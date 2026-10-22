@@ -141,6 +141,54 @@ static int has_arg(const char *s, const char *word)
 	return 0;
 }
 
+/* the number after `word` (e.g. "scfb.addr=") in s, decimal or 0x hex; 0 if absent */
+static uint64_t arg_num(const char *s, const char *word)
+{
+	for (const char *c = s; *c; c++) {
+		if ((c != s && c[-1] != ' ') || !starts_with(c, word))
+			continue;
+		const char *p = c + str_len(word);
+		uint64_t v = 0;
+		if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+			for (p += 2;; p++) {
+				uint64_t d;
+				if (*p >= '0' && *p <= '9')
+					d = (uint64_t)(*p - '0');
+				else if (*p >= 'a' && *p <= 'f')
+					d = (uint64_t)(*p - 'a' + 10);
+				else if (*p >= 'A' && *p <= 'F')
+					d = (uint64_t)(*p - 'A' + 10);
+				else
+					break;
+				v = v * 16 + d;
+			}
+		} else {
+			for (; *p >= '0' && *p <= '9'; p++)
+				v = v * 10 + (uint64_t)(*p - '0');
+		}
+		return v;
+	}
+	return 0;
+}
+
+/*
+ * Scion shared framebuffer (SCFB): the AVF app lends the VM a slice of RAM it maps too, and says
+ * where with scfb.addr= scfb.size= scfb.w= scfb.h= in the kernel parameters. It becomes the boot
+ * framebuffer (boot_args video): XNU's text console and MiniIOMobileFramebuffer draw into buffer 0,
+ * MiniIOMobileFramebuffer publishes each frame in the header, and the app copies it to its
+ * screen. The layout is the app's: display/SCFB.md in scion-avf.
+ */
+#define SCFB_MAGIC	0x42464353u	/* "SCFB" */
+#define SCFB_FB_OFFSET	0x10000u	/* buffer 0, after the header */
+#define FOURCC_XR24	0x34325258u	/* DRM_FORMAT_XRGB8888: bytes B, G, R, X (what iOS draws) */
+struct scfb_header {
+	uint32_t magic, version, width, height, stride, format, buf_offset[2], nbufs, flags, front, pad0;
+	uint64_t frame_seq, input_seq, guest_ns;
+	uint32_t dirty[4];
+	uint64_t host_seq, host_reading, host_ns;
+};
+static struct { uint64_t pa, size; uint32_t w, h; } scfb;
+
 /* ---- the machine, from the FDT ---- */
 
 static struct {
@@ -578,6 +626,18 @@ void avfboot_main(uint64_t fdt_pa)
 	uint64_t phys_base = align_up(low, BASE_ALIGN);
 	uint64_t pram = (m.ram_hi - PANIC_LOG_SIZE) & ~(PAGE_SIZE_MAX - 1);
 	uint64_t win_end = pram & ~(BASE_ALIGN - 1);
+	scfb.pa = arg_num(m.bootargs, "scfb.addr=");
+	scfb.size = arg_num(m.bootargs, "scfb.size=");
+	scfb.w = (uint32_t)arg_num(m.bootargs, "scfb.w=");
+	scfb.h = (uint32_t)arg_num(m.bootargs, "scfb.h=");
+	if (scfb.pa || scfb.size) {
+		if (scfb.pa < m.ram_lo || scfb.pa + scfb.size > m.ram_hi || (scfb.pa & 0xfff) || !scfb.w || !scfb.h ||
+		    SCFB_FB_OFFSET + (uint64_t)scfb.w * 4 * scfb.h > scfb.size)
+			die("scfb.addr/size/w/h do not describe a framebuffer in RAM");
+		/* the kernel's memory ends below it */
+		if (scfb.pa < win_end)
+			win_end = scfb.pa & ~(BASE_ALIGN - 1);
+	}
 	if (win_end <= phys_base)
 		die("not enough RAM above the payload");
 	uint64_t win_size = win_end - phys_base;
@@ -633,7 +693,32 @@ void avfboot_main(uint64_t fdt_pa)
 	ba->memSize = win_size;
 	ba->memSizeActual = win_size;
 	ba->topOfKernelData = top;
-	/* no framebuffer: video stays zero */
+	if (scfb.pa) {
+		volatile struct scfb_header *h = (volatile struct scfb_header *)scfb.pa;
+		h->magic = SCFB_MAGIC;
+		h->version = 1;
+		h->width = scfb.w;
+		h->height = scfb.h;
+		h->stride = scfb.w * 4;
+		h->format = FOURCC_XR24;
+		h->buf_offset[0] = SCFB_FB_OFFSET;
+		h->buf_offset[1] = SCFB_FB_OFFSET;
+		h->nbufs = 1;
+		h->front = 0;
+		h->frame_seq = 1;
+		h->flags = 3;	/* ready, and poll: the text console publishes nothing */
+		memset((void *)(scfb.pa + SCFB_FB_OFFSET), 0, (uint64_t)scfb.w * 4 * scfb.h);
+		ba->video.v_baseAddr = scfb.pa + SCFB_FB_OFFSET;
+		ba->video.v_display = 1;
+		ba->video.v_rowBytes = scfb.w * 4;
+		ba->video.v_width = scfb.w;
+		ba->video.v_height = scfb.h;
+		ba->video.v_depth = 32;
+		uart_kv("avfboot: scfb ", scfb.pa);
+		uart_kv("+", scfb.size);
+		uart_putc('\n');
+	}
+	/* otherwise no framebuffer: video stays zero */
 	char *cl = ba->commandLine;
 	uint32_t n = 0;
 	int own_serial = has_arg(pi.cmdline, "serial=") || has_arg(m.bootargs, "serial=");
