@@ -12,8 +12,10 @@
  * notifications itself while it is busy); transmit_ready says whether a descriptor is free
  * after taking back what the device is done with. Input: eight 64-byte buffers the device fills.
  *
- * boot-args: virtio_console=0  none; virtio_console=N (N >= 1)  the Nth console device
- *            (default 1: the first, hvc0)
+ * It is the console only where there is no other: a VMM that also captures a UART (crosvm's
+ * 8250 and its hvc0 go to the same place under AVF) would otherwise get every line twice.
+ * boot-args: virtio_console=N (N >= 1)  the Nth console device, even next to a UART;
+ *            virtio_console=0  none. Without it: the first, when there is no UART.
  */
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
@@ -132,16 +134,18 @@ redwood_vcon_receive_data(void)
 	return c;
 }
 
-/* From serial_init(): true when there is a console to register. */
+/* From serial_init(): true when there is a console to register. other: a UART is registered. */
 bool
-redwood_vcon_probe(void)
+redwood_vcon_probe(bool other)
 {
 	uint32_t which = 1;
+	bool asked;
 
 	if (vcon_dev != NULL) {
 		return true;
 	}
-	if (PE_parse_boot_argn("virtio_console", &which, sizeof(which)) && which == 0) {
+	asked = PE_parse_boot_argn("virtio_console", &which, sizeof(which));
+	if (which == 0 || (other && !asked)) {
 		return false;
 	}
 	if ((vcon_dev = vio_find(VIRTIO_ID_CONSOLE, which - 1)) == NULL) {
