@@ -258,6 +258,81 @@ main(int argc, char **argv)
 	printf("GFXTEST frames=%d frame_ms=%.3f (%.0f fps) bytes_out=%llu bytes_in=%llu round_trips=%llu\n", frames, per,
 	    1000.0 / per, (unsigned long long)c->bytes_out, (unsigned long long)c->bytes_in,
 	    (unsigned long long)c->round_trips);
+	/* textures that are client memory (gfx_share_texture), when the transport has resources */
+	if (t.res_create != NULL) {
+		enum { SW = 64, SSTRIDE = 72 * 4 };
+		uint8_t *s1 = calloc(SW, SSTRIDE), *s2 = calloc(SW, SSTRIDE);
+		for (int y = 0; y < SW; y++)
+			for (int x = 0; x < SW; x++) {
+				uint8_t *q = s1 + y * SSTRIDE + x * 4;      /* BGRA: memory rows 0-31 green, 32-63 blue */
+				q[0] = y < 32 ? 0 : 255; q[1] = y < 32 ? 255 : 0; q[2] = 0; q[3] = 255;
+			}
+		GLuint st[2];
+		glGenTextures(2, st);
+		glBindTexture(GL_TEXTURE_2D, st[0]);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		int ok1 = gfx_share_texture(c, 1, s1, SW, SW, SSTRIDE, 1);
+		/* sample it: the quad's bottom (texture row 0 side) should be memory row 0's colour */
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		glDisable(GL_BLEND);
+		glViewport(0, 0, W, H);
+		glClearColor(0, 0, 0, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		draw(prog, color_loc, 1.0f);
+		uint8_t lo[4], hi[4];
+		glReadPixels(W / 2, 64 + 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, lo);
+		glReadPixels(W / 2, 192 - 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, hi);
+		checks++; passed += ok1 && lo[1] == 255 && hi[2] == 255;
+		printf("GFXTEST shared sample: ok=%d bottom rgb=%u,%u,%u top rgb=%u,%u,%u (memory row 0 = texture row 0: %s)\n",
+		    ok1, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], lo[1] == 255 ? "yes" : "no");
+
+		/* draw into one: red, then GL rows 0-7 blue; memory rows 0-7 should come back blue */
+		GLuint fbo2;
+		glBindTexture(GL_TEXTURE_2D, st[1]);
+		int ok2 = gfx_share_texture(c, 2, s2, SW, SW, SSTRIDE, 1);
+		glGenFramebuffers(1, &fbo2);
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo2);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, st[1], 0);
+		glViewport(0, 0, SW, SW);
+		glClearColor(1, 0, 0, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(0, 0, SW, 8);
+		glClearColor(0, 0, 1, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glDisable(GL_SCISSOR_TEST);
+		glFinish();
+		const uint8_t *r0 = s2, *r60 = s2 + 60 * SSTRIDE;
+		checks++; passed += ok2 && r0[0] == 255 && r0[2] == 0 && r60[2] == 255 && r60[0] == 0;
+		printf("GFXTEST shared target: ok=%d memory row 0 bgra=%u,%u,%u row 60 bgra=%u,%u,%u downloads=%llu\n", ok2,
+		    r0[0], r0[1], r0[2], r60[0], r60[1], r60[2], (unsigned long long)c->downloads);
+
+		/* the display's size: a frame drawn into a shared 1125x2436 target and copied back */
+		enum { DW = 1125, DH = 2436, DSTRIDE = 1152 * 4 };
+		uint8_t *disp = calloc(DH, DSTRIDE);
+		GLuint dt, dfbo;
+		glGenTextures(1, &dt);
+		glBindTexture(GL_TEXTURE_2D, dt);
+		gfx_share_texture(c, 3, disp, DW, DH, DSTRIDE, 1);
+		glGenFramebuffers(1, &dfbo);
+		glBindFramebuffer(GL_FRAMEBUFFER, dfbo);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dt, 0);
+		glViewport(0, 0, DW, DH);
+		glBindTexture(GL_TEXTURE_2D, texid);
+		glEnable(GL_BLEND);
+		double d0 = now_ms();
+		for (int f = 0; f < 10; f++) {
+			glClearColor(0.2f, 0.2f, 0.2f, 1);
+			glClear(GL_COLOR_BUFFER_BIT);
+			for (int q = 0; q < 10; q++) {
+				draw(prog, color_loc, 0.3f);
+			}
+			glFinish();
+		}
+		printf("GFXTEST display-size frame (10 quads, copied back into a %dx%d surface): %.2f ms\n", DW, DH,
+		    (now_ms() - d0) / 10);
+	}
 	printf("GFXTEST checks %d/%d\nGFXTEST-DONE %s\n", passed, checks, passed == checks ? "pass" : "fail");
 	gfx_destroy(c);
 	return passed == checks ? 0 : 1;

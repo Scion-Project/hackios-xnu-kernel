@@ -47,6 +47,10 @@
 #                                   OpenGL ES renderer, by that GPU (boot-arg gpu=1); anywhere else -- QEMU,
 #                                   no boot-arg, no firmware in ../fw-gpu -- the library is not even loaded
 #                                   and nothing changes (src/inject.c, opengl_es()).
+#                                   GL=gfx: the library draws with the HOST's GPU instead: gfxstream over
+#                                   virtio-gpu (src/gfx, /dev/vgpu3d; AVF on the Pixel: the PowerVR), as
+#                                   lib/libredwood-gl.dylib (no Mesa), plus bin/gfx_test. Boot-arg gl=1 loads
+#                                   it into the window server.
 #                                   GL=test: only the library and bin/gl_test (a triangle, src/gl_test.c;
 #                                   RC_JOBS=rc.jobs.gltest runs it); the window server stays as it is.
 #                      ADSP=1       with the audio DSP's firmware from ../fw-audio in fw/ (20 MB; for the
@@ -323,7 +327,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# /redwood/lib/libredwoodmetal.dylib would bind the bundle to it and fail that test.
 		$DYN -bundle -framework Foundation -framework IOKit -framework Metal -lobjc \
 			-o obj/RedwoodMetal src/redwoodmetal.m src/redwooddrawable.m
-		if [ -n "$GL" ]; then
+		if [ "$GL" = gfx ]; then
+			# the OpenGL ES library that draws with the host's GPU: gfxstream over virtio-gpu
+			# (/dev/vgpu3d), behind the same eagl.c (tools/gfxstream/mk-gfx.sh)
+			OUT=$PWD/obj ../tools/gfxstream/mk-gfx.sh
+		elif [ -n "$GL" ]; then
 			# the OpenGL ES library, and the table of functions that hands CoreAnimation's calls to it
 			# (Mesa says beside the library what it was built from: one from other patches is built again)
 			M=../xnu-deps/build/mesa/out
@@ -468,7 +476,10 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		cp obj/RedwoodMetal root/lib/RedwoodMetal.bundle/
 		cp src/metal_plugin.plist root/lib/RedwoodMetal.bundle/Info.plist
 	fi
-	if [ -n "$GL" ]; then
+	if [ "$GL" = gfx ]; then
+		cp obj/libredwood-gl.dylib root/lib/
+		cp obj/gfx_test root/bin/
+	elif [ -n "$GL" ]; then
 		cp obj/libOSMesa.8.dylib root/lib/
 		cp obj/gl_test root/bin/
 		if [ -f obj/u2f_test ]; then cp obj/u2f_test root/bin/; fi   # an "if": see the inject.conf loop below

@@ -41,7 +41,28 @@ struct gfx_transport {
 	int (*write)(void *arg, const void *buf, size_t n);
 	int (*read)(void *arg, void *buf, size_t n);
 	void (*close)(void *arg);
+	/*
+	 * Optional: 2D colour-buffer resources (BGRA, rows of width * 4 bytes on the host) whose
+	 * handle rcBindTexture takes, and rectangles of client memory (any stride) to and from them.
+	 */
+	int (*res_create)(void *arg, uint32_t width, uint32_t height, uint32_t *res);
+	int (*res_unref)(void *arg, uint32_t res);
+	int (*res_upload)(void *arg, uint32_t res, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+	    const void *src, uint32_t stride);
+	int (*res_download)(void *arg, uint32_t res, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+	    void *dst, uint32_t stride);
 };
+
+/* A texture that is client memory (gfx_share_texture): what is drawn into it is copied back. */
+struct gfx_shared {
+	uint64_t key;                   /* the caller's name for the memory (an IOSurface ID) */
+	GLuint texture;
+	uint32_t res, width, height, stride;
+	void *base;
+	int dirty;                      /* drawn into since the last copy back */
+};
+#define GFX_MAX_SHARED  64
+#define GFX_MAX_FBOS    32
 
 #define GFX_MAX_ATTRIBS 16
 
@@ -73,6 +94,12 @@ struct gfx {
 	GLint unpack_alignment, unpack_row_length, unpack_skip_rows, unpack_skip_pixels;
 	GLint pack_alignment, pack_row_length, pack_skip_rows, pack_skip_pixels;
 	char *strings[8];
+
+	/* textures and framebuffers, for knowing when a shared texture is drawn into */
+	GLuint active_unit, bound_2d[16], draw_fbo;
+	struct { GLuint fbo, texture; } fbo_color[GFX_MAX_FBOS];
+	struct gfx_shared shared[GFX_MAX_SHARED];
+	uint64_t downloads, download_bytes, uploads, upload_bytes;
 	uint8_t *scratch;
 	size_t scratch_cap;
 };
@@ -103,5 +130,20 @@ void gfx_set_current(struct gfx *c);
 struct gfx *gfx_create(const struct gfx_transport *t, int version);
 int gfx_make_current(struct gfx *c);                            /* NULL: release; 0 on failure */
 void gfx_destroy(struct gfx *c);
+
+/*
+ * The texture bound to GL_TEXTURE_2D becomes `width` x `height` BGRA client memory at `base`
+ * (`stride` bytes a row), the same memory every time `key` is given: on the host a colour buffer
+ * the texture is bound to (rcBindTexture). `upload`: copy the memory to the host now (it may have
+ * changed). What is drawn into the texture is copied back into the memory when the frame ends
+ * (glFlush, glFinish, glClientWaitSync). Row r of the memory is row r of the texture. 0: the
+ * transport cannot (the caller copies with glTexImage2D/glReadPixels instead).
+ */
+int gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, uint32_t height, uint32_t stride,
+    int upload);
+/* Copy every shared texture drawn into since the last time back into its memory. */
+void gfx_sync_shared(struct gfx *c);
+void gfx_drawing(struct gfx *c);         /* (gfx_gl.c: a draw lands in the bound framebuffer) */
+void gfx_forget_shared(struct gfx *c, uint64_t key);
 
 #endif

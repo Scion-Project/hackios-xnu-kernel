@@ -359,6 +359,7 @@ glDrawArrays(GLenum mode, GLint first, GLsizei count)
 	if (c == NULL || count <= 0) {
 		return;
 	}
+	gfx_drawing(c);
 	if (any_client_arrays(c)) {
 		send_arrays(c, first, count);
 		/* the arrays now start at element `first`; buffer-backed ones are rare beside them */
@@ -376,6 +377,7 @@ glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 		return;
 	}
 	uint32_t isz = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
+	gfx_drawing(c);
 	if (c->element_buffer) {
 		if (any_client_arrays(c)) {
 			/* rare: indices in a buffer, vertices in client memory; send every vertex we may need */
@@ -426,6 +428,7 @@ glFlush(void)
 	struct gfx *c = gfx_current();
 	if (c != NULL) {
 		gfxe_glFlush(c);
+		gfx_sync_shared(c);
 		gfx_flush(c);
 	}
 }
@@ -436,6 +439,7 @@ glFinish(void)
 	struct gfx *c = gfx_current();
 	if (c != NULL) {
 		gfxe_glFinishRoundTrip(c);
+		gfx_sync_shared(c);
 	}
 }
 
@@ -450,7 +454,11 @@ API GLenum
 glClientWaitSync(void *sync, GLbitfield flags, GLuint64 timeout)
 {
 	struct gfx *c = gfx_current();
-	return c ? gfxe_glClientWaitSyncAEMU(c, (uint64_t)(uintptr_t)sync, flags, timeout) : GL_TIMEOUT_EXPIRED;
+	if (c == NULL) {
+		return GL_TIMEOUT_EXPIRED;
+	}
+	gfx_sync_shared(c);     /* a frame's end, for eagl.c: the shared targets into their memory */
+	return gfxe_glClientWaitSyncAEMU(c, (uint64_t)(uintptr_t)sync, flags, timeout);
 }
 
 API void
