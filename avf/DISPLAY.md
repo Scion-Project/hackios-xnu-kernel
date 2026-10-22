@@ -38,11 +38,24 @@ frame.
   * Until the first frame, `POLL` makes the app copy at the refresh rate, so
     the verbose boot console is visible too.
 
-There is one buffer, drawn in place, the same as with ramfb. A frame the app
-copies while the next one is being drawn may tear. The header has room for two
-buffers (`front`, `host_reading`). Double buffering would mean
-MiniIOMobileFramebuffer composing the whole panel each frame into alternating
-buffers. That's the next step if tearing shows.
+**No tearing.** There is one buffer, drawn in place, because a swap's layers
+only redraw what they cover. It is guarded like a seqlock:
+
+* Before drawing, the kernel waits while the app is copying (`host_reading`,
+  4 ms at most) and sets `drawing`.
+* The app waits while `drawing` is set, and copies again if a frame began
+  meanwhile.
+
+Measured on the Pixel with the test guest in this mode (scion-avf
+`display/run-on-device.sh --bufs 1`):
+
+| Mode | Frames presented | Torn |
+|---|---|---|
+| Seqlock, guest drawing back to back at 820 fps | 599 at 120 fps | 0 frames, 0 sampled frames mixing rows |
+| Same guest without the seqlock (`--bufs 0`, like ramfb) | 345 | 128 mixed rows from two frames |
+
+A flipped pair (`nbufs = 2`) also works in the app, but it would need
+MiniIOMobileFramebuffer to recompose the whole panel each frame.
 
 **No-copy:** the guest→host direction has no copy: the frame lands in memory
 the app has mapped. The one remaining copy is the app's `memcpy` into its
