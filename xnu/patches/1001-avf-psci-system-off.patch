@@ -110,10 +110,10 @@ index 4f540f8..c0ceb12 100644
  	while (1) {
  		;
 diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
-index 221defa..07f2b3d 100644
+index 221defa..74a9b5f 100644
 --- a/osfmk/arm64/psci_smp.c
 +++ b/osfmk/arm64/psci_smp.c
-@@ -112,6 +112,20 @@ psci_error(int64_t status)
+@@ -112,6 +112,30 @@ psci_error(int64_t status)
  	return (status <= 0 && status > -(int64_t)(sizeof(names) / sizeof(names[0]))) ? names[-status] : "?";
  }
  
@@ -128,6 +128,16 @@ index 221defa..07f2b3d 100644
 +int64_t
 +psci_system_off(int reset)
 +{
++	DTEntry chosen;
++	void const *prop;
++	unsigned int size;
++
++	/* (psci_smp_init() runs only when there are more processors to start: ask the device tree here) */
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "psci-method", &prop, &size) != kSuccess || size < 3) {
++		return -1;                      /* no PSCI firmware described */
++	}
++	psci_smp_hvc = strncmp((const char *)prop, "hvc", 3) == 0;
 +	return psci_call(reset ? PSCI_SYSTEM_RESET : PSCI_SYSTEM_OFF, 0, 0, 0);
 +}
 +
