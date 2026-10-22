@@ -60,5 +60,6 @@ API needs, and puts all of that back before it releases the lock.
 | **Pixel 10, AVF non-protected VM, 2 GB, 1 vCPU** | XNU console on AVF's captured console, md0 root, PID 1 |
 | **Pixel 10, `--match-host-cpus`, `cpus=8`** | 8 of 8 processors running, PID 1 |
 
-Pitfall: crosvm rejects VM parameters that begin with `-` after the first word (`--params "-v cpus=8"`
-fails with "Unrecognized argument: 8"); put the `-v` last (`--params "cpus=8 -v"`).
+Pitfall, seen once: with `--match-host-cpus`, `--params "-v cpus=8"` made crosvm exit at once
+("arg parsing failed: Unrecognized argument: 8"), while `--params "cpus=8 -v"` booted. (`--params "-v"`
+alone worked with one vCPU.) Keep a leading `-` out of the parameters.
