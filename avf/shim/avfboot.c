@@ -819,6 +819,24 @@ void avfboot_main(uint64_t fdt_pa)
 		dt_prop(&w, "RAMDisk", r, sizeof(r));
 	}
 	dt_end(&w);
+	if (more_cores) {
+		/*
+		 * Every "machine timeout" of the kernel (spinlock and mutex patience, IPI waits:
+		 * machine_timeout_init_with_suffix()) times this. Bare-metal values panic under pKVM,
+		 * which preempts vCPUs, a lock holder among them, for longer than real cores ever
+		 * stall: with 8 host-matched vCPUs the kernel died of "Ticket spinlock ... timeout
+		 * after 3001083 ticks" once launchd got busy. The UEFI loader uses 20 on QEMU.
+		 * Kernel parameter timeout_scale=N overrides (0: none).
+		 */
+		uint32_t scale = has_arg(m.bootargs, "timeout_scale=") ? (uint32_t)arg_num(m.bootargs, "timeout_scale=") : 40;
+		if (scale > 1) {
+			dt_begin(&w, "machine-timeouts");
+			dt_prop_u32(&w, "global-scale", scale);
+			dt_end(&w);
+			uart_kv("avfboot: machine timeouts x", scale);
+			uart_puts("\n");
+		}
+	}
 	dt_end(&w);	/* chosen */
 
 	dt_begin(&w, "defaults");
