@@ -26,6 +26,7 @@ __pycache__/
 !/tools/air/
 !/tools/mesa/
 !/tools/metal/
+!/tools/gfxstream/
 !/tools/mk-mesa.sh
 !/tools/mk-jb.sh
 !/tools/jb-preinstall.py
