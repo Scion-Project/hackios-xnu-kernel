@@ -33,8 +33,9 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends build-essential git curl clang lld \
-            python3 perl xz-utils flex bison m4 autoconf automake libtool-bin
+            python3 perl xz-utils flex bison m4 autoconf automake libtool-bin uuid-dev llvm
           clang --version | head -1
+          ls -la /usr/bin/dsymutil   # the kernel build runs it (xnu-deps/host/bin/xcrun -find)
 
       - name: Cache theos toolchain and SDK
         id: theos-cache
@@ -84,7 +85,7 @@ jobs:
 
       - name: Dependencies (xnu-deps/setup.sh)
         run: |
-          xnu-deps/setup.sh || { tail -50 xnu-deps/*.log 2>/dev/null; exit 1; }
+          xnu-deps/setup.sh || { for f in xnu-deps/*.log; do echo "== $f"; tail -60 "$f"; done; exit 1; }
 
       - name: Build (xnu-build.sh -k)
         run: |
@@ -105,7 +106,9 @@ jobs:
         if: always()
         with:
           name: xnu-build-log
-          path: build.log
+          path: |
+            build.log
+            xnu-deps/*.log
           retention-days: 7
 
       - uses: actions/upload-artifact@v4
