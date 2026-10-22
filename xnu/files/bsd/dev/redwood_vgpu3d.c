@@ -340,7 +340,8 @@ vgpu3d_query(struct vgpu3d *g, uint64_t features, uint32_t num_capsets)
 			/* the count is unknown: ask until the device says no */
 			v3_memset(&r, 0, sizeof(r));
 			if (g->ops.ctrl(g->ops.arg, &c, sizeof(c), &r, sizeof(r)) != 0 ||
-			    r.hdr.type != VIRTIO_GPU_RESP_OK_CAPSET_INFO || r.capset_id == 0) {
+			    r.hdr.type != VIRTIO_GPU_RESP_OK_CAPSET_INFO || r.capset_id == 0 ||
+			    r.capset_id > 64 /* crosvm poisons the answer past the last one */) {
 				break;
 			}
 		} else if (ctrl(g, &c, sizeof(c), &r, sizeof(r), VIRTIO_GPU_RESP_OK_CAPSET_INFO)) {
