@@ -486,3 +486,24 @@ redwood_virtio_blk_rootdev(const char *name, dev_t *dev)
 	*dev = makedev(blk_bmajor, unit);
 	return 0;
 }
+
+/*
+ * One more pair of names for a disk: /dev/NAME and /dev/rNAME (md0=rvblk0 makes the system
+ * disk /dev/md0 for HackiOS's user space, IOFindBSDRoot).
+ */
+int
+redwood_virtio_blk_alias(const char *disk, const char *name)
+{
+	dev_t dev;
+	int error;
+
+	if ((error = redwood_virtio_blk_rootdev(disk, &dev)) != 0) {
+		return error;
+	}
+	if (devfs_make_node(dev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "%s", name) == NULL ||
+	    devfs_make_node(makedev(blk_cmajor, minor(dev)), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "r%s", name) == NULL) {
+		return ENOMEM;
+	}
+	printf("virtio-blk: /dev/%s is /dev/%s\n", name, disk);
+	return 0;
+}
