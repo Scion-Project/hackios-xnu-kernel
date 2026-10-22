@@ -467,6 +467,7 @@ redwood_pci_init(void)
 void
 redwood_pci_dump(void)
 {
+	(void)redwood_pci_init();
 	if (!pci.present || pci.dumped) {
 		return;
 	}
