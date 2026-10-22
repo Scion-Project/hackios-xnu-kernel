@@ -33,8 +33,9 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends build-essential git curl clang lld \
-            python3 perl xz-utils flex bison m4 autoconf automake libtool-bin uuid-dev
+            python3 perl xz-utils flex bison m4 autoconf automake libtool-bin uuid-dev llvm
           clang --version | head -1
+          ls -la /usr/bin/dsymutil   # the kernel build runs it (xnu-deps/host/bin/xcrun -find)
 
       - name: Cache theos toolchain and SDK
         id: theos-cache
