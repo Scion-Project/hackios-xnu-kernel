@@ -82,6 +82,100 @@ pipe_read(void *arg, void *buf, size_t n)
 	return 0;
 }
 
+/* colour-buffer resources: a tight backing each, as the kernel keeps them */
+struct res { uint32_t id, w, h; uint8_t *mem; };
+static struct res resources[64];
+static uint32_t next_res_id = 0x30000;
+
+static struct res *
+res_of(uint32_t id)
+{
+	for (int i = 0; i < 64; i++) {
+		if (resources[i].id == id && id) {
+			return &resources[i];
+		}
+	}
+	return NULL;
+}
+
+static int
+res_create(void *arg, uint32_t w, uint32_t h, uint32_t *out)
+{
+	struct pipe *p = arg;
+	struct res *r = res_of(0);
+	for (int i = 0; r == NULL && i < 64; i++) {
+		if (resources[i].id == 0) {
+			r = &resources[i];
+		}
+	}
+	if (r == NULL) {
+		return 28;
+	}
+	r->id = next_res_id++;
+	r->w = w;
+	r->h = h;
+	r->mem = calloc(w * h, 4);
+	struct sr_create c = { r->id, 2 /* TEXTURE_2D */, 1 /* B8G8R8A8 */, (1u << 1) | (1u << 3), w, h, 1, 1, 0, 0, 0 };
+	struct sr_iovec iov = { r->mem, (size_t)w * h * 4 };
+	if (sr_resource_create(&c, NULL, 0) || sr_attach_iov((int)r->id, &iov, 1)) {
+		return 5;
+	}
+	sr_ctx_attach((int)p->ctx, (int)r->id);
+	*out = r->id;
+	return 0;
+}
+
+static int
+res_unref(void *arg, uint32_t id)
+{
+	(void)arg;
+	struct res *r = res_of(id);
+	if (r) {
+		free(r->mem);
+		memset(r, 0, sizeof(*r));
+	}
+	return 0;
+}
+
+static int
+res_xfer(struct pipe *p, uint32_t id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t *user, uint32_t stride,
+    int upload)
+{
+	struct res *r = res_of(id);
+	if (r == NULL) {
+		return 2;
+	}
+	size_t pitch = (size_t)r->w * 4;
+	uint64_t off = (uint64_t)y * pitch + (uint64_t)x * 4;
+	struct sr_box box = { x, y, 0, w, h, 1 };
+	struct sr_iovec iov = { r->mem, (size_t)r->w * r->h * 4 };
+	if (upload) {
+		for (uint32_t i = 0; i < h; i++) {
+			memcpy(r->mem + off + i * pitch, user + (size_t)i * stride, (size_t)w * 4);
+		}
+		return sr_write(r->id, p->ctx, 0, 0, 0, &box, off, &iov, 1) ? 5 : 0;
+	}
+	if (sr_read(r->id, p->ctx, 0, 0, 0, &box, off, &iov, 1)) {
+		return 5;
+	}
+	for (uint32_t i = 0; i < h; i++) {
+		memcpy(user + (size_t)i * stride, r->mem + off + i * pitch, (size_t)w * 4);
+	}
+	return 0;
+}
+
+static int
+res_upload(void *arg, uint32_t id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void *src, uint32_t stride)
+{
+	return res_xfer(arg, id, x, y, w, h, (uint8_t *)src, stride, 1);
+}
+
+static int
+res_download(void *arg, uint32_t id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, void *dst, uint32_t stride)
+{
+	return res_xfer(arg, id, x, y, w, h, dst, stride, 0);
+}
+
 int
 host_init(uint32_t flags)
 {
@@ -141,5 +235,9 @@ host_open(struct gfx_transport *t)
 	t->write = pipe_write;
 	t->read = pipe_read;
 	t->close = NULL;
+	t->res_create = res_create;
+	t->res_unref = res_unref;
+	t->res_upload = res_upload;
+	t->res_download = res_download;
 	return 0;
 }
