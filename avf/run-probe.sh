@@ -41,7 +41,8 @@ mkdir -p "$OUT"
 
 echo "== waiting for $LOCK"
 until sh_ mkdir "$LOCK" 2>/dev/null; do sleep 10; done
-prev=
+# what the exemption list was, before anything can change it (cleanup puts it back)
+prev=$(sh_ settings get global hidden_api_blacklist_exemptions | tr -d '\r')
 cleanup() {
 	if [[ "$prev" == "null" || -z "$prev" ]]; then
 		sh_ settings delete global hidden_api_blacklist_exemptions >/dev/null || true
@@ -58,7 +59,6 @@ trap cleanup EXIT
 sh_ pm list packages | grep -q "package:$PKG\$" || { echo "the probe app ($PKG) is not installed" >&2; exit 1; }
 sh_ pm grant "$PKG" android.permission.MANAGE_VIRTUAL_MACHINE
 sh_ pm grant "$PKG" android.permission.USE_CUSTOM_VIRTUAL_MACHINE
-prev=$(sh_ settings get global hidden_api_blacklist_exemptions | tr -d '\r')
 sh_ settings put global hidden_api_blacklist_exemptions "'$EXEMPT'"
 
 echo "== streaming guest files into the app's files/guest"
