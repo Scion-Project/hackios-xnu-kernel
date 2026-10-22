@@ -272,7 +272,7 @@ gfx_create(const struct gfx_transport *t, int version)
 
 	/* the render thread reads a flags word first (unused) */
 	uint32_t flags = 0;
-	if (c->buf == NULL || c->t.write(c->t.arg, &flags, 4) != 0) {
+	if (c->buf == NULL || (!c->t.flags_sent && c->t.write(c->t.arg, &flags, 4) != 0)) {
 		gfx_destroy(c);
 		return NULL;
 	}

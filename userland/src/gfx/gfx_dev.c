@@ -113,5 +113,6 @@ gfx_dev_open(struct gfx_transport *t)
 	t->res_unref = dev_res_unref;
 	t->res_upload = dev_res_upload;
 	t->res_download = dev_res_download;
+	t->flags_sent = 1;              /* the kernel's vgpu3d_open sends it */
 	return 0;
 }

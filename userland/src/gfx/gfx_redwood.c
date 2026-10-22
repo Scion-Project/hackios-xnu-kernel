@@ -26,7 +26,7 @@ struct redwood_gl {
 struct redwood_gl *
 redwood_gl_create(int version)
 {
-	struct gfx_transport t;
+	struct gfx_transport t = { 0 };
 	struct redwood_gl *gl;
 
 	if (gfx_dev_open(&t) != 0) {
