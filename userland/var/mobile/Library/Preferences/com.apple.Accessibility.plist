@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Settings > Accessibility > Display & Text Size > Reduce Transparency: no blur materials,
+	     which CoreAnimation's software renderer draws at great cost (every frame of the dock,
+	     folders, Control Center and the notification center). -->
+	<key>EnhancedBackgroundContrastEnabled</key>
+	<true/>
+	<!-- Settings > Accessibility > Motion > Reduce Motion: cross-fades instead of zooms and
+	     parallax. -->
+	<key>ReduceMotionEnabled</key>
+	<true/>
+</dict>
+</plist>
