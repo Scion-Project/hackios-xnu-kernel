@@ -220,7 +220,11 @@ struct vgpu3d {
 /* printf-like line through ops->log (%s %c %d %u %x %p with l/ll and a 0-padded width) */
 void vgpu3d_log(struct vgpu3d *g, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
-/* Lists the capsets (GET_CAPSET_INFO 0..num_capsets-1) and reads gfxstream-gles's. 0 or errno. */
+/*
+ * Lists the capsets (GET_CAPSET_INFO 0..num_capsets-1; VGPU3D_PROBE_CAPSETS: until the device
+ * refuses one) and reads gfxstream-gles's. 0 or errno.
+ */
+#define VGPU3D_PROBE_CAPSETS    0xffffffffu
 int vgpu3d_query(struct vgpu3d *g, uint64_t features, uint32_t num_capsets);
 /* The capset is offered (by ID). */
 bool vgpu3d_has_capset(const struct vgpu3d *g, uint32_t id);
@@ -233,6 +237,20 @@ int vgpu3d_open(struct vgpu3d *g, uint32_t capset, uint32_t pipe_size);
 uint32_t vgpu3d_create_scanout_resource(struct vgpu3d *g, uint32_t width, uint32_t height);
 /* SET_SCANOUT + RESOURCE_FLUSH of a whole resource. */
 int vgpu3d_present(struct vgpu3d *g, uint32_t scanout, uint32_t res, uint32_t width, uint32_t height);
+
+/*
+ * A 2D resource of this context (RESOURCE_CREATE_3D + ATTACH_BACKING + CTX_ATTACH_RESOURCE) with
+ * the given backing pages; gfxstream makes it a colour buffer whose handle is `res`. scratch
+ * holds the ATTACH_BACKING command. 0 or errno.
+ */
+int vgpu3d_resource_create(struct vgpu3d *g, uint32_t res, uint32_t width, uint32_t height, uint32_t format,
+    uint32_t bind, const struct virtio_gpu_mem_entry *entries, uint32_t nentries, void *scratch, uint32_t scratch_size);
+int vgpu3d_resource_unref(struct vgpu3d *g, uint32_t res);
+/* TRANSFER_{TO,FROM}_HOST_3D of a box; the backing is width * 4 bytes a row (gfxstream's layout). */
+int vgpu3d_transfer_box(struct vgpu3d *g, uint32_t res, bool to_host, uint32_t x, uint32_t y, uint32_t w,
+    uint32_t h, uint64_t offset);
+/* The pipe and the context away. */
+void vgpu3d_close(struct vgpu3d *g);
 
 /* The stream: space for n bytes of encoded calls, sending what is queued when it is full. */
 uint8_t *vgpu3d_alloc(struct vgpu3d *g, uint32_t n);

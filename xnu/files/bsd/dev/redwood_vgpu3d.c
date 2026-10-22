@@ -336,7 +336,14 @@ vgpu3d_query(struct vgpu3d *g, uint64_t features, uint32_t num_capsets)
 		v3_memset(&c, 0, sizeof(c));
 		hdr(&c.hdr, VIRTIO_GPU_CMD_GET_CAPSET_INFO, 0);
 		c.capset_index = i;
-		if (ctrl(g, &c, sizeof(c), &r, sizeof(r), VIRTIO_GPU_RESP_OK_CAPSET_INFO)) {
+		if (num_capsets == VGPU3D_PROBE_CAPSETS) {
+			/* the count is unknown: ask until the device says no */
+			v3_memset(&r, 0, sizeof(r));
+			if (g->ops.ctrl(g->ops.arg, &c, sizeof(c), &r, sizeof(r)) != 0 ||
+			    r.hdr.type != VIRTIO_GPU_RESP_OK_CAPSET_INFO || r.capset_id == 0) {
+				break;
+			}
+		} else if (ctrl(g, &c, sizeof(c), &r, sizeof(r), VIRTIO_GPU_RESP_OK_CAPSET_INFO)) {
 			return g->err;
 		}
 		g->capset[i].id = r.capset_id;
@@ -437,7 +444,9 @@ vgpu3d_open(struct vgpu3d *g, uint32_t capset, uint32_t pipe_size)
 	struct virtio_gpu_ctx_create c;
 	static const char name[] = "vgpu3d";
 	v3_memset(&c, 0, sizeof(c));
-	g->ctx_id = 1;
+	if (!g->ctx_id) {
+		g->ctx_id = 1;
+	}
 	hdr(&c.hdr, VIRTIO_GPU_CMD_CTX_CREATE, g->ctx_id);
 	c.nlen = sizeof(name) - 1;
 	c.context_init = capset;
@@ -519,6 +528,77 @@ vgpu3d_present(struct vgpu3d *g, uint32_t scanout, uint32_t res, uint32_t width,
 		return g->err;
 	}
 	return ctrl(g, &f, sizeof(f), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
+}
+
+int
+vgpu3d_resource_create(struct vgpu3d *g, uint32_t res, uint32_t width, uint32_t height, uint32_t format,
+    uint32_t bind, const struct virtio_gpu_mem_entry *entries, uint32_t nentries, void *scratch, uint32_t scratch_size)
+{
+	struct virtio_gpu_resource_attach_backing *a = scratch;
+	uint32_t len = (uint32_t)(sizeof(*a) - sizeof(a->entry) + nentries * sizeof(a->entry[0]));
+	if (len > scratch_size) {
+		return 7;       /* E2BIG */
+	}
+	if (create_3d(g, res, VGPU3D_PIPE_TEXTURE_2D, format, bind, width, height)) {
+		return g->err;
+	}
+	v3_memset(a, 0, sizeof(*a) - sizeof(a->entry));
+	hdr(&a->hdr, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, 0);
+	a->resource_id = res;
+	a->nr_entries = nentries;
+	v3_memcpy(a->entry, entries, nentries * sizeof(a->entry[0]));
+	if (ctrl(g, a, len, NULL, 0, VIRTIO_GPU_RESP_OK_NODATA)) {
+		return g->err;
+	}
+	return ctx_attach(g, res);
+}
+
+int
+vgpu3d_resource_unref(struct vgpu3d *g, uint32_t res)
+{
+	struct virtio_gpu_ctx_resource d;
+	struct virtio_gpu_resource_unref u;
+	v3_memset(&d, 0, sizeof(d));
+	hdr(&d.hdr, VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE, g->ctx_id);
+	d.resource_id = res;
+	v3_memset(&u, 0, sizeof(u));
+	hdr(&u.hdr, VIRTIO_GPU_CMD_RESOURCE_UNREF, 0);
+	u.resource_id = res;
+	ctrl(g, &d, sizeof(d), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
+	return ctrl(g, &u, sizeof(u), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
+}
+
+int
+vgpu3d_transfer_box(struct vgpu3d *g, uint32_t res, bool to_host, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+    uint64_t offset)
+{
+	struct virtio_gpu_transfer_host_3d t;
+	v3_memset(&t, 0, sizeof(t));
+	hdr(&t.hdr, to_host ? VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D : VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, g->ctx_id);
+	t.box.x = x;
+	t.box.y = y;
+	t.box.w = w;
+	t.box.h = h;
+	t.box.d = 1;
+	t.offset = offset;
+	t.resource_id = res;
+	return ctrl(g, &t, sizeof(t), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
+}
+
+void
+vgpu3d_close(struct vgpu3d *g)
+{
+	struct virtio_gpu_ctrl_hdr d;
+	if (g->pipe_res) {
+		g->err = 0;
+		vgpu3d_resource_unref(g, g->pipe_res);
+		g->pipe_res = 0;
+	}
+	if (g->ctx_id) {
+		g->err = 0;
+		hdr(&d, VIRTIO_GPU_CMD_CTX_DESTROY, g->ctx_id);
+		ctrl(g, &d, sizeof(d), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
+	}
 }
 
 /* ---- the stream ------------------------------------------------------------------------- */
