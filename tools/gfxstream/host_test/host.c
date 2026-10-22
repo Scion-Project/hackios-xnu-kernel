@@ -239,5 +239,6 @@ host_open(struct gfx_transport *t)
 	t->res_unref = res_unref;
 	t->res_upload = res_upload;
 	t->res_download = res_download;
+	t->flags_sent = 0;
 	return 0;
 }

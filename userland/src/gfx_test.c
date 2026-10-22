@@ -136,7 +136,7 @@ draw(GLuint prog, GLint color_loc, float alpha)
 int
 main(int argc, char **argv)
 {
-	struct gfx_transport t;
+	struct gfx_transport t = { 0 };
 	int frames = argc > 1 ? atoi(argv[1]) : 100;
 	if (gfx_test_transport(&t) != 0) {
 		printf("GFXTEST no transport\nGFXTEST-DONE fail\n");
