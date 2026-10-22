@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Save the SCFB framebuffer as a PNG.
 
-  avf/scfb-dump.py --qemu ADDR OUT.png        from a running avf/qemu-scfb.sh (monitor port 4454)
+  avf/scfb-dump.py --qemu ADDR OUT.png        from a running avf/qemu-scfb.sh (QMP port 4455)
   avf/scfb-dump.py FILE FILE_BASE ADDR OUT.png from a dump of guest memory starting at FILE_BASE
 """
 import struct, sys, zlib
@@ -9,8 +9,12 @@ import os, socket, time
 if sys.argv[1] == "--qemu":
     addr, out = int(sys.argv[2], 0), sys.argv[3]
     ram, base = os.path.abspath(out + ".bin"), addr
-    m = socket.create_connection(("127.0.0.1", int(os.environ.get("HMP", "4454")))); time.sleep(0.3); m.recv(65536)
-    m.sendall(f"pmemsave {addr:#x} 0x2000000 {ram}\n".encode()); time.sleep(3)
+    import json
+    m = socket.create_connection(("127.0.0.1", int(os.environ.get("QMP", "4455")))); f = m.makefile("rw")
+    f.readline(); f.write('{"execute": "qmp_capabilities"}\n'); f.flush(); f.readline()
+    f.write(json.dumps({"execute": "pmemsave", "arguments": {"val": addr, "size": 0x2000000, "filename": ram}}) + "\n"); f.flush()
+    while '"return"' not in (r := f.readline()) and '"error"' not in r:
+        pass
 else:
     ram, base, addr, out = sys.argv[1], int(sys.argv[2], 0), int(sys.argv[3], 0), sys.argv[4]
 with open(ram, 'rb') as f:
