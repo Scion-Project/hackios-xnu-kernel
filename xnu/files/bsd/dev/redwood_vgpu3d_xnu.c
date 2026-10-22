@@ -2,8 +2,9 @@
  * The kernel's side of virtio-gpu 3D (bsd/dev/redwood_vgpu3d.c): where its control queue
  * comes from, its memory, its log and its clock.
  *
- * Boot-arg gpu3d=1 (AVF with a GpuConfig: crosvm --gpu backend=gfxstream): at boot a kernel
- * thread brings up a gfxstream context and runs vgpu3d_selftest(). The Pixel's GPU draws a
+ * Boot-arg gpu3d=1 (AVF with a GpuConfig: crosvm --gpu backend=gfxstream): bsd_init brings up
+ * a gfxstream context and runs vgpu3d_selftest() before it goes on (about 0.2 s; synchronous,
+ * so the result is in before process 1 runs; gpu3d=2 runs it in a thread instead). The Pixel's GPU draws a
  * picture, the guest reads it back and checks it, and the "GPU3D ..." lines on the console
  * report the result, the host's GL strings and timings. With a scanout, the picture is also
  * put on it (SET_SCANOUT of the gfxstream colour buffer, no copy through the guest).
@@ -186,7 +187,7 @@ vgpu3d_thread(__unused void *param, __unused wait_result_t wr)
 	printf("GPU3D-DONE %s\n", !err && t.checks_passed == t.checks_total ? "pass" : "fail");
 }
 
-/* From bsd_init, after devfs: boot-arg gpu3d=1 starts the bring-up thread. */
+/* From bsd_init, after devfs: boot-arg gpu3d=1 runs the bring-up here, gpu3d=2 in a thread. */
 void
 redwood_vgpu3d_init(void)
 {
@@ -197,7 +198,9 @@ redwood_vgpu3d_init(void)
 		return;
 	}
 	lck_mtx_init(&vg.lock, &vgpu3d_lck_grp, LCK_ATTR_NULL);
-	if (kernel_thread_start(vgpu3d_thread, NULL, &th) == KERN_SUCCESS) {
+	if (on == 1) {
+		vgpu3d_thread(NULL, THREAD_AWAKENED);
+	} else if (kernel_thread_start(vgpu3d_thread, NULL, &th) == KERN_SUCCESS) {
 		thread_deallocate(th);
 	}
 }
