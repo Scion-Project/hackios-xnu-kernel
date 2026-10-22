@@ -82,7 +82,7 @@ index 997a4ab..c7a9f81 100644
 + * A virtio console (port 0 of the first virtio-console device, over virtio-pci or
 + * virtio-mmio): bsd/dev/redwood_virtio_console.c. For virtual machines without a UART.
 + */
-+extern bool redwood_vcon_probe(void);
++extern bool redwood_vcon_probe(bool other);
 +extern void redwood_vcon_init(void);
 +extern unsigned int redwood_vcon_transmit_ready(void);
 +extern void redwood_vcon_transmit_data(uint8_t c);
@@ -106,7 +106,7 @@ index 997a4ab..c7a9f81 100644
  	}
  #endif /* APPLE_UART */
  
-+	if (redwood_vcon_probe()) {
++	if (redwood_vcon_probe(gPESF != NULL)) {
 +		register_serial_functions(&virtio_console_serial_functions);
 +	}
 +
