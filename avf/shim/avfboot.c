@@ -314,8 +314,18 @@ static void read_fdt(const struct fdt *f)
 
 	stage = "fdt: rtc";
 	uint64_t rs;
-	if ((n = fdt_find_compatible(f, -1, "arm,pl031")) >= 0)
+	if ((n = fdt_find_compatible(f, -1, "arm,pl031")) >= 0) {
 		reg_pair(f, n, 0, ac, sc, &m.rtc_pa, &rs);
+	} else {
+		/* crosvm: a PL030 described only as "arm,primecell" + arm,primecell-periphid 0x41030 */
+		for (n = fdt_find_compatible(f, -1, "arm,primecell"); n >= 0; n = fdt_find_compatible(f, n, "arm,primecell")) {
+			uintptr_t id = fdt_prop(f, n, "arm,primecell-periphid", &len);
+			if (id && len == 4 && (fdt_be32(id) & 0xfffff) == 0x41030) {
+				reg_pair(f, n, 0, ac, sc, &m.rtc_pa, &rs);
+				break;
+			}
+		}
+	}
 
 	stage = "fdt: cpus";
 	int cpus = fdt_path(f, "/cpus");
@@ -672,7 +682,7 @@ void avfboot_main(uint64_t fdt_pa)
 	dt_prop_u32(&w, "display-rotation", 0);
 	dt_prop_str(&w, "psci-method", m.psci_hvc ? "hvc" : "smc");
 	if (m.rtc_pa) {
-		uint64_t epoch = *(volatile uint32_t *)m.rtc_pa;	/* PL031 RTCDR: seconds since 1970 */
+		uint64_t epoch = *(volatile uint32_t *)m.rtc_pa;	/* PL030/PL031 RTCDR: seconds since 1970 */
 		if (epoch > 1700000000ULL)
 			dt_prop_u64(&w, "boot-epoch", epoch);
 	}

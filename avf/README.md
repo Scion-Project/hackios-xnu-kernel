@@ -49,3 +49,16 @@ mockfs serves it as `/sbin/launchd`, and it prints `Hello from user space on Dar
 `run-probe.sh` drives the AVF probe app of dylanneve1/scion-avf (`probe/`). It takes the phone's
 `/data/local/tmp/pixel.lock`, grants the VM permissions and the hidden-API exemption the custom-VM
 API needs, and puts all of that back before it releases the lock.
+
+## Status (2026-10-22)
+
+| Where | Result |
+|---|---|
+| QEMU virt, TCG cortex-a76, 1 and 4 CPUs | PID 1 (`hello` as `/sbin/launchd`) |
+| QEMU virt, hvf `-cpu host`, 1 CPU (also `pmu=off`) | PID 1 |
+| QEMU virt, hvf, 4 CPUs | hangs before the kernel's first line (not looked into) |
+| **Pixel 10, AVF non-protected VM, 2 GB, 1 vCPU** | XNU console on AVF's captured console, md0 root, PID 1 |
+| **Pixel 10, `--match-host-cpus`, `cpus=8`** | 8 of 8 processors running, PID 1 |
+
+Pitfall: crosvm rejects VM parameters that begin with `-` after the first word (`--params "-v cpus=8"`
+fails with "Unrecognized argument: 8"); put the `-v` last (`--params "cpus=8 -v"`).

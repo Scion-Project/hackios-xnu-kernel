@@ -3,6 +3,7 @@
 # (dylanneve1/scion-avf, probe/), and collect the VM's console.
 #
 #   avf/run-probe.sh IMAGE PAYLOAD [-s SERIAL] [--mem MIB] [--timeout SEC] [--params "..."] [--out DIR]
+#                    [--match-host-cpus]   (one vCPU per host core instead of one; add cpus=N to --params)
 #
 # IMAGE is avf/shim/out/Image, PAYLOAD an xnuloader/mkpayload.py payload; --params become the VM's
 # kernel parameters, which avfboot appends to the kernel's boot-args. The probe app must be installed.
@@ -22,6 +23,7 @@ MEM=2048
 TIMEOUT=90
 PARAMS="-v"
 OUT=avf-run-$(date +%Y%m%d-%H%M%S)
+EXTRA=()
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	-s) SERIAL=$2; shift 2 ;;
@@ -29,6 +31,7 @@ while [[ $# -gt 0 ]]; do
 	--timeout) TIMEOUT=$2; shift 2 ;;
 	--params) PARAMS=$2; shift 2 ;;
 	--out) OUT=$2; shift 2 ;;
+	--match-host-cpus) EXTRA+=(--ez match_host_cpus true); shift ;;
 	*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
@@ -76,7 +79,7 @@ echo "== running (mem ${MEM} MiB, ${TIMEOUT} s, params: $PARAMS)"
 sh_ am force-stop "$PKG"
 "${ADB[@]}" logcat -c || true
 sh_ am start -W -n "$PKG/.MainActivity" --ez autorun true --el mem_mib "$MEM" --el timeout_s "$TIMEOUT" \
-	--es params "'$PARAMS'" >/dev/null
+	--es params "'$PARAMS'" ${EXTRA[@]+"${EXTRA[@]}"} >/dev/null
 deadline=$(($(date +%s) + TIMEOUT + 60))
 until sh_ grep -q '^VERDICT:' "$DATA/report.txt" 2>/dev/null; do
 	(($(date +%s) < deadline)) || { echo "no verdict in time" >&2; break; }
