@@ -182,6 +182,13 @@ bool vio_intr_wait(vio_dev_t *d, uint32_t seq, uint64_t timeout_ns);
 typedef void (*vio_service_fn)(void *arg, uint8_t isr);
 int vio_service_start(vio_dev_t *d, vio_service_fn cb, void *arg, uint64_t poll_ns);
 
+/*
+ * A shared memory region of the device (virtio-pci capability type 8, e.g. virtio-gpu's
+ * host-visible memory, shmid 1): its CPU physical address and length. ENOENT when the device
+ * has none with that id (and always on virtio-mmio, which is not looked at for them).
+ */
+int vio_shm_region(vio_dev_t *d, uint8_t id, uint64_t *pa, uint64_t *len);
+
 /* Physically contiguous, zeroed, page-aligned wired memory; NULL on failure. Never freed. */
 void *vio_dma_alloc(size_t size, uint64_t *pa);
 
