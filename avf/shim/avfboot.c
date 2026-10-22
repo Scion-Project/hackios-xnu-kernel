@@ -27,6 +27,7 @@
 #include <stddef.h>
 #include "fdtx.h"
 #include "uart.h"
+#include "pci.h"
 #include "identity.h"		/* xnuloader/identity.h: who iOS shall think we are */
 
 #define PAYLOAD_MAGIC		0x50554E58u	/* "XNUP" */
@@ -330,6 +331,17 @@ static void read_fdt(const struct fdt *f)
 			if (id != self)
 				m.mpidr[m.ncpus++] = id;
 		}
+	}
+
+	stage = "fdt: pci";
+	if (pci_from_fdt((const uint8_t *)f->base)) {
+		uart_puts("avfboot: PCI ");
+		uart_puts(PCI.compatible);
+		uart_kv(" config ", PCI.ecam[0]);
+		uart_kv("+", PCI.ecam[1]);
+		uart_kv(" windows ", PCI.nranges);
+		uart_kv(" INTx ", PCI.nintx);
+		uart_puts(PCI.probe_only ? " probe-only\n" : "\n");
 	}
 
 	uart_kv("avfboot: RAM ", m.ram_lo);
@@ -758,6 +770,19 @@ void avfboot_main(uint64_t fdt_pa)
 		dt_end(&w);
 	}
 	dt_end(&w);	/* arm-io */
+
+	/* the PCI host bridge, for bsd/dev/redwood_pci.c (format: pci.h, xnuloader/loader.c) */
+	if (PCI.present) {
+		dt_begin(&w, "pci0");
+		dt_prop_str(&w, "compatible", PCI.compatible);
+		dt_prop(&w, "ecam", PCI.ecam, sizeof(PCI.ecam));
+		dt_prop(&w, "bus-range", PCI.bus_range, sizeof(PCI.bus_range));
+		dt_prop(&w, "pci-ranges", PCI.ranges, PCI.nranges * sizeof(PCI.ranges[0]));
+		dt_prop(&w, "intx-map", PCI.intx, PCI.nintx * sizeof(PCI.intx[0]));
+		dt_prop(&w, "intx-mask", PCI.mask, sizeof(PCI.mask));
+		dt_prop_u32(&w, "probe-only", PCI.probe_only);
+		dt_end(&w);
+	}
 	dt_end(&w);	/* device-tree */
 
 	uint32_t dt_len = (uint32_t)(w.cur - w.base);
