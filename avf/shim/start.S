@@ -69,6 +69,24 @@ _start:
 	b	5b
 
 /*
+ * A core started with PSCI CPU_ON (avfboot_main hands the kernel to the biggest core): EL1,
+ * MMU and caches off like the boot core. Jumps to hop_entry with x0 = hop_arg, as the boot
+ * core would have.
+ */
+	.globl avfboot_hop
+avfboot_hop:
+	msr	daifset, #0xf
+	adrp	x1, hop_entry
+	ldr	x1, [x1, :lo12:hop_entry]
+	adrp	x0, hop_arg
+	ldr	x0, [x0, :lo12:hop_arg]
+	dsb	sy
+	ic	iallu
+	dsb	sy
+	isb
+	br	x1
+
+/*
  * Exceptions: every slot saves x0-x30 and calls avfboot_exception(slot, regs),
  * which prints them and powers the VM off.
  */

@@ -44,6 +44,8 @@
 #define MAX_CPUS		8
 
 #define PSCI_SYSTEM_OFF		0x84000008ULL
+#define PSCI_CPU_OFF		0x84000002ULL
+#define PSCI_CPU_ON_64		0xc4000003ULL
 
 #define LC_SEGMENT_64		0x19
 #define LC_UNIXTHREAD		0x5
@@ -200,6 +202,9 @@ static struct {
 	int psci_hvc;
 	int ncpus;
 	uint64_t mpidr[MAX_CPUS];
+	uint32_t capacity[MAX_CPUS];	/* capacity-dmips-mhz, 0 if the FDT does not say */
+	uint32_t max_capacity;
+	uint64_t self;			/* the core avfboot runs on */
 	int uart_kind;
 	uint64_t uart_pa, uart_size;
 	uint64_t rtc_pa;
@@ -381,14 +386,39 @@ static void read_fdt(const struct fdt *f)
 	uintptr_t acv = fdt_prop(f, cpus, "#address-cells", &len);
 	int cac = acv && len == 4 ? (int)fdt_be32(acv) : 1;
 	uint64_t self = rsr("mpidr_el1") & 0xff00ffffffULL;
+	m.self = self;
 	m.mpidr[m.ncpus++] = self;	/* the boot core comes first */
 	for (n = fdt_first_child(f, cpus); n >= 0 && m.ncpus < MAX_CPUS; n = fdt_next_sibling(f, n)) {
 		uintptr_t dt = fdt_prop(f, n, "device_type", &len);
 		uintptr_t reg = fdt_prop(f, n, "reg", &len);
+		unsigned int clen = 0;
+		uintptr_t cap = fdt_prop(f, n, "capacity-dmips-mhz", &clen);
 		if (dt && mem_streq(dt, "cpu") && reg && len >= 4U * cac) {
 			uint64_t id = fdt_cells(reg, cac) & 0xff00ffffffULL;
-			if (id != self)
-				m.mpidr[m.ncpus++] = id;
+			int at = id == self ? 0 : m.ncpus++;
+			m.mpidr[at] = id;
+			m.capacity[at] = cap && clen == 4 ? fdt_be32(cap) : 0;
+			if (m.capacity[at] > m.max_capacity)
+				m.max_capacity = m.capacity[at];
+		}
+	}
+	/*
+	 * Big cores first. With AVF's host-matched topology crosvm pins each vCPU to the host core
+	 * of the same number and gives its capacity: on the Pixel 10 vCPU 0 and 1 are Cortex-A520s,
+	 * 2-6 A725s and 7 the X4. avfboot runs on vCPU 0, a little core, and the kernel takes
+	 * cpus=N from the front of this list, so without this XNU would boot and do its single-CPU
+	 * work on the slowest core and fill up with the little ones first. Sorted by capacity,
+	 * largest first (stable), and the kernel starts on the first one (avfboot hops there with
+	 * PSCI CPU_ON before it jumps in). Kernel parameter avf_bigcore=0 keeps FDT order.
+	 */
+	if (m.max_capacity && !(has_arg(m.bootargs, "avf_bigcore=") && arg_num(m.bootargs, "avf_bigcore=") == 0)) {
+		for (int i = 1; i < m.ncpus; i++) {
+			for (int j = i; j > 0 && m.capacity[j] > m.capacity[j - 1]; j--) {
+				uint64_t t = m.mpidr[j];
+				uint32_t c = m.capacity[j];
+				m.mpidr[j] = m.mpidr[j - 1], m.capacity[j] = m.capacity[j - 1];
+				m.mpidr[j - 1] = t, m.capacity[j - 1] = c;
+			}
 		}
 	}
 
@@ -418,6 +448,14 @@ static void read_fdt(const struct fdt *f)
 	uart_dec(m.ncpus);
 	uart_kv(" UART ", m.uart_pa);
 	uart_puts(m.uart_kind == UART_8250 ? " ns16550a\n" : " pl011\n");
+	if (m.max_capacity) {
+		uart_puts("avfboot: cpus, kernel's order (MPIDR:capacity):");
+		for (int i = 0; i < m.ncpus; i++) {
+			uart_kv(" ", m.mpidr[i]);
+			uart_kv(":", m.capacity[i]);
+		}
+		uart_putc('\n');
+	}
 }
 
 /* ---- Apple device tree writer (as xnuloader/loader.c) ----
@@ -570,6 +608,9 @@ static uint64_t align_up(uint64_t v, uint64_t a)
 }
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
+/* start.S: where a core started with PSCI CPU_ON enters, to jump to hop_entry(hop_arg) */
+void avfboot_hop(void);
+volatile uint64_t hop_entry, hop_arg;
 
 static void cmd_append(char *cl, uint32_t *n, const char *s)
 {
@@ -874,6 +915,9 @@ void avfboot_main(uint64_t fdt_pa)
 		dt_prop_u64(&w, "bus-frequency", 100000000ULL);
 		dt_prop_u64(&w, "memory-frequency", 100000000ULL);
 		dt_prop_u64(&w, "peripheral-frequency", 24000000ULL);
+		/* a little core: the scheduler uses it once the big ones are busy */
+		if (m.max_capacity && m.capacity[i] && m.capacity[i] <= m.max_capacity / 2)
+			dt_prop_u32(&w, "small-core", 1);
 		dt_end(&w);
 	}
 	dt_end(&w);
@@ -932,6 +976,18 @@ void avfboot_main(uint64_t fdt_pa)
 
 	stage = "xnu";
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
+	if (m.mpidr[0] != m.self) {
+		/* the kernel starts on the big core (see "fdt: cpus"); this one switches itself off */
+		hop_entry = entry_va + slide;
+		hop_arg = ba_pa;
+		__asm__ volatile("dsb sy" ::: "memory");
+		uint64_t r = psci_call(PSCI_CPU_ON_64, m.mpidr[0], (uint64_t)(uintptr_t)avfboot_hop, 0);
+		if (r != 0)
+			die("PSCI CPU_ON of the big core failed (kernel parameter avf_bigcore=0 boots on this one)");
+		psci_call(PSCI_CPU_OFF, 0, 0, 0);
+		for (;;)
+			__asm__ volatile("wfe");
+	}
 	((xnu_entry_t)(entry_va + slide))(ba_pa);
 	die("XNU returned");
 }
