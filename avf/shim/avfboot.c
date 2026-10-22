@@ -9,8 +9,9 @@
  *
  *   - reads the machine from the FDT crosvm (or QEMU) hands over in x0:
  *     RAM, GICv3 regions, timer PPIs, PSCI conduit, CPUs, the UART and RTC
- *   - picks XNU's window: from the first 32 MB boundary above this image, the
- *     payload and a low FDT, to the end of RAM less the panic-log page
+ *   - picks XNU's window: all of RAM less the panic-log page at the top. This
+ *     image and the payload sit below the kernel's text (48 MB above the base),
+ *     which XNU does not use; a payload too big for that is moved up first
  *   - copies the Mach-O segments (and the RAM disk behind them), writes an
  *     Apple device tree and boot_args like the loader's, and jumps in with the
  *     MMU off, x0 = boot_args
@@ -140,6 +141,54 @@ static int has_arg(const char *s, const char *word)
 			return 1;
 	return 0;
 }
+
+/* the number after `word` (e.g. "scfb.addr=") in s, decimal or 0x hex; 0 if absent */
+static uint64_t arg_num(const char *s, const char *word)
+{
+	for (const char *c = s; *c; c++) {
+		if ((c != s && c[-1] != ' ') || !starts_with(c, word))
+			continue;
+		const char *p = c + str_len(word);
+		uint64_t v = 0;
+		if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+			for (p += 2;; p++) {
+				uint64_t d;
+				if (*p >= '0' && *p <= '9')
+					d = (uint64_t)(*p - '0');
+				else if (*p >= 'a' && *p <= 'f')
+					d = (uint64_t)(*p - 'a' + 10);
+				else if (*p >= 'A' && *p <= 'F')
+					d = (uint64_t)(*p - 'A' + 10);
+				else
+					break;
+				v = v * 16 + d;
+			}
+		} else {
+			for (; *p >= '0' && *p <= '9'; p++)
+				v = v * 10 + (uint64_t)(*p - '0');
+		}
+		return v;
+	}
+	return 0;
+}
+
+/*
+ * Scion shared framebuffer (SCFB): the AVF app lends the VM a slice of RAM it maps too, and says
+ * where with scfb.addr= scfb.size= scfb.w= scfb.h= in the kernel parameters. It becomes the boot
+ * framebuffer (boot_args video): XNU's text console and MiniIOMobileFramebuffer draw into buffer 0,
+ * MiniIOMobileFramebuffer publishes each frame in the header, and the app copies it to its
+ * screen. The layout is the app's: display/SCFB.md in scion-avf.
+ */
+#define SCFB_MAGIC	0x42464353u	/* "SCFB" */
+#define SCFB_FB_OFFSET	0x10000u	/* buffer 0, after the header */
+#define FOURCC_XR24	0x34325258u	/* DRM_FORMAT_XRGB8888: bytes B, G, R, X (what iOS draws) */
+struct scfb_header {
+	uint32_t magic, version, width, height, stride, format, buf_offset[2], nbufs, flags, front, pad0;
+	uint64_t frame_seq, input_seq, guest_ns;
+	uint32_t dirty[4];
+	uint64_t host_seq, host_reading, host_ns;
+};
+static struct { uint64_t pa, size; uint32_t w, h; } scfb;
 
 /* ---- the machine, from the FDT ---- */
 
@@ -520,11 +569,6 @@ static uint64_t align_up(uint64_t v, uint64_t a)
 	return (v + a - 1) & ~(a - 1);
 }
 
-static uint64_t max64(uint64_t a, uint64_t b)
-{
-	return a > b ? a : b;
-}
-
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 static void cmd_append(char *cl, uint32_t *n, const char *s)
@@ -570,16 +614,31 @@ void avfboot_main(uint64_t fdt_pa)
 	if (vm_lo < KERNEL_VIRT_BASE + KERNEL_LINK_OFFSET || !entry_va)
 		die("unexpected kernel layout (not a HackiOS kernel?)");
 
-	/* --- XNU's window: above everything still needed, below the panic log --- */
+	/*
+	 * --- XNU's window: all of RAM, less the panic log at the top ---
+	 * The kernel's text goes 48 MB above the window's base (KERNEL_LINK_OFFSET), and XNU never
+	 * uses what is below it: this program and the payload (crosvm puts it at +16 MB) live there
+	 * for free. Only a payload that reaches into the kernel's destination is moved out of the way
+	 * first, to the top of RAM, where XNU gets the pages back once it runs.
+	 */
 	stage = "layout";
-	uint64_t low = max64((uintptr_t)_end, m.rd_end);
-	if (m.fdt_lo < low)
-		low = max64(low, m.fdt_hi);	/* an FDT below (QEMU puts it after the initrd) */
-	uint64_t phys_base = align_up(low, BASE_ALIGN);
+	uint64_t phys_base = align_up(m.ram_lo, BASE_ALIGN);
 	uint64_t pram = (m.ram_hi - PANIC_LOG_SIZE) & ~(PAGE_SIZE_MAX - 1);
 	uint64_t win_end = pram & ~(BASE_ALIGN - 1);
+	scfb.pa = arg_num(m.bootargs, "scfb.addr=");
+	scfb.size = arg_num(m.bootargs, "scfb.size=");
+	scfb.w = (uint32_t)arg_num(m.bootargs, "scfb.w=");
+	scfb.h = (uint32_t)arg_num(m.bootargs, "scfb.h=");
+	if (scfb.pa || scfb.size) {
+		if (scfb.pa < m.ram_lo || scfb.pa + scfb.size > m.ram_hi || (scfb.pa & 0xfff) || !scfb.w || !scfb.h ||
+		    SCFB_FB_OFFSET + (uint64_t)scfb.w * 4 * scfb.h > scfb.size)
+			die("scfb.addr/size/w/h do not describe a framebuffer in RAM");
+		/* the kernel's memory ends below it */
+		if (scfb.pa < win_end)
+			win_end = scfb.pa & ~(BASE_ALIGN - 1);
+	}
 	if (win_end <= phys_base)
-		die("not enough RAM above the payload");
+		die("not enough RAM");
 	uint64_t win_size = win_end - phys_base;
 	if (win_size > MAX_MEM_SIZE)
 		win_size = MAX_MEM_SIZE;
@@ -592,6 +651,24 @@ void avfboot_main(uint64_t fdt_pa)
 	uint64_t top = ba_pa + PAGE_SIZE_MAX;
 	if (top + 0x4000000ULL > phys_base + win_size)
 		die("not enough RAM for the kernel");
+	if ((uintptr_t)_end > kern_lo)
+		die("this program overlaps the kernel's destination");
+	if (m.rd_start < top && m.rd_end > kern_lo) {
+		uint64_t len = m.rd_end - m.rd_start;
+		uint64_t to = (phys_base + win_size - len) & ~(PAGE_SIZE_MAX - 1);
+		if (to < top)
+			die("not enough RAM to move the payload out of the kernel's way");
+		uart_kv("avfboot: moving the payload to ", to);
+		uart_putc('\n');
+		/* upwards, so from the end: the two ranges may overlap */
+		for (uint64_t o = (len + 7) & ~7ULL; o > 0; o -= 8)
+			*(volatile uint64_t *)(to + o - 8) = *(volatile uint64_t *)(m.rd_start + o - 8);
+		m.rd_start = to;
+		m.rd_end = to + len;
+		if (!parse_payload(&pi, m.rd_start, len))
+			die("payload lost in the move");
+		mh = (const struct mach_header_64 *)pi.kernel;
+	}
 	uart_kv("avfboot: window ", phys_base);
 	uart_kv("+", win_size);
 	uart_kv(" kernel ", kern_lo);
@@ -633,7 +710,32 @@ void avfboot_main(uint64_t fdt_pa)
 	ba->memSize = win_size;
 	ba->memSizeActual = win_size;
 	ba->topOfKernelData = top;
-	/* no framebuffer: video stays zero */
+	if (scfb.pa) {
+		volatile struct scfb_header *h = (volatile struct scfb_header *)scfb.pa;
+		h->magic = SCFB_MAGIC;
+		h->version = 1;
+		h->width = scfb.w;
+		h->height = scfb.h;
+		h->stride = scfb.w * 4;
+		h->format = FOURCC_XR24;
+		h->buf_offset[0] = SCFB_FB_OFFSET;
+		h->buf_offset[1] = SCFB_FB_OFFSET;
+		h->nbufs = 1;
+		h->front = 0;
+		h->frame_seq = 1;
+		h->flags = 3;	/* ready, and poll: the text console publishes nothing */
+		memset((void *)(scfb.pa + SCFB_FB_OFFSET), 0, (uint64_t)scfb.w * 4 * scfb.h);
+		ba->video.v_baseAddr = scfb.pa + SCFB_FB_OFFSET;
+		ba->video.v_display = 1;
+		ba->video.v_rowBytes = scfb.w * 4;
+		ba->video.v_width = scfb.w;
+		ba->video.v_height = scfb.h;
+		ba->video.v_depth = 32;
+		uart_kv("avfboot: scfb ", scfb.pa);
+		uart_kv("+", scfb.size);
+		uart_putc('\n');
+	}
+	/* otherwise no framebuffer: video stays zero */
 	char *cl = ba->commandLine;
 	uint32_t n = 0;
 	int own_serial = has_arg(pi.cmdline, "serial=") || has_arg(m.bootargs, "serial=");
