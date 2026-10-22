@@ -24,15 +24,48 @@ its FDT at the top of RAM, and enters at EL1 with the MMU off and x0 = FDT. avfb
 | RTC | PL031 at 0x2000 | PL031 at 0x09010000 |
 | PCI | pci-host-cam-generic, config space 0x2e000000 | pci-host-ecam-generic |
 
-It puts XNU's window at the first 32 MB boundary above itself and the payload (up to the end of RAM
-less the 512 KB panic-log region), copies the kernel's segments and the RAM disk, and writes the
+XNU's window is all of RAM less the 512 KB panic-log region at the top. The kernel's text goes 48 MB
+above the window's base, and XNU never uses what is below it, so avfboot (at +0) and a payload of up
+to ~31 MB (crosvm puts it at +16 MB) cost nothing there; a bigger payload is first moved to the top
+of RAM, out of the kernel's way, where XNU gets the pages back. avfboot then copies the kernel's
+segments and the RAM disk, and writes the
 same Apple device tree and `boot_args` as the loader: iPhone X identity, `/chosen` (dram, `psci-method`,
 `boot-epoch` from the RTC, NVRAM image), `/cpus` from the FDT's MPIDRs, `/arm-io/gic`, `/arm-io/uart0`
 (`ns16550a` or `arm,pl011`), `/pci0` for the virtio-pci host driver, `/pram`. There is no
-return-to-loader path: on a panic the kernel stays put and the VM is stopped from outside.
+return-to-loader path (the kernel's return slot stays 0).
 
-Kernel side: `xnu/patches/1000-avf-ns16550-console.patch` drives the 8250 UART (crosvm accepts only
-byte-wide accesses to it).
+Kernel side (`xnu/patches/`):
+
+- **1000** drives the 8250 UART (crosvm accepts only byte-wide accesses to it).
+- **1001** ends the VM when the kernel is done: with no loader to return to, a reboot becomes PSCI
+  SYSTEM_RESET and a halt or a panic SYSTEM_OFF, so crosvm exits and the app sees the VM stop. A
+  panic's first line is repeated as the console's last words: `avf: kernel panic: panic(cpu 0 ...): ...`
+  then `avf: powering off (PSCI SYSTEM_OFF)`. Boot-arg `avf_exit=0` keeps the old behaviour (stay).
+- **1002** the boot-arg `security=`, below.
+
+## security= (boot-arg; the app's setting)
+
+`security=full|bringup|off`, default `bringup`. The kernel logs the level at boot:
+`security: bringup (boot-arg security=full|bringup|off): AMFI stand-in, Sandbox stand-in; ...`.
+
+| | off | bringup (default) | full |
+|---|---|---|---|
+| AMFI stand-in: signatures | every signature accepted; ad hoc = platform binary | same | same |
+| AMFI stand-in: dyld freedoms (DYLD_* variables, inserted libraries, @paths) | everyone | everyone | platform binaries only |
+| AMFI stand-in: "is AMFI enforcing?" (ExtensionKit asks) | no | no | yes |
+| Sandbox stand-in: queries and profiles | all allowed, nothing applied | same | same |
+| Sandbox stand-in: privileges of non-root processes | all granted | by entitlement (table in `kern_minimac.c`) | by entitlement |
+| XNU code-signing enforcement | off (not even the dyld shared cache) | default: the shared cache only | every process: code pages are checked against their signature, unsigned code is killed |
+
+What none of the levels is: iOS's security model. There is no trust cache, so an ad hoc signature
+counts as Apple's; no Sandbox profile is ever evaluated; there is no SEP, no data protection, a stub
+key store. `full` is the most these stand-ins and XNU's own checks can enforce, not more.
+
+Known effects: `full` kills unsigned programs, including test programs like `hello` (seen:
+`unexpected SIGKILL of init with reason -- namespace 9` = code signing) and HackiOS's own init if
+it is not signed (ad hoc signing is enough: `codesign -s -` / `ldid -S`); with "enforcing" ExtensionKit
+looks for AMFI's IOKit service, which is not there, so extension points may not register. `bringup`
+is what HackiOS has always run with.
 
 ## Build and run
 
