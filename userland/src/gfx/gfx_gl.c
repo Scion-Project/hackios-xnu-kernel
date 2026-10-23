@@ -156,6 +156,9 @@ glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GL
 		return;
 	}
 	void *p = pixels ? repack(c, (void *)pixels, width, height, format, type, 0, 0, NULL) : NULL;
+	if (target == 0x0DE1 /* GL_TEXTURE_2D */ && level == 0) {
+		gfx_note_texture_size(c, c->bound_2d[c->active_unit], (uint32_t)width, (uint32_t)height);
+	}
 	gfxe_glTexImage2D(c, target, level, internalformat, width, height, border, format, type, p);
 }
 

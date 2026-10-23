@@ -54,6 +54,7 @@ extern void glVertexAttribPointer(GLuint, GLint, GLenum, GLboolean, GLsizei, con
 extern void glEnableVertexAttribArray(GLuint);
 extern void glDrawArrays(GLenum, GLint, GLsizei);
 extern void glDrawElements(GLenum, GLsizei, GLenum, const void *);
+extern void glBlitFramebuffer(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
 extern void glReadPixels(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
 extern GLenum glGetError(void);
 extern void glFinish(void);
@@ -69,6 +70,8 @@ extern void glFinish(void);
 #define GL_UNSIGNED_SHORT 0x1403
 #define GL_FLOAT 0x1406
 #define GL_FRAMEBUFFER 0x8D40
+#define GL_READ_FRAMEBUFFER 0x8CA8
+#define GL_DRAW_FRAMEBUFFER 0x8CA9
 #define GL_COLOR_ATTACHMENT0 0x8CE0
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 #define GL_COLOR_BUFFER_BIT 0x4000
@@ -143,7 +146,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 	double t0 = now_ms();
-	struct gfx *c = gfx_create(&t, 2);
+	struct gfx *c = gfx_create(&t, 3);       /* ES 3, as CoreAnimation asks */
 	if (c == NULL || !gfx_make_current(c)) {
 		printf("GFXTEST no context\nGFXTEST-DONE fail\n");
 		return 1;
@@ -272,7 +275,7 @@ main(int argc, char **argv)
 		glBindTexture(GL_TEXTURE_2D, st[0]);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		int ok1 = gfx_share_texture(c, 1, s1, SW, SW, SSTRIDE, 1);
+		int ok1 = gfx_share_texture(c, 1, s1, SW, SW, SSTRIDE, 1, NULL);
 		/* sample it: the quad's bottom (texture row 0 side) should be memory row 0's colour */
 		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 		glDisable(GL_BLEND);
@@ -290,7 +293,7 @@ main(int argc, char **argv)
 		/* draw into one: red, then GL rows 0-7 blue; memory rows 0-7 should come back blue */
 		GLuint fbo2;
 		glBindTexture(GL_TEXTURE_2D, st[1]);
-		int ok2 = gfx_share_texture(c, 2, s2, SW, SW, SSTRIDE, 1);
+		int ok2 = gfx_share_texture(c, 2, s2, SW, SW, SSTRIDE, 1, NULL);
 		glGenFramebuffers(1, &fbo2);
 		glBindFramebuffer(GL_FRAMEBUFFER, fbo2);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, st[1], 0);
@@ -314,7 +317,7 @@ main(int argc, char **argv)
 		GLuint dt, dfbo;
 		glGenTextures(1, &dt);
 		glBindTexture(GL_TEXTURE_2D, dt);
-		gfx_share_texture(c, 3, disp, DW, DH, DSTRIDE, 1);
+		gfx_share_texture(c, 3, disp, DW, DH, DSTRIDE, 1, NULL);
 		glGenFramebuffers(1, &dfbo);
 		glBindFramebuffer(GL_FRAMEBUFFER, dfbo);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dt, 0);
@@ -332,6 +335,52 @@ main(int argc, char **argv)
 		}
 		printf("GFXTEST display-size frame (10 quads, copied back into a %dx%d surface): %.2f ms\n", DW, DH,
 		    (now_ms() - d0) / 10);
+		/* a small change (a 100 x 100 scissored clear): only its rows come back */
+		uint64_t before = c->download_bytes;
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(500, 1000, 100, 100);
+		glClearColor(1, 1, 1, 1);
+		d0 = now_ms();
+		glClear(GL_COLOR_BUFFER_BIT);
+		glFinish();
+		double small = now_ms() - d0;
+		glDisable(GL_SCISSOR_TEST);
+		const uint8_t *w = disp + 1050 * DSTRIDE + 550 * 4;
+		checks++; passed += c->download_bytes - before == 100 * 100 * 4 && w[0] == 255 && w[1] == 255;
+		printf("GFXTEST damage: a 100x100 change copied back %llu bytes in %.2f ms\n",
+		    (unsigned long long)(c->download_bytes - before), small);
+
+		/* eagl.c's way: CoreAnimation draws into a texture of its own, which is blitted upside down
+		   into the shared mirror; the damage follows the blit */
+		GLuint ca_tex, ca_fbo;
+		glGenTextures(1, &ca_tex);
+		glBindTexture(GL_TEXTURE_2D, ca_tex);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, DW, DH, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		glGenFramebuffers(1, &ca_fbo);
+		glBindFramebuffer(GL_FRAMEBUFFER, ca_fbo);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ca_tex, 0);
+		glClearColor(0, 0, 0, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, ca_fbo);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dfbo);
+		glBlitFramebuffer(0, 0, DW, DH, 0, DH, DW, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+		glFinish();                                     /* (a full frame: all of it comes back) */
+		glBindFramebuffer(GL_FRAMEBUFFER, ca_fbo);
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(10, 20, 50, 30);                      /* GL rows 20..49 of CA's texture */
+		glClearColor(0, 1, 0, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glDisable(GL_SCISSOR_TEST);
+		before = c->download_bytes;
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, ca_fbo);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dfbo);
+		glBlitFramebuffer(0, 0, DW, DH, 0, DH, DW, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+		glFinish();
+		/* flipped: GL rows 20..49 land in rows DH-50 .. DH-21 of the mirror */
+		const uint8_t *g = disp + (size_t)(DH - 35) * DSTRIDE + 30 * 4, *k = disp + (size_t)(DH - 60) * DSTRIDE + 30 * 4;
+		checks++; passed += c->download_bytes - before == 50 * 30 * 4 && g[1] == 255 && g[2] == 0 && k[1] == 0;
+		printf("GFXTEST blit damage: %llu bytes back (expected %d), flipped row green=%u, row outside green=%u\n",
+		    (unsigned long long)(c->download_bytes - before), 50 * 30 * 4, g[1], k[1]);
 	}
 	printf("GFXTEST checks %d/%d\nGFXTEST-DONE %s\n", passed, checks, passed == checks ? "pass" : "fail");
 	gfx_destroy(c);

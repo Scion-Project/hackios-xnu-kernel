@@ -67,9 +67,19 @@ struct gfx_shared {
 	void *base;
 	int dirty;                      /* drawn into since the last copy back */
 	int gpu_owned;                  /* the memory holds what the colour buffer holds (copied back, not written since) */
+	void *user;                     /* the caller's handle (an IOSurfaceRef), for seed_of */
+	uint32_t seed;                  /* the caller's change count of the memory when it was last uploaded */
 };
-#define GFX_MAX_SHARED  64
-#define GFX_MAX_FBOS    32
+#define GFX_MAX_SHARED  1024
+#define GFX_MAX_FBOS    64
+#define GFX_MAX_TEX     1024
+
+/* What is known of a texture: its size, and the part of it drawn into since that was copied on. */
+struct gfx_tex {
+	GLuint name;
+	uint32_t width, height;
+	int32_t x0, y0, x1, y1;         /* damage, empty when x0 >= x1 */
+};
 
 #define GFX_MAX_ATTRIBS 16
 
@@ -106,6 +116,13 @@ struct gfx {
 	GLuint active_unit, bound_2d[16], draw_fbo;
 	struct { GLuint fbo, texture; } fbo_color[GFX_MAX_FBOS];
 	struct gfx_shared shared[GFX_MAX_SHARED];
+	struct gfx_tex tex[GFX_MAX_TEX];
+	GLuint read_fbo;
+	int scissor_on;
+	GLint scissor[4];
+	/* the caller's change count of a shared memory (IOSurfaceGetSeed), and its handle let go */
+	uint32_t (*seed_of)(void *user);
+	void (*release)(void *user);
 	uint64_t downloads, download_bytes, uploads, upload_bytes;
 	/* time (us) in each part, and frame ends, for the report every few seconds (gfx_report) */
 	uint64_t us_write, us_read, us_download, us_upload, frames, report_at, report_frames;
@@ -150,7 +167,8 @@ void gfx_destroy(struct gfx *c);
  * transport cannot (the caller copies with glTexImage2D/glReadPixels instead).
  */
 int gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, uint32_t height, uint32_t stride,
-    int upload);
+    int upload, void *user);
+void gfx_note_texture_size(struct gfx *c, GLuint texture, uint32_t width, uint32_t height);
 /* Copy every shared texture drawn into since the last time back into its memory. */
 void gfx_sync_shared(struct gfx *c);
 void gfx_drawing(struct gfx *c);

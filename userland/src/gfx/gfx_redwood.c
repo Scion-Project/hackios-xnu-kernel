@@ -23,6 +23,18 @@ struct redwood_gl {
 	struct gfx *gfx;
 };
 
+static uint32_t
+surface_seed(void *user)
+{
+	return IOSurfaceGetSeed((IOSurfaceRef)user);
+}
+
+static void
+surface_release(void *user)
+{
+	CFRelease((IOSurfaceRef)user);
+}
+
 struct redwood_gl *
 redwood_gl_create(int version)
 {
@@ -37,6 +49,8 @@ redwood_gl_create(int version)
 		free(gl);
 		return NULL;
 	}
+	gl->gfx->seed_of = surface_seed;
+	gl->gfx->release = surface_release;
 	return gl;
 }
 
@@ -82,9 +96,12 @@ redwood_gl_surface_texture(struct redwood_gl *gl, uint32_t id)
 	 * texture is the surface. The lock is for reading it now.
 	 */
 	IOSurfaceLock(surface, kIOSurfaceLockReadOnly, NULL);
+	/* the reference stays with the shared texture: its seed says when the memory has changed */
 	ok = gfx_share_texture(gl->gfx, id, IOSurfaceGetBaseAddress(surface), (uint32_t)IOSurfaceGetWidth(surface),
-	    (uint32_t)IOSurfaceGetHeight(surface), (uint32_t)IOSurfaceGetBytesPerRow(surface), 1);
+	    (uint32_t)IOSurfaceGetHeight(surface), (uint32_t)IOSurfaceGetBytesPerRow(surface), 1, (void *)surface);
 	IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL);
-	CFRelease(surface);
+	if (!ok) {
+		CFRelease(surface);
+	}
 	return ok;
 }
