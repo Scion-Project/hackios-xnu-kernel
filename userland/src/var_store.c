@@ -18,6 +18,7 @@
  *   var_store show          what the store holds, both slots
  *   var_store erase         forget both slots (the next boot starts empty again)
  *   var_store stamp PATH    write a line into PATH saying when: a marker for a run
+ *   var_store bootok        tell the loader's boot guard that this generation came up
  *
  * Nobody has to remember to save. `watch` registers with the kernel (kern.redwood.var_save), and
  * on the orderly way back to the loader -- the run's time up, or "xl stop" -- the kernel asks it
@@ -40,6 +41,11 @@
  * then to make files. A store that was torn or is half a different archive therefore leaves
  * /private/var as init made it rather than half filled.
  *
+ * The boot guard (xnuloader/flashboot.c in hackios-xnu-kernel): the loader counts every start of a boot
+ * bundle in a block of darwin's boot area and gives up on a generation that was started three times
+ * without coming up. `bootok` is the "came up": the watcher says it once the run has lasted
+ * BOOTOK_AFTER seconds, so a kernel or a userland that dies early is rolled back by itself.
+ *
  * What is left out: sockets and devices, which the daemons of a new boot make for themselves, and
  * the directories in SKIP below, which hold what only this boot can mean (its runtime sockets, its
  * swap, its logs) or what is grafted from a read-only image at every boot anyway.
@@ -52,6 +58,8 @@
 #define SLOT_BYTES      0x80000000LL            /* 2 GiB a slot, two slots */
 #define SLOTS           2
 #define DEVICE          "/dev/rufs_darwin"
+#define STATE_AT        8566865920LL            /* darwin's block 2091520: the boot state (common/flash/bundlefmt.py) */
+#define BOOTOK_AFTER    60                      /* seconds of a run that make it a good start */
 #define ROOT            "/private/var"
 #define MAX_PATH        1024
 #define MAX_DEPTH       32
@@ -1261,6 +1269,71 @@ save_once(void)
 	return ok;
 }
 
+/* The boot state's block, as the loader keeps it (the layout: common/flash/bundlefmt.py). */
+struct boot_state {
+	char magic[8];
+	uint64_t trying, tries_flags;    /* tries_flags: u32 tries, u32 flags */
+	uint64_t good, boots, bad, sum;
+};
+
+static uint64_t
+fnv64(const void *data, uint64_t n)
+{
+	const uint8_t *p = data;
+	uint64_t h = 0xcbf29ce484222325ULL;
+
+	for (uint64_t i = 0; i < n; i++) {
+		h ^= p[i];
+		h *= 0x100000001b3ULL;
+	}
+	return h;
+}
+
+/* This start came up: the generation the loader is trying is a good one. */
+static int
+bootok(void)
+{
+	static uint8_t block[BLOCK] __attribute__((aligned(BLOCK)));
+	struct boot_state st;
+	int ok;
+
+	fd = open(DEVICE, O_RDWR, 0);
+	if (fd < 0) {
+		printf("var_store: bootok: %s: %s\n", DEVICE, strerror(errno));
+		return 0;
+	}
+	ok = device_read(STATE_AT, block, BLOCK);
+	memcpy(&st, block, sizeof(st));
+	if (!ok || memcmp(st.magic, "HKSTATE1", 8) != 0 || fnv64(&st, 48) != st.sum) {
+		printf("var_store: bootok: no boot state (not started from darwin): nothing to say\n");
+		close(fd);
+		fd = -1;
+		return 1;
+	}
+	if (st.good == st.trying && (uint32_t)st.tries_flags == 0) {
+		printf("var_store: bootok: generation %llu is already known good\n", (unsigned long long)st.good);
+		close(fd);
+		fd = -1;
+		return 1;
+	}
+	st.good = st.trying;
+	st.tries_flags &= ~0xffffffffULL;        /* tries = 0, the flags kept */
+	if (st.bad == st.trying) {
+		st.bad = 0;
+	}
+	st.sum = fnv64(&st, 48);
+	memcpy(block, &st, sizeof(st));
+	ok = claim() && device_write(STATE_AT, block, BLOCK);
+	release();
+	close(fd);
+	fd = -1;
+	if (ok) {
+		printf("var_store: bootok: generation %llu came up (start %llu)\n", (unsigned long long)st.good,
+		    (unsigned long long)st.boots);
+	}
+	return ok;
+}
+
 static int
 watch(int seconds)
 {
@@ -1287,9 +1360,15 @@ watch(int seconds)
 		gettimeofday(&tv, NULL);
 		last = (uint64_t)tv.tv_sec;
 	}
-	for (;;) {
+	for (uint64_t started = last, said_ok = 0;;) {
 		struct timeval tv = { 0, 0 };
 		int state = VAR_SAVE_NONE;
+
+		gettimeofday(&tv, NULL);
+		if (!said_ok && (uint64_t)tv.tv_sec - started >= BOOTOK_AFTER) {
+			said_ok = 1;
+			(void)bootok();
+		}
 
 		if (sysctl_int("kern.redwood.var_save", &state) == 0 && state == VAR_SAVE_WANTED) {
 			asked = 1;
@@ -1362,6 +1441,9 @@ main(int argc, char **argv, char **envp)
 
 	(void)envp;
 	crc_init();
+	if (strcmp(what, "bootok") == 0) {
+		return bootok() ? 0 : 1;
+	}
 	if (strcmp(what, "stamp") == 0) {
 		return stamp(argc > 2 ? argv[2] : "/private/var/redwood-stamp") ? 0 : 1;
 	}
