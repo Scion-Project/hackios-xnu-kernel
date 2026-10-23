@@ -11,6 +11,17 @@
 #define GFX_BUF         (256 * 1024)
 #include <time.h>
 
+/* Everything sent has been done by the host: one round trip, unless nothing was sent since. */
+void
+gfx_finish(struct gfx *c)
+{
+	if (c->bytes_out + c->used == c->finished_at) {
+		return;
+	}
+	gfxe_glFinishRoundTrip(c);
+	c->finished_at = c->bytes_out + c->used;
+}
+
 uint64_t
 gfx_now_us(void)
 {

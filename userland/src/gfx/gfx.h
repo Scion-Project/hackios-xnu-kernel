@@ -103,7 +103,9 @@ struct gfx {
 	/* renderControl */
 	uint32_t config, rc_context, rc_surface, rc_color_buffer;
 	int version;
-	int host_store_set;              /* host pack/unpack alignment set to 1 */
+	int host_store_set;
+	int just_finished;               /* a glFinishRoundTrip has just been answered */
+	uint64_t finished_at;            /* bytes sent when the last glFinishRoundTrip was answered */              /* host pack/unpack alignment set to 1 */
 
 	/* client state */
 	struct gfx_attrib attrib[GFX_MAX_ATTRIBS];
@@ -173,6 +175,7 @@ void gfx_note_texture_size(struct gfx *c, GLuint texture, uint32_t width, uint32
 void gfx_sync_shared(struct gfx *c);
 void gfx_drawing(struct gfx *c);
 uint64_t gfx_now_us(void);
+void gfx_finish(struct gfx *c);           /* glFinishRoundTrip, skipped when nothing was sent since the last */
 void gfx_frame_end(struct gfx *c);      /* counts, and every 5 s one line of where the time went */         /* (gfx_gl.c: a draw lands in the bound framebuffer) */
 void gfx_forget_shared(struct gfx *c, uint64_t key);
 
