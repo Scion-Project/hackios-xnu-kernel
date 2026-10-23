@@ -153,11 +153,12 @@ virtio_net_start(uint8_t address[ETHER_ADDR_LEN])
 		printf("net: no virtio network device (QEMU: -device virtio-net-pci or virtio-net-device)\n");
 		return false;
 	}
-	offered = vio_device_features(net_dev);
 	if ((error = vio_init(net_dev, VIRTIO_BIT(VIRTIO_NET_F_MAC), &features)) != 0) {
-		printf("net: %s: features refused (the device offers %#llx)\n", vio_name(net_dev), offered);
+		printf("net: %s: features refused (the device offers %#llx)\n", vio_name(net_dev), vio_device_features(net_dev));
 		return false;
 	}
+	/* (read after vio_init: before it, a PCI device's registers may not be reachable yet, and read as all ones) */
+	offered = vio_device_features(net_dev);
 	if (!queue_make(&receive_queue, QUEUE_RECEIVE, true) || !queue_make(&transmit_queue, QUEUE_TRANSMIT, false)) {
 		vio_fail(net_dev);
 		return false;
