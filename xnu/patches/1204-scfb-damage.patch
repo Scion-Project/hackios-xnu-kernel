@@ -1,0 +1,259 @@
+diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+index be385cf..7e61a2c 100644
+--- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
++++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+@@ -59,6 +59,7 @@ extern "C" void redwood_tl(const char * format, ...) __printflike(1, 2);
+ #define SCFB_MAGIC              0x42464353u     /* "SCFB" */
+ #define SCFB_F_READY            1u              /* the header is valid */
+ #define SCFB_F_POLL             2u              /* nothing publishes frames yet: copy now and then */
++#define SCFB_F_DAMAGE           4u              /* dirty[] is exact: an empty rectangle means nothing changed */
+ struct scfb_header {
+ 	uint32_t        magic, version;
+ 	uint32_t        width, height;
+@@ -129,9 +130,12 @@ scfbBeginDraw(void)
+ 	}
+ }
+ 
+-/* The frame is in the panel's memory: tell the app. */
++/*
++ * The frame is in the panel's memory: tell the app what changed. exact: the rectangle is the
++ * whole change (empty when nothing did), as the shadow comparison in drawRows finds it.
++ */
+ static void
+-scfbPublish(uint32_t width, uint32_t height)
++scfbPublish(uint32_t x, uint32_t y, uint32_t width, uint32_t height, bool exact)
+ {
+ 	volatile struct scfb_header * h = gSCFB;
+ 	uint64_t nanos;
+@@ -141,8 +145,8 @@ scfbPublish(uint32_t width, uint32_t height)
+ 	}
+ 	__builtin_arm_dsb(0xf);                 /* (SY) the frame's write-combined stores are out */
+ 	absolutetime_to_nanoseconds(mach_absolute_time(), &nanos);
+-	h->dirty[0] = 0;
+-	h->dirty[1] = 0;
++	h->dirty[0] = x;
++	h->dirty[1] = y;
+ 	h->dirty[2] = width;
+ 	h->dirty[3] = height;
+ 	h->guest_ns = nanos;
+@@ -150,7 +154,7 @@ scfbPublish(uint32_t width, uint32_t height)
+ 	__builtin_arm_dmb(0xb);
+ 	h->drawing = 0;
+ 	h->frame_seq = h->frame_seq + 1;
+-	h->flags = SCFB_F_READY;                /* from now on every frame says so itself */
++	h->flags = SCFB_F_READY | (exact ? SCFB_F_DAMAGE : 0);   /* from now on every frame says so itself */
+ 	__builtin_arm_dsb(0xb);
+ }
+ 
+@@ -350,6 +354,15 @@ public:
+ 	uint32_t        fSwapsShown;
+ 	uint32_t        fLayersShown;           /* which layers the last swap had a surface in */
+ 	bool            fGraphics;              /* the text console has been told to stop */
++	/*
++	 * With the shared framebuffer (SCFB): a cached copy of what the panel's memory holds. drawRows
++	 * compares each new row with it and writes only what differs to both, so the app is told
++	 * exactly what changed (and reads of the write-combined panel are never needed). Each thread
++	 * keeps its own bounds and folds them into fDamage* once per share of rows.
++	 */
++	uint32_t *      fShadow;
++	bool            fShadowStale;           /* the panel was drawn without it (text console): rewrite all */
++	uint32_t        fDamageX0, fDamageY0, fDamageX1, fDamageY1;     /* inclusive; X0 > X1: nothing */
+ 	/*
+ 	 * A frame goes to the panel when the GPU is done with it: a thread of ours waits for that
+ 	 * and copies it there, and whoever made the frame is back at the next one meanwhile. One
+@@ -417,6 +430,7 @@ public:
+ 	void reportFrameTimes(void);
+ 	void drawLayer(MiniIOSurface * s, const int32_t * src, const int32_t * dst);
+ 	void drawRows(const struct RowJob * job, int32_t y0, int32_t y1, uint32_t * blendRow);
++	void damage(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1);
+ 	static void helperMain(void * self, wait_result_t result);
+ 	/* the scaling shared out (fb_threads): fThreads drawers, the presenter and fThreads - 1 helpers */
+ 	unsigned        fThreads;
+@@ -563,6 +577,13 @@ IOMobileFramebuffer::start(IOService * provider)
+ 	}
+ 	fColumn = IONewZero(uint32_t, fPanelWidth);
+ 	scfbAttach();
++	if (gSCFB != NULL) {
++		fShadow = (uint32_t *) IOMalloc((size_t) fPanelWidth * fPanelHeight * 4);
++		fShadowStale = true;
++		if (fShadow == NULL) {
++			IOLog("MiniIOMobileFramebuffer: no memory for the shadow of the panel: every frame is published whole\n");
++		}
++	}
+ 	fColumnWeight = IONewZero(uint16_t, fPanelWidth);
+ 	fDiff = gDiff != 0;
+ 	fDiffLeft = fDiffTop = ~0u;
+@@ -717,6 +738,7 @@ struct RowJob {
+ 	uint32_t        stride;
+ 	int32_t         sx, sy, sw, sh, px0, py0, px1, py1, cx0, cx1;
+ 	bool            filter, unscaled;
++	bool force;              /* SCFB: write every row whole (the shadow does not match the panel) */
+ };
+ 
+ void
+@@ -727,6 +749,7 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
+ 	int32_t sx = job->sx, sy = job->sy, sw = job->sw, sh = job->sh;
+ 	int32_t px0 = job->px0, py0 = job->py0, px1 = job->px1, py1 = job->py1, cx0 = job->cx0, cx1 = job->cx1;
+ 	bool filter = job->filter;
++	uint32_t dx0 = ~0u, dy0 = ~0u, dx1 = 0, dy1 = 0;        /* what this share changed */
+ 
+ 	for (int32_t y = y0; y < y1; y++) {
+ 		const uint32_t * from;
+@@ -736,6 +759,31 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
+ 			continue;
+ 		}
+ 		to = (uint32_t *) (fBase + (size_t) y * fRowBytes);
++		if (fShadow != NULL && job->unscaled) {
++			/* the changed span of the row, by the shadow; only that goes to the panel */
++			const uint32_t * row = (const uint32_t *) (pixels + (size_t) (sy + y - py0) * stride + (size_t) sx * 4);
++			uint32_t * shadow = fShadow + (size_t) y * fPanelWidth + px0;
++			int32_t a = 0, b = sw - 1;
++
++			if (!job->force) {
++				while (a < sw && shadow[a] == row[a]) {
++					a++;
++				}
++				if (a == sw) {
++					continue;
++				}
++				while (b > a && shadow[b] == row[b]) {
++					b--;
++				}
++			}
++			memcpy(shadow + a, row + a, (size_t) (b - a + 1) * 4);
++			memcpy(to + px0 + a, row + a, (size_t) (b - a + 1) * 4);
++			dx0 = (uint32_t) (px0 + a) < dx0 ? (uint32_t) (px0 + a) : dx0;
++			dx1 = (uint32_t) (px0 + b) > dx1 ? (uint32_t) (px0 + b) : dx1;
++			dy0 = (uint32_t) y < dy0 ? (uint32_t) y : dy0;
++			dy1 = (uint32_t) y;
++			continue;
++		}
+ 		if (job->unscaled) {
+ 			/* not scaled at all */
+ 			memcpy(to + px0, pixels + (size_t) (sy + y - py0) * stride + (size_t) sx * 4, (size_t) sw * 4);
+@@ -764,6 +812,36 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
+ 		} else {
+ 			from = (const uint32_t *) (pixels + (size_t) (sy + (int64_t) (y - py0) * sh / (py1 - py0)) * stride);
+ 		}
++		if (fShadow != NULL) {
++			/* scaled: pixel by pixel against the shadow, only changes written to the panel */
++			uint32_t * shadow = fShadow + (size_t) y * fPanelWidth;
++			int32_t a = -1, b = -1;
++
++			for (int32_t x = cx0; x < cx1; x++) {
++				uint32_t c = fColumn[x], value;
++
++				if (filter) {
++					uint32_t w = fColumnWeight[x], p = from[c];
++
++					value = w == 0 || p == from[c + 1] ? p : blend(p, from[c + 1], w);
++				} else {
++					value = from[c];
++				}
++				if (job->force || shadow[x] != value) {
++					shadow[x] = value;
++					to[x] = value;
++					a = a < 0 ? x : a;
++					b = x;
++				}
++			}
++			if (a >= 0) {
++				dx0 = (uint32_t) a < dx0 ? (uint32_t) a : dx0;
++				dx1 = (uint32_t) b > dx1 ? (uint32_t) b : dx1;
++				dy0 = (uint32_t) y < dy0 ? (uint32_t) y : dy0;
++				dy1 = (uint32_t) y;
++			}
++			continue;
++		}
+ 		if (fDiff) {
+ 			for (int32_t x = cx0; x < cx1; x++) {
+ 				uint32_t value = filter ? blend(from[fColumn[x]], from[fColumn[x] + (fColumnWeight[x] != 0)], fColumnWeight[x]) :
+@@ -794,6 +872,37 @@ IOMobileFramebuffer::drawRows(const RowJob * job, int32_t y0, int32_t y1, uint32
+ 			}
+ 		}
+ 	}
++	if (dx0 <= dx1) {
++		damage(dx0, dy0, dx1, dy1);
++	}
++}
++
++/* Folds a share's changed bounds into the frame's (shares run on several threads at once). */
++static inline void
++atomicMin(uint32_t * p, uint32_t v)
++{
++	uint32_t old = __atomic_load_n(p, __ATOMIC_RELAXED);
++
++	while (v < old && !__atomic_compare_exchange_n(p, &old, v, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
++	}
++}
++
++static inline void
++atomicMax(uint32_t * p, uint32_t v)
++{
++	uint32_t old = __atomic_load_n(p, __ATOMIC_RELAXED);
++
++	while (v > old && !__atomic_compare_exchange_n(p, &old, v, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
++	}
++}
++
++void
++IOMobileFramebuffer::damage(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1)
++{
++	atomicMin(&fDamageX0, x0);
++	atomicMin(&fDamageY0, y0);
++	atomicMax(&fDamageX1, x1);
++	atomicMax(&fDamageY1, y1);
+ }
+ 
+ /* A helper of the scaling (fb_threads): waits for rows to do, does them, says so. */
+@@ -920,6 +1029,7 @@ IOMobileFramebuffer::drawLayer(MiniIOSurface * s, const int32_t * src, const int
+ 	job.cx1 = cx1;
+ 	job.filter = filter;
+ 	job.unscaled = px1 - px0 == sw && py1 - py0 == sh && px0 >= 0 && (uint32_t) px1 <= fPanelWidth;
++	job.force = fShadowStale;
+ 	if (fThreads <= 1 || fDiff || fHelpersStarted + 1 < fThreads) {
+ 		drawRows(&job, py0, py1, fBlendRow);
+ 		return;
+@@ -1115,6 +1225,8 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+ 		    swapWord(swap, SWAP_SURFACE(2)), swapWord(swap, SWAP_SURFACE(3)), set, swapWord(swap, SWAP_LAYERS_CLEARED));
+ 	}
+ 	scfbBeginDraw();
++	fDamageX0 = fDamageY0 = ~0u;
++	fDamageX1 = fDamageY1 = 0;
+ 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
+ 		uint32_t sid = swapWord(swap, SWAP_SURFACE(layer));
+ 		int32_t src[4], dst[4];
+@@ -1134,6 +1246,10 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+ 				for (uint32_t y = 0; y < fPanelHeight; y++) {
+ 					bzero(fBase + (size_t) y * fRowBytes, (size_t) fPanelWidth * 4);
+ 				}
++				if (fShadow != NULL) {
++					bzero(fShadow, (size_t) fPanelWidth * fPanelHeight * 4);
++				}
++				damage(0, 0, fPanelWidth - 1, fPanelHeight - 1);
+ 			}
+ 			continue;
+ 		}
+@@ -1164,7 +1280,21 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+ 		}
+ 	}
+ 	drawn = mach_absolute_time();
+-	scfbPublish(fPanelWidth, fPanelHeight);
++	if (fShadow != NULL) {
++		/* exactly what changed; an empty rectangle when nothing did */
++		bool any = fDamageX0 <= fDamageX1;
++
++		if (fShadowStale) {
++			/* the first picture after the text console: all of it, as before */
++			scfbPublish(0, 0, fPanelWidth, fPanelHeight, false);
++		} else {
++			scfbPublish(any ? fDamageX0 : 0, any ? fDamageY0 : 0, any ? fDamageX1 - fDamageX0 + 1 : 0,
++			    any ? fDamageY1 - fDamageY0 + 1 : 0, true);
++		}
++		fShadowStale = false;
++	} else {
++		scfbPublish(0, 0, fPanelWidth, fPanelHeight, false);
++	}
+ 	if (gVGPU) {
+ 		redwood_vgpu_flush(0, 0, fPanelWidth, fPanelHeight);
+ 	}
