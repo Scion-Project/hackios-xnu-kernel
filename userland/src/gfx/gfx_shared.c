@@ -79,11 +79,20 @@ gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, uint3
 	s->texture = texture;
 	s->base = base;
 	s->stride = stride;
+	/*
+	 * A surface the GPU drew and that was copied back (the display's buffers, attached again
+	 * every frame) holds what the colour buffer holds: no 11 MB upload of it.
+	 */
+	if (upload && s->gpu_owned) {
+		upload = 0;
+	}
 	if (upload) {
 		gfx_flush(c);
+		uint64_t t0 = gfx_now_us();
 		if (c->t.res_upload(c->t.arg, s->res, 0, 0, width, height, base, stride) != 0) {
 			return 0;
 		}
+		c->us_upload += gfx_now_us() - t0;
 		c->uploads++;
 		c->upload_bytes += (uint64_t)width * height * 4;
 	}
@@ -118,7 +127,11 @@ gfx_sync_shared(struct gfx *c)
 		struct gfx_shared *s = &c->shared[i];
 		if (s->res && s->dirty && s->base != NULL) {
 			s->dirty = 0;
-			if (c->t.res_download(c->t.arg, s->res, 0, 0, s->width, s->height, s->base, s->stride) == 0) {
+			uint64_t t0 = gfx_now_us();
+			int r = c->t.res_download(c->t.arg, s->res, 0, 0, s->width, s->height, s->base, s->stride);
+			c->us_download += gfx_now_us() - t0;
+			if (r == 0) {
+				s->gpu_owned = 1;
 				c->downloads++;
 				c->download_bytes += (uint64_t)s->width * s->height * 4;
 			}

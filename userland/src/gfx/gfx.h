@@ -66,6 +66,7 @@ struct gfx_shared {
 	uint32_t res, width, height, stride;
 	void *base;
 	int dirty;                      /* drawn into since the last copy back */
+	int gpu_owned;                  /* the memory holds what the colour buffer holds (copied back, not written since) */
 };
 #define GFX_MAX_SHARED  64
 #define GFX_MAX_FBOS    32
@@ -106,6 +107,9 @@ struct gfx {
 	struct { GLuint fbo, texture; } fbo_color[GFX_MAX_FBOS];
 	struct gfx_shared shared[GFX_MAX_SHARED];
 	uint64_t downloads, download_bytes, uploads, upload_bytes;
+	/* time (us) in each part, and frame ends, for the report every few seconds (gfx_report) */
+	uint64_t us_write, us_read, us_download, us_upload, frames, report_at, report_frames;
+	uint64_t r_trips, r_out, r_in, r_down, r_up, r_down_bytes, r_up_bytes;
 	uint8_t *scratch;
 	size_t scratch_cap;
 };
@@ -149,7 +153,9 @@ int gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, u
     int upload);
 /* Copy every shared texture drawn into since the last time back into its memory. */
 void gfx_sync_shared(struct gfx *c);
-void gfx_drawing(struct gfx *c);         /* (gfx_gl.c: a draw lands in the bound framebuffer) */
+void gfx_drawing(struct gfx *c);
+uint64_t gfx_now_us(void);
+void gfx_frame_end(struct gfx *c);      /* counts, and every 5 s one line of where the time went */         /* (gfx_gl.c: a draw lands in the bound framebuffer) */
 void gfx_forget_shared(struct gfx *c, uint64_t key);
 
 #endif
