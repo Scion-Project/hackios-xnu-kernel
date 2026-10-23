@@ -107,8 +107,16 @@ IOS_JOBS=${JOBS-"
 	com.apple.backboardd com.apple.mobile.usermanagerd com.apple.mobilegestalt.xpc com.apple.lsd
 	com.apple.powerd com.apple.analyticsd com.apple.logd_helper
 	com.apple.iconservices.iconservicesagent com.apple.pluginkit.pkd
-	com.apple.SpringBoard
+	com.apple.SpringBoard com.apple.chronod
 "}
+# com.apple.chronod is WidgetKit's host: it asks every widget extension for its timeline and hands
+# SpringBoard the rendered views. Without the job SpringBoard asked launchd for it every second
+# ("Could not find job with label com.apple.chronod", failed lookups of com.apple.chronoservices) and
+# the home screen's Weather and Calendar widgets stayed blank white boxes. It used to abort in
+# RenderBox for want of that framework's default.metallib; the system image carries the small
+# shader libraries now (ios165/select-system.py), and on QEMU's AVF layout (23 October 2026) it ran
+# without a crash, started the extensions on demand and both widgets showed their content
+# (Calendar the day, Weather "No weather data", there being no network and no location).
 # iOS's own Wi-Fi daemon, for Settings to have a Wi-Fi to show: the kernel answers it in
 # bsd/dev/redwood_apple80211.c. With the radio (wifi=1) Settings then shows Wi-Fi on, the network joined and the
 # networks the radio hears. NOT FINISHED: a network cannot be joined from Settings yet.
