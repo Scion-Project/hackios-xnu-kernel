@@ -268,6 +268,10 @@ for label in labels:
     with open(f'{src}/{label}.plist', 'rb') as f:
         job = plistlib.load(f)
     job['StandardErrorPath'] = '/dev/console'
+    # chronod's plist has ThrottleInterval as a string ("3"), which this launchd refuses ("Invalid
+    # type for plist importer (key: ThrottleInterval type: string), accepted types: [integer]")
+    if isinstance(job.get('ThrottleInterval'), str) and job['ThrottleInterval'].isdigit():
+        job['ThrottleInterval'] = int(job['ThrottleInterval'])
     # ... and the standard output with it, which launchd otherwise sends to /dev/null. That
     # default cost two nights of reading: the Metal driver says every one of its refusals with
     # printf, so inside a daemon each one was written to nowhere, and a log with no refusal in
@@ -313,6 +317,8 @@ if rest:
         for key in ('RunAtLoad', 'KeepAlive', 'StartInterval', 'StartCalendarInterval', 'WatchPaths',
                     'QueueDirectories', 'StartOnMount', 'LaunchEvents'):
             job.pop(key, None)
+        if isinstance(job.get('ThrottleInterval'), str) and job['ThrottleInterval'].isdigit():
+            job['ThrottleInterval'] = int(job['ThrottleInterval'])
         job['StandardErrorPath'] = '/dev/console'
         job['StandardOutPath'] = '/dev/console'
         # One experiment at a time, carried to every job because the thing being measured is what
