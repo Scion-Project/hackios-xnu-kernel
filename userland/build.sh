@@ -171,8 +171,12 @@ cp obj/child root/bin/child
 # The data volume into the flash and back (src/var_store.c), and the job that saves it when a run
 # ends: the program and its job together, away from the iOS job list below, which several working
 # copies are editing at once.
-[ -f obj/var_store ] && cp obj/var_store root/bin/
-cp com.redwood.varstore.plist root/LaunchDaemons/
+# Only with the program: a PREBUILT tree has no var_store, and its job then made xpcproxy exit(78)
+# (EX_CONFIG, nothing to run) at every boot.
+if [ -f obj/var_store ]; then
+	cp obj/var_store root/bin/
+	cp com.redwood.varstore.plist root/LaunchDaemons/
+fi
 echo "Darwin on redwood: image built $(date '+%Y-%m-%d %H:%M')" > root/etc/motd
 # 300000 bytes, byte i = (i*31 + (i>>8)) & 0xff; init verifies it through read() and mmap()
 python3 -c "import sys; sys.stdout.buffer.write(bytes((i*31 + (i>>8)) & 0xff for i in range(300000)))" > root/share/pattern.bin
