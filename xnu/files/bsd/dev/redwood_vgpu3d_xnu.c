@@ -57,7 +57,7 @@ struct vgpu3d_ioc_xfer {
 #define VGPU3D_IOC_DOWNLOAD     _IOW('G', 4, struct vgpu3d_ioc_xfer)
 
 #define MAX_OPENS               32
-#define MAX_RES                 64
+#define MAX_RES                 1024            /* CoreAnimation shares hundreds of IOSurfaces */
 #define PIPE_SIZE               (1u << 20)
 #define MAX_ENTRIES             3000            /* ATTACH_BACKING entries: 48 KiB of command */
 
