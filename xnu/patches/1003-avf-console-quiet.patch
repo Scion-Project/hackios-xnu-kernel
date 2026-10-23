@@ -1,0 +1,28 @@
+diff --git a/bsd/dev/arm/km.c b/bsd/dev/arm/km.c
+index 69eacee..9e244fc 100644
+--- a/bsd/dev/arm/km.c
++++ b/bsd/dev/arm/km.c
+@@ -175,6 +175,23 @@ kmwrite(dev_t dev, struct uio * uio, int ioflag)
+ 	int ret;
+ 	struct tty *tp = km_tty[minor(dev)];
+ 
++	/*
++	 * Boot-arg console_quiet=1: what user space writes to the console (launchd's own log, the
++	 * daemons' standard error, os_log mirrored there) is dropped; the kernel's printf and panics
++	 * are not written this way and still come out. Under a hypervisor every console byte is a
++	 * trap to the VMM: on the Pixel (AVF), launchd's log of SpringBoard's failed lookups kept the
++	 * host's console thread a quarter busy.
++	 */
++	static int quiet = -1;
++	if (quiet < 0) {
++		uint32_t v = 0;
++		quiet = PE_parse_boot_argn("console_quiet", &v, sizeof(v)) && v != 0;
++	}
++	if (quiet) {
++		uio_update(uio, uio_resid(uio));
++		return 0;
++	}
++
+ 	tty_lock(tp);
+ 	ret = (*linesw[tp->t_line].l_write)(tp, uio, ioflag);
+ 	tty_unlock(tp);
