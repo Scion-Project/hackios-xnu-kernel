@@ -242,7 +242,9 @@ gfx_sync_shared(struct gfx *c)
 		return;
 	}
 	/* the host must have drawn everything before the colour buffers are read */
-	gfxe_glFinishRoundTrip(c);
+	if (!c->just_finished) {
+		gfx_finish(c);
+	}
 	for (int i = 0; i < GFX_MAX_SHARED; i++) {
 		struct gfx_shared *s = &c->shared[i];
 		if (!s->res || !s->dirty || s->base == NULL) {

@@ -442,46 +442,60 @@ glFinish(void)
 {
 	struct gfx *c = gfx_current();
 	if (c != NULL) {
-		gfxe_glFinishRoundTrip(c);
+		gfx_finish(c);
+		c->just_finished = 1;
 		gfx_sync_shared(c);
+		c->just_finished = 0;
 		gfx_frame_end(c);
 	}
 }
 
+/*
+ * Fences without the host: a fence is a number, and waiting for one waits for everything
+ * (glFinishRoundTrip, one round trip), which is also when the shared targets are copied back.
+ * gfxstream's own fences (gl*SyncAEMU) would cost a round trip to make one, another to wait.
+ * GL_SYNC_FLUSH_COMMANDS_BIT with timeout 0, eagl.c's frame end, is a wait too: the display
+ * reads the surface as soon as the swap tells it to.
+ */
+#define GL_CONDITION_SATISFIED  0x911C
+
 API void *
 glFenceSync(GLenum condition, GLbitfield flags)
 {
-	struct gfx *c = gfx_current();
-	return c ? (void *)(uintptr_t)gfxe_glFenceSyncAEMU(c, condition, flags) : NULL;
+	static uintptr_t next = 1;
+	(void)condition;
+	(void)flags;
+	return (void *)next++;
 }
 
 API GLenum
 glClientWaitSync(void *sync, GLbitfield flags, GLuint64 timeout)
 {
 	struct gfx *c = gfx_current();
+	(void)sync;
+	(void)flags;
+	(void)timeout;
 	if (c == NULL) {
 		return GL_TIMEOUT_EXPIRED;
 	}
-	gfx_sync_shared(c);     /* a frame's end, for eagl.c: the shared targets into their memory */
-	return gfxe_glClientWaitSyncAEMU(c, (uint64_t)(uintptr_t)sync, flags, timeout);
+	gfx_finish(c);
+	c->just_finished = 1;
+	gfx_sync_shared(c);
+	c->just_finished = 0;
+	gfx_frame_end(c);
+	return GL_CONDITION_SATISFIED;
 }
 
 API void
 glWaitSync(void *sync, GLbitfield flags, GLuint64 timeout)
 {
-	struct gfx *c = gfx_current();
-	if (c) {
-		gfxe_glWaitSyncAEMU(c, (uint64_t)(uintptr_t)sync, flags, timeout);
-	}
+	(void)sync; (void)flags; (void)timeout;   /* one stream: the host runs it in order anyway */
 }
 
 API void
 glDeleteSync(void *sync)
 {
-	struct gfx *c = gfx_current();
-	if (c && sync) {
-		gfxe_glDeleteSyncAEMU(c, (uint64_t)(uintptr_t)sync);
-	}
+	(void)sync;
 }
 
 /* ---- markers: nothing to send ----------------------------------------------------------- */
