@@ -809,6 +809,12 @@ void avfboot_main(uint64_t fdt_pa)
 	if (!has_arg(pi.cmdline, "cpus=") && !has_arg(pi.cmdline, "cpumask=") &&
 	    !has_arg(m.bootargs, "cpus=") && !has_arg(m.bootargs, "cpumask="))
 		cmd_append(cl, &n, "cpus=1 ");
+	/*
+	 * User space quiet on the console unless asked otherwise (console_quiet=0): every console byte
+	 * is a trap to crosvm, and launchd alone writes thousands of lines a minute (patch 1003).
+	 */
+	if (!has_arg(pi.cmdline, "console_quiet=") && !has_arg(m.bootargs, "console_quiet="))
+		cmd_append(cl, &n, "console_quiet=1 ");
 	if (rd_size && !has_arg(pi.cmdline, "rd=") && !has_arg(m.bootargs, "rd="))
 		cmd_append(cl, &n, "rd=md0 ");
 	cmd_append(cl, &n, pi.cmdline);
