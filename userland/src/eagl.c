@@ -815,6 +815,47 @@ target_to_surface(struct eagl *e, struct image *image)
 }
 
 /*
+ * A mirrored target's texture, which is bound, filled from the mirror by the GPU (the reverse of
+ * target_to_surface()): the mirror is the surface's memory as the GPU has it, so a surface
+ * attached again -- the display's buffers, every frame -- is not uploaded from memory. Only where
+ * the library says the mirror is the surface (REDWOOD_GL_MIRROR_FILL in the environment of a
+ * library that keeps them in step, gfx's); false: fill it the usual way.
+ */
+static bool
+mirror_to_texture(struct eagl *e, struct image *image)
+{
+	static int fill = -1;
+	GLint read = 0, draw = 0;
+
+	if (fill < 0) {
+		fill = strstr(redwood_gl_library(), "gfx") != NULL;
+	}
+	if (!fill || image->mirror == 0) {
+		return false;
+	}
+	glTexImage2D(GL_TEXTURE_2D, 0, (GLint)internal_format(GL_BGRA, GL_BGRA), image->width, image->height, 0, GL_BGRA,
+	    GL_UNSIGNED_BYTE, NULL);
+	glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+	if (e->reader == 0) {
+		glGenFramebuffers(1, &e->reader);
+	}
+	if (e->writer == 0) {
+		glGenFramebuffers(1, &e->writer);
+	}
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, e->reader);
+	glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, image->mirror, 0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e->writer);
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, image->texture, 0);
+	glBlitFramebuffer(0, image->invert ? image->height : 0, image->width, image->invert ? 0 : image->height, 0, 0,
+	    image->width, image->height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)read);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)draw);
+	image->seed = IOSurfaceGetSeed(image->surface);
+	return true;
+}
+
+/*
  * For looking at what is drawn on the way to the picture (boot-arg glshow=TEXTURE): that texture's
  * pixels are put over the top left corner of the picture as it goes out. glshow=WxH takes, instead
  * of a name that is a new one every run, whichever texture is of that size; glshow_part=W,H only
@@ -3992,7 +4033,12 @@ my_attachImage(id self, SEL selector, unsigned long target, IOSurfaceRef surface
 	 * around, to be shown): a texture that is not the surface's memory starts with what the surface holds.
 	 */
 	began = now_us();
-	if (surface_mirrored(e, image) || !surface_shared(e, image)) {
+	if (surface_mirrored(e, image)) {
+		if (!mirror_to_texture(e, image)) {
+			surface_changed(e, image);
+			surface_to_texture(e, image);
+		}
+	} else if (!surface_shared(e, image)) {
 		surface_changed(e, image);              /* (what it adds up to now) */
 		surface_to_texture(e, image);
 	}

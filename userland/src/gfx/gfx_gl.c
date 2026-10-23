@@ -430,6 +430,7 @@ glFlush(void)
 		gfxe_glFlush(c);
 		gfx_sync_shared(c);
 		gfx_flush(c);
+		gfx_frame_end(c);
 	}
 }
 
@@ -440,6 +441,7 @@ glFinish(void)
 	if (c != NULL) {
 		gfxe_glFinishRoundTrip(c);
 		gfx_sync_shared(c);
+		gfx_frame_end(c);
 	}
 }
 

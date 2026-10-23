@@ -9,6 +9,51 @@
 #include "gfx_enc.h"
 
 #define GFX_BUF         (256 * 1024)
+#include <time.h>
+
+uint64_t
+gfx_now_us(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+void
+gfx_frame_end(struct gfx *c)
+{
+	uint64_t now = gfx_now_us();
+	c->frames++;
+	if (c->report_at == 0) {
+		c->report_at = now;
+		c->report_frames = c->frames;
+		c->r_trips = c->round_trips; c->r_out = c->bytes_out; c->r_in = c->bytes_in;
+		c->r_down = c->us_download; c->r_up = c->us_upload; c->r_down_bytes = c->download_bytes;
+		c->r_up_bytes = c->upload_bytes;
+		c->us_write = c->us_read = 0;
+		return;
+	}
+	if (now - c->report_at < 5000000) {
+		return;
+	}
+	uint64_t f = c->frames - c->report_frames, span = now - c->report_at;
+	if (f) {
+		fprintf(stderr, "gfx: %llu frames in %llu ms (%.1f a second); a frame: %llu round trips, %llu KB out, %llu KB in;"
+		    " %llu us writing, %llu us waiting for replies, %llu us copying back (%llu KB), %llu us uploading (%llu KB)\n",
+		    (unsigned long long)f, (unsigned long long)(span / 1000), f * 1e6 / (double)span,
+		    (unsigned long long)((c->round_trips - c->r_trips) / f), (unsigned long long)((c->bytes_out - c->r_out) / f / 1024),
+		    (unsigned long long)((c->bytes_in - c->r_in) / f / 1024), (unsigned long long)(c->us_write / f),
+		    (unsigned long long)(c->us_read / f), (unsigned long long)((c->us_download - c->r_down) / f),
+		    (unsigned long long)((c->download_bytes - c->r_down_bytes) / f / 1024),
+		    (unsigned long long)((c->us_upload - c->r_up) / f), (unsigned long long)((c->upload_bytes - c->r_up_bytes) / f / 1024));
+	}
+	c->report_at = now;
+	c->report_frames = c->frames;
+	c->r_trips = c->round_trips; c->r_out = c->bytes_out; c->r_in = c->bytes_in;
+	c->r_down = c->us_download; c->r_up = c->us_upload; c->r_down_bytes = c->download_bytes;
+	c->r_up_bytes = c->upload_bytes;
+	c->us_write = c->us_read = 0;
+}
 
 /* ---- the stream ------------------------------------------------------------------------- */
 
@@ -27,7 +72,9 @@ gfx_flush(struct gfx *c)
 	if (c == NULL || c->err || c->used == 0) {
 		return;
 	}
+	uint64_t t0 = gfx_now_us();
 	int r = c->t.write(c->t.arg, c->buf, c->used);
+	c->us_write += gfx_now_us() - t0;
 	c->bytes_out += c->used;
 	c->used = 0;
 	if (r) {
@@ -71,7 +118,9 @@ gfx_read(struct gfx *c, void *buf, size_t n)
 		memset(buf, 0, n);
 		return;
 	}
+	uint64_t t0 = gfx_now_us();
 	int r = c->t.read(c->t.arg, buf, n);
+	c->us_read += gfx_now_us() - t0;
 	c->bytes_in += n;
 	c->round_trips++;
 	if (r) {
