@@ -15,6 +15,10 @@
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
+	<!-- On the way to a shutdown launchd sends SIGTERM and waits this long before SIGKILL: time for
+	     the last save (AVF, where no loader asks for one). -->
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
 	<key>StandardOutPath</key>
 	<string>/dev/console</string>
 	<key>StandardErrorPath</key>
