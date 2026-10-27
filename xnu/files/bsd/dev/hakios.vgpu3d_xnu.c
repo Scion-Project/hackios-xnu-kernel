@@ -130,6 +130,7 @@ static struct bell_event *bell_events, *bell_status;
 static uint64_t bell_events_pa, bell_status_pa;
 static unsigned bell_status_next;
 static uint64_t bell_rung, bell_heard;
+static LCK_MTX_DECLARE(bell_lock, &vgpu3d_lck_grp);     /* the status queue: rung from the mailbox and the ring */
 static int scgpu_reply_chan;                    /* (its address: what a waiting thread sleeps on) */
 
 /* After every interrupt of the doorbell: the app rang (each event a ring); the waiter wakes. */
@@ -179,15 +180,17 @@ hakios_scgpu_bell_attach(vio_dev_t *v)
 	return true;
 }
 
-/* Ring the app (under scgpu_mailbox_lock): a status event, which it reads from its socket. */
+/* Ring the app: a status event, which it reads from its socket. */
 static void
 bell_ring(void)
 {
 	uint32_t len;
 
+	lck_mtx_lock(&bell_lock);
 	while (vio_queue_get(bell_statusq, &len) != NULL) {
 	}
 	if (vio_queue_num_free(bell_statusq) == 0) {
+		lck_mtx_unlock(&bell_lock);
 		return;                         /* rings not yet taken: it is awake anyway */
 	}
 	unsigned i = bell_status_next++ % BELL_STATUS;
@@ -198,6 +201,59 @@ bell_ring(void)
 	vio_queue_add(bell_statusq, &sg, 1, (void *)(uintptr_t)(i + 1));
 	vio_queue_kick(bell_statusq);
 	bell_rung++;
+	lck_mtx_unlock(&bell_lock);
+}
+
+/* ---- the stream ring (sys/hakios.scgpu.h) ---- */
+
+#define SCGPU_RING_SIZE         (4u << 20)
+static uint8_t *scgpu_ring;
+static uint32_t scgpu_ring_size;
+static LCK_MTX_DECLARE(scgpu_ring_lock, &vgpu3d_lck_grp);
+static uint64_t ring_waits;
+
+/* Until the ring has room for `need` more bytes past `head`: spin, then asleep on the doorbell. */
+static int
+ring_room(uint32_t head, uint32_t need)
+{
+	volatile uint32_t *tailp = &scgpu->ring_tail;
+	uint64_t now, spin_until, give_up;
+
+	if (head - __atomic_load_n((uint32_t *)(uintptr_t)tailp, __ATOMIC_ACQUIRE) + need <= scgpu_ring_size) {
+		return 0;
+	}
+	ring_waits++;
+	now = mach_absolute_time();
+	nanoseconds_to_absolutetime(SCGPU_BELL_SPIN_US * NSEC_PER_USEC, &spin_until);
+	nanoseconds_to_absolutetime(SCGPU_TIMEOUT_S * NSEC_PER_SEC, &give_up);
+	spin_until += now;
+	give_up += now;
+	while (head - __atomic_load_n((uint32_t *)(uintptr_t)tailp, __ATOMIC_ACQUIRE) + need > scgpu_ring_size) {
+		now = mach_absolute_time();
+		if (now > give_up) {
+			printf("vgpu3d: SCGPU: the stream ring stayed full for %d s\n", SCGPU_TIMEOUT_S);
+			return ETIMEDOUT;
+		}
+		if (now <= spin_until) {
+			continue;
+		}
+		if (bell == NULL) {
+			delay_for_interval(SCGPU_NAP_US, NSEC_PER_USEC);
+			continue;
+		}
+		uint64_t deadline;
+		clock_interval_to_deadline(SCGPU_BELL_SAFETY_MS, kMillisecondScale, &deadline);
+		assert_wait_deadline((event_t)&scgpu_reply_chan, THREAD_UNINT, deadline);
+		__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->guest_waiting, 1, __ATOMIC_RELAXED);
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
+		if (head - __atomic_load_n((uint32_t *)(uintptr_t)tailp, __ATOMIC_ACQUIRE) + need <= scgpu_ring_size) {
+			clear_wait(current_thread(), THREAD_AWAKENED);
+		} else {
+			thread_block(THREAD_CONTINUE_NULL);
+		}
+		__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->guest_waiting, 0, __ATOMIC_RELAXED);
+	}
+	return 0;
 }
 
 /* One command through the mailbox, as hakios_vgpu_ctrl puts one on the control queue. */
@@ -343,8 +399,18 @@ scgpu_attach(void)
 	if (scgpu_chunks > SCGPU_MAX_CHUNKS) {
 		scgpu_chunks = SCGPU_MAX_CHUNKS;
 	}
-	printf("vgpu3d: SCGPU: the app's GPU at %#llx (%llu MiB, a pool of %u KiB), %s\n", pa, size >> 20,
-	    scgpu_chunks * (SCGPU_CHUNK >> 10), scgpu->flags & SCGPU_F_HOST_READY ? "ready" : "NOT READY");
+	/* the stream ring, from the pool; the app finds it in the header (no ring: every write by mailbox) */
+	uint64_t ring_pa;
+	scgpu_ring = scgpu->flags & SCGPU_F_RING ? scgpu_alloc(SCGPU_RING_SIZE, &ring_pa) : NULL;
+	if (scgpu_ring != NULL) {
+		scgpu->ring_off = (uint32_t)(ring_pa - scgpu_pa);
+		scgpu->ring_head = scgpu->ring_tail = 0;
+		scgpu_ring_size = SCGPU_RING_SIZE;
+		__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->ring_size, SCGPU_RING_SIZE, __ATOMIC_RELEASE);
+	}
+	printf("vgpu3d: SCGPU: the app's GPU at %#llx (%llu MiB, a pool of %u KiB, a stream ring of %u KiB), %s\n", pa,
+	    size >> 20, scgpu_chunks * (SCGPU_CHUNK >> 10), scgpu_ring_size >> 10,
+	    scgpu->flags & SCGPU_F_HOST_READY ? "ready" : "NOT READY");
 }
 
 /* ---- the ops ---------------------------------------------------------------------------- */
@@ -822,6 +888,49 @@ open_of(dev_t dev)
 	return o && o->ready ? o : NULL;
 }
 
+/*
+ * SCGPU's write: the bytes into the stream ring as records of the context's pipe, a pipe's worth at
+ * most each (gfxstream copies a record through the pipe's linear copy), and back at once; the app is
+ * rung if it sleeps. Only room is waited for.
+ */
+static int
+scgpu_ring_write(struct vopen *o, struct uio *uio)
+{
+	uint32_t mask = scgpu_ring_size - 1;
+	int err = 0;
+
+	lck_mtx_lock(&scgpu_ring_lock);
+	while (uio_resid(uio) > 0 && !err) {
+		uint32_t n = uio_resid(uio) > (user_ssize_t)o->g.pipe_size ? o->g.pipe_size : (uint32_t)uio_resid(uio);
+		uint32_t need = (uint32_t)sizeof(struct scgpu_record) + ((n + 15) & ~15u);
+		uint32_t head = scgpu->ring_head;       /* (ours alone) */
+
+		if ((err = ring_room(head, need)) != 0) {
+			break;
+		}
+		struct scgpu_record rec = { o->g.pipe_res, o->g.ctx_id, n, 0 };
+		uint32_t pos = head & mask;             /* 16-aligned in a ring of a multiple of 16: the record never splits */
+		memcpy(scgpu_ring + pos, &rec, sizeof(rec));
+		uint32_t at = (pos + (uint32_t)sizeof(rec)) & mask;
+		uint32_t first = n < scgpu_ring_size - at ? n : scgpu_ring_size - at;
+		err = uiomove((caddr_t)(scgpu_ring + at), (int)first, uio);
+		if (!err && n > first) {
+			err = uiomove((caddr_t)scgpu_ring, (int)(n - first), uio);
+		}
+		if (err) {
+			break;
+		}
+		__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->ring_head, head + need, __ATOMIC_RELEASE);
+		o->g.bytes_out += n;
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
+		if (bell != NULL && __atomic_load_n((uint32_t *)(uintptr_t)&scgpu->host_sleeping, __ATOMIC_RELAXED)) {
+			bell_ring();
+		}
+	}
+	lck_mtx_unlock(&scgpu_ring_lock);
+	return err;
+}
+
 static int
 vgpu3d_dev_write(dev_t dev, struct uio *uio, __unused int flag)
 {
@@ -832,6 +941,11 @@ vgpu3d_dev_write(dev_t dev, struct uio *uio, __unused int flag)
 		return ENXIO;
 	}
 	lck_mtx_lock(&o->lock);
+	if (scgpu != NULL && scgpu_ring != NULL) {
+		err = scgpu_ring_write(o, uio);
+		lck_mtx_unlock(&o->lock);
+		return err;
+	}
 	while (uio_resid(uio) > 0 && !err) {
 		uint32_t n = uio_resid(uio) > (user_ssize_t)o->g.pipe_size ? o->g.pipe_size : (uint32_t)uio_resid(uio);
 		err = uiomove((caddr_t)o->g.pipe_va, (int)n, uio);
