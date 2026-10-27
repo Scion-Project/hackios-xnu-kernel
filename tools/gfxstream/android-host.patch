@@ -79,6 +79,46 @@ index c31cab6..7ad849c 100644
 +if (ANDROID)
 +    target_link_libraries(gfxstream_host_native_window PUBLIC nativewindow log)
 +endif()
+diff --git a/host/virtio_gpu_frontend.cpp b/host/virtio_gpu_frontend.cpp
+index 4c5c3e1..7d54575 100644
+--- a/host/virtio_gpu_frontend.cpp
++++ b/host/virtio_gpu_frontend.cpp
+@@ -1021,12 +1021,22 @@ void VirtioGpuFrontend::setupWindow(void* nativeWindowHandle, int32_t windowX, i
+         return;
+     }
+ 
++    // An app's window comes and goes (Scion: its SurfaceView is destroyed when the activity
++    // stops): NULL takes the subwindow away before the native window is released, and another
++    // window replaces the one there was instead of being ignored.
++    if (nativeWindowHandle == nullptr) {
++        mRenderer->destroyOpenGLSubwindow();
++        mSubWindowHandle = nullptr;
++        return;
++    }
++    const bool replace = mSubWindowHandle != nullptr && mSubWindowHandle != nativeWindowHandle;
++    mSubWindowHandle = nativeWindowHandle;
+     bool success = mRenderer->showOpenGLSubwindow((FBNativeWindowType)(uintptr_t)nativeWindowHandle,
+                                                   windowX, windowY, windowWidth, windowHeight,
+                                                   framebufferWidth, framebufferHeight,
+                                                   /*dpr=*/1.0f,
+                                                   /*rotation=*/0,
+-                                                  /*deleteExisting=*/false,
++                                                  /*deleteExisting=*/replace,
+                                                   /*hideWindow=*/false);
+     if (!success) {
+         GFXSTREAM_ERROR("Failed to setup window: show subwindow failed.");
+diff --git a/host/virtio_gpu_frontend.h b/host/virtio_gpu_frontend.h
+index 0431560..71949f8 100644
+--- a/host/virtio_gpu_frontend.h
++++ b/host/virtio_gpu_frontend.h
+@@ -138,6 +138,7 @@ class VirtioGpuFrontend {
+ #endif  // GFXSTREAM_BUILD_WITH_SNAPSHOT_FRONTEND_SUPPORT
+ 
+     RendererPtr mRenderer;
++    void* mSubWindowHandle = nullptr;  // the native window setupWindow last showed the subwindow in
+     void* mCookie = nullptr;
+     gfxstream::host::FeatureSet mFeatures;
+     stream_renderer_fence_callback mFenceCallback;
 diff --git a/host/vulkan/CMakeLists.txt b/host/vulkan/CMakeLists.txt
 index d98f3db..a8440c2 100644
 --- a/host/vulkan/CMakeLists.txt
