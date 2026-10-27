@@ -134,7 +134,7 @@ module, or the open lzfse library gets built). User space and the images: `REST=
 | `qemu/` | running in QEMU |
 | `docs/` | `notes.md`: the detailed notes (Russian); `cellular.md`: cellular; `air.md`, `metal.md`: the GPU |
 | `prebuilt/` | the built kernel, loader and libraries |
-| `avf/` | this fork: XNU as a guest of Android's own hypervisor (AVF/crosvm) for [Scion](https://github.com/dylanneve1/scion); see `avf/README.md` |
+| `avf/` | this fork: XNU as a guest of Android's own hypervisor (AVF/crosvm) for [Scion](https://github.com/Scion-Project/scion); see `avf/README.md` |
 | `xnu/patches/` | this fork: numbered kernel patches applied after `hakios.patch` (AVF platform, virtio-pci, virtio-gpu, display, camera) |
 
 ## Devices
