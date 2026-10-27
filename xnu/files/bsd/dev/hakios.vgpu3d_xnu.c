@@ -49,6 +49,7 @@
 #include <vm/vm_kern.h>
 #include <vm/memory_types.h>
 #include <sys/hakios.scgpu.h>
+#include <sys/hakios.virtio.h>
 #include <sys/hakios.vgpu.h>
 #include <sys/hakios.vgpu3d.h>
 
@@ -103,6 +104,8 @@ static uint8_t *attach_scratch;                 /* ATTACH_BACKING commands (unde
 #define SCGPU_MAX_CHUNKS        8192u           /* 512 MiB of pool at most */
 #define SCGPU_SPIN_US           300             /* a reply is waited for by spinning this long, */
 #define SCGPU_NAP_US            20              /* then in naps of this, */
+#define SCGPU_BELL_SPIN_US      60              /* ... or, with the doorbell, this long and then asleep, */
+#define SCGPU_BELL_SAFETY_MS    5               /* looking again at least this often (a lost ring) */
 #define SCGPU_TIMEOUT_S         10              /* until this (a first shader compile can take a while) */
 
 static volatile struct scgpu_header *scgpu;     /* NULL: the virtio-gpu device, as before */
@@ -112,6 +115,90 @@ static uint32_t scgpu_chunks;
 static uint8_t scgpu_used[SCGPU_MAX_CHUNKS / 8];
 static LCK_MTX_DECLARE(scgpu_mailbox_lock, &vgpu3d_lck_grp);
 static LCK_MTX_DECLARE(scgpu_pool_lock, &vgpu3d_lck_grp);
+
+/*
+ * The doorbell (sys/hakios.scgpu.h): the virtio-input device "scion-scgpu", handed over by the input
+ * driver (hakios_scgpu_bell_attach). The app rings by an input event, which comes as an interrupt;
+ * the guest rings by a status event, which crosvm writes into the app's socket.
+ */
+#define BELL_EVENTS             16
+#define BELL_STATUS             8
+struct bell_event { uint16_t type, code; uint32_t value; };
+static vio_dev_t *bell;
+static vio_queue_t *bell_eventq, *bell_statusq;
+static struct bell_event *bell_events, *bell_status;
+static uint64_t bell_events_pa, bell_status_pa;
+static unsigned bell_status_next;
+static uint64_t bell_rung, bell_heard;
+static int scgpu_reply_chan;                    /* (its address: what a waiting thread sleeps on) */
+
+/* After every interrupt of the doorbell: the app rang (each event a ring); the waiter wakes. */
+static void
+bell_service(__unused void *arg, __unused uint8_t isr)
+{
+	uint32_t len;
+	void *cookie;
+	bool any = false;
+
+	while ((cookie = vio_queue_get(bell_eventq, &len)) != NULL) {
+		uintptr_t i = (uintptr_t)cookie - 1;
+		struct vio_sg sg = { bell_events_pa + i * sizeof(struct bell_event), sizeof(struct bell_event), true };
+
+		vio_queue_add(bell_eventq, &sg, 1, cookie);
+		any = true;
+		bell_heard++;
+	}
+	if (any) {
+		vio_queue_kick(bell_eventq);
+		thread_wakeup((event_t)&scgpu_reply_chan);
+	}
+}
+
+/* From the virtio-input driver, with the device initialized: the doorbell is ours. */
+bool
+hakios_scgpu_bell_attach(vio_dev_t *v)
+{
+	if (vio_queue_setup(v, 0, BELL_EVENTS, &bell_eventq) != 0 || vio_queue_setup(v, 1, BELL_STATUS, &bell_statusq) != 0 ||
+	    (bell_events = vio_dma_alloc(BELL_EVENTS * sizeof(struct bell_event), &bell_events_pa)) == NULL ||
+	    (bell_status = vio_dma_alloc(BELL_STATUS * sizeof(struct bell_event), &bell_status_pa)) == NULL) {
+		printf("vgpu3d: SCGPU: the doorbell could not be set up; polling\n");
+		vio_fail(v);
+		return false;
+	}
+	for (uintptr_t i = 0; i < vio_queue_size(bell_eventq); i++) {
+		struct vio_sg sg = { bell_events_pa + i * sizeof(struct bell_event), sizeof(struct bell_event), true };
+
+		vio_queue_add(bell_eventq, &sg, 1, (void *)(i + 1));
+	}
+	vio_intr_enable(v);
+	vio_driver_ok(v);
+	vio_queue_kick(bell_eventq);
+	vio_service_start(v, bell_service, NULL, 4 * NSEC_PER_MSEC);
+	bell = v;
+	printf("vgpu3d: SCGPU: the doorbell is %s (%s)\n", vio_name(v), vio_intr_active(v) ? "interrupts" : "POLLED");
+	return true;
+}
+
+/* Ring the app (under scgpu_mailbox_lock): a status event, which it reads from its socket. */
+static void
+bell_ring(void)
+{
+	uint32_t len;
+
+	while (vio_queue_get(bell_statusq, &len) != NULL) {
+	}
+	if (vio_queue_num_free(bell_statusq) == 0) {
+		return;                         /* rings not yet taken: it is awake anyway */
+	}
+	unsigned i = bell_status_next++ % BELL_STATUS;
+	struct vio_sg sg = { bell_status_pa + i * sizeof(struct bell_event), sizeof(struct bell_event), false };
+
+	/* EV_LED: crosvm writes every status event but EV_MSC into the socket */
+	bell_status[i] = (struct bell_event){ 0x11, 0, (uint32_t)bell_rung };
+	vio_queue_add(bell_statusq, &sg, 1, (void *)(uintptr_t)(i + 1));
+	vio_queue_kick(bell_statusq);
+	bell_rung++;
+}
 
 /* One command through the mailbox, as hakios_vgpu_ctrl puts one on the control queue. */
 static int
@@ -131,8 +218,13 @@ scgpu_ctrl(const void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len)
 	scgpu->resp_max = resp_len;
 	seq = scgpu->req_seq + 1;
 	__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->req_seq, seq, __ATOMIC_RELEASE);
+	/* the app asleep on the doorbell is rung (a full barrier first: the other half of its host_sleeping) */
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
+	if (bell != NULL && __atomic_load_n((uint32_t *)(uintptr_t)&scgpu->host_sleeping, __ATOMIC_RELAXED)) {
+		bell_ring();
+	}
 	now = mach_absolute_time();
-	nanoseconds_to_absolutetime(SCGPU_SPIN_US * NSEC_PER_USEC, &spin_until);
+	nanoseconds_to_absolutetime((bell != NULL ? SCGPU_BELL_SPIN_US : SCGPU_SPIN_US) * NSEC_PER_USEC, &spin_until);
 	nanoseconds_to_absolutetime(SCGPU_TIMEOUT_S * NSEC_PER_SEC, &give_up);
 	spin_until += now;
 	give_up += now;
@@ -143,8 +235,30 @@ scgpu_ctrl(const void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len)
 			err = ETIMEDOUT;
 			break;
 		}
-		if (now > spin_until) {
+		if (now <= spin_until) {
+			continue;
+		}
+		if (bell == NULL) {
 			delay_for_interval(SCGPU_NAP_US, NSEC_PER_USEC);
+			continue;
+		}
+		/* asleep until the app rings: say so, then look once more, so one of the two sees the other */
+		uint64_t deadline;
+		clock_interval_to_deadline(SCGPU_BELL_SAFETY_MS, kMillisecondScale, &deadline);
+		assert_wait_deadline((event_t)&scgpu_reply_chan, THREAD_UNINT, deadline);
+		__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->guest_waiting, 1, __ATOMIC_RELAXED);
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
+		if (__atomic_load_n((uint32_t *)(uintptr_t)resp_seq, __ATOMIC_ACQUIRE) == seq) {
+			clear_wait(current_thread(), THREAD_AWAKENED);
+		} else {
+			thread_block(THREAD_CONTINUE_NULL);
+		}
+		__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->guest_waiting, 0, __ATOMIC_RELAXED);
+		/* (a ring that found no free status descriptor: the app may still be asleep on it) */
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
+		if (__atomic_load_n((uint32_t *)(uintptr_t)&scgpu->host_sleeping, __ATOMIC_RELAXED) &&
+		    __atomic_load_n((uint32_t *)(uintptr_t)resp_seq, __ATOMIC_ACQUIRE) != seq) {
+			bell_ring();
 		}
 	}
 	if (!err && scgpu->status != 0) {

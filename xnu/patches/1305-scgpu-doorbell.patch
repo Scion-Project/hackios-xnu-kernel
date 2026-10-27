@@ -1,0 +1,25 @@
+diff --git a/bsd/dev/hakios.virtio_input.c b/bsd/dev/hakios.virtio_input.c
+--- a/bsd/dev/hakios.virtio_input.c
++++ b/bsd/dev/hakios.virtio_input.c
+@@ -32,6 +32,9 @@
+ #include <vm/vm_kern.h>
+ #if __has_include(<sys/hakios.virtio.h>)
+ #include <sys/hakios.virtio.h>
++#include <sys/hakios.scgpu.h>
++
++extern bool hakios_scgpu_bell_attach(vio_dev_t *v);       /* bsd/dev/hakios.vgpu3d_xnu.c */
+ #define INPUT_VIO               1
+ #endif
+ 
+@@ -550,6 +553,11 @@
+ 	size = size < sizeof(name) - 1 ? size : sizeof(name) - 1;
+ 	vio_cfg_read(v, CFG_UNION, name, size);
+ 	name[size] = 0;
++	/* SCGPU's doorbell, not a touch screen: the SCGPU code takes it (bsd/dev/hakios.vgpu3d_xnu.c) */
++	if (strcmp(name, SCGPU_BELL_NAME) == 0) {
++		hakios_scgpu_bell_attach(v);
++		return false;
++	}
+ 	input_defaults(d);
+ 	vio_axis(v, ABS_X, &d->ax);
+ 	vio_axis(v, ABS_Y, &d->ay);

@@ -21,7 +21,15 @@
  *
  * One command at a time, as on a control queue: the guest writes the command and req_len, then bumps
  * req_seq (a release); the app sees it (an acquire), runs it, writes the reply, resp_len and status,
- * then sets resp_seq = req_seq (a release). Both sides poll for now.
+ * then sets resp_seq = req_seq (a release).
+ *
+ * Waiting: each side spins a little, then sleeps on a doorbell -- a virtio-input device named
+ * "scion-scgpu" (SCGPU_BELL_NAME) whose socket is the app's. The guest rings by putting an event on
+ * its status queue (crosvm writes it into the socket), the app by writing one into the socket (crosvm
+ * puts it on the event queue: an interrupt). A side rings only when the other has said it sleeps
+ * (host_sleeping, guest_waiting), and says so before its last look at the sequence it waits for, with
+ * a full barrier on both sides, so one of the two always sees the other. Without the device (an older
+ * app) both sides poll as before.
  *
  * Commands are virtio-gpu's (virtio 1.2, 5.7.6), with these meanings at the app:
  *   GET_CAPSET_INFO, GET_CAPSET            gfxstream's capsets (stream_renderer_get_cap_set/fill_caps)
@@ -58,6 +66,9 @@
  */
 #define SCGPU_G_PRESENTING      (1u << 0)
 
+/* the doorbell's virtio-input device (its name, ID_NAME) */
+#define SCGPU_BELL_NAME         "scion-scgpu"
+
 /* SCGPU_CMD_TRANSFER: outside virtio-gpu's command numbers */
 #define SCGPU_CMD_TRANSFER      0x0f00u
 
@@ -77,7 +88,9 @@ struct scgpu_header {
 	/* counters, for the logs of both sides */
 	uint64_t commands, presents, host_busy_ns;
 	uint32_t guest_flags;           /* SCGPU_G_*, set by the guest */
-	uint32_t reserved[15];
+	uint32_t host_sleeping;         /* the app waits for the doorbell, not polling: ring it */
+	uint32_t guest_waiting;         /* the guest waits for a reply asleep: ring it */
+	uint32_t reserved[13];
 };
 
 /* struct virtio_gpu_transfer_host_3d's twin, with the staging buffer instead of the backing */
