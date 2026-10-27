@@ -41,6 +41,7 @@ gfx_frame_end(struct gfx *c)
 		c->r_trips = c->round_trips; c->r_out = c->bytes_out; c->r_in = c->bytes_in;
 		c->r_down = c->us_download; c->r_up = c->us_upload; c->r_down_bytes = c->download_bytes;
 		c->r_up_bytes = c->upload_bytes;
+		c->r_presents = c->presents;
 		c->us_write = c->us_read = 0;
 		return;
 	}
@@ -50,19 +51,22 @@ gfx_frame_end(struct gfx *c)
 	uint64_t f = c->frames - c->report_frames, span = now - c->report_at;
 	if (f) {
 		fprintf(stderr, "gfx: %llu frames in %llu ms (%.1f a second); a frame: %llu round trips, %llu KB out, %llu KB in;"
-		    " %llu us writing, %llu us waiting for replies, %llu us copying back (%llu KB), %llu us uploading (%llu KB)\n",
+		    " %llu us writing, %llu us waiting for replies, %llu us copying back (%llu KB), %llu us uploading (%llu KB);"
+		    " %llu shown by the host\n",
 		    (unsigned long long)f, (unsigned long long)(span / 1000), f * 1e6 / (double)span,
 		    (unsigned long long)((c->round_trips - c->r_trips) / f), (unsigned long long)((c->bytes_out - c->r_out) / f / 1024),
 		    (unsigned long long)((c->bytes_in - c->r_in) / f / 1024), (unsigned long long)(c->us_write / f),
 		    (unsigned long long)(c->us_read / f), (unsigned long long)((c->us_download - c->r_down) / f),
 		    (unsigned long long)((c->download_bytes - c->r_down_bytes) / f / 1024),
-		    (unsigned long long)((c->us_upload - c->r_up) / f), (unsigned long long)((c->upload_bytes - c->r_up_bytes) / f / 1024));
+		    (unsigned long long)((c->us_upload - c->r_up) / f), (unsigned long long)((c->upload_bytes - c->r_up_bytes) / f / 1024),
+		    (unsigned long long)(c->presents - c->r_presents));
 	}
 	c->report_at = now;
 	c->report_frames = c->frames;
 	c->r_trips = c->round_trips; c->r_out = c->bytes_out; c->r_in = c->bytes_in;
 	c->r_down = c->us_download; c->r_up = c->us_upload; c->r_down_bytes = c->download_bytes;
 	c->r_up_bytes = c->upload_bytes;
+	c->r_presents = c->presents;
 	c->us_write = c->us_read = 0;
 }
 

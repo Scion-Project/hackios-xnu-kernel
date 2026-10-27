@@ -1,0 +1,50 @@
+diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+--- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
++++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+@@ -39,6 +39,9 @@
+ #include <IOKit/IOBufferMemoryDescriptor.h>
+ 
+ #include "MiniIOSurface.h"
++
++extern "C" void hakios_vgpu3d_display_surface(uint32_t sid);       /* bsd/dev/hakios.vgpu3d_xnu.c */
++extern "C" bool hakios_vgpu3d_host_owns(uint32_t sid);
+ 
+ extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
+ 
+@@ -1121,6 +1124,10 @@
+ 		uint32_t sid = swapWord(swap, SWAP_SURFACE(layer));
+ 
+ 		fSwapSurfaces[slot][layer] = sid != 0 ? MiniIOSurfaceCopy(sid) : NULL;
++		if (sid != 0) {
++			/* (SCGPU: a frame drawn into this surface is shown by the host itself: bsd/dev/hakios.vgpu3d_xnu.c) */
++			hakios_vgpu3d_display_surface(sid);
++		}
+ 	}
+ 	fSwapsWaiting++;
+ 	IOLockWakeup(fSwapLock, fSwap, true);
+@@ -1168,6 +1175,10 @@
+ 	bool report;
+ 
+ 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
++		/* (a surface the host shows itself is never waited for, nor drawn here: see below) */
++		if (hakios_vgpu3d_host_owns(swapWord(swap, SWAP_SURFACE(layer)))) {
++			continue;
++		}
+ 		if (surfaces[layer] != NULL && !MiniIOSurfaceDrawn(surfaces[layer], SWAP_GPU_MS)) {
+ 			IOLog("MiniIOMobileFramebuffer: swap %u: the GPU is not done with surface %u after %u ms; shown as it is\n",
+ 			    swapWord(swap, SWAP_ID), swapWord(swap, SWAP_SURFACE(layer)), SWAP_GPU_MS);
+@@ -1273,6 +1284,14 @@
+ 				fGraphics = true;
+ 				PE_initialize_console(NULL, kPEGraphicsMode);
+ 			}
++			/*
++			 * SCGPU: the frame in this surface went from the GPU straight to the app's window
++			 * (rcFBPost, bsd/dev/hakios.vgpu3d_xnu.c); its memory here is stale, and copying it
++			 * to the panel would only cost the milliseconds the next swap waits for.
++			 */
++			if (hakios_vgpu3d_host_owns(sid)) {
++				continue;
++			}
+ 			drawLayer(s, src, dst);
+ 			if (layer == 0) {
+ 				recorded = s;   /* (recorded once the frame is in the panel's memory: see below) */

@@ -230,6 +230,36 @@ gfx_forget_shared(struct gfx *c, uint64_t key)
 	}
 }
 
+int
+gfx_present_shared(struct gfx *c, uint64_t key)
+{
+	struct gfx_shared *s = shared_of_key(c, key);
+	struct gfx_tex *t;
+
+	if (s == NULL || c->t.host_shows == NULL || c->err) {
+		return 0;
+	}
+	if (!s->host_shown) {
+		/* (asked every frame until yes: the display names its surfaces at its first swap of each) */
+		if (c->t.host_shows(c->t.arg, (uint32_t)key) != 1) {
+			return 0;
+		}
+		s->host_shown = 1;
+		fprintf(stderr, "gfx: the host shows surface %llu (colour buffer %u) itself from now on\n",
+		    (unsigned long long)key, s->res);
+	}
+	gfxe_rcFBPost(c, s->res);
+	gfx_flush(c);
+	s->dirty = 0;
+	s->gpu_owned = 1;
+	t = tex_of(c, s->texture, 0);
+	if (t != NULL) {
+		t->x0 = t->x1 = 0;              /* nothing left to copy back */
+	}
+	c->presents++;
+	return 1;
+}
+
 /* Copy back the damaged rows of every shared texture drawn into since the last time. */
 void
 gfx_sync_shared(struct gfx *c)

@@ -26,6 +26,7 @@ struct vgpu3d_ioc_xfer {
 #define VGPU3D_IOC_UNREF        _IOW('G', 2, uint32_t)
 #define VGPU3D_IOC_UPLOAD       _IOW('G', 3, struct vgpu3d_ioc_xfer)
 #define VGPU3D_IOC_DOWNLOAD     _IOW('G', 4, struct vgpu3d_ioc_xfer)
+#define VGPU3D_IOC_HOST_SHOWS   _IOWR('G', 5, uint32_t)
 
 static int
 dev_write(void *arg, const void *buf, size_t n)
@@ -98,6 +99,14 @@ dev_res_download(void *arg, uint32_t res, uint32_t x, uint32_t y, uint32_t w, ui
 	return ioctl((int)(intptr_t)arg, VGPU3D_IOC_DOWNLOAD, &t) ? errno : 0;
 }
 
+/* 1: the host (SCGPU) shows this surface itself; 0: not, or a kernel without the question */
+static int
+dev_host_shows(void *arg, uint32_t key)
+{
+	uint32_t v = key;
+	return ioctl((int)(intptr_t)arg, VGPU3D_IOC_HOST_SHOWS, &v) ? 0 : (int)v;
+}
+
 int
 gfx_dev_open(struct gfx_transport *t)
 {
@@ -113,6 +122,7 @@ gfx_dev_open(struct gfx_transport *t)
 	t->res_unref = dev_res_unref;
 	t->res_upload = dev_res_upload;
 	t->res_download = dev_res_download;
+	t->host_shows = dev_host_shows;
 	t->flags_sent = 1;              /* the kernel's vgpu3d_open sends it */
 	return 0;
 }

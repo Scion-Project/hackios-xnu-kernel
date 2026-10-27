@@ -181,8 +181,13 @@ host_init(uint32_t flags)
 {
 	const char *dir = getenv("GFXSTREAM_LIB");
 	char path[1024];
+#ifdef __APPLE__
 	snprintf(path, sizeof(path), "%s/libgfxstream_backend.dylib",
 	    dir ? dir : "/Users/dylan/Library/Android/sdk/emulator/lib64");
+#else
+	/* Android (build-android.sh): next to the program unless GFXSTREAM_LIB says otherwise */
+	snprintf(path, sizeof(path), "%s/libgfxstream_backend.so", dir ? dir : ".");
+#endif
 	void *h = dlopen(path, RTLD_NOW);
 	if (h == NULL) {
 		fprintf(stderr, "host: %s\n", dlerror());

@@ -113,3 +113,12 @@ hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t surface)
 	image_target(GL_TEXTURE_2D, (void *)(uintptr_t)surface);
 	return glGetError() == 0;
 }
+
+/* Mesa draws in this process: there is no host to show anything. */
+int
+hakios_gl_present(struct hakios_gl *gl, uint32_t surface)
+{
+	(void)gl;
+	(void)surface;
+	return 0;
+}

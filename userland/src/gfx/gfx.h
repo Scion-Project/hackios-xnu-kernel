@@ -52,6 +52,12 @@ struct gfx_transport {
 	int (*res_download)(void *arg, uint32_t res, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
 	    void *dst, uint32_t stride);
 	/*
+	 * Optional: 1 when the host shows a frame in the memory named `key` (an IOSurface ID) itself,
+	 * after rcFBPost of its colour buffer, so that it need not be copied back (SCGPU: the Scion app
+	 * runs gfxstream and presents in its own window; /dev/vgpu3d says which surfaces are the display's).
+	 */
+	int (*host_shows)(void *arg, uint32_t key);
+	/*
 	 * The render thread's first word (the client flags) has been sent already: /dev/vgpu3d sends it
 	 * when it connects the pipe. A second one would be read as the start of a packet, and the
 	 * stream would never line up again (the first reply never comes).
@@ -69,6 +75,7 @@ struct gfx_shared {
 	int gpu_owned;                  /* the memory holds what the colour buffer holds (copied back, not written since) */
 	void *user;                     /* the caller's handle (an IOSurfaceRef), for seed_of */
 	uint32_t seed;                  /* the caller's change count of the memory when it was last uploaded */
+	int host_shown;                 /* the host shows it (transport host_shows): rcFBPost, no copy back */
 };
 #define GFX_MAX_SHARED  1024
 #define GFX_MAX_FBOS    64
@@ -126,9 +133,10 @@ struct gfx {
 	uint32_t (*seed_of)(void *user);
 	void (*release)(void *user);
 	uint64_t downloads, download_bytes, uploads, upload_bytes;
+	uint64_t presents;              /* frames the host showed itself (gfx_present_shared) */
 	/* time (us) in each part, and frame ends, for the report every few seconds (gfx_report) */
 	uint64_t us_write, us_read, us_download, us_upload, frames, report_at, report_frames;
-	uint64_t r_trips, r_out, r_in, r_down, r_up, r_down_bytes, r_up_bytes;
+	uint64_t r_trips, r_out, r_in, r_down, r_up, r_down_bytes, r_up_bytes, r_presents;
 	uint8_t *scratch;
 	size_t scratch_cap;
 };
@@ -178,5 +186,12 @@ uint64_t gfx_now_us(void);
 void gfx_finish(struct gfx *c);           /* glFinishRoundTrip, skipped when nothing was sent since the last */
 void gfx_frame_end(struct gfx *c);      /* counts, and every 5 s one line of where the time went */         /* (gfx_gl.c: a draw lands in the bound framebuffer) */
 void gfx_forget_shared(struct gfx *c, uint64_t key);
+/*
+ * The frame just drawn into the shared texture of `key`, shown by the host itself: rcFBPost of its
+ * colour buffer, in the stream after the frame's draws, and no copy back (the host's window has the
+ * picture, the memory need not). 1 when it was, 0 when the host does not show that memory (copy it
+ * back as before).
+ */
+int gfx_present_shared(struct gfx *c, uint64_t key);
 
 #endif

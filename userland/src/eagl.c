@@ -1069,7 +1069,7 @@ frame_end(struct eagl *e, bool finished)
 {
 	static unsigned unfollowed;
 	uint64_t before, waited, after;
-	unsigned copied = 0, in_place = 0;
+	unsigned copied = 0, in_place = 0, presented = 0;
 
 	clear_now(e);
 	before = now_us();
@@ -1077,10 +1077,15 @@ frame_end(struct eagl *e, bool finished)
 		if (e->images[i].target && e->images[i].drawn && e->images[i].mirror != 0) {
 			target_to_surface(e, &e->images[i]);    /* (the GPU's copy: before what follows sends it out) */
 			in_place++;
+			/* the display's surface, shown by the host itself: no copy back (hakios_gl_present) */
+			presented += hakios_gl_present(e->gl, IOSurfaceGetID(e->images[i].surface));
 			glFlush();                              /* (also after a glFinish: the copy is new since) */
 		}
 		if (e->images[i].target && e->images[i].drawn && e->images[i].shared) {
 			in_place++;
+			if (e->images[i].mirror == 0) {
+				presented += hakios_gl_present(e->gl, IOSurfaceGetID(e->images[i].surface));
+			}
 		}
 	}
 	if (in_place != 0 && !finished && wait_for_frames) {
@@ -1159,10 +1164,10 @@ frame_end(struct eagl *e, bool finished)
 	}
 	if (e->frames <= 40 || e->frames % 20 == 0) {
 		say("hakios-gl: frame %u: %u GL calls, %u draws, %u triangles, %u clears; %u textures refilled from IOSurfaces "
-		    "(%llu KB); %u picture%s copied out, %u drawn in place; %llu us (%llu handing on, %llu waiting, %llu copying "
-		    "out), %llu before it for the IOSurfaces\n", e->frames, e->calls, e->draws, e->triangles, e->clears, e->uploads,
-		    e->upload_bytes >> 10, copied, copied == 1 ? "" : "s", in_place, after - e->began, e->flushing, waited - before,
-		    after - waited, e->attaching);
+		    "(%llu KB); %u picture%s copied out, %u drawn in place, %u shown by the host; %llu us (%llu handing on, %llu "
+		    "waiting, %llu copying out), %llu before it for the IOSurfaces\n", e->frames, e->calls, e->draws, e->triangles,
+		    e->clears, e->uploads, e->upload_bytes >> 10, copied, copied == 1 ? "" : "s", in_place, presented,
+		    after - e->began, e->flushing, waited - before, after - waited, e->attaching);
 	}
 	if (e->frames == 30 || e->frames % 200 == 0) {
 		summary(e);

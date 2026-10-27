@@ -703,6 +703,21 @@ void avfboot_main(uint64_t fdt_pa)
 		uart_kv("+", sccam.size);
 		uart_putc('\n');
 	}
+	/*
+	 * Scion's GPU (SCGPU, xnu/files/bsd/sys/hakios.scgpu.h): a third slice the app maps, a mailbox and a
+	 * pool, below the others; the kernel finds it by scgpu.addr= itself, here it only stays out of the
+	 * kernel's memory.
+	 */
+	uint64_t scgpu_pa = arg_num(m.bootargs, "scgpu.addr="), scgpu_size = arg_num(m.bootargs, "scgpu.size=");
+	if (scgpu_pa || scgpu_size) {
+		if (scgpu_pa < m.ram_lo || scgpu_pa + scgpu_size > m.ram_hi || (scgpu_pa & 0xfff) || scgpu_size < 0x40000)
+			die("scgpu.addr/size do not describe a region in RAM");
+		if (scgpu_pa < win_end)
+			win_end = scgpu_pa & ~(BASE_ALIGN - 1);
+		uart_kv("avfboot: scgpu ", scgpu_pa);
+		uart_kv("+", scgpu_size);
+		uart_putc('\n');
+	}
 	if (win_end <= phys_base)
 		die("not enough RAM");
 	uint64_t win_size = win_end - phys_base;

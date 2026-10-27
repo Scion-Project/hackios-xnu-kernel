@@ -13,6 +13,16 @@
  *   VGPU3D_IOC_UPLOAD    a rectangle of user memory (any stride) into it, then to the host
  *   VGPU3D_IOC_DOWNLOAD  a rectangle from the host, then out to user memory
  *   VGPU3D_IOC_UNREF     a resource away (all of them go with the last close)
+ *   VGPU3D_IOC_HOST_SHOWS  whether the host shows a surface itself: in an IOSurface ID, out 1 when
+ *                        the host is SCGPU's (below) and the display has had that surface in a swap
+ *                        (hakios_vgpu3d_display_surface, from MiniIOMobileFramebuffer). The gfx library
+ *                        then ends such a frame with rcFBPost -- in the stream, after its draws -- instead
+ *                        of copying it back for the display to copy out again.
+ *
+ * With scgpu.addr= and scgpu.size= (sys/hakios.scgpu.h) the "device" is the Scion app, which runs
+ * gfxstream itself: the same commands go through a mailbox in a region of RAM the app maps too, the
+ * pipe's buffer comes from that region's pool, and colour buffers get no backing of their own --
+ * UPLOAD and DOWNLOAD pass through a staging buffer of the pool instead (SCGPU_CMD_TRANSFER).
  *
  * The user-space side is the gfx library (userland/src/gfx, gfx_dev.c).
  *
@@ -37,10 +47,13 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <vm/vm_kern.h>
+#include <vm/memory_types.h>
+#include <sys/hakios.scgpu.h>
 #include <sys/hakios.vgpu.h>
 #include <sys/hakios.vgpu3d.h>
 
 extern uint64_t kvtophys(vm_offset_t va);
+extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 
 struct vgpu3d_ioc_create {
 	uint32_t width, height, format, bind;   /* format: VIRGL_FORMAT_*, 0 = B8G8R8A8 */
@@ -55,6 +68,7 @@ struct vgpu3d_ioc_xfer {
 #define VGPU3D_IOC_UNREF        _IOW('G', 2, uint32_t)
 #define VGPU3D_IOC_UPLOAD       _IOW('G', 3, struct vgpu3d_ioc_xfer)
 #define VGPU3D_IOC_DOWNLOAD     _IOW('G', 4, struct vgpu3d_ioc_xfer)
+#define VGPU3D_IOC_HOST_SHOWS   _IOWR('G', 5, uint32_t)
 
 #define MAX_OPENS               32
 #define MAX_RES                 1024            /* CoreAnimation shares hundreds of IOSurfaces */
@@ -83,11 +97,150 @@ static uint64_t vgpu3d_features;
 static uint32_t vgpu3d_gles = 0xffffffff;       /* the context type: unknown yet */
 static uint8_t *attach_scratch;                 /* ATTACH_BACKING commands (under vgpu3d_opens_lock) */
 
+/* ---- SCGPU: the Scion app's GPU (sys/hakios.scgpu.h) ------------------------------------ */
+
+#define SCGPU_CHUNK             0x10000u        /* the pool's unit: 64 KiB */
+#define SCGPU_MAX_CHUNKS        8192u           /* 512 MiB of pool at most */
+#define SCGPU_SPIN_US           300             /* a reply is waited for by spinning this long, */
+#define SCGPU_NAP_US            20              /* then in naps of this, */
+#define SCGPU_TIMEOUT_S         10              /* until this (a first shader compile can take a while) */
+
+static volatile struct scgpu_header *scgpu;     /* NULL: the virtio-gpu device, as before */
+static uint8_t *scgpu_va;
+static uint64_t scgpu_pa, scgpu_size;
+static uint32_t scgpu_chunks;
+static uint8_t scgpu_used[SCGPU_MAX_CHUNKS / 8];
+static LCK_MTX_DECLARE(scgpu_mailbox_lock, &vgpu3d_lck_grp);
+static LCK_MTX_DECLARE(scgpu_pool_lock, &vgpu3d_lck_grp);
+
+/* One command through the mailbox, as hakios_vgpu_ctrl puts one on the control queue. */
+static int
+scgpu_ctrl(const void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len)
+{
+	volatile uint32_t *resp_seq = &scgpu->resp_seq;
+	uint64_t now, spin_until, give_up;
+	uint32_t seq;
+	int err = 0;
+
+	if (cmd_len > SCGPU_CMD_MAX || resp_len > SCGPU_RESP_MAX) {
+		return E2BIG;
+	}
+	lck_mtx_lock(&scgpu_mailbox_lock);
+	memcpy(scgpu_va + SCGPU_CMD_OFF, cmd, cmd_len);
+	scgpu->req_len = cmd_len;
+	scgpu->resp_max = resp_len;
+	seq = scgpu->req_seq + 1;
+	__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->req_seq, seq, __ATOMIC_RELEASE);
+	now = mach_absolute_time();
+	nanoseconds_to_absolutetime(SCGPU_SPIN_US * NSEC_PER_USEC, &spin_until);
+	nanoseconds_to_absolutetime(SCGPU_TIMEOUT_S * NSEC_PER_SEC, &give_up);
+	spin_until += now;
+	give_up += now;
+	while (__atomic_load_n((uint32_t *)(uintptr_t)resp_seq, __ATOMIC_ACQUIRE) != seq) {
+		now = mach_absolute_time();
+		if (now > give_up) {
+			printf("vgpu3d: SCGPU: no reply to command %#x in %d s\n", *(const uint32_t *)cmd, SCGPU_TIMEOUT_S);
+			err = ETIMEDOUT;
+			break;
+		}
+		if (now > spin_until) {
+			delay_for_interval(SCGPU_NAP_US, NSEC_PER_USEC);
+		}
+	}
+	if (!err && scgpu->status != 0) {
+		err = EIO;
+	}
+	if (!err && resp_len) {
+		uint32_t n = scgpu->resp_len < resp_len ? scgpu->resp_len : resp_len;
+		memcpy(resp, scgpu_va + SCGPU_RESP_OFF, n);
+		if (n < resp_len) {
+			bzero((uint8_t *)resp + n, resp_len - n);
+		}
+	}
+	lck_mtx_unlock(&scgpu_mailbox_lock);
+	return err;
+}
+
+/* n bytes of the pool, contiguous: the address here, and *pa the guest's for the app. */
+static void *
+scgpu_alloc(size_t size, uint64_t *pa)
+{
+	uint32_t n = (uint32_t)((size + SCGPU_CHUNK - 1) / SCGPU_CHUNK), run = 0;
+
+	lck_mtx_lock(&scgpu_pool_lock);
+	for (uint32_t i = 0; n && i < scgpu_chunks; i++) {
+		if (scgpu_used[i / 8] & (1u << (i % 8))) {
+			run = 0;
+			continue;
+		}
+		if (++run == n) {
+			uint32_t first = i + 1 - n;
+			for (uint32_t k = first; k <= i; k++) {
+				scgpu_used[k / 8] |= (uint8_t)(1u << (k % 8));
+			}
+			lck_mtx_unlock(&scgpu_pool_lock);
+			uint64_t off = SCGPU_POOL_OFF + (uint64_t)first * SCGPU_CHUNK;
+			*pa = scgpu_pa + off;
+			return scgpu_va + off;
+		}
+	}
+	lck_mtx_unlock(&scgpu_pool_lock);
+	printf("vgpu3d: SCGPU: the pool has no %zu bytes in one piece\n", size);
+	return NULL;
+}
+
+static void
+scgpu_free(void *va, size_t size)
+{
+	uint32_t first = (uint32_t)(((uint8_t *)va - scgpu_va - SCGPU_POOL_OFF) / SCGPU_CHUNK);
+	uint32_t n = (uint32_t)((size + SCGPU_CHUNK - 1) / SCGPU_CHUNK);
+
+	lck_mtx_lock(&scgpu_pool_lock);
+	for (uint32_t k = first; k < first + n && k < scgpu_chunks; k++) {
+		scgpu_used[k / 8] &= (uint8_t)~(1u << (k % 8));
+	}
+	lck_mtx_unlock(&scgpu_pool_lock);
+}
+
+/* scgpu.addr= scgpu.size=: the app's region, mapped as ordinary (cached) memory. */
+static void
+scgpu_attach(void)
+{
+	uint64_t pa = 0, size = 0;
+
+	if (!PE_parse_boot_argn("scgpu.addr", &pa, sizeof(pa)) || pa == 0) {
+		return;
+	}
+	(void)PE_parse_boot_argn("scgpu.size", &size, sizeof(size));
+	if ((pa & PAGE_MASK) || size < SCGPU_POOL_OFF + SCGPU_CHUNK) {
+		printf("vgpu3d: scgpu.addr=%#llx scgpu.size=%#llx: not a region\n", pa, size);
+		return;
+	}
+	scgpu_va = (uint8_t *)ml_io_map_unmappable((vm_offset_t)pa, (vm_size_t)round_page(size), VM_WIMG_DEFAULT);
+	scgpu = (volatile struct scgpu_header *)scgpu_va;
+	if (scgpu == NULL || scgpu->magic != SCGPU_MAGIC || scgpu->version != SCGPU_VERSION) {
+		printf("vgpu3d: SCGPU at %#llx: no header from the app (magic %#x)\n", pa, scgpu ? scgpu->magic : 0);
+		scgpu = NULL;
+		return;
+	}
+	scgpu_pa = pa;
+	scgpu_size = size;
+	scgpu_chunks = (uint32_t)((size - SCGPU_POOL_OFF) / SCGPU_CHUNK);
+	if (scgpu_chunks > SCGPU_MAX_CHUNKS) {
+		scgpu_chunks = SCGPU_MAX_CHUNKS;
+	}
+	printf("vgpu3d: SCGPU: the app's GPU at %#llx (%llu MiB, a pool of %u KiB), %s\n", pa, size >> 20,
+	    scgpu_chunks * (SCGPU_CHUNK >> 10), scgpu->flags & SCGPU_F_HOST_READY ? "ready" : "NOT READY");
+}
+
 /* ---- the ops ---------------------------------------------------------------------------- */
 
 static int
 xnu_ctrl(__unused void *arg, const void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len)
 {
+	if (scgpu != NULL) {
+		return scgpu_ctrl(cmd, cmd_len, resp, resp_len);
+	}
 	return hakios_vgpu_ctrl(cmd, cmd_len, resp, resp_len);
 }
 
@@ -95,12 +248,30 @@ static void *
 xnu_dma_alloc(__unused void *arg, size_t size, uint64_t *pa)
 {
 	vm_offset_t va = 0;
+	if (scgpu != NULL) {
+		void *p = scgpu_alloc(size, pa);
+		if (p != NULL) {
+			bzero(p, size);
+		}
+		return p;
+	}
 	if (kmem_alloc_contig(kernel_map, &va, round_page(size), PAGE_MASK, 0, 0,
 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
 		return NULL;
 	}
 	*pa = kvtophys(va);
 	return (void *)va;
+}
+
+/* What xnu_dma_alloc gave. */
+static void
+xnu_dma_free(void *va, size_t size)
+{
+	if (scgpu != NULL) {
+		scgpu_free(va, size);
+	} else {
+		kmem_free(kernel_map, (vm_offset_t)va, round_page(size));
+	}
 }
 
 static void
@@ -134,13 +305,22 @@ vgpu3d_probe(void)
 		return vgpu3d_gles == 0xfffffffe ? ENODEV : 0;
 	}
 	vgpu3d_gles = 0xfffffffe;
-	if (hakios_vgpu_ctrl(&get, sizeof(get), &info, sizeof(info)) != 0) {
+	if (scgpu != NULL) {
+		/* the app's renderer: its features and capsets are in the header */
+		if (!(scgpu->flags & SCGPU_F_HOST_READY)) {
+			printf("vgpu3d: SCGPU: the app's renderer is not up\n");
+			return ENODEV;
+		}
+		vgpu3d_features = (uint64_t)scgpu->features_hi << 32 | scgpu->features_lo;
+	} else if (hakios_vgpu_ctrl(&get, sizeof(get), &info, sizeof(info)) != 0) {
 		printf("vgpu3d: no virtio-gpu device (does the VM have a GpuConfig?)\n");
 		return ENODEV;
+	} else {
+		vgpu3d_features = hakios_vgpu_features();
 	}
-	vgpu3d_features = hakios_vgpu_features();
 	q.ops = xnu_ops;
-	if (vgpu3d_query(&q, vgpu3d_features, VGPU3D_PROBE_CAPSETS) != 0) {
+	if (vgpu3d_query(&q, vgpu3d_features, scgpu != NULL && scgpu->num_capsets ? scgpu->num_capsets :
+	    VGPU3D_PROBE_CAPSETS) != 0) {
 		return ENODEV;
 	}
 	vgpu3d_gles = vgpu3d_has_capset(&q, VIRTIO_GPU_CAPSET_GFXSTREAM_GLES) ? VIRTIO_GPU_CAPSET_GFXSTREAM_GLES : 0;
@@ -167,8 +347,150 @@ res_free(struct vopen *o, struct res *r)
 {
 	vgpu3d_resource_unref(&o->g, r->id);
 	o->g.err = 0;
-	kmem_free(kernel_map, r->va, r->size);
+	if (r->va) {
+		kmem_free(kernel_map, r->va, r->size);
+	}
 	bzero(r, sizeof(*r));
+}
+
+/*
+ * SCGPU: a resource with no backing of its own (ATTACH_BACKING with no entries); its transfers go
+ * through the pool (scgpu_xfer).
+ */
+static int
+scgpu_res_create(struct vopen *o, struct res *r, struct vgpu3d_ioc_create *c)
+{
+	int err;
+
+	r->id = o->next_id++;
+	r->width = c->width;
+	r->height = c->height;
+	lck_mtx_lock(&vgpu3d_opens_lock);
+	err = vgpu3d_resource_create(&o->g, r->id, c->width, c->height,
+	    c->format ? c->format : VIRGL_FORMAT_B8G8R8A8_UNORM,
+	    c->bind ? c->bind : VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SAMPLER_VIEW, NULL, 0, attach_scratch,
+	    (uint32_t)(sizeof(struct virtio_gpu_resource_attach_backing) + MAX_ENTRIES * sizeof(struct virtio_gpu_mem_entry)));
+	lck_mtx_unlock(&vgpu3d_opens_lock);
+	if (err) {
+		o->g.err = 0;
+		bzero(r, sizeof(*r));
+		return EIO;
+	}
+	c->res = r->id;
+	return 0;
+}
+
+/* SCGPU: a rectangle between user memory and the host, through a staging buffer of the pool. */
+static int
+scgpu_xfer(struct vopen *o, struct res *r, struct vgpu3d_ioc_xfer *x, bool upload)
+{
+	size_t row = (size_t)x->w * 4, pitch = (size_t)r->width * 4;
+	size_t len = (size_t)(x->h - 1) * pitch + row;
+	struct scgpu_transfer t;
+	struct virtio_gpu_ctrl_hdr reply;
+	uint64_t pa;
+	uint8_t *stage = scgpu_alloc(len, &pa);
+	int err = 0;
+
+	if (stage == NULL) {
+		return ENOMEM;
+	}
+	if (upload) {
+		for (uint32_t y = 0; y < x->h && !err; y++) {
+			err = copyin((user_addr_t)(x->addr + (uint64_t)y * x->stride), stage + y * pitch, row);
+		}
+	}
+	if (!err) {
+		bzero(&t, sizeof(t));
+		t.type = SCGPU_CMD_TRANSFER;
+		t.ctx_id = o->g.ctx_id;
+		t.resource_id = r->id;
+		t.to_host = upload;
+		t.x = x->x;
+		t.y = x->y;
+		t.w = x->w;
+		t.h = x->h;
+		t.offset = (uint64_t)x->y * pitch + (uint64_t)x->x * 4;
+		t.staging = pa;
+		t.staging_len = len;
+		if (scgpu_ctrl(&t, sizeof(t), &reply, sizeof(reply)) || reply.type != VIRTIO_GPU_RESP_OK_NODATA) {
+			err = EIO;
+		}
+	}
+	if (!upload) {
+		for (uint32_t y = 0; y < x->h && !err; y++) {
+			err = copyout(stage + y * pitch, (user_addr_t)(x->addr + (uint64_t)y * x->stride), row);
+		}
+	}
+	scgpu_free(stage, len);
+	return err;
+}
+
+/*
+ * The surfaces the display has had in its swaps: CoreAnimation's frame buffers, two or three of them,
+ * the same ones every frame. The display's driver tells (any layer of any swap); the gfx library asks.
+ */
+#define DISPLAY_SURFACES        8
+static uint32_t display_surfaces[DISPLAY_SURFACES];
+static unsigned display_next;
+/*
+ * ... and of those, the ones the gfx library has been told the host shows: from then on its frames
+ * in them go out by rcFBPost and their memory here is stale, so the display's driver neither waits for
+ * them nor copies them to the panel (hakios_vgpu3d_host_owns).
+ */
+static uint32_t host_owned[DISPLAY_SURFACES];
+
+void
+hakios_vgpu3d_display_surface(uint32_t sid)
+{
+	for (unsigned i = 0; i < DISPLAY_SURFACES; i++) {
+		if (__atomic_load_n(&display_surfaces[i], __ATOMIC_RELAXED) == sid) {
+			return;
+		}
+	}
+	unsigned slot = __atomic_fetch_add(&display_next, 1, __ATOMIC_RELAXED) % DISPLAY_SURFACES;
+	__atomic_store_n(&display_surfaces[slot], sid, __ATOMIC_RELAXED);
+}
+
+static int
+host_shows(uint32_t *sid)
+{
+	uint32_t want = *sid;
+
+	*sid = 0;
+	for (unsigned i = 0; scgpu != NULL && want != 0 && i < DISPLAY_SURFACES; i++) {
+		if (__atomic_load_n(&display_surfaces[i], __ATOMIC_RELAXED) == want) {
+			*sid = 1;
+		}
+	}
+	if (*sid) {
+		bool known = false;
+		for (unsigned i = 0; i < DISPLAY_SURFACES && !known; i++) {
+			known = __atomic_load_n(&host_owned[i], __ATOMIC_RELAXED) == want;
+		}
+		if (!known) {
+			for (unsigned i = 0; i < DISPLAY_SURFACES; i++) {
+				uint32_t none = 0;
+				if (__atomic_compare_exchange_n(&host_owned[i], &none, want, false, __ATOMIC_RELAXED,
+				    __ATOMIC_RELAXED)) {
+					printf("vgpu3d: SCGPU: surface %u is shown by the host from now on\n", want);
+					break;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+bool
+hakios_vgpu3d_host_owns(uint32_t sid)
+{
+	for (unsigned i = 0; sid != 0 && i < DISPLAY_SURFACES; i++) {
+		if (__atomic_load_n(&host_owned[i], __ATOMIC_RELAXED) == sid) {
+			return true;
+		}
+	}
+	return false;
 }
 
 static int
@@ -186,6 +508,9 @@ res_create(struct vopen *o, struct vgpu3d_ioc_create *c)
 	}
 	if (r == NULL || c->width == 0 || c->height == 0 || c->width > 8192 || c->height > 8192) {
 		return r == NULL ? ENOSPC : EINVAL;
+	}
+	if (scgpu != NULL) {
+		return scgpu_res_create(o, r, c);
 	}
 	r->size = round_page((vm_size_t)c->width * c->height * 4);
 	if (kmem_alloc(kernel_map, &r->va, r->size, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
@@ -252,6 +577,9 @@ res_xfer(struct vopen *o, struct vgpu3d_ioc_xfer *x, bool upload)
 	if (x->w == 0 || x->h == 0 || x->x >= r->width || x->y >= r->height || x->w > r->width - x->x ||
 	    x->h > r->height - x->y || x->stride < x->w * 4) {
 		return EINVAL;
+	}
+	if (scgpu != NULL) {
+		return scgpu_xfer(o, r, x, upload);
 	}
 	size_t row = (size_t)x->w * 4, pitch = (size_t)r->width * 4;
 	uint64_t offset = (uint64_t)x->y * pitch + (uint64_t)x->x * 4;
@@ -358,7 +686,7 @@ vgpu3d_dev_close(dev_t dev, __unused int flags, __unused int devtype, __unused p
 	}
 	vgpu3d_close(&o->g);
 	if (o->g.pipe_va) {
-		kmem_free(kernel_map, (vm_offset_t)o->g.pipe_va, round_page(o->g.pipe_size));
+		xnu_dma_free(o->g.pipe_va, o->g.pipe_size);
 	}
 	lck_mtx_unlock(&o->lock);
 	lck_mtx_lock(&vgpu3d_opens_lock);
@@ -452,6 +780,9 @@ vgpu3d_dev_ioctl(dev_t dev, u_long cmd, caddr_t data, __unused int flag, __unuse
 	case VGPU3D_IOC_DOWNLOAD:
 		err = res_xfer(o, (struct vgpu3d_ioc_xfer *)data, false);
 		break;
+	case VGPU3D_IOC_HOST_SHOWS:
+		err = host_shows((uint32_t *)data);
+		break;
 	default:
 		err = ENOTTY;
 		break;
@@ -516,6 +847,7 @@ hakios_vgpu3d_init(void)
 	uint32_t on = 0;
 	thread_t th;
 
+	scgpu_attach();
 	vgpu3d_major = cdevsw_add(-1, &vgpu3d_cdevsw);
 	if (vgpu3d_major < 0 || devfs_make_node_clone(makedev(vgpu3d_major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL,
 	    0666, vgpu3d_clone, "vgpu3d") == NULL) {

@@ -74,6 +74,12 @@ hakios_gl_library(void)
 }
 
 int
+hakios_gl_present(struct hakios_gl *gl, uint32_t id)
+{
+	return gfx_present_shared(gl->gfx, id);
+}
+
+int
 hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t id)
 {
 	static int share = -1;

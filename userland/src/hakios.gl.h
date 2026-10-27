@@ -19,6 +19,12 @@ const char *hakios_gl_library(void);                           /* for the log */
  * done; the texture is to be filled and read back with OpenGL ES calls.
  */
 int hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t surface);
+/*
+ * The frame just drawn into the surface's texture (hakios_gl_surface_texture) is shown by the host
+ * itself, in a window of its own: 1 when it is (nothing to copy back for the display), 0 when the
+ * library has no such host or the surface is not the display's. (SCGPU: the Scion app's gfxstream.)
+ */
+int hakios_gl_present(struct hakios_gl *gl, uint32_t surface);
 
 /*
  * CoreAnimation draws a layer's pixels with one of ninety "functions" (a fragment shader each); these
