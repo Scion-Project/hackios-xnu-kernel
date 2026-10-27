@@ -31,6 +31,15 @@
  * a full barrier on both sides, so one of the two always sees the other. Without the device (an older
  * app) both sides poll as before.
  *
+ * The stream ring: what user space writes to the pipe (the GL stream, write(2) on /dev/vgpu3d) does
+ * not go through the mailbox, one command per write and a wait for each, but into a byte ring in the
+ * pool (ring_off, ring_size, a power of two) as records -- struct scgpu_record, then the bytes, then
+ * padding to 16 -- and the guest goes on at once. ring_head (the guest's) and ring_tail (the app's) count
+ * bytes forever; their difference is what waits. The app hands each record to its resource (the
+ * context's pipe) and moves ring_tail on, and it does so with everything the ring holds before it runs
+ * any mailbox command: so a reply, an upload or a read still comes after every byte written before it.
+ * The guest waits only for room (and rings the app, or is rung, as for the mailbox).
+ *
  * Commands are virtio-gpu's (virtio 1.2, 5.7.6), with these meanings at the app:
  *   GET_CAPSET_INFO, GET_CAPSET            gfxstream's capsets (stream_renderer_get_cap_set/fill_caps)
  *   CTX_CREATE, CTX_DESTROY                stream_renderer_context_create/destroy
@@ -60,6 +69,8 @@
 
 /* the app's renderer is up and answers the mailbox */
 #define SCGPU_F_HOST_READY      (1u << 0)
+/* ... and takes the stream ring's records (without it the guest makes no ring: every write by mailbox) */
+#define SCGPU_F_RING            (1u << 1)
 /*
  * guest_flags: the guest has begun to show frames through the host (rcFBPost): the app can put the
  * renderer's window in front from now on (before, the shared framebuffer had the picture)
@@ -89,8 +100,16 @@ struct scgpu_header {
 	uint64_t commands, presents, host_busy_ns;
 	uint32_t guest_flags;           /* SCGPU_G_*, set by the guest */
 	uint32_t host_sleeping;         /* the app waits for the doorbell, not polling: ring it */
-	uint32_t guest_waiting;         /* the guest waits for a reply asleep: ring it */
-	uint32_t reserved[13];
+	uint32_t guest_waiting;         /* the guest waits for a reply (or for room in the ring) asleep: ring it */
+	uint32_t ring_off, ring_size;   /* the stream ring, in the region; size 0: no ring (every write by mailbox) */
+	uint32_t ring_head, ring_tail;  /* bytes put in (the guest's), bytes taken out (the app's), forever */
+	uint32_t reserved[9];
+};
+
+/* A record of the stream ring: the bytes follow, then padding to 16. */
+struct scgpu_record {
+	uint32_t resource_id, ctx_id;   /* the pipe of a context */
+	uint32_t len, reserved;
 };
 
 /* struct virtio_gpu_transfer_host_3d's twin, with the staging buffer instead of the backing */
