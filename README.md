@@ -1,235 +1,196 @@
-# HackiOS — XNU kernel
+# HakiOS
 
-**HackiOS** boots Apple's open-source **XNU kernel** (`xnu-8796.121.2`, the kernel of iOS 16.5) on Android phone
-hardware and runs the **unmodified iOS 16.5 user space** on top of it: launchd → backboardd → SpringBoard →
-apps. Our own EFI loader, our own replacements for Apple's closed drivers, a UEFI port, and a Linux Wi-Fi driver
-on a compatibility layer make that possible.
+English · [中文](README.zh.md) · [Українська](README.uk.md)
 
-It runs in two places:
+HakiOS runs the open-source XNU kernel (xnu-8796.121.2) with my own boot loader and my own drivers
+on an Android phone with a Qualcomm SoC, and boots the stock iOS 16.5 user space on top of it:
+launchd, backboardd, SpringBoard, the apps. The same thing runs in QEMU (`virt`, aarch64) on a
+Linux PC.
 
-- **POCO X5 Pro 5G (redwood, Snapdragon 778G)** — nothing is flashed: the UEFI is started with `fastboot boot`,
-  the whole system lives in RAM, and after a reboot the phone is back in Android;
-- **QEMU** (`virt`, aarch64) — the same thing on any Linux computer, no phone needed.
+Nothing is flashed. The loader goes into RAM through `fastboot boot`, the system lives in RAM for
+the length of a session, and a reboot brings the phone back to its own Android. This is a research
+bench, not a ROM.
 
-This repository is half of the project:
+The first phone is the **POCO X5 Pro 5G** (`redwood`, Snapdragon 778G). The kernel knows nothing
+about it in advance: every address, interrupt, power rail and firmware comes from the phone's own
+device tree and its own Android, so a port to another Qualcomm phone is a new directory under
+`devices/`, not a rewrite.
 
-| Repository | What |
+## What is in the repository
+
+Only my code and my data:
+
+- the kernel: a patch to Apple's open-source XNU (`xnu/hakios.patch`, APSL 2.0) and my driver
+  files (`xnu/files/`), laid over a fresh clone by `xnu/apply.sh`;
+- the boot loader (`xnuloader/`), my programs and libraries (`userland/src/`), tools (`tools/`),
+  build and run scripts;
+- `prebuilt/`: the kernel, loader and libraries built from this repository;
+- `devices/poco-x5-pro/`: what one phone needs (its UEFI port, device tree, firmware script).
+
+Not in the repository, never:
+
+- any file of iOS: no binary, image, cache, font, picture or screenshot. You build the system
+  image on your machine from the iOS 16.5 IPSW, which `sysimage/fetch.sh` downloads from Apple's
+  public servers for you, without decrypting or circumventing anything;
+- the phone's firmware (GPU, Wi-Fi, audio DSP, modem, haptics, cameras): it is the vendor's and
+  is pulled from your own phone into `fw-*/`, which git ignores;
+- keys, certificates, activation, or anything that would make the phone pass as an iPhone to
+  Apple's services. Signing in to an Apple account is impossible here and not a goal.
+
+## Status
+
+| Works | Not yet |
 |---|---|
-| **hackios-xnu-kernel** (this one) | XNU patches, the EFI loader, the UEFI port, Wi-Fi, QEMU scripts, `xl`, prebuilt kernel/loader/UEFI, `common/` scripts |
-| [hackios-xnu-userland](https://github.com/oosexgang/hackios-xnu-userland) | our init, injected libraries, launchd jobs, the APFS image builder, the scripts that take iOS out of Apple's IPSW, Metal/Mesa work |
+| Lock screen, home screen, Control Center, gestures, the stock apps | Cellular: the modem boots, sees the network, the SIM is bound, the IPA data path and `en1` are in place; registration, the data session and the status bar bars are in progress (`docs/cellular.md`) |
+| Touch screen, multitouch, power and volume buttons | Bluetooth |
+| All 8 CPU cores, the big core at 2.4 GHz | Charging under this kernel |
+| GPU rendering on Adreno (`gpu=1`, OpenGL ES through Mesa) | Metal (there is a shader compiler, no Metal) |
+| Speakers and microphone (`adsp=1 sound=4 mic=4`) | Apple account: no Secure Enclave |
+| Battery level in the UI (through the audio DSP, `adsp=1`) | |
+| Vibration (`haptic=5`) | |
+| Wi-Fi: radio, driver, network connection (`wifi=1`) | |
+| Cameras in Camera.app (`cam=5`) | |
+| `/private/var` kept across reboots (`var_store=1 ufs_write=1`) | |
+| Sileo, Procursus packages, SSH into the phone | |
 
-> **No Apple files are in either repository.** `ios165/fetch.sh` downloads the iOS 16.5 IPSW from Apple's own CDN
-> to *your* machine and extracts what is needed there. HackiOS is an independent research project by OOSEX GANG and
-> is not affiliated with, authorised or endorsed by Apple Inc. iOS, iPhone and Apple are trademarks of Apple Inc.
+## Quick start in QEMU
 
-<p>
-<img src="docs/lockscreen.jpg" width="190" alt="Lock screen">
-<img src="docs/homescreen.jpg" width="190" alt="Home screen">
-<img src="docs/control-center.jpg" width="190" alt="Control Center">
-<img src="docs/settings.jpg" width="190" alt="Settings">
-</p>
+Linux x86-64, about 12 GB of disk, 7-Zip 23 or newer, `lz4`, `qemu-system-aarch64`, `edk2-aarch64`.
 
-Photographed on the phone, the Adreno GPU drawing (`gpu=1`). More in [Screenshots](#screenshots).
+```sh
+git clone https://github.com/oosexgang/hakios-os.git hakios
+cd hakios
+sysimage/fetch.sh             # the iOS 16.5 IPSW from Apple's servers, the needed parts unpacked (7.4 GB)
+REST=1 userland/build.sh      # the APFS images: userland/root.apfs and userland/system.apfs
+mkdir -p logs
+qemu/run-ios.sh 1200 -display gtk > logs/qemu.log     # a 20-minute session
+```
 
-## What works
+The lock screen appears after two or three minutes. The mouse with the button held is a finger;
+`H` is Home, `L` is the power button, `↑`/`↓` are volume.
 
-| Works | Does not work (yet) |
+## On the phone
+
+A phone with a port (`devices/poco-x5-pro/`, POCO X5 Pro 5G), its boot loader unlocked, `adb` and
+`fastboot` on the PC, the images from the previous section, and the phone's own firmware:
+
+```sh
+devices/poco-x5-pro/pull-firmware.sh    # GPU, Wi-Fi, audio/battery, haptics, modem, cameras -> fw-*/
+./xl enter                          # Android -> fastboot -> our loader in RAM
+./xl ramdisk userland/system.apfs   # the system image into the phone's RAM (~80 s), once per loader session
+XL_SB_DELAY=8 XL_SECS=600 \
+XL_CMDLINE="bootcpu=7 cpus=8 cpufreq=1 ufs=2 touchscreen=1 gpu=1 adsp=1 sound=4 wifi=1 haptic=5 modem=1" \
+./xl run                            # a 10-minute session, the log goes to logs/
+./xl reboot                         # back to Android
+```
+
+`tools/modem-cycle.sh "ARGS" SECS` does all of that in one command and returns the phone to Android.
+
+The main kernel arguments (the full list is in `docs/ru/notes.md`):
+
+| Argument | What it does |
 |---|---|
-| Lock screen, swipe to unlock, home screen with all icons (two pages), stock iOS 16 wallpapers | Cellular, Bluetooth |
-| System gestures: swipe up (home, app switcher), edge swipe (back), Control Center | Charging under our kernel (the phone only discharges) |
-| Apps: Settings, Clock, Calendar, Photos, Notes, Safari and more; widgets (Weather, Calendar) on the phone | Metal for apps (in progress: 293 of 456 system shaders already run on the Adreno, see `docs/air.md` in hackios-xnu-userland) |
-| Phone touchscreen (Goodix GT9916), multitouch, wake on touch; real power and volume keys | App Store content and Apple ID sign-in (no Secure Enclave; FairPlay daemon exits) |
-| Up to 8 CPU cores (`cpus=8`), big core at 2.4 GHz, ~20 s to the lock screen | Video and Live Photo recording |
-| Adreno 642L GPU through Mesa/freedreno (`gpu=1`, OpenGL ES for CoreAnimation) | |
-| Wi-Fi (WCN6750, ath11k): join from Settings, Safari over Wi-Fi, 55–90 Mbit/s | |
-| Sound (speakers, main microphone), camera in Camera.app (front/rear, preview, focus, HEIC photos) | |
-| Data that iOS writes survives a reboot (`var_store=1 ufs_write=1`); iOS root volume on the phone's flash | |
-| Sileo + Procursus (dpkg, apt), tweaks, SSH | |
-
-It is a research bench, not a ROM: a session lasts a given number of seconds, then the kernel returns to the
-loader and hands over its log.
-
-## Quick start: QEMU, no kernel build
-
-`prebuilt/` holds the kernel, loader and our programs built from these repositories, so all you need is the system
-image, which is made on your machine from Apple's IPSW.
-
-Needs: Linux x86-64, ~12 GB free disk, 4 GB free RAM. Packages (Arch):
-
-```sh
-sudo pacman -S --needed git python 7zip lz4 gcc qemu-system-aarch64 qemu-ui-gtk edk2-aarch64
-```
-
-(Debian/Ubuntu: `git python3 7zip liblz4-dev gcc qemu-system-arm qemu-efi-aarch64`; 7-Zip must be 23 or newer — it
-reads APFS.)
-
-```sh
-git clone https://github.com/oosexgang/hackios-xnu-kernel.git hackios
-cd hackios
-common/setup.sh               # brings hackios-xnu-userland into the same tree, checks the host
-ios165/fetch.sh               # downloads 7.4 GB from Apple's CDN and extracts what is needed (5-15 min)
-common/build.sh qemu-virt     # builds the APFS images (and the kernel, if the toolchain is there)
-common/run.sh qemu-virt       # a 20-minute session in a QEMU window
-```
-
-The lock screen appears after 2–3 minutes.
-
-- **Mouse with the left button held = finger.** Unlock / leave an app: swipe up from the very bottom edge; back:
-  swipe from the left edge.
-- Keys: `H` home, `L` lock/power, `↑`/`↓` volume, `F11` (hold) five fingers.
-- From a script: `qemu/touch.py swipe 0.5 0.985 0.5 0.3 250`, `qemu/touch.py tap 0.615 0.71`,
-  `qemu/touch.py key home`; screenshot: `qemu/screendump.sh shot.png`.
-- Right after SpringBoard appears the system is still registering apps: give it 30–40 s.
-- Debian/Ubuntu UEFI firmware: `QEMU_EFI=/usr/share/AAVMF/AAVMF_CODE.fd QEMU_VARS=/usr/share/AAVMF/AAVMF_VARS.fd`.
-
-## On the phone (POCO X5 Pro 5G)
-
-You need a **POCO X5 Pro 5G (redwood)** with an unlocked bootloader, `adb` and `fastboot`, and the images from the
-section above. Nothing is written to the phone's storage.
-
-**The phone's own firmware** is not in the repository and cannot be: it is the vendor's and is taken from the very
-phone it will run on, from its Android:
-
-```sh
-adb pull /vendor/firmware/a660_{gmu.bin,sqe.fw,zap.mdt,zap.b00,zap.b01,zap.b02} fw-gpu/      # GPU (gpu=1)
-adb pull /vendor/firmware_mnt/image/wpss.{mdt,b02,b03,b04,b05,b06,b07} fw-wifi/              # Wi-Fi (wifi=1)
-adb pull /vendor/firmware_mnt/image/adsp.{mdt,b02,...,b36} fw-audio/                         # sound (adsp=1)
-adb pull /vendor/firmware/aw8697_haptic.bin fw-haptic/                                       # haptics
-```
-
-(Put the `fw-*` directories next to the workspace. Wi-Fi also needs `fw-wifi/mac` — the radio's address on one
-line — and `fw-wifi/network` — network name and password. `userland/build.sh` prints which firmware went in.)
-
-```sh
-common/build.sh redwood GL=1          # images + out/redwood-boot.img
-common/run.sh redwood 900             # loader into RAM, system image into RAM, a 15-minute session
-```
-
-or step by step with `xl`:
-
-```sh
-./xl enter            # Android -> fastboot -> our loader in RAM (fastboot boot); it brings up its own USB link
-./xl ramdisk          # upload the system image into the phone's RAM (2.5 GB, ~80 s), once per loader session
-XL_SECS=900 XL_CMDLINE="touchscreen=1 cpufreq=1 bootcpu=7 cpus=8 gpu=1 wifi=1 adsp=1" ./xl run
-./xl screenshot shot.png
-./xl reboot           # back to Android
-```
-
-`./xl` with no arguments lists every command (logs, screen and sound recording, camera frames, stop, state...).
-
-## Prebuilt boot image
-
-Every release has `hackios-redwood-boot.img` attached: the redwood UEFI with our loader inside, ready for
-`fastboot boot`. It contains no Apple files; the system image is still made on your machine (above).
+| `cpus=8 bootcpu=7 cpufreq=1` | all CPU cores and their clocks |
+| `touchscreen=1` | the touch screen |
+| `gpu=1` | rendering on Adreno (an image built with `GL=1`, firmware in `fw-gpu/`) |
+| `adsp=1 sound=4 mic=4` | the audio DSP: speakers, microphone; battery and charging come with it |
+| `haptic=5` | the vibration motor |
+| `wifi=1` | Wi-Fi (the network from `fw-wifi/network`) |
+| `cam=5` | the cameras |
+| `modem=1` | the modem beside the system: its firmware, file systems, IPA, SIM, NAS |
+| `modem_step=N` | the modem step by step, for debugging (`docs/cellular.md`) |
+| `var_store=1 ufs_write=1` | keep `/private/var` across reboots |
 
 ## Building from source
 
-`common/build.sh <device>` runs every step that this machine can run and uses `prebuilt/` for the rest.
-
-- **Kernel** — needs [theos](https://theos.dev/docs/installation-linux) in `~/theos` (cctools and
-  `iPhoneOS16.5.sdk`) and `clang lld python perl`. Details: [xnu/README.md](xnu/README.md).
-  ```sh
-  xnu/apply.sh && xnu-deps/setup.sh && ./xnu-build.sh -j8 -k
-  ```
-- **Loader** — `xnuloader/build.sh` (clang + lld-link, an EFI application without EDK2).
-- **Images** — `REST=1 userland/build.sh` (variables documented at the top of that file).
-- **UEFI** — [uefi/README.md](uefi/README.md) (Project Silicium port); not needed to run, `prebuilt/uefi` has it.
-- After rebuilding: `tools/update-prebuilt.sh` refreshes `prebuilt/`.
-
-## Porting to another device
+The kernel (Linux: theos with its cctools and `iPhoneOS16.5.sdk`; macOS: Xcode or cctools, the SDK
+is fetched for you):
 
 ```sh
-common/new-device.sh <codename> path/to/device.dtb   # profile + loader platform from the phone's device tree
+xnu/apply.sh             # XNU sources from Apple's GitHub + my changes -> xnu-src/
+xnu-deps/setup.sh        # dependencies, tools and the SDK
+./xnu-build.sh -j8 -k    # -> xnu-src/.../BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
 ```
 
-Then follow [docs/PORTING.md](docs/PORTING.md): the UEFI port, the loader's platform description, the kernel's
-drivers, the firmware. Device profiles live in `common/devices/` (`redwood.conf`, `qemu-virt.conf`, `_template.conf`).
-
-## How it works
-
-```
-fastboot boot ──► UEFI (Mu-Silicium) ──► xnuloader (EFI application)
-                                           │  stays resident: USB link (fastboot protocol),
-                                           │  watchdog, receives the kernel's log
-                                           ▼
-            XNU (BCM2837 config as the base + our platform)
-              ├─ GICv3, timer, video console, return to the loader
-              ├─ APFS (images in RAM, iOS volume on flash), ramfs (/private/var, /tmp)
-              ├─ minicrypto instead of corecrypto, AMFI and Sandbox stand-ins (MAC policies)
-              ├─ driver replacements: IOSurface, IOMobileFramebuffer, AppleKeyStore, network stack
-              ├─ input: /dev/redwood-touch ◄─ Goodix GT9916 (phone) / virtio-input (QEMU)
-              ├─ GPU: Adreno 642L, Wi-Fi: WCN6750 (ath11k via LinuxKPI), sound: ADSP / virtio-sound
-              ▼
-   iOS 16.5 launchd → logd, notifyd, cfprefsd, runningboardd, backboardd, SpringBoard, apps
-              ├─ our libraries are injected into backboardd, SpringBoard and mediaserverd
-              │  (virtual HID services, a few ObjC method swaps — in memory only)
-              └─ mediaserverd gets our CoreAudio output device (RedwoodAudio.driver)
-```
-
-The iOS programs, frameworks and dyld shared cache are not changed by a single byte: what they miss is done by the
-kernel (driver replacements) or by a library the kernel injects with `DYLD_INSERT_LIBRARIES` (`kern.exec_inject`).
+The loader: `xnuloader/build.sh` (clang + lld-link, an EFI application without EDK2). The header
+`xnuloader/identity.h`, the properties by which iOS tells which iPhone it is, is not kept in the
+repository: `xnuloader/mkidentity.sh` makes it at build time from the device tree in your own IPSW
+(one 34 KB file; LZFSE is decoded by `lzfse`, macOS's `compression_tool` or the Python `lzfse`
+module, or the open lzfse library gets built). User space and the images: `REST=1 userland/build.sh`
+(`MODEM=1 SYSTEM=1` put the modem's firmware into the system image). Details: `xnu/README.md`,
+`docs/ru/notes.md`.
 
 ## Layout
 
-| Path | What |
+| Directory | Contents |
 |---|---|
-| `common/` | `setup.sh` (workspace), `build.sh` / `run.sh` (per device), `new-device.sh`, `devices/*.conf`, `ugit` |
-| `xl` | drives the phone over USB: loader, kernel runs, logs, screenshots, screen and sound recording |
-| `xnuloader/` | the loader: `loader.c` (UEFI application), `mkpayload.py` (kernel + images + arguments container) |
-| `xnu/` | our XNU changes: patch, new files, `apply.sh` / `export.sh` |
-| `xnu-deps/` | everything for building XNU on Linux: `setup.sh`, tool wrappers, stubs |
-| `xnu-build.sh`, `xnu-env.sh` | kernel build |
-| `uefi/`, `mkxnuimg.py` | the UEFI port and packing the boot image for `fastboot boot` |
-| `wifi/lx/` | the layer on which Linux's Wi-Fi driver builds for our kernel |
-| `qemu/` | QEMU runs, touch input, screenshots, stack symbolication |
-| `tools/` | recording (`recording.py`, `sound.py`), UFS/flash tools, `mk-ath11k.sh`, `new-workspace.sh`, host tests |
-| `prebuilt/` | built kernel, loader and UEFI pieces (`NOTICES.md` for the third-party code in the kernel) |
-| `docs/` | screenshots, [checks.md](docs/checks.md), [PORTING.md](docs/PORTING.md) |
+| `xnu/` | the kernel patch and files; `apply.sh`, `export.sh`; a README about the kernel |
+| `xnu/files/bsd/dev/hakios.*.c` | my drivers: display, touch, UFS, GPU, Wi-Fi, audio, modem (`hakios.mpss.c`), its packets (`hakios.ipa.c`, `hakios.cell.c`), SIM/NAS, haptics, cameras |
+| `xnuloader/` | the boot loader (a UEFI application) |
+| `userland/` | my programs and libraries (`src/`), the image build, launchd jobs |
+| `sysimage/` | scripts that fetch and unpack the OS files from the IPSW (none of the files themselves) |
+| `devices/poco-x5-pro/` | one phone: its UEFI port, device tree, prebuilt UEFI images, firmware script, tools |
+| `tools/` | APFS, firmware, QMI tests, run scripts |
+| `qemu/` | running in QEMU |
+| `docs/` | `notes.md`: the detailed notes (Russian); `cellular.md`: cellular; `air.md`, `metal.md`: the GPU |
+| `prebuilt/` | the built kernel, loader and libraries |
+| `avf/` | this fork: XNU as a guest of Android's own hypervisor (AVF/crosvm) for [Scion](https://github.com/dylanneve1/scion); see `avf/README.md` |
+| `xnu/patches/` | this fork: numbered kernel patches applied after `hakios.patch` (AVF platform, virtio-pci, virtio-gpu, display, camera) |
 
-## Debugging
+## Devices
 
-- Session log: QEMU's stdout or `logs/HHMMSS-run.log` from the phone.
-- `RC_JOBS=rc.jobs.tour REST=1 userland/build.sh` — an image that unlocks and opens every app of the first page.
-- `userabort:` in the log is the stack of a process that called `abort()`; `usertrap:` (with `systrace=1`) — crashes.
-- Live stacks (QEMU): `qemu/touch.py stacks NAME`, then `qemu/symstack.py LOG NAME`
-  (needs [`ipsw`](https://github.com/blacktop/ipsw)).
-- How a check can lie to you: [docs/checks.md](docs/checks.md).
+The kernel, loader and user space are shared. Everything about one phone lives in
+`devices/<name>/`: its UEFI, device tree, firmware list and tools. Today there is one,
+`devices/poco-x5-pro/`, and its README is the map of what a port to another Qualcomm phone must bring.
+The phone's drivers are the files `xnu/files/bsd/dev/hakios.*.c`; the head of each says where its
+numbers came from.
 
-## Screenshots
+## Cellular
 
-From the phone's screen, one session (`GL=1 REST=1`, `gpu=1`):
+The modem (the Hexagon MPSS) is brought up from XNU: firmware through TrustZone, shared memory,
+SMP2P, GLINK, QRTR, QMI; its file systems are served from the UFS (read-only, writes stay in kernel
+memory), TFTP and the service registry are mine. The IPA packet engine runs with its firmware,
+clock and SMMU context, and the handshake with the modem goes through. The SIM is bound to the
+subscription and NAS reads the signal. The current state and the whole story are in
+`docs/cellular.md`.
 
-<p>
-<img src="docs/homescreen-2.jpg" width="160" alt="Home screen, page 2">
-<img src="docs/search.jpg" width="160" alt="Search">
-<img src="docs/settings-general.jpg" width="160" alt="Settings > General">
-<img src="docs/calendar.jpg" width="160" alt="Calendar">
-<img src="docs/clock.jpg" width="160" alt="Clock">
-</p>
-<p>
-<img src="docs/wallet.jpg" width="160" alt="Wallet">
-<img src="docs/messages.jpg" width="160" alt="Messages">
-<img src="docs/music.jpg" width="160" alt="Music">
-<img src="docs/maps.jpg" width="160" alt="Maps">
-<img src="docs/appstore-tabs.png" width="160" alt="App Store">
-</p>
+## Independent, and Apple-free at the core
 
-## Licenses
+HakiOS is an independent research project. It is **not affiliated with or endorsed by Apple**;
+"iOS", "iPhone", "XNU" and "Apple" are named only to describe what the code works with. The core
+kernel, the boot loader and the open tools build and run with nothing of Apple's:
 
-- No iOS files are in the repositories: `ios165/fetch.sh` downloads them from Apple's CDN to your machine.
-- `xnu/` is a derivative work of XNU and is distributed under APSL 2.0, like XNU itself; `prebuilt/mach.*` is the
-  kernel built from it. It also contains ath11k (BSD-3-Clause-Clear) and FreeBSD LinuxKPI code (BSD-2-Clause):
-  see [prebuilt/NOTICES.md](prebuilt/NOTICES.md).
-- `xnu/files/bsd/miscfs/apfs/libzbitmap/` and `xnu-deps/build/lzbitmap/` — libzbitmap (Corellium LLC, MIT here);
-  `xnu/files/bsd/miscfs/apfs/libdeflate/` — libdeflate 1.24 (Eric Biggers, MIT, `COPYING` there).
-- ath11k, Linux and FreeBSD sources are not in the repository: `tools/mk-ath11k.sh` fetches pinned releases.
-  `wifi/lx/patches/*.patch` are our changes to FreeBSD headers; the rest of `wifi/lx/` is ours.
-- `uefi/files/Binaries/redwood` and `prebuilt/uefi/SILICIUM_UEFI.fd` contain UEFI drivers from the phone's
-  Xiaomi firmware, distributed the way Project Silicium distributes them for other devices;
-  `prebuilt/uefi/mkbootimg.py` — AOSP, Apache-2.0.
-- This repository is licensed under the [Apple Public Source License 2.0](LICENSE): our changes to XNU are a derivative of XNU and must be, and our other code here (loader, scripts) is released under the same license. Third-party code keeps its own license, as listed above.
+```sh
+make qemu-open      # the open kernel + a placeholder loader + a tiny raw-syscall user space, in QEMU
+```
 
-## Team
+No IPSW, no iOS user space, no firmware. Booting the stock iOS user space (`make qemu`,
+`make phone`) is an optional path that needs the IPSW and the phone's firmware, which you supply
+from your own device.
 
-OOSEX GANG — [@oodze](https://t.me/oodze) (founder), [@netusd](https://t.me/netusd), [@wannqn](https://t.me/wannqn),
-[@hxfuxyyXD](https://t.me/hxfuxyyXD). News: [t.me/oosexgangdevs](https://t.me/oosexgangdevs).
+## Licenses and the legal side
+
+My code is under the license of the files it changes: the XNU patch under the Apple Public Source
+License 2.0 (Apple publishes XNU under it; the terms are met: changes are published as source,
+notices are kept), the rest as the file headers say. iOS, its images, Apple's trademarks and the
+phone's firmware belong to their owners, are not in this repository and are not distributed by me;
+everyone takes them from their own phone and their own IPSW. "iOS", "iPhone" and "Apple" are
+named only to describe what the code works with. If you believe a file here infringes anyone's
+rights, open an issue and I will remove it.
+
+The detail is in separate files: `LEGAL.md` (what is and is not distributed, and the limits of
+these statements), `COMPLIANCE.md` (how the APSL 2.0 and other terms are met, and the items still
+to verify), `THIRD_PARTY_LICENSES.md` (every third-party component with origin and license), and
+`NOTICE` (the short canonical list). None of this is legal advice.
+
+hakios is an experimental project focused on bringing ios to android hardware. our goal is to make hackios free and accessible to everyone.
+
+owners:
+@oodze - founder
+@netusd - adversting / ceo-dev
+@wannqn - dev 
+@hxfuxyyXD - dev
+Rhaenja Hun（杭润嘉） — Developer / Sponsor
+
+tym sicilium for the sources!
+

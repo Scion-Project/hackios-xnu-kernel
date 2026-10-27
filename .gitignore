@@ -1,11 +1,21 @@
 # A whitelist: the working tree also holds gigabytes of downloads, build output, logs, third-party
-# clones, files of iOS and the hackios-xnu-userland checkout (common/setup.sh), none of which belongs
-# in this repository. Nothing is tracked unless it is named here.
+# clones and files of iOS, none of which belongs in the repository. Nothing is tracked unless it
+# is named here.
 /*
 !/.gitignore
 !/README.md
+!/CONTRIBUTING.md
+!/ci/
+!/README.uk.md
+!/README.zh.md
+!/Makefile
 !/LICENSE
-!/common/
+!/LICENSE.APSL
+!/NOTICE
+!/LEGAL.md
+!/COMPLIANCE.md
+!/THIRD_PARTY_LICENSES.md
+!/devices/
 !/docs/
 !/xl
 !/mkxnuimg.py
@@ -14,9 +24,10 @@
 !/xnuloader/
 !/qemu/
 !/tools/
+!/userland/
+!/sysimage/
 !/xnu/
 !/xnu-deps/
-!/uefi/
 !/prebuilt/
 !/wifi/
 !/.github/
@@ -27,24 +38,9 @@ __pycache__/
 *.orig
 *.rej
 
-# hackios-xnu-userland's files share this working tree (common/setup.sh)
-/docs/air.md
-/docs/air-report.md
-/prebuilt/userland/
-/tools/apfs/
-/tools/air/
-/tools/mesa/
-/tools/metal/
-/tools/mk-mesa.sh
-/tools/mk-jb.sh
-/tools/jb-preinstall.py
-/tools/font_trim.py
-/tools/metallib.py
-
 /xnuloader/*
 !/xnuloader/build.sh
 !/xnuloader/efi.h
-!/xnuloader/identity.h
 !/xnuloader/loader.c
 !/xnuloader/mkidentity.py
 !/xnuloader/mkpayload.py
@@ -52,6 +48,19 @@ __pycache__/
 /qemu/*
 !/qemu/*.sh
 !/qemu/*.py
+
+/userland/*
+!/userland/build.sh
+!/userland/*.py
+!/userland/rc.*
+!/userland/com.hakios.*.plist
+!/userland/src/
+!/userland/libmini/
+!/userland/var/
+
+/sysimage/*
+!/sysimage/fetch.sh
+!/sysimage/*.py
 
 # of xnu-deps only what is ours; setup.sh fetches and builds the rest
 /xnu-deps/*
@@ -82,3 +91,9 @@ __pycache__/
 !/xnu-deps/build/lzbitmap/libzbitmap.c
 !/xnu-deps/build/lzbitmap/libzbitmap.h
 /tools/android/f2fs-resize
+/tools/macos-bin/platform-tools/
+
+# made at build time from the device tree of the builder's own IPSW (xnuloader/mkidentity.sh)
+/xnuloader/identity.h
+!/xnuloader/im4p.py
+!/xnuloader/mkidentity.sh

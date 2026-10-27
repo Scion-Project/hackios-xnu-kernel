@@ -2,16 +2,16 @@ diff --git a/bsd/conf/files b/bsd/conf/files
 index 9cd24b4..d8e23ea 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -132,6 +132,9 @@ bsd/dev/redwood_mic.c		standard
- bsd/dev/redwood_wifi.c		standard
- bsd/dev/redwood_adsp.c		standard
- bsd/dev/redwood_image.c		standard
-+bsd/dev/redwood_pci.c		standard
-+bsd/dev/redwood_virtio.c	standard
-+bsd/dev/redwood_virtio_console.c	standard
- bsd/dev/redwood_virtio_blk.c	standard
- bsd/dev/redwood_sparse.c	standard
- bsd/dev/redwood_apfs_check.c	optional apfs
+@@ -132,6 +132,9 @@ bsd/dev/hakios.mic.c		standard
+ bsd/dev/hakios.wifi.c		standard
+ bsd/dev/hakios.adsp.c		standard
+ bsd/dev/hakios.image.c		standard
++bsd/dev/hakios.pci.c		standard
++bsd/dev/hakios.virtio.c	standard
++bsd/dev/hakios.virtio_console.c	standard
+ bsd/dev/hakios.virtio_blk.c	standard
+ bsd/dev/hakios.sparse.c	standard
+ bsd/dev/hakios.apfs_check.c	optional apfs
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
 index 16cf4fd..b9fb59d 100644
 --- a/bsd/kern/bsd_init.c
@@ -22,7 +22,7 @@ index 16cf4fd..b9fb59d 100644
  
 -	if (!bsd_rooted_ramdisk()) {
 +	/*
-+	 * A virtio disk root (rd=rvblkN, bsd/dev/redwood_virtio_blk.c) is an image the host serves,
++	 * A virtio disk root (rd=rvblkN, bsd/dev/hakios.virtio_blk.c) is an image the host serves,
 +	 * like a RAM disk: nothing here can verify a seal on it.
 +	 */
 +	char rd_virtio[16] = "";
@@ -51,14 +51,14 @@ index 29978e9..1e64e96 100644
  	}
  
 +//
-+//	A virtio disk (bsd/dev/redwood_virtio_blk.c): rd=rvblk0 roots on the first one
++//	A virtio disk (bsd/dev/hakios.virtio_blk.c): rd=rvblk0 roots on the first one
 +//
 +	if (strncmp(rdBootVar, "rvblk", 5) == 0) {
-+		extern int redwood_virtio_blk_rootdev(const char *name, dev_t *dev);
++		extern int hakios_virtio_blk_rootdev(const char *name, dev_t *dev);
 +		int vblk_error;
 +
 +		OSSafeReleaseNULL(matching);
-+		if ((vblk_error = redwood_virtio_blk_rootdev(rdBootVar, root)) != 0) {
++		if ((vblk_error = hakios_virtio_blk_rootdev(rdBootVar, root)) != 0) {
 +			panic("IOFindBSDRoot: virtio root %s unavailable: %d", rdBootVar, vblk_error);
 +		}
 +		strlcpy(rootName, rdBootVar, rootNameSize);
@@ -80,22 +80,22 @@ index 997a4ab..c7a9f81 100644
  
 +/*
 + * A virtio console (port 0 of the first virtio-console device, over virtio-pci or
-+ * virtio-mmio): bsd/dev/redwood_virtio_console.c. For virtual machines without a UART.
++ * virtio-mmio): bsd/dev/hakios.virtio_console.c. For virtual machines without a UART.
 + */
-+extern bool redwood_vcon_probe(bool other);
-+extern void redwood_vcon_init(void);
-+extern unsigned int redwood_vcon_transmit_ready(void);
-+extern void redwood_vcon_transmit_data(uint8_t c);
-+extern unsigned int redwood_vcon_receive_ready(void);
-+extern uint8_t redwood_vcon_receive_data(void);
++extern bool hakios_vcon_probe(bool other);
++extern void hakios_vcon_init(void);
++extern unsigned int hakios_vcon_transmit_ready(void);
++extern void hakios_vcon_transmit_data(uint8_t c);
++extern unsigned int hakios_vcon_receive_ready(void);
++extern uint8_t hakios_vcon_receive_data(void);
 +
 +SECURITY_READ_ONLY_LATE(static struct pe_serial_functions) virtio_console_serial_functions =
 +{
-+	.init = redwood_vcon_init,
-+	.transmit_ready = redwood_vcon_transmit_ready,
-+	.transmit_data = redwood_vcon_transmit_data,
-+	.receive_ready = redwood_vcon_receive_ready,
-+	.receive_data = redwood_vcon_receive_data,
++	.init = hakios_vcon_init,
++	.transmit_ready = hakios_vcon_transmit_ready,
++	.transmit_data = hakios_vcon_transmit_data,
++	.receive_ready = hakios_vcon_receive_ready,
++	.receive_data = hakios_vcon_receive_data,
 +	.device = SERIAL_VIRTIO_CONSOLE
 +};
 +
@@ -106,7 +106,7 @@ index 997a4ab..c7a9f81 100644
  	}
  #endif /* APPLE_UART */
  
-+	if (redwood_vcon_probe(gPESF != NULL)) {
++	if (hakios_vcon_probe(gPESF != NULL)) {
 +		register_serial_functions(&virtio_console_serial_functions);
 +	}
 +
@@ -123,7 +123,7 @@ index 404b50b..b3a59cc 100644
  	SERIAL_VMAPPLE_UART=0x8,
 -	SERIAL_DCC_UART=0x10
 +	SERIAL_DCC_UART=0x10,
-+	SERIAL_VIRTIO_CONSOLE=0x100     /* bsd/dev/redwood_virtio_console.c */
++	SERIAL_VIRTIO_CONSOLE=0x100     /* bsd/dev/hakios.virtio_console.c */
  } serial_device_t;
  
  kern_return_t serial_irq_enable(serial_device_t device);

@@ -47,7 +47,7 @@ index f65c979..1c840d7 100644
 + *            anything (DYLD_* variables, inserted libraries) for anyone, "not enforcing" when
 + *            asked; Sandbox: everything allowed, every privilege granted to everyone; no
 + *            code-signing enforcement, not even of the dyld shared cache.
-+ *   bringup  as HackiOS has always run: as off, but privileges only by entitlement (the table
++ *   bringup  as HakiOS has always run: as off, but privileges only by entitlement (the table
 + *            below) and the kernel's default code-signing checks (the shared cache's).
 + *   full     as bringup, and: code-signing enforcement for every process (code pages are
 + *            checked against their signature; unsigned code is killed), dyld's freedoms only

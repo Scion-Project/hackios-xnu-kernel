@@ -98,13 +98,13 @@ index 4f540f8..c0ceb12 100644
  
  extern void loader_return(void);
 +extern void loader_exit_wanted(bool reset);    /* osfmk/arm64/loader_return.c */
- extern void redwood_adreno_stop(void);
+ extern void hakios_adreno_stop(void);
  
  __attribute__((noreturn))
 @@ -750,6 +751,7 @@ halt_all_cpus(boolean_t reboot)
  	}
  	/* No platform driver powers the machine off: hand control (and the log) back to the loader. */
- 	redwood_adreno_stop();
+ 	hakios_adreno_stop();
 +	loader_exit_wanted(reboot);     /* without a loader: PSCI SYSTEM_RESET or SYSTEM_OFF */
  	loader_return();
  	while (1) {

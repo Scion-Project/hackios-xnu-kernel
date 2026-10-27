@@ -1,6 +1,6 @@
 # AVF / crosvm platform
 
-Scion runs HackiOS's XNU as a hardware-virtualized guest on Android's own hypervisor (pKVM), through
+Scion runs HakiOS's XNU as a hardware-virtualized guest on Android's own hypervisor (pKVM), through
 the Android Virtualization Framework (AVF), instead of emulating an iPhone. AVF's custom VMs boot
 a Linux kernel `Image`, an initrd and kernel parameters under crosvm. Here:
 
@@ -62,10 +62,10 @@ counts as Apple's; no Sandbox profile is ever evaluated; there is no SEP, no dat
 key store. `full` is the most these stand-ins and XNU's own checks can enforce, not more.
 
 Known effects: `full` kills unsigned programs, including test programs like `hello` (seen:
-`unexpected SIGKILL of init with reason -- namespace 9` = code signing) and HackiOS's own init if
+`unexpected SIGKILL of init with reason -- namespace 9` = code signing) and HakiOS's own init if
 it is not signed (ad hoc signing is enough: `codesign -s -` / `ldid -S`); with "enforcing" ExtensionKit
 looks for AMFI's IOKit service, which is not there, so extension points may not register. `bringup`
-is what HackiOS has always run with.
+is what HakiOS has always run with.
 
 ## Build and run
 
@@ -76,7 +76,7 @@ avf/qemu-avf.sh payload.bin 60                      # QEMU virt, hvf/kvm/tcg
 avf/run-probe.sh avf/shim/out/Image payload.bin -s SERIAL --mem 2048 --params "-v"   # phone, AVF probe app
 ```
 
-`hello` is `prebuilt/userland/hello` of hackios-xnu-userland: with it as the RAM disk the kernel's
+`hello` is `prebuilt/userland/hello`: with it as the RAM disk the kernel's
 mockfs serves it as `/sbin/launchd`, and it prints `Hello from user space on Darwin!` as process 1.
 
 `run-probe.sh` drives the AVF probe app of dylanneve1/scion-avf (`probe/`). It takes the phone's

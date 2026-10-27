@@ -8,7 +8,7 @@
  *      unassigned BARs it assigns) and finds the virtio-gpu function;
  *   3. drives it as a virtio-pci 1.x device: features (VIRGL, CONTEXT_INIT), the control
  *      queue, polled;
- *   4. hands that control queue to the portable 3D layer (xnu/files/bsd/dev/redwood_vgpu3d.c,
+ *   4. hands that control queue to the portable 3D layer (xnu/files/bsd/dev/hakios.vgpu3d.c,
  *      the same code the kernel will use), which lists the capsets, opens a gfxstream pipe,
  *      and has the host GPU draw and send back a picture (vgpu3d_selftest);
  *   5. prints everything as "GPU3D ..." lines on the console and powers off.
@@ -22,7 +22,7 @@
 #include <stdbool.h>
 #include "../../shim/fdtx.h"
 #include "../../shim/uart.h"
-#include "../../../xnu/files/bsd/sys/redwood_vgpu3d.h"
+#include "../../../xnu/files/bsd/sys/hakios.vgpu3d.h"
 
 #define PSCI_SYSTEM_OFF 0x84000008u
 

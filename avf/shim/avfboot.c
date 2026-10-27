@@ -1,5 +1,5 @@
 /*
- * avfboot: boot the HackiOS XNU kernel as the "Linux kernel" of a VM.
+ * avfboot: boot the HakiOS XNU kernel as the "Linux kernel" of a VM.
  *
  * AVF (Android Virtualization Framework, crosvm on pKVM) boots a custom VM
  * from an arm64 Linux Image, an initrd and kernel parameters. This program
@@ -195,7 +195,7 @@ static struct { uint64_t pa, size; uint32_t w, h; } scfb;
 /*
  * Scion camera (SCCAM, avf/CAMERA.md): with the app's Camera setting, a second slice of RAM the app
  * maps too, with sccam.addr= sccam.size= in the kernel parameters, below the framebuffer's. The app
- * writes the Pixel's camera frames there and the kernel reads them (patch 1400, bsd/dev/redwood_camera.c);
+ * writes the Pixel's camera frames there and the kernel reads them (patch 1400, bsd/dev/hakios.camera.c);
  * here it is kept out of the kernel's memory, and the device tree says there is a camera, which is
  * how MobileGestalt (and so SpringBoard's Camera.app) finds one: as xnuloader's cam=5.
  */
@@ -317,7 +317,7 @@ static void read_fdt(const struct fdt *f)
 		m.uart_kind = UART_PL011;
 	uart_init(m.uart_kind, m.uart_pa);
 
-	uart_puts("\navfboot: HackiOS XNU boot for crosvm/AVF and QEMU virt\n");
+	uart_puts("\navfboot: HakiOS XNU boot for crosvm/AVF and QEMU virt\n");
 	uart_kv("avfboot: image ", (uintptr_t)_head);
 	uart_kv("-", (uintptr_t)_end);
 	uart_kv(" fdt ", f->base);
@@ -663,7 +663,7 @@ void avfboot_main(uint64_t fdt_pa)
 		}
 	}
 	if (vm_lo < KERNEL_VIRT_BASE + KERNEL_LINK_OFFSET || !entry_va)
-		die("unexpected kernel layout (not a HackiOS kernel?)");
+		die("unexpected kernel layout (not a HakiOS kernel?)");
 
 	/*
 	 * --- XNU's window: all of RAM, less the panic log at the top ---
@@ -986,7 +986,7 @@ void avfboot_main(uint64_t fdt_pa)
 	}
 	dt_end(&w);	/* arm-io */
 
-	/* the PCI host bridge, for bsd/dev/redwood_pci.c (format: pci.h, xnuloader/loader.c) */
+	/* the PCI host bridge, for bsd/dev/hakios.pci.c (format: pci.h, xnuloader/loader.c) */
 	if (PCI.present) {
 		dt_begin(&w, "pci0");
 		dt_prop_str(&w, "compatible", PCI.compatible);

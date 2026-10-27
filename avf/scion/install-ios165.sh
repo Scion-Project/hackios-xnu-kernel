@@ -3,7 +3,7 @@
 # the app, via run-as), registers that folder as an install ("iOS 16.5 (AVF)", backend AVF,
 # security Bring-up), boots it once through the debug build's developer hook and collects its
 # console. system.apfs (and root.apfs) must already be in files/ios165 (built by
-# hackios-xnu-userland's userland/build.sh; Apple's files, never in a repository).
+# userland/build.sh; Apple's files, never in a repository).
 #
 #   FILES=DIR avf/scion/install-ios165.sh [--secs N] [--no-register] [--no-boot]
 #

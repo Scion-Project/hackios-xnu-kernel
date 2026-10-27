@@ -1,6 +1,6 @@
 # Display and touch under AVF (crosvm on the Pixel)
 
-HackiOS needs a framebuffer: without `disp0`, SpringBoard doesn't start. On
+HakiOS needs a framebuffer: without `disp0`, SpringBoard doesn't start. On
 QEMU that framebuffer is ramfb, set up by the loader. crosvm has no ramfb. Its
 virtio-gpu display can't reach a sideloaded app on the Pixel 10 either: that
 build's crosvm rejects `--android-display-service`, and SELinux reserves the
@@ -63,8 +63,8 @@ buffer queue.
 
 ## 2. virtio-gpu 2D (QEMU, or a crosvm that shows its display)
 
-**Patch 1202** (`bsd/dev/redwood_vgpu.c`, `bsd/sys/redwood_vgpu.h`) runs on the
-virtio core from PR #1 (`sys/redwood_virtio.h`). Without the core it builds as
+**Patch 1202** (`bsd/dev/hakios.vgpu.c`, `bsd/sys/hakios.vgpu.h`) runs on the
+virtio core from PR #1 (`sys/hakios.virtio.h`). Without the core it builds as
 stubs that return `ENODEV`.
 
 Setup:
@@ -82,16 +82,16 @@ Setup:
 MiniIOMobileFramebuffer uses it only when the loader left no framebuffer:
 
 * `start()` takes the scanout's memory as the panel;
-* `show()` ends each frame with `redwood_vgpu_flush()`, which sends
+* `show()` ends each frame with `hakios_vgpu_flush()`, which sends
   `TRANSFER_TO_HOST_2D` and then `RESOURCE_FLUSH`.
 
-**For 3D on top** (branch `avf/gpu3d`, `redwood_vgpu3d.c`):
+**For 3D on top** (branch `avf/gpu3d`, `hakios.vgpu3d.c`):
 
-* `int redwood_vgpu_ctrl(const void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len)`
+* `int hakios_vgpu_ctrl(const void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len)`
   puts one command on the control queue, serialized with 2D. It copies through
   64 KiB / 4 KiB device-visible buffers and may sleep.
-* `uint64_t redwood_vgpu_features(void)` returns the negotiated `VIRTIO_GPU_F_*` bits.
-* Resource IDs below `REDWOOD_VGPU_3D_FIRST_ID` (0x10000) are 2D's; 3D
+* `uint64_t hakios_vgpu_features(void)` returns the negotiated `VIRTIO_GPU_F_*` bits.
+* Resource IDs below `HAKIOS_VGPU_3D_FIRST_ID` (0x10000) are 2D's; 3D
   allocates from there up.
 * Fences, `RESOURCE_BLOB` and `SET_SCANOUT_BLOB` come later. A blob scanout on
   guest memory would remove the per-frame transfer, the virtio-gpu version of
@@ -99,16 +99,16 @@ MiniIOMobileFramebuffer uses it only when the loader left no framebuffer:
 
 ## 3. Touch: virtio-input multi-touch
 
-**Patch 1201** (`bsd/dev/redwood_virtio_input.c`). With the virtio core, it:
+**Patch 1201** (`bsd/dev/hakios.virtio_input.c`). With the virtio core, it:
 
 * finds every input device on either transport (crosvm puts them on PCI);
 * reads the device's name and axis ranges (`ABS_INFO` for `ABS_X/Y` and
   `ABS_MT_POSITION_X/Y`) from configuration space, instead of assuming QEMU's
   0..0x7fff;
 * tracks `ABS_MT_SLOT`/`ABS_MT_TRACKING_ID`. Each contact (up to 10) is its own
-  finger, and every `EV_SYN` posts DOWN, MOVE or UP to `/dev/redwood-touch`;
+  finger, and every `EV_SYN` posts DOWN, MOVE or UP to `/dev/hakios-touch`;
 * runs from `vio_service_start` (interrupt or 8 ms poll), in thread context,
-  as `redwood_touch_post` requires.
+  as `hakios_touch_post` requires.
 
 The userland side (inject.c in backboardd) already turns those records into
 IOHID digitizer events with up to 10 fingers. Single-touch pointers (QEMU's
@@ -128,7 +128,7 @@ at p50 10.6 ms.
   virtio core (PR #1) and avfboot (PR #2). The SCFB path doesn't depend on the
   virtio core.
 * The vio-based input and GPU code compile only once
-  `bsd/sys/redwood_virtio.h` is in the tree (`__has_include`). PR #1's header
+  `bsd/sys/hakios.virtio.h` is in the tree (`__has_include`). PR #1's header
   is what they're written against.
 * The app side for iOS: pass the `scfb.*` parameters and present XR24 (the
   BGRA buffer queue gives a plain `memcpy`). scion-avf `display/app` shows how.

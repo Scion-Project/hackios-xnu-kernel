@@ -1,7 +1,7 @@
-diff --git a/bsd/dev/redwood_vgpu.c b/bsd/dev/redwood_vgpu.c
+diff --git a/bsd/dev/hakios.vgpu.c b/bsd/dev/hakios.vgpu.c
 index 0c805f7..81f6852 100644
---- a/bsd/dev/redwood_vgpu.c
-+++ b/bsd/dev/redwood_vgpu.c
+--- a/bsd/dev/hakios.vgpu.c
++++ b/bsd/dev/hakios.vgpu.c
 @@ -126,8 +126,10 @@ vgpu_setup(void)
  		return ENOMEM;
  	}

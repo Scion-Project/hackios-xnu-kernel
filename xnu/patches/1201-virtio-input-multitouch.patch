@@ -1,27 +1,27 @@
-diff --git a/bsd/dev/redwood_virtio_input.c b/bsd/dev/redwood_virtio_input.c
+diff --git a/bsd/dev/hakios.virtio_input.c b/bsd/dev/hakios.virtio_input.c
 index d8484e3..64585e9 100644
---- a/bsd/dev/redwood_virtio_input.c
-+++ b/bsd/dev/redwood_virtio_input.c
+--- a/bsd/dev/hakios.virtio_input.c
++++ b/bsd/dev/hakios.virtio_input.c
 @@ -13,6 +13,13 @@
   * F12, a process name, Enter prints where every thread of that process is (ustacks_now(); the
   * host side is "qemu/touch.py stacks NAME"). F11 is five fingers on the screen for as long as it
-  * is held, which is how the way out in redwood_input.c is tried ("qemu/touch.py key fivefingers 2000").
+  * is held, which is how the way out in hakios.input.c is tried ("qemu/touch.py key fivefingers 2000").
 + *
 + * Under crosvm (the Android Virtualization Framework) the touch screen is a virtio-input
 + * multi-touch device on PCI, made by the Scion app (ABS_MT_SLOT, ABS_MT_TRACKING_ID,
 + * ABS_MT_POSITION_X/Y, range 0..width/height of the framebuffer). With the virtio core
-+ * (sys/redwood_virtio.h) devices are found on either transport, the axes' ranges are read from
++ * (sys/hakios.virtio.h) devices are found on either transport, the axes' ranges are read from
 + * the device's configuration space instead of assuming QEMU's 0..0x7fff, and every contact
 + * (up to ten) is its own finger. Without the core, the virtio-mmio code below is used as before.
   */
  #include <kern/clock.h>
  #include <kern/thread_call.h>
 @@ -23,6 +30,10 @@
- #include <sys/redwood_input.h>
+ #include <sys/hakios.input.h>
  #include <sys/systm.h>
  #include <vm/vm_kern.h>
-+#if __has_include(<sys/redwood_virtio.h>)
-+#include <sys/redwood_virtio.h>
++#if __has_include(<sys/hakios.virtio.h>)
++#include <sys/hakios.virtio.h>
 +#define INPUT_VIO               1
 +#endif
  
@@ -103,11 +103,11 @@ index d8484e3..64585e9 100644
 +		bool down = d->contact[i].id >= 0;
 +
 +		if (down && !d->contact[i].down) {
-+			redwood_touch_post(REDWOOD_TOUCH_DOWN, (uint32_t)i, d->contact[i].x, d->contact[i].y);
++			hakios_touch_post(HAKIOS_TOUCH_DOWN, (uint32_t)i, d->contact[i].x, d->contact[i].y);
 +		} else if (down && d->contact[i].moved) {
-+			redwood_touch_post(REDWOOD_TOUCH_MOVE, (uint32_t)i, d->contact[i].x, d->contact[i].y);
++			hakios_touch_post(HAKIOS_TOUCH_MOVE, (uint32_t)i, d->contact[i].x, d->contact[i].y);
 +		} else if (!down && d->contact[i].down) {
-+			redwood_touch_post(REDWOOD_TOUCH_UP, (uint32_t)i, d->contact[i].x, d->contact[i].y);
++			hakios_touch_post(HAKIOS_TOUCH_UP, (uint32_t)i, d->contact[i].x, d->contact[i].y);
 +		}
 +		d->contact[i].down = down;
 +		d->contact[i].moved = false;
@@ -164,7 +164,7 @@ index d8484e3..64585e9 100644
 +			break;
 +		}
  		if (d->pressed && !d->touching) {
- 			redwood_touch_post(REDWOOD_TOUCH_DOWN, 0, d->x, d->y);
+ 			hakios_touch_post(HAKIOS_TOUCH_DOWN, 0, d->x, d->y);
  		} else if (d->pressed && d->moved) {
 @@ -248,6 +343,17 @@ input_event(struct input_device *d, const struct input_event *e)
  	}
@@ -294,7 +294,7 @@ index d8484e3..64585e9 100644
 +
 +/* Every virtio input device, on PCI (crosvm) or virtio-mmio (QEMU, with its boot-arg). */
 +void
-+redwood_virtio_input_init(void)
++hakios_virtio_input_init(void)
 +{
 +	vio_dev_t *v;
 +
@@ -310,9 +310,9 @@ index d8484e3..64585e9 100644
  
 +#else /* !INPUT_VIO: QEMU's virtio-mmio bus only */
  void
- redwood_virtio_input_init(void)
+ hakios_virtio_input_init(void)
  {
-@@ -351,6 +577,7 @@ redwood_virtio_input_init(void)
+@@ -351,6 +577,7 @@ hakios_virtio_input_init(void)
  			printf("virtio-input: slot %d is a legacy transport; start QEMU with -global virtio-mmio.force-legacy=false\n", slot);
  			continue;
  		}
@@ -320,7 +320,7 @@ index d8484e3..64585e9 100644
  		if (input_attach(d, slot)) {
  			printf("virtio-input: device in slot %d\n", slot);
  			device_count++;
-@@ -363,3 +590,4 @@ redwood_virtio_input_init(void)
+@@ -363,3 +590,4 @@ hakios_virtio_input_init(void)
  		printf("virtio-input: no input devices\n");
  	}
  }

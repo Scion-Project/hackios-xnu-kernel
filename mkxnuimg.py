@@ -7,12 +7,12 @@ into an Android boot image for `fastboot boot`.
 
 The boot shim copies the FD to its base and the payload to PAYLOAD_BASE.
 
-The UEFI pieces are taken from a Mu-Silicium tree built here (Mu-Silicium/, see uefi/README.md)
-or, when there is none, from prebuilt/uefi/.
+The UEFI pieces are taken from a Mu-Silicium tree built here (Mu-Silicium/, see devices/poco-x5-pro/uefi/README.md)
+or, when there is none, from devices/poco-x5-pro/prebuilt/.
 
 usage: mkxnuimg.py [-p payload.bin] [-o out.img]
 
-Another device (common/devices/<name>.conf, read by common/build.sh) sets these in the environment:
+Another device sets these in the environment:
   UEFI_TARGET   Mu-Silicium device name (default redwood)    UEFI_FD, DTB   files to use instead
   FD_BASE, FD_SIZE, PAYLOAD_BASE                              addresses from its UEFI port's memory map
 """
@@ -20,7 +20,7 @@ import argparse, gzip, os, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MU = os.path.join(HERE, 'Mu-Silicium')
-PREBUILT = os.path.join(HERE, 'prebuilt', 'uefi')
+PREBUILT = os.path.join(HERE, 'devices', 'poco-x5-pro', 'prebuilt')
 def env_int(name, default):
     v = os.environ.get(name, '')
     return int(v, 0) if v else default
@@ -48,7 +48,7 @@ if os.path.isfile(fd_path) and os.path.isdir(os.path.join(MU, 'BootShim')):
              'mkbootimg': os.path.join(MU, 'Resources/Scripts/mkbootimg.py')}
 else:
     parts = {'shim': os.path.join(PREBUILT, 'BootShim.bin'), 'fd': os.path.join(PREBUILT, 'SILICIUM_UEFI.fd'),
-             'dtb': os.path.join(PREBUILT, 'redwood.dtb'), 'ramdisk': os.path.join(PREBUILT, 'ramdisk'),
+             'dtb': os.path.join(PREBUILT, 'device-tree.dtb'), 'ramdisk': os.path.join(PREBUILT, 'ramdisk'),
              'mkbootimg': os.path.join(PREBUILT, 'mkbootimg.py')}
     if os.environ.get('UEFI_FD'): parts['fd'] = os.environ['UEFI_FD']
 shim = open(parts['shim'], 'rb').read()
