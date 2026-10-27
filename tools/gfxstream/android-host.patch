@@ -79,6 +79,113 @@ index c31cab6..7ad849c 100644
 +if (ANDROID)
 +    target_link_libraries(gfxstream_host_native_window PUBLIC nativewindow log)
 +endif()
+diff --git a/host/render_control.cpp b/host/render_control.cpp
+index 9b95892..ebbb09c 100644
+--- a/host/render_control.cpp
++++ b/host/render_control.cpp
+@@ -22,6 +22,15 @@
+ #include <atomic>
+ #include <limits>
+ #include <memory>
++#ifdef __ANDROID__
++#include <android/log.h>
++#include <sys/system_properties.h>
++
++#include <chrono>
++#include <condition_variable>
++#include <future>
++#include <mutex>
++#endif
+ 
+ #include "frame_buffer.h"
+ #include "host/gl/gles_version_detector.h"
+@@ -947,6 +956,74 @@ static EGLint rcMakeCurrent(uint32_t context,
+     return (ret ? EGL_TRUE : EGL_FALSE);
+ }
+ 
++#ifdef __ANDROID__
++// Scion (hackios-xnu-kernel tools/gfxstream/android-host.patch): the guest's frames are posted from
++// the one render thread that runs its whole stream, and FrameBuffer::post holds that thread until the
++// post worker has drawn the frame into the app's window and swapped -- no GL of the next frame is
++// run meanwhile. With debug.scion.scgpu.post=async the post is handed to the post worker and the
++// thread goes on; it waits only for the post before (one in flight: the guest draws the next frame
++// into another of the display's surfaces, and the one after that into this one again only after it
++// has been shown). Every 5 s a line of how long the thread spent in rcFBPost (logcat tag scgpu).
++namespace {
++
++struct ScionPosts {
++    std::mutex lock;
++    std::condition_variable done;
++    int inFlight = 0;
++    int async = -1;
++    uint64_t posts = 0, us = 0, maxUs = 0, at = 0;
++};
++ScionPosts sScionPosts;
++
++uint64_t scionNowUs() {
++    return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
++               std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++void scionPost(FrameBuffer* fb, uint32_t colorBuffer) {
++    ScionPosts& s = sScionPosts;
++    if (s.async < 0) {
++        char v[PROP_VALUE_MAX] = "";
++        __system_property_get("debug.scion.scgpu.post", v);
++        s.async = strcmp(v, "async") == 0;
++        __android_log_print(ANDROID_LOG_INFO, "scgpu", "SCGPU: frames are posted %s (debug.scion.scgpu.post)",
++                            s.async ? "asynchronously, one in flight" : "synchronously");
++    }
++    uint64_t t0 = scionNowUs();
++    if (s.async) {
++        {
++            std::unique_lock<std::mutex> l(s.lock);
++            s.done.wait(l, [] { return sScionPosts.inFlight == 0; });
++            s.inFlight++;
++        }
++        fb->postWithCallback(colorBuffer, [](std::shared_future<void> gpu) {
++            gpu.wait();
++            std::lock_guard<std::mutex> l(sScionPosts.lock);
++            sScionPosts.inFlight--;
++            sScionPosts.done.notify_all();
++        });
++    } else {
++        fb->post(colorBuffer);
++    }
++    uint64_t t1 = scionNowUs(), took = t1 - t0;
++    s.posts++;
++    s.us += took;
++    s.maxUs = took > s.maxUs ? took : s.maxUs;
++    if (s.at == 0) {
++        s.at = t1;
++    } else if (t1 - s.at >= 5000000) {
++        __android_log_print(ANDROID_LOG_INFO, "scgpu", "SCGPU: %.1f posts/s; the render thread spent %llu us in each "
++                            "on average, %llu at most (%s)", s.posts * 1e6 / (double)(t1 - s.at),
++                            (unsigned long long)(s.us / s.posts), (unsigned long long)s.maxUs,
++                            s.async ? "async" : "sync");
++        s.posts = s.us = s.maxUs = 0;
++        s.at = t1;
++    }
++}
++
++}  // namespace
++#endif
++
+ static void rcFBPost(uint32_t colorBuffer)
+ {
+     FrameBuffer* fb = FrameBuffer::getFB();
+@@ -954,7 +1031,11 @@ static void rcFBPost(uint32_t colorBuffer)
+         return;
+     }
+ 
++#ifdef __ANDROID__
++    scionPost(fb, colorBuffer);
++#else
+     fb->post(colorBuffer);
++#endif
+ }
+ 
+ static void rcFBSetSwapInterval(EGLint interval)
 diff --git a/host/virtio_gpu_frontend.cpp b/host/virtio_gpu_frontend.cpp
 index 4c5c3e1..7d54575 100644
 --- a/host/virtio_gpu_frontend.cpp
