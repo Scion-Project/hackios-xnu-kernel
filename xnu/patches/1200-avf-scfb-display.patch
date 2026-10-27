@@ -1,10 +1,10 @@
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-index a537cb6..69009fe 100644
+index 1cb905a..3e34210 100644
 --- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 @@ -42,6 +42,110 @@ extern struct vc_info vinfo;            /* the boot framebuffer, as the text con
  
- extern "C" void redwood_tl(const char * format, ...) __printflike(1, 2);
+ extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
  
 +/*
 + * Scion shared framebuffer (SCFB), for the Android Virtualization Framework: crosvm has no ramfb,

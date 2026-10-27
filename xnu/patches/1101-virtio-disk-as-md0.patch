@@ -1,5 +1,5 @@
 diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
-index 1e64e96..42781e7 100644
+index 6953948..cfbed7a 100644
 --- a/iokit/bsddev/IOKitBSDInit.cpp
 +++ b/iokit/bsddev/IOKitBSDInit.cpp
 @@ -755,6 +755,15 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
@@ -7,7 +7,7 @@ index 1e64e96..42781e7 100644
  //
  
 +	/*
-+	 * md0=rvblkN: the system volume, which HackiOS's user space knows as md0 (the root, and the
++	 * md0=rvblkN: the system volume, which HakiOS's user space knows as md0 (the root, and the
 +	 * container its cryptexes are mounted from: "/dev/md0,c=N"), is that virtio disk instead of a
 +	 * RAM disk: under crosvm the host serves the 2.5 GB image from its own storage. The RAM
 +	 * disks then start at md1, where stage0 looks for the small image (root.apfs).
@@ -44,15 +44,15 @@ index 1e64e96..42781e7 100644
 +//	rd=md0 with md0=rvblkN: the root is that virtio disk, also reachable as /dev/md0
 +//
 +	if (md0Virtio && strcmp(rdBootVar, "md0") == 0) {
-+		extern int redwood_virtio_blk_rootdev(const char *name, dev_t *dev);
-+		extern int redwood_virtio_blk_alias(const char *disk, const char *name);
++		extern int hakios_virtio_blk_rootdev(const char *name, dev_t *dev);
++		extern int hakios_virtio_blk_alias(const char *disk, const char *name);
 +		int vblk_error;
 +
 +		OSSafeReleaseNULL(matching);
-+		if ((vblk_error = redwood_virtio_blk_rootdev(md0Disk, root)) != 0) {
++		if ((vblk_error = hakios_virtio_blk_rootdev(md0Disk, root)) != 0) {
 +			panic("IOFindBSDRoot: md0=%s: no such virtio disk: %d", md0Disk, vblk_error);
 +		}
-+		(void)redwood_virtio_blk_alias(md0Disk, "md0");
++		(void)hakios_virtio_blk_alias(md0Disk, "md0");
 +		strlcpy(rootName, "md0", rootNameSize);
 +		IOLog("BSD root: md0 = %s, major %d, minor %d\n", md0Disk, major(*root), minor(*root));
 +		*oflags = 0;

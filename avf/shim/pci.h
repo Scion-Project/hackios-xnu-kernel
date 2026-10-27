@@ -3,7 +3,7 @@
 
 /*
  * The PCI host bridge from the FDT (crosvm: pci-host-cam-generic at 0x2e000000), as the ADT node
- * /pci0 that the kernel's PCI host driver reads (bsd/dev/redwood_pci.c). From agent B's
+ * /pci0 that the kernel's PCI host driver reads (bsd/dev/hakios.pci.c). From agent B's
  * xnuloader/loader.c (pci_from_fdt); see there for the node's format.
  */
 #define PCI_MAX_RANGES  4

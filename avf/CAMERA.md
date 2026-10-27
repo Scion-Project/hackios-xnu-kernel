@@ -9,13 +9,13 @@ Camera2 and lends the VM a second slice of shared RAM, as it does for the displa
 ```
 Pixel camera --Camera2--> app (ImageReader, YUV_420_888)
         --NV12 into a ring of slots--> SCCAM region (ashmem, guest RAM)
-        --> XNU /dev/redwood-camera (patch 1400): RAW10, every pixel a 2x2 RGGB cell
-        --> libredwood-media.dylib in mediaserverd (camera_device.c, camera_isp.c)
+        --> XNU /dev/hakios-camera (patch 1400): RAW10, every pixel a 2x2 RGGB cell
+        --> libhakios.media.dylib in mediaserverd (camera_device.c, camera_isp.c)
         --> CMCapture's graph --> Camera.app (preview, photos)
 ```
 
 Above the kernel nothing changes: the media library, its ISP and the capture graph run as on
-HackiOS's phone, with `/dev/redwood-camera` as the interface. The kernel makes each NV12 frame into
+HakiOS's phone, with `/dev/hakios-camera` as the interface. The kernel makes each NV12 frame into
 the RAW10 frame a sensor would give, every pixel of the app's one cell of four sites, so the ISP's
 preview path (a cell a pixel) gets the app's pixels back; the colours are linear light, so the ISP's
 gamma restores them (round trip within 4/255 of the app's pixels, measured on the host with the
@@ -32,7 +32,7 @@ the app's levels), so AE closes on its own target. There is no colour tuning on 
 * **avfboot** reads `sccam.addr`/`sccam.size`, ends XNU's memory window below the region, and adds the
   device-tree nodes MobileGestalt looks for (`/arm-io/isp` with `camera-rear`, `/product/camera`), as
   xnuloader does for `cam=5`. That puts Camera.app on the home screen.
-* **Patch 1400** (`bsd/dev/redwood_camera.c`): with `sccam.addr`, `/dev/redwood-camera` serves the
+* **Patch 1400** (`bsd/dev/hakios.camera.c`): with `sccam.addr`, `/dev/hakios-camera` serves the
   app's frames (no `cam=` needed). It maps the region cacheable (the app's mapping is too), checks
   the header, and on every session (a read wants frames) asks for them. Sensor 1 (camera_device.c's
   back camera) is the phone's back camera, sensor 2 its front one. `sccam.turn=MASK` turns the back

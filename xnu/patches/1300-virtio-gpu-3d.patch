@@ -1,28 +1,28 @@
 diff --git a/bsd/conf/files b/bsd/conf/files
-index d8e23ea..80fb6a0 100644
+index c832477..dcc51a5 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -139,6 +139,8 @@ bsd/dev/redwood_virtio_blk.c	standard
- bsd/dev/redwood_sparse.c	standard
- bsd/dev/redwood_apfs_check.c	optional apfs
- bsd/dev/redwood_sound.c		standard
-+bsd/dev/redwood_vgpu3d.c	standard
-+bsd/dev/redwood_vgpu3d_xnu.c	standard
- bsd/dev/redwood_qmi.c		standard
- bsd/dev/redwood_wlfw.c		standard
- bsd/dev/redwood_lx.c		standard
+@@ -143,6 +143,8 @@ bsd/dev/hakios.virtio_blk.c	standard
+ bsd/dev/hakios.sparse.c	standard
+ bsd/dev/hakios.apfs_check.c	optional apfs
+ bsd/dev/hakios.sound.c		standard
++bsd/dev/hakios.vgpu3d.c	standard
++bsd/dev/hakios.vgpu3d_xnu.c	standard
+ bsd/dev/hakios.qmi.c		standard
+ bsd/dev/hakios.nas.c		standard
+ bsd/dev/hakios.wlfw.c		standard
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index b9fb59d..3e63086 100644
+index 0250d5e..92a191b 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -993,6 +993,10 @@ bsd_init(void)
- 		redwood_input_init();           /* /dev/redwood-touch */
- 		redwood_audio_init();           /* /dev/redwood-audio */
- 		redwood_virtio_blk_init();      /* /dev/rvblk0, a disk image of the host (QEMU) */
+ 		hakios_input_init();           /* /dev/hakios-touch */
+ 		hakios_audio_init();           /* /dev/hakios-audio */
+ 		hakios_virtio_blk_init();      /* /dev/rvblk0, a disk image of the host (QEMU) */
 +		{
-+			extern void redwood_vgpu3d_init(void);
-+			redwood_vgpu3d_init();  /* boot-arg gpu3d=1: virtio-gpu 3D bring-up (bsd/dev/redwood_vgpu3d_xnu.c) */
++			extern void hakios_vgpu3d_init(void);
++			hakios_vgpu3d_init();  /* boot-arg gpu3d=1: virtio-gpu 3D bring-up (bsd/dev/hakios.vgpu3d_xnu.c) */
 +		}
- 		redwood_sparse_init();          /* /dev/rsp0, part of an image too big to hold */
+ 		hakios_sparse_init();          /* /dev/rsp0, part of an image too big to hold */
  #if APFS
  		/* mounts and walks /dev/rvblk0 once userland has /private/var up */

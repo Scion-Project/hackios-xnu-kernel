@@ -1,5 +1,5 @@
 diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
-index a058bb5..4aae8b6 100644
+index 9dcd99b..f3101de 100644
 --- a/osfmk/arm64/loader_return.c
 +++ b/osfmk/arm64/loader_return.c
 @@ -24,6 +24,7 @@
@@ -10,7 +10,7 @@ index a058bb5..4aae8b6 100644
  #include <vm/vm_page.h>
  #include <vm/vm_compressor.h>
  
-@@ -358,6 +359,70 @@ loader_log_append_msgbuf(void)
+@@ -360,6 +361,70 @@ loader_log_append_msgbuf(void)
  	}
  }
  
@@ -81,7 +81,7 @@ index a058bb5..4aae8b6 100644
  void
  loader_return(void)
  {
-@@ -395,6 +460,7 @@ loader_return(void)
+@@ -398,6 +463,7 @@ loader_return(void)
  		}
  	}
  	loader_jump(0, 0);
@@ -90,7 +90,7 @@ index a058bb5..4aae8b6 100644
  
  /* Bring-up aid: stop here if the loader asked for checkpoint n. */
 diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
-index 4f540f8..c0ceb12 100644
+index 828a511..057e465 100644
 --- a/osfmk/arm64/machine_routines.c
 +++ b/osfmk/arm64/machine_routines.c
 @@ -735,6 +735,7 @@ ml_get_machine_mem(void)
@@ -98,13 +98,13 @@ index 4f540f8..c0ceb12 100644
  
  extern void loader_return(void);
 +extern void loader_exit_wanted(bool reset);    /* osfmk/arm64/loader_return.c */
- extern void redwood_adreno_stop(void);
+ extern void hakios_adreno_stop(void);
  
  __attribute__((noreturn))
 @@ -750,6 +751,7 @@ halt_all_cpus(boolean_t reboot)
  	}
  	/* No platform driver powers the machine off: hand control (and the log) back to the loader. */
- 	redwood_adreno_stop();
+ 	hakios_adreno_stop();
 +	loader_exit_wanted(reboot);     /* without a loader: PSCI SYSTEM_RESET or SYSTEM_OFF */
  	loader_return();
  	while (1) {

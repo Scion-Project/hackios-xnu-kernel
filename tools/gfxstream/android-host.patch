@@ -1,0 +1,105 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 639baeb..418ee7a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -104,6 +104,11 @@ if (APPLE)
+ elseif(QNX)
+     # TODO(jsimonot): fix build error
+     # add_compile_definitions(VK_USE_PLATFORM_SCREEN_QNX)
++elseif(ANDROID)
++    # Android (the NDK): EGL on ANativeWindow, no X11. The AOSP headers Vulkan's Android
++    # path wants (cutils/native_handle.h) come from third_party/android, after the NDK's own.
++    add_compile_definitions(VK_USE_PLATFORM_ANDROID_KHR)
++    add_compile_options(-idirafter ${CMAKE_CURRENT_SOURCE_DIR}/third_party/android/include)
+ elseif(UNIX)
+     # Use X11 version of EGL platform specific definitions.
+     add_compile_definitions(USE_X11)
+diff --git a/common/base/CMakeLists.txt b/common/base/CMakeLists.txt
+index 090901f..60e40a4 100644
+--- a/common/base/CMakeLists.txt
++++ b/common/base/CMakeLists.txt
+@@ -102,7 +102,7 @@ target_compile_definitions(gfxstream_common_base PRIVATE)
+ if (WIN32)
+     set(gfxstream_common_base_platform_deps
+         Shlwapi)
+-elseif (QNX)
++elseif (QNX OR ANDROID)
+     set(gfxstream_common_base_platform_deps
+         dl)
+ elseif(LINUX)
+diff --git a/host/gl/glestranslator/egl/CMakeLists.txt b/host/gl/glestranslator/egl/CMakeLists.txt
+index 103b18e..7d0ba8e 100644
+--- a/host/gl/glestranslator/egl/CMakeLists.txt
++++ b/host/gl/glestranslator/egl/CMakeLists.txt
+@@ -15,6 +15,7 @@
+ # Use EGL platform specific definitions.
+ if (APPLE)
+     add_compile_definitions(__APPLE__)
++elseif(ANDROID)
+ elseif(UNIX)
+     add_compile_definitions(USE_X11)
+ endif()
+@@ -59,7 +60,7 @@ elseif (APPLE)
+         EGL_translator_static
+         ${egl-translator-common-sources}
+         ${egl-translator-darwin-sources})
+-elseif (QNX)
++elseif (QNX OR ANDROID)
+     add_library(
+         EGL_translator_static
+         ${egl-translator-common-sources}
+@@ -98,6 +99,8 @@ elseif (APPLE)
+     target_link_libraries(EGL_translator_static PUBLIC "-framework AppKit -framework IOSurface")
+ elseif (QNX)
+     target_link_libraries(EGL_translator_static PUBLIC "-lscreen -lregex -lEGL -lGLESv2")
++elseif (ANDROID)
++    target_link_libraries(EGL_translator_static PUBLIC "-ldl")
+ else()
+     target_link_libraries(EGL_translator_static PUBLIC "-ldl -lpthread")
+ endif()
+diff --git a/host/native_window/CMakeLists.txt b/host/native_window/CMakeLists.txt
+index c31cab6..7ad849c 100644
+--- a/host/native_window/CMakeLists.txt
++++ b/host/native_window/CMakeLists.txt
+@@ -9,6 +9,9 @@ elseif (WIN32)
+ elseif (QNX)
+     set(gfxstream_host_native_window_platform_sources
+         native_sub_window_qnx.cpp)
++elseif (ANDROID)
++    set(gfxstream_host_native_window_platform_sources
++        native_sub_window_android.cpp)
+ else()
+     set(gfxstream_host_native_window_platform_sources
+         native_sub_window_x11.cpp)
+@@ -33,3 +36,7 @@ target_link_libraries(
+     gfxstream_backend_headers
+     gfxstream_host_decoder_common
+     )
++
++if (ANDROID)
++    target_link_libraries(gfxstream_host_native_window PUBLIC nativewindow log)
++endif()
+diff --git a/host/vulkan/CMakeLists.txt b/host/vulkan/CMakeLists.txt
+index d98f3db..a8440c2 100644
+--- a/host/vulkan/CMakeLists.txt
++++ b/host/vulkan/CMakeLists.txt
+@@ -83,6 +83,7 @@ elseif (APPLE)
+ target_compile_definitions(gfxstream-vulkan-server PRIVATE -DVK_USE_PLATFORM_METAL_EXT -DVK_USE_PLATFORM_MACOS_MVK)
+ elseif (QNX)
+ target_compile_definitions(gfxstream-vulkan-server PRIVATE -DVK_USE_PLATFORM_SCREEN_QNX)
++elseif (ANDROID)
+ elseif (UNIX)
+ target_compile_definitions(gfxstream-vulkan-server PRIVATE -DVK_USE_PLATFORM_XCB_KHR)
+ endif()
+diff --git a/host/vulkan/cereal/CMakeLists.txt b/host/vulkan/cereal/CMakeLists.txt
+index 136076a..7ff82c5 100644
+--- a/host/vulkan/cereal/CMakeLists.txt
++++ b/host/vulkan/cereal/CMakeLists.txt
+@@ -25,6 +25,7 @@ if (WIN32)
+     target_compile_definitions(OpenglRender_vulkan_cereal PRIVATE -DVK_USE_PLATFORM_WIN32_KHR)
+ elseif (APPLE)
+     target_compile_definitions(OpenglRender_vulkan_cereal PRIVATE -DVK_USE_PLATFORM_MACOS_MVK -DVK_USE_PLATFORM_METAL_EXT)
++elseif(ANDROID)
+ elseif(UNIX)
+     target_compile_definitions(OpenglRender_vulkan_cereal PRIVATE -DVK_USE_PLATFORM_XCB_KHR)
+ endif()

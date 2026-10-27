@@ -12,7 +12,7 @@ CFLAGS="--target=aarch64-none-elf -O2 -ffreestanding -fno-builtin -nostdlib -fPI
 	-I../../../xnu/files/bsd"
 mkdir -p out
 SH=../../shim
-SRCS="$SH/start.S main.c bench.c $SH/fdtx.c $SH/uart.c ../../../xnu/files/bsd/dev/redwood_vgpu3d.c"
+SRCS="$SH/start.S main.c bench.c $SH/fdtx.c $SH/uart.c ../../../xnu/files/bsd/dev/hakios.vgpu3d.c"
 OBJS=
 for f in $SRCS; do
 	o=out/$(basename "${f%.*}").o

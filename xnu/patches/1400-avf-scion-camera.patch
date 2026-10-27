@@ -1,13 +1,13 @@
-diff --git a/bsd/dev/redwood_camera.c b/bsd/dev/redwood_camera.c
-index 133b179..b5030b0 100644
---- a/bsd/dev/redwood_camera.c
-+++ b/bsd/dev/redwood_camera.c
+diff --git a/bsd/dev/hakios.camera.c b/bsd/dev/hakios.camera.c
+index 0e3c470..05273e3 100644
+--- a/bsd/dev/hakios.camera.c
++++ b/bsd/dev/hakios.camera.c
 @@ -3770,6 +3770,424 @@ fake_session(void)
  	    "another sensor asked for" : "nobody reads", ios_frames_done, ios_given);
  }
  
 +/*
-+ * sccam.addr= (patch 1400; for the Android Virtualization Framework): /dev/redwood-camera with the
++ * sccam.addr= (patch 1400; for the Android Virtualization Framework): /dev/hakios-camera with the
 + * frames of the camera of the phone the VM runs on. The Scion app lends the VM a slice of RAM it
 + * maps too, as it does the shared framebuffer (an ashmem region crosvm maps as guest memory: SCCAM,
 + * avf/CAMERA.md), and says where with sccam.addr= sccam.size= in the kernel parameters; avfboot keeps
@@ -419,7 +419,7 @@ index 133b179..b5030b0 100644
 +	ios_ask.lines = host_mode.frame_length - EXPOSURE_MARGIN;
 +	ios_ask.gain = 8 * GAIN_UNITY;
 +	ios_ask.frame_lines = 0;
-+	say("camera: /dev/redwood-camera: the app's %s camera (as the %s), %ux%u, whenever it is read\n", index == 2 ? "front" : "back",
++	say("camera: /dev/hakios-camera: the app's %s camera (as the %s), %ux%u, whenever it is read\n", index == 2 ? "front" : "back",
 +	    hw->name, host_mode.width, host_mode.height);
 +	return true;
 +}
@@ -474,7 +474,7 @@ index 133b179..b5030b0 100644
  		serve_ios();
  		say("camera: done\n");
  		thread_terminate(current_thread());
-@@ -4220,14 +4647,18 @@ redwood_camera_init(void)
+@@ -4220,14 +4647,18 @@ hakios_camera_init(void)
  {
  	thread_t thread;
  

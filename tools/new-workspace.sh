@@ -5,30 +5,23 @@
 # (btrfs or xfs), so a workspace costs about 0.5 GB, most of it the kernel's build output.
 #
 # usage: tools/new-workspace.sh NAME INSTANCE [DIR]
-#   NAME      the branch, and the directory ../hackios-NAME unless DIR is given
+#   NAME      the branch, and the directory ../hakios-NAME unless DIR is given
 #   INSTANCE  the QEMU instance number of the copy (1, 2, ...; see qemu/run-ios.sh)
 #
 # The kernel tree is copied as it is now, uncommitted work included, and that state is recorded
 # (refs/redwood/baseline in the copy's kernel tree): tools/kernel-delta.sh, run in the workspace,
-# prints what was changed in the kernel since. Files below ios165/rootfs, ios165/cryptex and
-# ios165/cryptex-app are hard links to this copy's: replace them, never edit them in place.
+# prints what was changed in the kernel since. Files below sysimage/rootfs, sysimage/cryptex and
+# sysimage/cryptex-app are hard links to this copy's: replace them, never edit them in place.
 # The phone is not part of a workspace: there is one, and ./xl belongs to the main copy.
 set -e
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 NAME=${1:?usage: new-workspace.sh NAME INSTANCE [DIR]}
 INSTANCE=${2:?usage: new-workspace.sh NAME INSTANCE [DIR]}
-WS=${3:-$(dirname "$ROOT")/hackios-$NAME}
+WS=${3:-$(dirname "$ROOT")/hakios-$NAME}
 [ -e "$WS" ] && { echo "new-workspace.sh: $WS already exists"; exit 1; }
 
 git -C "$ROOT" worktree add -q -b "$NAME" "$WS"
 cd "$WS"
-# hackios-xnu-userland shares the tree (common/setup.sh): the copy gets its own clone of it, from this
-# copy's, on a branch of the same name
-if [ -d "$ROOT/.userland.git" ]; then
-	USERLAND_URL="$ROOT/.userland.git" USERLAND_REF="$(git --git-dir="$ROOT/.userland.git" rev-parse --abbrev-ref HEAD)" \
-		common/setup.sh > /dev/null
-	common/ugit checkout -q -b "$NAME"
-fi
 
 # the kernel tree, without build output (it is full of absolute paths)
 mkdir -p xnu-src
@@ -52,13 +45,13 @@ cp -a --reflink=auto "$ROOT/xnu-deps/." xnu-deps/
 # out with no /System/Cryptexes/App at all, and Safari's daemons and AuthenticationServicesAgent --
 # eight jobs -- then look to mkjobs.py like programs nobody has (build.sh at cryptex-app, present()).
 for d in rootfs cryptex cryptex-app "20F66__iPhone10,3_6"; do
-	if [ -e "$ROOT/ios165/$d" ]; then cp -al "$ROOT/ios165/$d" ios165/; fi
+	if [ -e "$ROOT/sysimage/$d" ]; then cp -al "$ROOT/sysimage/$d" sysimage/; fi
 done
 for f in system.files system.manifest var.skel .done-rootfs .done-cryptex .done-cryptex-app a2s.json; do
-	if [ -e "$ROOT/ios165/$f" ]; then cp -a "$ROOT/ios165/$f" ios165/; fi
+	if [ -e "$ROOT/sysimage/$f" ]; then cp -a "$ROOT/sysimage/$f" sysimage/; fi
 done
 for f in rootfs.dmg rootfs.slt cryptex-app.dmg extracted; do
-	if [ -e "$ROOT/ios165/$f" ]; then ln -s "$ROOT/ios165/$f" ios165/; fi
+	if [ -e "$ROOT/sysimage/$f" ]; then ln -s "$ROOT/sysimage/$f" sysimage/; fi
 done
 # The firmware the build puts into the images -- the radio's, the audio DSP's, the GPU's. A copy
 # without them builds an image with no /fw and says nothing about it: gpu=1 then starts no GPU.

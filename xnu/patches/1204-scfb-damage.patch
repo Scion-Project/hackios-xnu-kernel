@@ -1,8 +1,8 @@
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-index be385cf..7e61a2c 100644
+index 18a9e69..efc09e6 100644
 --- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-@@ -59,6 +59,7 @@ extern "C" void redwood_tl(const char * format, ...) __printflike(1, 2);
+@@ -59,6 +59,7 @@ extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
  #define SCFB_MAGIC              0x42464353u     /* "SCFB" */
  #define SCFB_F_READY            1u              /* the header is valid */
  #define SCFB_F_POLL             2u              /* nothing publishes frames yet: copy now and then */
@@ -255,5 +255,5 @@ index be385cf..7e61a2c 100644
 +		scfbPublish(0, 0, fPanelWidth, fPanelHeight, false);
 +	}
  	if (gVGPU) {
- 		redwood_vgpu_flush(0, 0, fPanelWidth, fPanelHeight);
+ 		hakios_vgpu_flush(0, 0, fPanelWidth, fPanelHeight);
  	}
