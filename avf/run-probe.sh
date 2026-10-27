@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Boot avfboot + an XNUP payload as a custom AVF VM on a phone, through the AVF probe app
-# (dylanneve1/scion-avf, probe/), and collect the VM's console.
+# (Scion-Project/scion-avf, probe/), and collect the VM's console.
 #
 #   avf/run-probe.sh IMAGE PAYLOAD [-s SERIAL] [--mem MIB] [--timeout SEC] [--params "..."] [--out DIR]
 #                    [--match-host-cpus]   (one vCPU per host core instead of one; add cpus=N to --params)

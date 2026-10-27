@@ -79,7 +79,7 @@ avf/run-probe.sh avf/shim/out/Image payload.bin -s SERIAL --mem 2048 --params "-
 `hello` is `prebuilt/userland/hello`: with it as the RAM disk the kernel's
 mockfs serves it as `/sbin/launchd`, and it prints `Hello from user space on Darwin!` as process 1.
 
-`run-probe.sh` drives the AVF probe app of dylanneve1/scion-avf (`probe/`). It takes the phone's
+`run-probe.sh` drives the AVF probe app of Scion-Project/scion-avf (`probe/`). It takes the phone's
 `/data/local/tmp/pixel.lock`, grants the VM permissions and the hidden-API exemption the custom-VM
 API needs, and puts all of that back before it releases the lock.
 
