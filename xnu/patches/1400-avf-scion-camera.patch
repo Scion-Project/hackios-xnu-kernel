@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/hakios.camera.c b/bsd/dev/hakios.camera.c
-index 133b179..b5030b0 100644
+index 0e3c470..05273e3 100644
 --- a/bsd/dev/hakios.camera.c
 +++ b/bsd/dev/hakios.camera.c
 @@ -3770,6 +3770,424 @@ fake_session(void)

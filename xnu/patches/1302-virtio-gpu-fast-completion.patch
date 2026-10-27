@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/hakios.vgpu.c b/bsd/dev/hakios.vgpu.c
-index 5c15113..0c805f7 100644
+index 0456991..c1b3ef1 100644
 --- a/bsd/dev/hakios.vgpu.c
 +++ b/bsd/dev/hakios.vgpu.c
 @@ -158,12 +158,28 @@ vgpu_submit(const void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len)

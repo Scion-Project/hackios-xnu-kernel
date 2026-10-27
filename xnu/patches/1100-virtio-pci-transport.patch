@@ -1,10 +1,10 @@
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 9cd24b4..d8e23ea 100644
+index be702e2..f4eea96 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -132,6 +132,9 @@ bsd/dev/hakios.mic.c		standard
- bsd/dev/hakios.wifi.c		standard
+@@ -135,6 +135,9 @@ bsd/dev/hakios.wifi.c		standard
  bsd/dev/hakios.adsp.c		standard
+ bsd/dev/hakios.mpss.c		standard
  bsd/dev/hakios.image.c		standard
 +bsd/dev/hakios.pci.c		standard
 +bsd/dev/hakios.virtio.c	standard
@@ -13,7 +13,7 @@ index 9cd24b4..d8e23ea 100644
  bsd/dev/hakios.sparse.c	standard
  bsd/dev/hakios.apfs_check.c	optional apfs
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index 16cf4fd..b9fb59d 100644
+index 4a6e0cc..0250d5e 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -912,7 +912,14 @@ bsd_init(void)
@@ -33,7 +33,7 @@ index 16cf4fd..b9fb59d 100644
  
  #if XNU_TARGET_OS_OSX && defined(__arm64__)
 diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
-index 29978e9..1e64e96 100644
+index 29978e9..6953948 100644
 --- a/iokit/bsddev/IOKitBSDInit.cpp
 +++ b/iokit/bsddev/IOKitBSDInit.cpp
 @@ -686,7 +686,8 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
@@ -71,10 +71,10 @@ index 29978e9..1e64e96 100644
  //	Now check if we are trying to root on a memory device
  //
 diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
-index 997a4ab..c7a9f81 100644
+index 3ee150b..f192350 100644
 --- a/pexpert/arm/pe_serial.c
 +++ b/pexpert/arm/pe_serial.c
-@@ -697,6 +697,27 @@ register_serial_functions(struct pe_serial_functions *fns)
+@@ -762,6 +762,27 @@ register_serial_functions(struct pe_serial_functions *fns)
  	gPESF = fns;
  }
  
@@ -102,7 +102,7 @@ index 997a4ab..c7a9f81 100644
  #if HIBERNATION
  /**
   * Transitions the serial driver into a mode that can be run in the hibernation
-@@ -897,6 +918,10 @@ serial_init(void)
+@@ -972,6 +993,10 @@ serial_init(void)
  	}
  #endif /* APPLE_UART */
  
@@ -114,7 +114,7 @@ index 997a4ab..c7a9f81 100644
  		return 0;
  	}
 diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
-index 404b50b..b3a59cc 100644
+index 404b50b..9799b05 100644
 --- a/pexpert/pexpert/arm/protos.h
 +++ b/pexpert/pexpert/arm/protos.h
 @@ -47,7 +47,8 @@ typedef enum serial_device {

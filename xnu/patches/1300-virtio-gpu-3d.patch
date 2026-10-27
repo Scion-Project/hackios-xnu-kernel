@@ -1,18 +1,18 @@
 diff --git a/bsd/conf/files b/bsd/conf/files
-index d8e23ea..80fb6a0 100644
+index c832477..dcc51a5 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -139,6 +139,8 @@ bsd/dev/hakios.virtio_blk.c	standard
+@@ -143,6 +143,8 @@ bsd/dev/hakios.virtio_blk.c	standard
  bsd/dev/hakios.sparse.c	standard
  bsd/dev/hakios.apfs_check.c	optional apfs
  bsd/dev/hakios.sound.c		standard
 +bsd/dev/hakios.vgpu3d.c	standard
 +bsd/dev/hakios.vgpu3d_xnu.c	standard
  bsd/dev/hakios.qmi.c		standard
+ bsd/dev/hakios.nas.c		standard
  bsd/dev/hakios.wlfw.c		standard
- bsd/dev/hakios.lx.c		standard
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index b9fb59d..3e63086 100644
+index 0250d5e..92a191b 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -993,6 +993,10 @@ bsd_init(void)

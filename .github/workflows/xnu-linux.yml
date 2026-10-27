@@ -97,7 +97,11 @@ jobs:
           mkdir -p out && cp $K $K.unstripped out/
 
       - name: Loader (xnuloader/build.sh)
+        # identity.h comes from the device tree of the builder's own IPSW (xnuloader/mkidentity.sh);
+        # CI fetches nothing of Apple's, so it builds with the placeholder (no Apple data). Under AVF
+        # avfboot loads the kernel and this loader is not used; here it is a compile check.
         run: |
+          xnuloader/mkidentity.sh --placeholder
           xnuloader/build.sh
           cp xnuloader/loader.efi xnuloader/mkpayload.py out/
           (cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS)

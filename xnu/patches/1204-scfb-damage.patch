@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-index be385cf..7e61a2c 100644
+index 18a9e69..efc09e6 100644
 --- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 @@ -59,6 +59,7 @@ extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);

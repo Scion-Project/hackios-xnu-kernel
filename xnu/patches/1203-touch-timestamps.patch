@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/hakios.input.c b/bsd/dev/hakios.input.c
-index 8076cf0..e0ea070 100644
+index 5f8aeb8..8d27f41 100644
 --- a/bsd/dev/hakios.input.c
 +++ b/bsd/dev/hakios.input.c
 @@ -107,7 +107,7 @@ count_fingers(uint32_t type, uint32_t finger)
@@ -46,7 +46,7 @@ index 8076cf0..e0ea070 100644
  	return error;
  }
 diff --git a/bsd/dev/hakios.virtio_input.c b/bsd/dev/hakios.virtio_input.c
-index 64585e9..642d589 100644
+index f1accd9..51b1b95 100644
 --- a/bsd/dev/hakios.virtio_input.c
 +++ b/bsd/dev/hakios.virtio_input.c
 @@ -112,6 +112,8 @@ struct input_event {
@@ -149,7 +149,7 @@ index 64585e9..642d589 100644
  			hakios_touch_post(HAKIOS_TOUCH_DOWN, 0, d->x, d->y);
  		} else if (d->pressed && d->moved) {
 diff --git a/bsd/sys/hakios.input.h b/bsd/sys/hakios.input.h
-index bb8ad1b..5b21eac 100644
+index f727013..6381103 100644
 --- a/bsd/sys/hakios.input.h
 +++ b/bsd/sys/hakios.input.h
 @@ -38,6 +38,8 @@ struct hakios_touch {

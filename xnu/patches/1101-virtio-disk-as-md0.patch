@@ -1,5 +1,5 @@
 diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
-index 1e64e96..42781e7 100644
+index 6953948..cfbed7a 100644
 --- a/iokit/bsddev/IOKitBSDInit.cpp
 +++ b/iokit/bsddev/IOKitBSDInit.cpp
 @@ -755,6 +755,15 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
