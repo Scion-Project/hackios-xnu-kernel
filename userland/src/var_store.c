@@ -20,6 +20,13 @@
  *   var_store stamp PATH    write a line into PATH saying when: a marker for a run
  *   var_store bootok        tell the loader's boot guard that this generation came up
  *
+ * Under the Android Virtualization Framework (crosvm on the Pixel) there is no flash partition of
+ * ours: the store is then a second virtio disk, /dev/rrvblk1 (a writable disk image of the Scion
+ * app, disk.1 in its avf.properties; the kernel needs virtio_blk_rw=1), the whole of it, its two
+ * halves the two slots. Nor is there a way back to a loader to ask for the save at the end: there
+ * `watch` saves every var_store_every=SECS seconds (boot-arg) and when launchd stops it on the way
+ * to a shutdown or a restart (SIGTERM).
+ *
  * Nobody has to remember to save. `watch` registers with the kernel (kern.hakios.var_save), and
  * on the orderly way back to the loader -- the run's time up, or "xl stop" -- the kernel asks it
  * for the volume and waits, bounded, before it goes (bsd/dev/hakios.ufs.c,
@@ -58,6 +65,9 @@
 #define SLOT_BYTES      0x80000000LL            /* 2 GiB a slot, two slots */
 #define SLOTS           2
 #define DEVICE          "/dev/rufs_darwin"
+#define VIRTIO_DEVICE   "/dev/rrvblk1"          /* AVF: the second virtio disk, all of it */
+#define DKIOCGETBLOCKSIZE  0x40046418
+#define DKIOCGETBLOCKCOUNT 0x40086419
 #define STATE_AT        8566865920LL            /* darwin's block 2091520: the boot state (common/flash/bundlefmt.py) */
 #define BOOTOK_AFTER    60                      /* seconds of a run that make it a good start */
 #define ROOT            "/private/var"
@@ -229,6 +239,119 @@ head_checksum(const struct head *h)
 /* ---- the store, as a stream of bytes in one slot ---- */
 
 static int fd = -1;
+
+/*
+ * SIGTERM, which launchd sends every job on the way to a shutdown or a restart: noted here, and the
+ * watch loop saves once more and ends. libmini has no signals, so this is the whole of it: the
+ * kernel enters the trampoline with x0 = the handler, x1 = infostyle, x2 = the signal, x4 = the
+ * context and x5 = the token sigreturn wants back (bsd/dev/arm/unix_signal.c, sendsig).
+ */
+static volatile int terminated;
+
+static void
+on_term(int sig)
+{
+	(void)sig;
+	terminated = 1;
+}
+
+void var_store_sigtramp(void);
+__asm__(
+	"	.text\n"
+	"	.align 2\n"
+	"_var_store_sigtramp:\n"
+	"	mov	x19, x4\n"
+	"	mov	x20, x1\n"
+	"	mov	x21, x5\n"
+	"	mov	x9, x0\n"
+	"	mov	x0, x2\n"
+	"	blr	x9\n"
+	"	mov	x0, x19\n"
+	"	mov	x1, x20\n"
+	"	mov	x2, x21\n"
+	"	mov	x16, #184\n"            /* SYS_sigreturn */
+	"	svc	#0x80\n"
+	"	brk	#1\n");
+
+static void
+catch_term(void)
+{
+	struct {
+		void (*handler)(int);
+		void (*tramp)(void);
+		uint32_t mask;
+		int flags;
+	} act = { on_term, var_store_sigtramp, 0, 0 };     /* no SA_RESTART: a sleep is cut short */
+
+	(void)mini_syscall(46 /* SYS_sigaction */, 15 /* SIGTERM */, (long)&act, 0, 0, 0, 0);
+}
+
+/* A number among the kernel's boot-args, or 0. */
+static uint64_t
+boot_arg_number(const char *name)
+{
+	static char args[1024];
+	size_t len = sizeof(args) - 1, n = strlen(name);
+
+	if (sysctlbyname("kern.bootargs", args, &len, NULL, 0) != 0) {
+		return 0;
+	}
+	args[len < sizeof(args) ? len : sizeof(args) - 1] = 0;
+	for (char *p = args; *p;) {
+		while (*p == ' ') {
+			p++;
+		}
+		if (strncmp(p, name, n) == 0 && p[n] == '=') {
+			uint64_t v = 0;
+			for (p += n + 1; *p >= '0' && *p <= '9'; p++) {
+				v = v * 10 + (uint64_t)(*p - '0');
+			}
+			return v;
+		}
+		while (*p && *p != ' ') {
+			p++;
+		}
+	}
+	return 0;
+}
+/* where the store is: the flash partition, or under AVF a virtio disk (pick_device) */
+static const char *device = DEVICE;
+static off_t store_at = STORE_AT;
+static off_t slot_bytes = SLOT_BYTES;
+
+/*
+ * The phone's partition when there is one; otherwise the second virtio disk, split in two slots.
+ * A disk too small to hold anything worth keeping is not taken.
+ */
+static void
+pick_device(void)
+{
+	uint64_t count = 0;
+	uint32_t size = 0;
+	int t = open(device, O_RDONLY, 0);
+
+	if (t >= 0) {
+		close(t);
+		return;
+	}
+	t = open(VIRTIO_DEVICE, O_RDONLY, 0);
+	if (t < 0) {
+		return;
+	}
+	if (mini_syscall(SYS_ioctl, t, DKIOCGETBLOCKCOUNT, (long)&count, 0, 0, 0) < 0 ||
+	    mini_syscall(SYS_ioctl, t, DKIOCGETBLOCKSIZE, (long)&size, 0, 0, 0) < 0) {
+		count = 0;
+	}
+	close(t);
+	if (count * size < (128ull << 20)) {
+		printf("var_store: %s holds %llu bytes: too small for a store\n", VIRTIO_DEVICE,
+		    (unsigned long long)(count * size));
+		return;
+	}
+	device = VIRTIO_DEVICE;
+	store_at = 0;
+	slot_bytes = (off_t)(count * size / 2) & ~(off_t)(BUFFER - 1);
+}
 static uint8_t *buffer;
 static uint8_t *already;                /* what the slot holds there now, to not write it again */
 static uint64_t skipped_blocks, written_blocks;
@@ -244,7 +367,7 @@ static uint64_t entries;
 static off_t
 slot_at(int slot)
 {
-	return STORE_AT + (off_t)slot * SLOT_BYTES;
+	return store_at + (off_t)slot * slot_bytes;
 }
 
 static int
@@ -435,7 +558,7 @@ static void
 stream_start(int slot, uint64_t bytes)
 {
 	at = slot_at(slot) + BLOCK;
-	stream_limit = slot_at(slot) + SLOT_BYTES;
+	stream_limit = slot_at(slot) + slot_bytes;
 	buffered = taken = 0;
 	stream_bytes = 0;
 	stream_left = bytes;
@@ -455,7 +578,7 @@ read_head(int slot, struct head *into)
 		return 0;
 	}
 	if (memcmp(h->magic, HEAD_MAGIC, sizeof(h->magic)) != 0 || h->version != HEAD_VERSION ||
-	    h->slot != (uint32_t)slot || h->bytes > (uint64_t)SLOT_BYTES - BLOCK ||
+	    h->slot != (uint32_t)slot || h->bytes > (uint64_t)slot_bytes - BLOCK ||
 	    h->head_crc != head_checksum(h)) {
 		return 0;
 	}
@@ -869,9 +992,9 @@ save(void)
 	}
 	h.crc = stream_crc ^ 0xffffffffu;
 	h.head_crc = head_checksum(&h);
-	if (h.bytes > (uint64_t)SLOT_BYTES - BLOCK) {
+	if (h.bytes > (uint64_t)slot_bytes - BLOCK) {
 		printf("var_store: the archive is %llu bytes, more than a slot holds (%llu): nothing saved\n",
-		    (unsigned long long)h.bytes, (unsigned long long)(SLOT_BYTES - BLOCK));
+		    (unsigned long long)h.bytes, (unsigned long long)(slot_bytes - BLOCK));
 		return 0;
 	}
 	memset(block, 0, sizeof(block));
@@ -1257,9 +1380,9 @@ save_once(void)
 	 * device is closed (bsd/dev/hakios.ufs.c, ufs_cclose). A watcher that kept the device open
 	 * would leave iOS reading the flash through the loader for the rest of the run.
 	 */
-	fd = open(DEVICE, O_RDWR, 0);
+	fd = open(device, O_RDWR, 0);
 	if (fd < 0) {
-		printf("var_store: %s: %s\n", DEVICE, strerror(errno));
+		printf("var_store: %s: %s\n", device, strerror(errno));
 		return 0;
 	}
 	ok = claim() && save();
@@ -1340,9 +1463,14 @@ watch(int seconds)
 	uint64_t last = 0;
 	int asked = 0;
 
-	fd = open(DEVICE, O_RDWR, 0);
+	if (seconds <= 0) {
+		seconds = (int)boot_arg_number("var_store_every");
+	}
+	catch_term();
+
+	fd = open(device, O_RDWR, 0);
 	if (fd < 0) {
-		printf("var_store: %s cannot be written (%s): nothing would be saved\n", DEVICE,
+		printf("var_store: %s cannot be written (%s): nothing would be saved\n", device,
 		    strerror(errno));
 		return 0;
 	}
@@ -1372,6 +1500,12 @@ watch(int seconds)
 
 		if (sysctl_int("kern.hakios.var_save", &state) == 0 && state == VAR_SAVE_WANTED) {
 			asked = 1;
+		}
+		if (terminated) {
+			printf("var_store: stopped (SIGTERM): saving the volume once more\n");
+			int ok = save_once();
+			printf("var_store: %s\n", ok ? "saved" : "this save came to nothing; the store keeps what it had");
+			return ok;
 		}
 		gettimeofday(&tv, NULL);
 		if (asked || (seconds > 0 && (uint64_t)tv.tv_sec - last >= (uint64_t)seconds)) {
@@ -1458,6 +1592,7 @@ main(int argc, char **argv, char **envp)
 	if (already == MAP_FAILED) {
 		already = NULL;
 	}
+	pick_device();
 	if (strcmp(what, "watch") == 0) {
 		if (!boot_arg_is("var_store", "1")) {
 			printf("var_store: not asked to keep the data volume (var_store=1): nothing to watch\n");
@@ -1465,9 +1600,9 @@ main(int argc, char **argv, char **envp)
 		}
 		return watch(argc > 2 ? (int)parse_number(argv[2]) : 0) ? 0 : 1;
 	}
-	fd = open(DEVICE, strcmp(what, "load") == 0 || strcmp(what, "show") == 0 ? O_RDONLY : O_RDWR, 0);
+	fd = open(device, strcmp(what, "load") == 0 || strcmp(what, "show") == 0 ? O_RDONLY : O_RDWR, 0);
 	if (fd < 0) {
-		printf("var_store: %s: %s (the kernel takes writes with ufs_write=1)\n", DEVICE,
+		printf("var_store: %s: %s (the kernel takes writes with ufs_write=1, or virtio_blk_rw=1)\n", device,
 		    strerror(errno));
 		return 1;
 	}
