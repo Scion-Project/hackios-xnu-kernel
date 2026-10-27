@@ -8,8 +8,11 @@
  *   - pixels: the host packs and unpacks with alignment 1 (gfx_make_current), so uploads are
  *     packed and readbacks unpacked here, by the client's pixel-store state;
  *   - glShaderSource: one string, glShaderString;
- *   - strings: rcGetGLString, cached; syncs: gl*SyncAEMU; glFinish: a round trip.
+ *   - strings: rcGetGLString, cached; syncs: gl*SyncAEMU; glFinish: a round trip;
+ *   - state the client set (bindings, the scissor, blending, the clear colour, the viewport, what a
+ *     framebuffer draws into): asked for, it is answered here, as each query is a round trip.
  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,6 +39,20 @@
 #define GL_ARRAY_BUFFER_BINDING         0x8894
 #define GL_ELEMENT_ARRAY_BUFFER_BINDING 0x8895
 #define GL_TIMEOUT_EXPIRED              0x911B
+#define GL_NONE                         0
+#define GL_BLEND                        0x0BE2
+#define GL_SCISSOR_TEST                 0x0C11
+#define GL_SCISSOR_BOX                  0x0C10
+#define GL_VIEWPORT                     0x0BA2
+#define GL_COLOR_CLEAR_VALUE            0x0C22
+#define GL_TEXTURE_BINDING_2D           0x8069
+#define GL_DRAW_FRAMEBUFFER_BINDING     0x8CA6  /* = GL_FRAMEBUFFER_BINDING */
+#define GL_READ_FRAMEBUFFER_BINDING     0x8CAA
+#define GL_READ_FRAMEBUFFER             0x8CA8
+#define GL_COLOR_ATTACHMENT0            0x8CE0
+#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE 0x8CD0
+#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME 0x8CD1
+#define GL_VERTEX_ATTRIB_ARRAY_ENABLED  0x8622
 
 /* ---- strings, state queries ------------------------------------------------------------- */
 
@@ -90,6 +107,26 @@ glPixelStorei(GLenum pname, GLint param)
 	}
 }
 
+/*
+ * One answer given here in 256 is also asked of the host, as a check that the client state follows
+ * the host's: a difference is logged once per kind, and that state is asked of the host from then on.
+ */
+static int
+spot_check(struct gfx *c)
+{
+	return (c->answered & 255) == 0;
+}
+
+static void
+differs(struct gfx *c, const char *what, GLenum pname, long here, long host)
+{
+	if (!(c->check_failed & 1u)) {
+		fprintf(stderr, "gfx: %s %#x was answered %ld here, the host has %ld; asking the host from now on\n",
+		    what, pname, here, host);
+	}
+	c->check_failed |= 1u;
+}
+
 API void
 glGetIntegerv(GLenum pname, GLint *params)
 {
@@ -98,15 +135,162 @@ glGetIntegerv(GLenum pname, GLint *params)
 	if (c == NULL) {
 		return;
 	}
+	if (c->check_failed) {
+		/* (the pixel store and the buffer bindings were answered here before the checks: they stay) */
+		if ((slot = store_slot(c, pname)) != NULL) {
+			*params = *slot;
+		} else {
+			gfxe_glGetIntegerv(c, pname, params);
+		}
+		return;
+	}
 	if ((slot = store_slot(c, pname)) != NULL) {
 		*params = *slot;
 	} else if (pname == GL_ARRAY_BUFFER_BINDING) {
 		*params = (GLint)c->array_buffer;
 	} else if (pname == GL_ELEMENT_ARRAY_BUFFER_BINDING) {
 		*params = (GLint)c->element_buffer;
+	} else if (pname == GL_TEXTURE_BINDING_2D && !c->unit_over) {
+		*params = (GLint)c->bound_2d[c->active_unit];
+	} else if (pname == GL_DRAW_FRAMEBUFFER_BINDING) {
+		*params = (GLint)c->draw_fbo;
+	} else if (pname == GL_READ_FRAMEBUFFER_BINDING) {
+		*params = (GLint)c->read_fbo;
+	} else if (pname == GL_SCISSOR_BOX && c->scissor_known) {
+		memcpy(params, c->scissor, sizeof(c->scissor));
+	} else if (pname == GL_VIEWPORT && c->viewport_known) {
+		memcpy(params, c->viewport, sizeof(c->viewport));
 	} else {
 		gfxe_glGetIntegerv(c, pname, params);
+		/* the surface's box, until the client sets one: known from now on */
+		if (pname == GL_SCISSOR_BOX && !c->err) {
+			memcpy(c->scissor, params, sizeof(c->scissor));
+			c->scissor_known = 1;
+		} else if (pname == GL_VIEWPORT && !c->err) {
+			memcpy(c->viewport, params, sizeof(c->viewport));
+			c->viewport_known = 1;
+		}
+		return;
 	}
+	c->answered++;
+	if (spot_check(c) && store_slot(c, pname) == NULL && pname != GL_ARRAY_BUFFER_BINDING &&
+	    pname != GL_ELEMENT_ARRAY_BUFFER_BINDING) {
+		GLint host[4] = { 0, 0, 0, 0 };
+		int n = pname == GL_SCISSOR_BOX || pname == GL_VIEWPORT ? 4 : 1;
+		gfxe_glGetIntegerv(c, pname, host);
+		for (int i = 0; i < n; i++) {
+			if (host[i] != params[i]) {
+				differs(c, "glGetIntegerv", pname, params[i], host[i]);
+				memcpy(params, host, sizeof(GLint) * (size_t)n);
+				break;
+			}
+		}
+	}
+}
+
+API GLboolean
+glIsEnabled(GLenum cap)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return 0;
+	}
+	if ((cap == GL_SCISSOR_TEST || cap == GL_BLEND) && !c->check_failed) {
+		GLboolean here = (GLboolean)(cap == GL_BLEND ? c->blend_on : c->scissor_on);
+		c->answered++;
+		if (spot_check(c)) {
+			GLboolean host = gfxe_glIsEnabled(c, cap);
+			if (host != here) {
+				differs(c, "glIsEnabled", cap, here, host);
+				return host;
+			}
+		}
+		return here;
+	}
+	return gfxe_glIsEnabled(c, cap);
+}
+
+API void
+glGetFloatv(GLenum pname, GLfloat *params)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (pname == GL_COLOR_CLEAR_VALUE && !c->clear_unknown && !c->check_failed) {
+		c->answered++;
+		memcpy(params, c->clear_colour, sizeof(c->clear_colour));
+		if (spot_check(c)) {
+			GLfloat host[4];
+			gfxe_glGetFloatv(c, pname, host);
+			if (memcmp(host, params, sizeof(host)) != 0) {
+				differs(c, "glGetFloatv", pname, (long)(params[0] * 1000), (long)(host[0] * 1000));
+				memcpy(params, host, sizeof(host));
+			}
+		}
+		return;
+	}
+	gfxe_glGetFloatv(c, pname, params);
+}
+
+API void
+glClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	GLfloat v[4] = { red, green, blue, alpha };
+	c->clear_unknown = 0;
+	for (int i = 0; i < 4; i++) {
+		if (!(v[i] >= 0.0f && v[i] <= 1.0f)) {
+			c->clear_unknown = 1;           /* (the host may clamp it) */
+		}
+	}
+	memcpy(c->clear_colour, v, sizeof(v));
+	gfxe_glClearColor(c, red, green, blue, alpha);
+}
+
+API void
+glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	c->viewport[0] = x;
+	c->viewport[1] = y;
+	c->viewport[2] = width;
+	c->viewport[3] = height;
+	/* (a negative size is refused; past GL_MAX_VIEWPORT_DIMS, at least 8192 on the hosts we know, it is clamped) */
+	c->viewport_known = width >= 0 && height >= 0 && width <= 8192 && height <= 8192;
+	gfxe_glViewport(c, x, y, width, height);
+}
+
+/* What a framebuffer draws into, as gfx_shared.c has followed it; anything else is asked. */
+API void
+glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	struct gfx_fbo *f = gfx_fbo_of(c, target == GL_READ_FRAMEBUFFER ? c->read_fbo : c->draw_fbo);
+	if (f != NULL && attachment == GL_COLOR_ATTACHMENT0 && !c->check_failed &&
+	    (pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE || (pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME && f->kind != GL_NONE))) {
+		c->answered++;
+		*params = pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE ? (GLint)f->kind : (GLint)f->texture;
+		if (spot_check(c)) {
+			GLint host = 0;
+			gfxe_glGetFramebufferAttachmentParameteriv(c, target, attachment, pname, &host);
+			if (host != *params) {
+				differs(c, "glGetFramebufferAttachmentParameteriv", pname, *params, host);
+				*params = host;
+			}
+		}
+		return;
+	}
+	gfxe_glGetFramebufferAttachmentParameteriv(c, target, attachment, pname, params);
 }
 
 /* ---- pixels ----------------------------------------------------------------------------- */
@@ -301,6 +485,49 @@ glDisableVertexAttribArray(GLuint index)
 	}
 	c->attrib[index].enabled = 0;
 	gfxe_glDisableVertexAttribArray(c, index);
+}
+
+API void
+glGetVertexAttribiv(GLuint index, GLenum pname, GLint *params)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (pname == GL_VERTEX_ATTRIB_ARRAY_ENABLED && index < GFX_MAX_ATTRIBS && c->vertex_array == 0 && !c->check_failed) {
+		c->answered++;
+		*params = c->attrib[index].enabled;
+		if (spot_check(c)) {
+			GLint host = 0;
+			gfxe_glGetVertexAttribiv(c, index, pname, &host);
+			if (host != *params) {
+				differs(c, "glGetVertexAttribiv", pname, *params, host);
+				*params = host;
+			}
+		}
+		return;
+	}
+	gfxe_glGetVertexAttribiv(c, index, pname, params);
+}
+
+API void
+glBindVertexArray(GLuint array)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		c->vertex_array = array;
+		gfxe_glBindVertexArray(c, array);
+	}
+}
+
+API void
+glBindVertexArrayOES(GLuint array)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		c->vertex_array = array;
+		gfxe_glBindVertexArrayOES(c, array);
+	}
 }
 
 static uint32_t

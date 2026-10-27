@@ -78,8 +78,14 @@ struct gfx_shared {
 	int host_shown;                 /* the host shows it (transport host_shows): rcFBPost, no copy back */
 };
 #define GFX_MAX_SHARED  1024
-#define GFX_MAX_FBOS    64
+#define GFX_MAX_FBOS    1024            /* by name modulo this; one that another pushes out is asked of the host */
 #define GFX_MAX_TEX     1024
+
+/* A framebuffer's colour attachment 0 as the host has it: GL_NONE, GL_TEXTURE or GL_RENDERBUFFER, and its name. */
+struct gfx_fbo {
+	GLuint fbo, texture;
+	GLenum kind;
+};
 
 /* What is known of a texture: its size, and the part of it drawn into since that was copied on. */
 struct gfx_tex {
@@ -123,12 +129,25 @@ struct gfx {
 
 	/* textures and framebuffers, for knowing when a shared texture is drawn into */
 	GLuint active_unit, bound_2d[16], draw_fbo;
-	struct { GLuint fbo, texture; } fbo_color[GFX_MAX_FBOS];
+	struct gfx_fbo fbo_color[GFX_MAX_FBOS];
 	struct gfx_shared shared[GFX_MAX_SHARED];
 	struct gfx_tex tex[GFX_MAX_TEX];
 	GLuint read_fbo;
 	int scissor_on;
 	GLint scissor[4];
+	/*
+	 * State the client set, so that asking for it costs no round trip (gfx_gl.c glGet*, glIsEnabled):
+	 * eagl.c saves and puts back the scissor and the clear colour around every clear, and asks what a
+	 * framebuffer draws into at every bind. The scissor box and the viewport start as the surface's,
+	 * so they are asked of the host until set; a value the host would refuse or clamp is not kept.
+	 */
+	int blend_on, scissor_known, viewport_known, clear_unknown;
+	GLint viewport[4];
+	GLfloat clear_colour[4];
+	GLuint vertex_array;            /* a bound vertex array object has its own attribute state: asked of the host */
+	int unit_over;                  /* the active texture unit is past bound_2d's 16: its binding is asked */
+	uint64_t answered, r_answered;  /* queries answered here (and at the last report) */
+	uint32_t check_failed;          /* a spot check found the client state wrong: everything is asked */
 	/* the caller's change count of a shared memory (IOSurfaceGetSeed), and its handle let go */
 	uint32_t (*seed_of)(void *user);
 	void (*release)(void *user);
@@ -179,6 +198,8 @@ void gfx_destroy(struct gfx *c);
 int gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, uint32_t height, uint32_t stride,
     int upload, void *user);
 void gfx_note_texture_size(struct gfx *c, GLuint texture, uint32_t width, uint32_t height);
+/* What is known of framebuffer `fbo`'s colour attachment 0 (gfx_shared.c), or NULL: ask the host. */
+struct gfx_fbo *gfx_fbo_of(struct gfx *c, GLuint fbo);
 /* Copy every shared texture drawn into since the last time back into its memory. */
 void gfx_sync_shared(struct gfx *c);
 void gfx_drawing(struct gfx *c);
