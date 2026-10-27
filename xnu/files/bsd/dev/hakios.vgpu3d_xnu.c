@@ -474,6 +474,9 @@ host_shows(uint32_t *sid)
 				if (__atomic_compare_exchange_n(&host_owned[i], &none, want, false, __ATOMIC_RELAXED,
 				    __ATOMIC_RELAXED)) {
 					printf("vgpu3d: SCGPU: surface %u is shown by the host from now on\n", want);
+					/* the app may put its renderer's window in front now */
+					__atomic_fetch_or((uint32_t *)(uintptr_t)&scgpu->guest_flags, SCGPU_G_PRESENTING,
+					    __ATOMIC_RELEASE);
 					break;
 				}
 			}

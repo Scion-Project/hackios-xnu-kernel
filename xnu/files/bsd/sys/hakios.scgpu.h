@@ -52,6 +52,11 @@
 
 /* the app's renderer is up and answers the mailbox */
 #define SCGPU_F_HOST_READY      (1u << 0)
+/*
+ * guest_flags: the guest has begun to show frames through the host (rcFBPost): the app can put the
+ * renderer's window in front from now on (before, the shared framebuffer had the picture)
+ */
+#define SCGPU_G_PRESENTING      (1u << 0)
 
 /* SCGPU_CMD_TRANSFER: outside virtio-gpu's command numbers */
 #define SCGPU_CMD_TRANSFER      0x0f00u
@@ -71,7 +76,8 @@ struct scgpu_header {
 	int32_t status;                 /* 0, or a negative errno: the app could not run the command */
 	/* counters, for the logs of both sides */
 	uint64_t commands, presents, host_busy_ns;
-	uint32_t reserved[16];
+	uint32_t guest_flags;           /* SCGPU_G_*, set by the guest */
+	uint32_t reserved[15];
 };
 
 /* struct virtio_gpu_transfer_host_3d's twin, with the staging buffer instead of the backing */
