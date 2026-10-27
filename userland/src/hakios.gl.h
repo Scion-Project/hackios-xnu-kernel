@@ -25,6 +25,13 @@ int hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t surface);
  * library has no such host or the surface is not the display's. (SCGPU: the Scion app's gfxstream.)
  */
 int hakios_gl_present(struct hakios_gl *gl, uint32_t surface);
+/*
+ * The end of a frame whose surfaces were all shown by the host (hakios_gl_present), instead of
+ * waiting for the GPU: the library waits only until the host has taken in the frame before, so the
+ * next frame is made here while the host draws this one. 1 when it did, 0 when it cannot (wait for
+ * the frame as before).
+ */
+int hakios_gl_pace(struct hakios_gl *gl);
 
 /*
  * CoreAnimation draws a layer's pixels with one of ninety "functions" (a fragment shader each); these

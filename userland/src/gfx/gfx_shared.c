@@ -293,6 +293,28 @@ gfx_present_shared(struct gfx *c, uint64_t key)
 	return 1;
 }
 
+int
+gfx_pace(struct gfx *c)
+{
+	if (c == NULL || c->err || c->pace_off || c->t.ring_mark == NULL) {
+		return 0;
+	}
+	gfx_flush(c);
+	uint64_t mark = c->paced_mark, t0 = gfx_now_us();
+	int r = c->t.ring_mark(c->t.arg, &mark);
+	if (r != 0) {
+		c->pace_off = 1;
+		fprintf(stderr, "gfx: frames are waited for, not paced (%d)\n", r);
+		return 0;
+	}
+	c->us_paced += gfx_now_us() - t0;
+	c->paced++;
+	c->paced_mark = mark;
+	gfx_sync_shared(c);             /* (other shared textures drawn into: copied back, as glClientWaitSync would) */
+	gfx_frame_end(c);
+	return 1;
+}
+
 /* Copy back the damaged rows of every shared texture drawn into since the last time. */
 void
 gfx_sync_shared(struct gfx *c)

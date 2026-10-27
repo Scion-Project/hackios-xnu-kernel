@@ -27,6 +27,7 @@ struct vgpu3d_ioc_xfer {
 #define VGPU3D_IOC_UPLOAD       _IOW('G', 3, struct vgpu3d_ioc_xfer)
 #define VGPU3D_IOC_DOWNLOAD     _IOW('G', 4, struct vgpu3d_ioc_xfer)
 #define VGPU3D_IOC_HOST_SHOWS   _IOWR('G', 5, uint32_t)
+#define VGPU3D_IOC_RING_MARK    _IOWR('G', 6, uint64_t)
 
 static int
 dev_write(void *arg, const void *buf, size_t n)
@@ -107,6 +108,13 @@ dev_host_shows(void *arg, uint32_t key)
 	return ioctl((int)(intptr_t)arg, VGPU3D_IOC_HOST_SHOWS, &v) ? 0 : (int)v;
 }
 
+/* ENOTSUP without SCGPU's stream ring, ENOTTY from a kernel without the ioctl */
+static int
+dev_ring_mark(void *arg, uint64_t *mark)
+{
+	return ioctl((int)(intptr_t)arg, VGPU3D_IOC_RING_MARK, mark) ? errno : 0;
+}
+
 int
 gfx_dev_open(struct gfx_transport *t)
 {
@@ -123,6 +131,7 @@ gfx_dev_open(struct gfx_transport *t)
 	t->res_upload = dev_res_upload;
 	t->res_download = dev_res_download;
 	t->host_shows = dev_host_shows;
+	t->ring_mark = dev_ring_mark;
 	t->flags_sent = 1;              /* the kernel's vgpu3d_open sends it */
 	return 0;
 }
