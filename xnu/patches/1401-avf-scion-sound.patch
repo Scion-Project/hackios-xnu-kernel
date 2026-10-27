@@ -1,0 +1,27 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index dcc51a5..48d9d32 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -145,6 +145,7 @@ bsd/dev/hakios.apfs_check.c	optional apfs
+ bsd/dev/hakios.sound.c		standard
+ bsd/dev/hakios.vgpu3d.c	standard
+ bsd/dev/hakios.vgpu3d_xnu.c	standard
++bsd/dev/hakios.scsnd.c		standard
+ bsd/dev/hakios.qmi.c		standard
+ bsd/dev/hakios.nas.c		standard
+ bsd/dev/hakios.wlfw.c		standard
+diff --git a/bsd/dev/hakios.audio.c b/bsd/dev/hakios.audio.c
+index de97d92..77b49c4 100644
+--- a/bsd/dev/hakios.audio.c
++++ b/bsd/dev/hakios.audio.c
+@@ -347,6 +347,10 @@ hakios_audio_init(void)
+ 	report_call = thread_call_allocate(audio_report, NULL);
+ 	audio_recording_init();
+ 	hakios_virtio_sound_init();
++	{
++		extern void hakios_scsnd_init(void);
++		hakios_scsnd_init();    /* scsnd.addr=: the Scion app plays it (bsd/dev/hakios.scsnd.c) */
++	}
+ 	hakios_speaker_init();
+ 	hakios_haptic_init();
+ 	hakios_torch_init();
