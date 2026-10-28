@@ -279,6 +279,22 @@ ctrl(struct vgpu3d *g, void *cmd, uint32_t len, void *resp, uint32_t resp_len, u
 	return 0;
 }
 
+/*
+ * A command whose reply nothing waits for (a colour buffer made or let go): posted, in order with the
+ * stream, where the transport can; otherwise as ctrl(). A failure then shows only in the device's log.
+ */
+static int
+ctrl_posted(struct vgpu3d *g, void *cmd, uint32_t len)
+{
+	if (g->err) {
+		return g->err;
+	}
+	if (g->ops.post != NULL && g->ops.post(g->ops.arg, cmd, len) == 0) {
+		return 0;
+	}
+	return ctrl(g, cmd, len, NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
+}
+
 static void
 hdr(struct virtio_gpu_ctrl_hdr *h, uint32_t type, uint32_t ctx)
 {
@@ -387,18 +403,21 @@ attach_backing(struct vgpu3d *g, uint32_t res, uint64_t pa, uint32_t len)
 }
 
 static int
-ctx_attach(struct vgpu3d *g, uint32_t res)
+ctx_attach(struct vgpu3d *g, uint32_t res, bool posted)
 {
 	struct virtio_gpu_ctx_resource c;
 	v3_memset(&c, 0, sizeof(c));
 	hdr(&c.hdr, VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, g->ctx_id);
 	c.resource_id = res;
+	if (posted) {
+		return ctrl_posted(g, &c, sizeof(c));
+	}
 	return ctrl(g, &c, sizeof(c), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
 }
 
 static int
 create_3d(struct vgpu3d *g, uint32_t res, uint32_t target, uint32_t format, uint32_t bind,
-    uint32_t w, uint32_t h)
+    uint32_t w, uint32_t h, bool posted)
 {
 	struct virtio_gpu_resource_create_3d c;
 	v3_memset(&c, 0, sizeof(c));
@@ -411,6 +430,9 @@ create_3d(struct vgpu3d *g, uint32_t res, uint32_t target, uint32_t format, uint
 	c.height = h;
 	c.depth = 1;
 	c.array_size = 1;
+	if (posted) {
+		return ctrl_posted(g, &c, sizeof(c));
+	}
 	return ctrl(g, &c, sizeof(c), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
 }
 
@@ -467,8 +489,8 @@ vgpu3d_open(struct vgpu3d *g, uint32_t capset, uint32_t pipe_size)
 	}
 	g->pipe_res = g->next_resource++;
 	if (create_3d(g, g->pipe_res, VGPU3D_PIPE_BUFFER, VIRGL_FORMAT_R8_UNORM, VIRGL_BIND_CUSTOM,
-	    pipe_size, 1) || attach_backing(g, g->pipe_res, g->pipe_pa, pipe_size) ||
-	    ctx_attach(g, g->pipe_res)) {
+	    pipe_size, 1, false) || attach_backing(g, g->pipe_res, g->pipe_pa, pipe_size) ||
+	    ctx_attach(g, g->pipe_res, false)) {
 		return g->err;
 	}
 
@@ -502,8 +524,8 @@ vgpu3d_create_scanout_resource(struct vgpu3d *g, uint32_t width, uint32_t height
 		return 0;
 	}
 	if (create_3d(g, res, VGPU3D_PIPE_TEXTURE_2D, VIRGL_FORMAT_R8G8B8A8_UNORM,
-	    VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_SCANOUT, width, height) ||
-	    attach_backing(g, res, pa, (uint32_t)size) || ctx_attach(g, res)) {
+	    VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_SCANOUT, width, height, false) ||
+	    attach_backing(g, res, pa, (uint32_t)size) || ctx_attach(g, res, false)) {
 		return 0;
 	}
 	return res;
@@ -540,7 +562,8 @@ vgpu3d_resource_create(struct vgpu3d *g, uint32_t res, uint32_t width, uint32_t 
 	if (len > scratch_size) {
 		return 7;       /* E2BIG */
 	}
-	if (create_3d(g, res, VGPU3D_PIPE_TEXTURE_2D, format, bind, width, height)) {
+	/* (none of the three is waited for where the transport can post: a colour buffer costs no round trip) */
+	if (create_3d(g, res, VGPU3D_PIPE_TEXTURE_2D, format, bind, width, height, true)) {
 		return g->err;
 	}
 	v3_memset(a, 0, sizeof(*a) - sizeof(a->entry));
@@ -548,10 +571,10 @@ vgpu3d_resource_create(struct vgpu3d *g, uint32_t res, uint32_t width, uint32_t 
 	a->resource_id = res;
 	a->nr_entries = nentries;
 	v3_memcpy(a->entry, entries, nentries * sizeof(a->entry[0]));
-	if (ctrl(g, a, len, NULL, 0, VIRTIO_GPU_RESP_OK_NODATA)) {
+	if (ctrl_posted(g, a, len)) {
 		return g->err;
 	}
-	return ctx_attach(g, res);
+	return ctx_attach(g, res, true);
 }
 
 int
@@ -565,8 +588,8 @@ vgpu3d_resource_unref(struct vgpu3d *g, uint32_t res)
 	v3_memset(&u, 0, sizeof(u));
 	hdr(&u.hdr, VIRTIO_GPU_CMD_RESOURCE_UNREF, 0);
 	u.resource_id = res;
-	ctrl(g, &d, sizeof(d), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
-	return ctrl(g, &u, sizeof(u), NULL, 0, VIRTIO_GPU_RESP_OK_NODATA);
+	ctrl_posted(g, &d, sizeof(d));
+	return ctrl_posted(g, &u, sizeof(u));
 }
 
 int
