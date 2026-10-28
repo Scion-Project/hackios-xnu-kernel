@@ -179,6 +179,8 @@ struct gfx {
 	/* names the host has made, handed out here: glGen* is a round trip, made once for GFX_NAMES of them */
 	GLuint texture_names[GFX_NAMES], framebuffer_names[GFX_NAMES];
 	int texture_names_left, framebuffer_names_left;
+	int errors_from_host;           /* GFX_ERRORS=1: glGetError asks the host every time */
+	uint32_t error_queries, errors_said;
 	GLenum blend_func[4];           /* source RGB, destination RGB, source alpha, destination alpha */
 	int blend_func_known;
 	GLuint program;                 /* glUseProgram */

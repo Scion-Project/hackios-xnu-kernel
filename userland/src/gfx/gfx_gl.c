@@ -304,6 +304,35 @@ glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum p
 	gfxe_glGetFramebufferAttachmentParameteriv(c, target, attachment, pname, params);
 }
 
+/*
+ * glGetError: answered here, GL_NO_ERROR. Asking the host is a round trip that waits for everything
+ * sent before it to be run -- CoreAnimation asks once a frame, and that one call made every frame
+ * wait for the one before it to be drawn, as the frames' pacing (gfx_pace) had just stopped doing.
+ * One call in 128 still asks, and an error it finds is said (the first 16). GFX_ERRORS=1 (eagl.c sets
+ * it with boot-arg glerrors=N): the host every time.
+ */
+API GLenum
+glGetError(void)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return 0;
+	}
+	if (c->errors_from_host) {
+		return gfxe_glGetError(c);
+	}
+	if ((++c->error_queries & 127) != 0) {
+		c->answered++;
+		return 0;
+	}
+	GLenum error = gfxe_glGetError(c);
+	if (error != 0 && c->errors_said++ < 16) {
+		fprintf(stderr, "gfx: the host has error %#x (glGetError is answered here, GL_NO_ERROR; GFX_ERRORS=1 asks the "
+		    "host every time)\n", error);
+	}
+	return error;
+}
+
 /* A blend factor glBlendFunc takes (anything else is refused, and changes nothing). */
 static int
 blend_factor(GLenum f)
