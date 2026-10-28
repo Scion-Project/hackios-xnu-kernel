@@ -948,6 +948,15 @@ void avfboot_main(uint64_t fdt_pa)
 	dt_end(&w);
 	if (sccam.ok) {
 		dt_begin(&w, "camera");	/* (MobileGestalt's video-camera) */
+		/*
+		 * ... with a flash: MobileGestalt's camera-flash, without which iOS has no flashlight at all.
+		 * The light is the phone's torch, which the app switches (patch 1402, /dev/hakios-torch).
+		 */
+		for (uint32_t i = 0; i < sizeof(identity_camera) / sizeof(identity_camera[0]); i++) {
+			if (str_eq(identity_camera[i].name, "flash"))
+				dt_prop(&w, identity_camera[i].name, identity_camera_data + identity_camera[i].offset,
+				    identity_camera[i].length);
+		}
 		dt_end(&w);
 	}
 	dt_end(&w);

@@ -1,0 +1,24 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -146,6 +146,7 @@
+ bsd/dev/hakios.vgpu3d.c	standard
+ bsd/dev/hakios.vgpu3d_xnu.c	standard
+ bsd/dev/hakios.scsnd.c		standard
++bsd/dev/hakios.sccam_torch.c	standard
+ bsd/dev/hakios.qmi.c		standard
+ bsd/dev/hakios.nas.c		standard
+ bsd/dev/hakios.wlfw.c		standard
+diff --git a/bsd/dev/hakios.audio.c b/bsd/dev/hakios.audio.c
+--- a/bsd/dev/hakios.audio.c
++++ b/bsd/dev/hakios.audio.c
+@@ -354,5 +354,9 @@
+ 	hakios_speaker_init();
+ 	hakios_haptic_init();
+ 	hakios_torch_init();
++	{
++		extern void hakios_sccam_torch_init(void);
++		hakios_sccam_torch_init();      /* sccam.addr=: the phone's torch, by the Scion app (bsd/dev/hakios.sccam_torch.c) */
++	}
+ 	hakios_camera_init();
+ }
