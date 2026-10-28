@@ -430,6 +430,23 @@ static void read_fdt(const struct fdt *f)
 				m.mpidr[j - 1] = t, m.capacity[j - 1] = c;
 			}
 		}
+		/*
+		 * ... and without the little ones, those of under half the biggest's capacity (the
+		 * A520s): XNU's scheduler here takes every CPU for the same, and whatever it put on one of
+		 * them ran at a third of the speed -- SpringBoard's turn as a swipe's pan begins took 42 ms
+		 * at the median with them, 24 without (touch_lat=1). The kernel is told of the others
+		 * only; the little vCPUs are never started. Kernel parameter avf_little=1 keeps them.
+		 */
+		if (!(has_arg(m.bootargs, "avf_little=") && arg_num(m.bootargs, "avf_little=") != 0)) {
+			int keep = 0;
+			while (keep < m.ncpus && m.capacity[keep] * 2 >= m.max_capacity)
+				keep++;
+			if (keep >= 1 && keep < m.ncpus) {
+				uart_kv("avfboot: little cores left out: ", m.ncpus - keep);
+				uart_puts(" (avf_little=1 keeps them)\n");
+				m.ncpus = keep;
+			}
+		}
 	}
 
 	stage = "fdt: pci";
