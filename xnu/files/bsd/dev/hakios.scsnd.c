@@ -32,7 +32,8 @@ scsnd_play(const int16_t *frames, uint32_t count)
 	uint32_t below, generation;
 	bool muted;
 
-	if (hakios_audio_volume(&below, &muted, &generation) && generation != volume_seen) {
+	/* (the _held one: the sink is called with /dev/hakios-audio's lock held, and that one takes it) */
+	if (hakios_audio_volume_held(&below, &muted, &generation) && generation != volume_seen) {
 		h->below = below;
 		h->muted = muted ? 1 : 0;
 		volume_seen = generation;
