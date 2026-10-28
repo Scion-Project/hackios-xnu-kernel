@@ -42,9 +42,11 @@
  *
  * With SCGPU_F_RING_CMDS from the app, a record of kind SCGPU_REC_CMD holds a virtio-gpu command
  * instead of stream bytes, one whose reply nothing waits for: RESOURCE_CREATE_3D,
- * RESOURCE_ATTACH_BACKING, CTX_ATTACH_RESOURCE, CTX_DETACH_RESOURCE, RESOURCE_UNREF. The app runs it
- * where it is in the ring, in order with the stream around it, and only logs a failure. A colour
- * buffer then costs the guest no round trip to make or let go (it was five, each a wait for the app).
+ * RESOURCE_ATTACH_BACKING, CTX_ATTACH_RESOURCE, CTX_DETACH_RESOURCE, RESOURCE_UNREF, and uploads:
+ * SCGPU_CMD_TRANSFER to the host with staging 0, the rows (staging_len bytes, at the resource's pitch)
+ * right after it in the record. The app runs it where it is in the ring, in order with the stream
+ * around it, and only logs a failure. A colour buffer then costs the guest no round trip to make, fill
+ * (up to a quarter of the ring) or let go (it was five and one a fill, each a wait for the app).
  *
  * Commands are virtio-gpu's (virtio 1.2, 5.7.6), with these meanings at the app:
  *   GET_CAPSET_INFO, GET_CAPSET            gfxstream's capsets (stream_renderer_get_cap_set/fill_caps)
