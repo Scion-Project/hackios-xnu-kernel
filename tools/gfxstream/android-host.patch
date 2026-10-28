@@ -79,6 +79,25 @@ index c31cab6..7ad849c 100644
 +if (ANDROID)
 +    target_link_libraries(gfxstream_host_native_window PUBLIC nativewindow log)
 +endif()
+diff --git a/host/native_window/native_sub_window_android.cpp b/host/native_window/native_sub_window_android.cpp
+index cafb1fe..6b4294e 100644
+--- a/host/native_window/native_sub_window_android.cpp
++++ b/host/native_window/native_sub_window_android.cpp
+@@ -32,8 +32,12 @@ void destroySubWindow(EGLNativeWindowType win) { ANativeWindow_release(win); }
+ 
+ int moveSubWindow(FBNativeWindowType p_parent_window, EGLNativeWindowType p_sub_window, int x,
+                   int y, int width, int height, float dpr) {
+-    // moving windows not supported in Android; we can't create an actual sub window
+-    return true;
++    // moving windows not supported in Android; we can't create an actual sub window. But its size
++    // follows (Scion: a SurfaceView laid out anew): the buffers were made at the size the window had
++    // when the subwindow was, and the compositor scaled them into the new one -- the picture
++    // squashed. The EGL surface takes the new size at its next buffer.
++    return ANativeWindow_setBuffersGeometry(p_sub_window, width, height,
++                                            AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM) == 0;
+ }
+ 
+ void* getNativeDisplay() {
 diff --git a/host/render_control.cpp b/host/render_control.cpp
 index 9b95892..3d1b22a 100644
 --- a/host/render_control.cpp
