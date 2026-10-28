@@ -1407,6 +1407,29 @@ configure_vnodes(void)
 	}
 }
 
+/*
+ * The audio server's plug-ins when the root is the system image (AVF): that image has a link to our
+ * device in /System/Library/Audio/Plug-Ins/HAL (userland/build.sh), but one built before the link
+ * was there has none, and iOS then has no speaker at all -- nothing reaches /dev/hakios-audio. Our
+ * directory of plug-ins is bound over Apple's then, as flash_root() does on the phone's flash.
+ */
+static void
+audio_plugins(void)
+{
+	static const char hal[] = "/System/Library/Audio/Plug-Ins/HAL";
+	struct stat st;
+
+	if (flash_root_mode || stat(in_image("/hal"), &st) != 0) {
+		return;
+	}
+	if (lstat("/System/Library/Audio/Plug-Ins/HAL/HakiosAudio.driver", &st) == 0) {
+		printf("init: the system image has our audio device\n");
+		return;
+	}
+	check(stat(hal, &st) == 0 && bind_dir(in_image("/hal"), hal),
+	    "our audio device in the audio server's plug-in directory (the system image has none)");
+}
+
 int
 main(int argc, char **argv, char **envp)
 {
@@ -1456,6 +1479,7 @@ main(int argc, char **argv, char **envp)
 	chmod("/dev/console", 0666);
 	configure_inject();
 	configure_vnodes();
+	audio_plugins();
 	run_rc(in_image("/etc/rc"));
 	printf("\n=== init: done ===\n");
 	reboot(RB_HALT);

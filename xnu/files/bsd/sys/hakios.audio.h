@@ -49,6 +49,8 @@ typedef uint32_t (*hakios_audio_sink_t)(const int16_t *frames, uint32_t count);
 void hakios_audio_set_sink(const char *name, hakios_audio_sink_t sink);
 /* The volume iOS has set last (HAKIOS_AUDIO_SET_VOLUME): false if it has set none; *generation counts the settings. */
 bool hakios_audio_volume(uint32_t *below, bool *muted, uint32_t *generation);
+/* ... for a sink, which is called with the device's lock held (hakios_audio_volume takes it) */
+bool hakios_audio_volume_held(uint32_t *below, bool *muted, uint32_t *generation);
 void hakios_audio_init(void);
 void hakios_virtio_sound_init(void);   /* boot-arg virtio_sound=1: QEMU's virtio sound device */
 void hakios_speaker_init(void);        /* boot-arg speaker_probe=N: a look at the phone's speaker amplifiers */

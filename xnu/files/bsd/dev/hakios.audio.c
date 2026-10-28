@@ -277,11 +277,21 @@ audio_ioctl(__unused dev_t dev, u_long command, caddr_t data, __unused int flags
 bool
 hakios_audio_volume(uint32_t *below, bool *muted, uint32_t *generation)
 {
+	bool known;
+
 	lck_mtx_lock(&audio_lock);
+	known = hakios_audio_volume_held(below, muted, generation);
+	lck_mtx_unlock(&audio_lock);
+	return known;
+}
+
+/* The same, for a sink: it is called with audio_lock held (hakios_audio_set_sink). */
+bool
+hakios_audio_volume_held(uint32_t *below, bool *muted, uint32_t *generation)
+{
 	*below = volume_below;
 	*muted = volume_muted;
 	*generation = volume_generation;
-	lck_mtx_unlock(&audio_lock);
 	return *generation != 0;
 }
 
