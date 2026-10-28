@@ -74,12 +74,13 @@ say(const char *format, ...)
  * Boot-arg touch_lat=1: a line for every turn of SpringBoard's main run loop -- when it woke up (a
  * touch, a timer, the display link ...), when CoreAnimation's commit of what that turn changed
  * began and when it was done (our observers just before and after its own, of order 2000000), in
- * microseconds of mach_absolute_time, as the other "tl:" lines (tools/latency.py, tools/frames.py):
- *   tl: a WOKE COMMIT DONE
+ * microseconds of mach_absolute_time, as the other "tl:" lines (tools/latency.py, tools/frames.py),
+ * and how much of the turn the main thread spent on a CPU (the rest it waited: on a reply, a lock):
+ *   tl: a WOKE COMMIT DONE CPU_US
  * (a commit with nothing in it takes some microseconds; one that sends changes, a good deal more)
  */
 #define CA_COMMIT_ORDER 2000000
-static uint64_t main_woke, commit_began;
+static uint64_t main_woke, commit_began, main_cpu_woke;
 static mach_timebase_info_data_t timebase;
 
 static uint64_t
@@ -88,15 +89,25 @@ now_us(void)
 	return mach_absolute_time() * timebase.numer / timebase.denom / 1000;
 }
 
+/* the calling thread's CPU time, microseconds */
+static uint64_t
+thread_cpu_us(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
 static void
 main_loop_turn(__unused CFRunLoopObserverRef observer, CFRunLoopActivity activity, void *info)
 {
 	if (activity == kCFRunLoopAfterWaiting) {
 		main_woke = now_us();
+		main_cpu_woke = thread_cpu_us();
 	} else if (activity == kCFRunLoopBeforeWaiting && info == NULL) {
 		commit_began = now_us();
 	} else if (activity == kCFRunLoopBeforeWaiting && main_woke != 0) {
-		say("tl: a %llu %llu %llu\n", main_woke, commit_began, now_us());
+		say("tl: a %llu %llu %llu %llu\n", main_woke, commit_began, now_us(), thread_cpu_us() - main_cpu_woke);
 		main_woke = 0;
 	}
 }
