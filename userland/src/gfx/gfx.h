@@ -86,6 +86,22 @@ struct gfx_shared {
 };
 #define GFX_MAX_SHARED  1024
 #define GFX_MAX_FBOS    1024            /* by name modulo this; one that another pushes out is asked of the host */
+#define GFX_UNIFORMS    256             /* uniform locations and values known here, by a hash; ditto */
+
+/* A uniform's location by its name, as the host gave it (gfx_gl.c glGetUniformLocation). */
+struct gfx_uniform_name {
+	GLuint program;                 /* 0: free */
+	GLint location;
+	char name[44];
+};
+
+/* A float uniform's value as the client set it (glUniform4f[v], glUniformMatrix4fv): n floats. */
+struct gfx_uniform_value {
+	GLuint program;                 /* 0: free */
+	GLint location;
+	int n;
+	GLfloat v[16];
+};
 #define GFX_MAX_TEX     1024
 
 /* A framebuffer's colour attachment 0 as the host has it: GL_NONE, GL_TEXTURE or GL_RENDERBUFFER, and its name. */
@@ -154,7 +170,17 @@ struct gfx {
 	GLuint vertex_array;            /* a bound vertex array object has its own attribute state: asked of the host */
 	int unit_over;                  /* the active texture unit is past bound_2d's 16: its binding is asked */
 	uint64_t answered, r_answered;  /* queries answered here (and at the last report) */
-	uint32_t check_failed;          /* a spot check found the client state wrong: everything is asked */
+	/*
+	 * ... and more of it: the blend factors (eagl.c saves and puts them back around every draw of a
+	 * vibrant layer's group), the size of a 2D texture's first level (gfx_tex), uniform locations by
+	 * name and float uniforms' values (eagl.c reads CoreAnimation's matrices back at those draws).
+	 */
+	GLenum blend_func[4];           /* source RGB, destination RGB, source alpha, destination alpha */
+	int blend_func_known;
+	GLuint program;                 /* glUseProgram */
+	struct gfx_uniform_name uniform_names[GFX_UNIFORMS];
+	struct gfx_uniform_value uniform_values[GFX_UNIFORMS];
+	uint32_t check_failed;          /* the kinds of answer a spot check found wrong (gfx_gl.c CHECK_*): asked of the host */
 	/* the caller's change count of a shared memory (IOSurfaceGetSeed), and its handle let go */
 	uint32_t (*seed_of)(void *user);
 	void (*release)(void *user);
@@ -208,6 +234,8 @@ void gfx_destroy(struct gfx *c);
 int gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, uint32_t height, uint32_t stride,
     int upload, void *user);
 void gfx_note_texture_size(struct gfx *c, GLuint texture, uint32_t width, uint32_t height);
+/* The size of a texture's first level as followed here (gfx_note_texture_size): 1 when it is known. */
+int gfx_texture_size(struct gfx *c, GLuint texture, uint32_t *width, uint32_t *height);
 /* What is known of framebuffer `fbo`'s colour attachment 0 (gfx_shared.c), or NULL: ask the host. */
 struct gfx_fbo *gfx_fbo_of(struct gfx *c, GLuint fbo);
 /* Copy every shared texture drawn into since the last time back into its memory. */

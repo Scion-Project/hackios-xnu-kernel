@@ -1408,7 +1408,7 @@ trace_uniforms(struct eagl *e)
 			continue;
 		}
 		if ((floats = uniform_floats(type)) == 0) {
-			GLint whole[4] = { 0 };
+			GLint whole[16] = { 0 };       /* (room for the biggest: see group_uniform()) */
 
 			glGetUniformiv(e->program, place, whole);
 			eagl_trace("      %s (%d) = %d\n", name, place, whole[0]);
@@ -2751,16 +2751,22 @@ group_read(struct eagl *e, GLuint texture)
 	}
 }
 
-/* CoreAnimation's own uniform of its program in use, by name (a matrix of 16 numbers, or a vector of 4); false if it has none. */
+/*
+ * CoreAnimation's own uniform of its program in use, by name (a matrix of 16 numbers, or a vector of 4):
+ * its first n numbers; false if it has none. (Read into room for 16: a uniform whose size the library
+ * does not know comes back as big as a matrix.)
+ */
 static bool
-group_uniform(struct eagl *e, const char *name, GLfloat *values)
+group_uniform(struct eagl *e, const char *name, GLfloat *values, unsigned n)
 {
 	GLint location = glGetUniformLocation(e->program, name);
+	GLfloat all[16] = { 0 };
 
 	if (location < 0) {
 		return false;
 	}
-	glGetUniformfv(e->program, location, values);
+	glGetUniformfv(e->program, location, all);
+	memcpy(values, all, sizeof(GLfloat) * (n < 16 ? n : 16));
 	return true;
 }
 
@@ -2807,11 +2813,11 @@ group_draw_begin(struct eagl *e, GLint enabled[4])
 			say("hakios-gl: a group that holds a vibrant layer is drawn with CoreAnimation's function %u (\"%s\"): %s\n",
 			    function, census_name(function), laid ? "the layer over what is behind it" : "made what it would have been");
 		}
-		if (!laid || !group_uniform(e, "vertex_matrix", matrix)) {
+		if (!laid || !group_uniform(e, "vertex_matrix", matrix, 16)) {
 			group_flatten(e, e->bound[0], from);
 			from = NULL;
 		} else {
-			if (!group_uniform(e, "texmat0", texmat)) {
+			if (!group_uniform(e, "texmat0", texmat, 4)) {
 				texmat[0] = texmat[1] = 1;
 			}
 			colours = from->colours;

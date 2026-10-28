@@ -14,6 +14,7 @@
 #include <time.h>
 
 #include "gfx/gfx.h"
+#include "gfx_enc.h"                    /* (the host's own answers, to check the library's against) */
 
 int gfx_test_transport(struct gfx_transport *t);       /* per platform */
 
@@ -58,6 +59,14 @@ extern void glBlitFramebuffer(GLint, GLint, GLint, GLint, GLint, GLint, GLint, G
 extern void glReadPixels(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
 extern GLenum glGetError(void);
 extern void glFinish(void);
+extern void glBlendFuncSeparate(GLenum, GLenum, GLenum, GLenum);
+extern void glGetIntegerv(GLenum, GLint *);
+extern void glGetFloatv(GLenum, GLfloat *);
+extern GLboolean glIsEnabled(GLenum);
+extern void glGetTexLevelParameteriv(GLenum, GLint, GLenum, GLint *);
+extern void glTexStorage2D(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+extern void glGetUniformfv(GLuint, GLint, GLfloat *);
+extern void glUniform4fv(GLint, GLsizei, const GLfloat *);
 
 #define GL_TEXTURE_2D 0x0DE1
 #define GL_TEXTURE0 0x84C0
@@ -381,6 +390,77 @@ main(int argc, char **argv)
 		checks++; passed += c->download_bytes - before == 50 * 30 * 4 && g[1] == 255 && g[2] == 0 && k[1] == 0;
 		printf("GFXTEST blit damage: %llu bytes back (expected %d), flipped row green=%u, row outside green=%u\n",
 		    (unsigned long long)(c->download_bytes - before), 50 * 30 * 4, g[1], k[1]);
+	}
+	{
+		/*
+		 * State the library answers itself (gfx_gl.c), each answer against the host's: what eagl.c
+		 * asks around clears, binds and the draws of vibrant layers' groups.
+		 */
+		int same = 1, n = 0, bad = 0;
+		uint64_t answered = c->answered;
+		GLint here[4], host[4];
+		GLfloat fhere[4], fhost[16];
+#define SAME_I(pname, k) do { glGetIntegerv(pname, here); gfxe_glGetIntegerv(c, pname, host); n++; \
+	if (memcmp(here, host, sizeof(GLint) * (k)) != 0) { same = 0; printf("GFXTEST state %#x: %d here, %d the host\n", pname, here[0], host[0]); } } while (0)
+		glUseProgram(prog);
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, 1 /* GL_ONE */, GL_ONE_MINUS_SRC_ALPHA);
+		for (GLenum b = 0x80C8; b <= 0x80CB; b++) {
+			SAME_I(b, 1);
+		}
+		glBlendFunc(1, 0);
+		SAME_I(0x80C9, 1);
+		SAME_I(0x80C8, 1);
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(3, 4, 50, 60);
+		SAME_I(0x0C10 /* SCISSOR_BOX */, 4);
+		n++; same &= glIsEnabled(GL_SCISSOR_TEST) == gfxe_glIsEnabled(c, GL_SCISSOR_TEST);
+		if (!same) { printf("GFXTEST state check 1 differs\n"); same = 1; bad++; }
+		glDisable(GL_SCISSOR_TEST);
+		glViewport(0, 0, W, H);
+		SAME_I(0x0BA2 /* VIEWPORT */, 4);
+		glClearColor(0.25f, 0.5f, 0.75f, 1);
+		glGetFloatv(0x0C22 /* COLOR_CLEAR_VALUE */, fhere);
+		gfxe_glGetFloatv(c, 0x0C22, fhost);
+		n++; same &= memcmp(fhere, fhost, sizeof(fhere)) == 0;
+		if (!same) { printf("GFXTEST state check 2 differs\n"); same = 1; bad++; }
+		SAME_I(0x8CA6 /* DRAW_FRAMEBUFFER_BINDING */, 1);
+		glBindTexture(GL_TEXTURE_2D, texid);
+		SAME_I(0x8069 /* TEXTURE_BINDING_2D */, 1);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, 0x1000, here);
+		gfxe_glGetTexLevelParameteriv(c, GL_TEXTURE_2D, 0, 0x1000, host);
+		/* (against the size it was given: the emulator's ES 3.0 host has no glGetTexLevelParameteriv; the phone's has) */
+		n++; same &= here[0] == TW;
+		if (!same) { printf("GFXTEST state check 3 differs\n"); same = 1; bad++; }
+		GLuint stored;
+		glGenTextures(1, &stored);
+		glBindTexture(GL_TEXTURE_2D, stored);
+		glTexStorage2D(GL_TEXTURE_2D, 1, 0x8058 /* RGBA8 */, 32, 16);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, 0x1001, here);
+		gfxe_glGetTexLevelParameteriv(c, GL_TEXTURE_2D, 0, 0x1001, host);
+		n++; same &= here[0] == 16;
+		if (!same) { printf("GFXTEST state check 4 differs\n"); same = 1; bad++; }
+		glBindTexture(GL_TEXTURE_2D, texid);
+		GLint again = glGetUniformLocation(prog, "color");
+		n++; same &= again == color_loc && again == gfxe_glGetUniformLocation(c, prog, "color");
+		if (!same) { printf("GFXTEST state check 5 differs\n"); same = 1; bad++; }
+		/* a vec4 read back into room for 4 (and a guard after it, which must stay as it is) */
+		struct { GLfloat v[4], guard[12]; } back;
+		for (int i = 0; i < 12; i++) {
+			back.guard[i] = 7.0f;
+		}
+		const GLfloat set[4] = { 0.125f, 0.25f, 0.5f, 1.0f };
+		glUniform4fv(color_loc, 1, set);
+		glGetUniformfv(prog, color_loc, back.v);
+		gfxe_glGetUniformfv(c, prog, color_loc, fhost);
+		n++; same &= memcmp(back.v, set, sizeof(set)) == 0 && memcmp(fhost, set, sizeof(set)) == 0 && back.guard[11] == 7.0f;
+		if (!same) { printf("GFXTEST state check 6 differs\n"); same = 1; bad++; }
+		uint64_t local = c->answered - answered;
+		same &= bad == 0;
+		checks++; passed += same && local >= 14 && c->check_failed == 0;
+		printf("GFXTEST state answered here: %d queries the same as the host's (%s), %llu of them without a round trip, "
+		    "spot checks %s\n", n, same ? "all" : "NOT all", (unsigned long long)local, c->check_failed ? "FAILED" : "fine");
+#undef SAME_I
 	}
 	printf("GFXTEST checks %d/%d\nGFXTEST-DONE %s\n", passed, checks, passed == checks ? "pass" : "fail");
 	gfx_destroy(c);
