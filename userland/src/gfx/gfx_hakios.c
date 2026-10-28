@@ -80,6 +80,12 @@ hakios_gl_present(struct hakios_gl *gl, uint32_t id)
 }
 
 int
+hakios_gl_pace(struct hakios_gl *gl)
+{
+	return gfx_pace(gl->gfx);
+}
+
+int
 hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t id)
 {
 	static int share = -1;

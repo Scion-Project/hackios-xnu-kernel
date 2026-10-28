@@ -56,7 +56,8 @@
  * fetch_offered), glgroup=0 leaves vibrant layers inside groups as they were (see group_draw_begin()), glprecision=0 leaves the shaders' "lowp" and "mediump" as they are (see all_highp), glenv=NAME=VALUE puts that into the environment for the library to find
  * (its own switches: FD_MESA_DEBUG=sysmem, say), vblur=0 blurs nothing whose radius varies and
  * vblur=2 paints such blurs by their masks instead (see vblur_on), glframes=1 writes a line for
- * every frame (see frame_end()), glerrors=1 asks for an error after every call for as long as the
+ * every frame (see frame_end()), glpace=0 waits for every frame the host shows itself (see
+ * pace_frames), glerrors=1 asks for an error after every call for as long as the
  * window server runs, not the first 600 frames.
  */
 #include <CoreFoundation/CoreFoundation.h>
@@ -307,7 +308,7 @@ struct eagl {
 	unsigned calls, draws, triangles, uploads, clears, last_draws;
 	uint64_t upload_bytes, began, attaching, flushing;
 	/* everything so far */
-	unsigned frames, shaders, programs, errors, shared, refused;
+	unsigned frames, shaders, programs, errors, shared, refused, paced;
 	uint64_t all_calls, all_draws, all_triangles, readback_us, wait_us, attach_us, flush_us, frame_us;
 	unsigned most_calls, most_triangles;
 	const char *sources[256];       /* the text of the shaders being made, by name (modulo this) */
@@ -358,6 +359,14 @@ static int blit_targets = 1;
  */
 static int wait_for_frames = 1;
 static int sync_frames = 1;             /* boot-arg glsync=0 (a test): a frame's end does not push what Mesa holds back (frame_end()) */
+/*
+ * A frame the host shows itself (hakios_gl_present: SCGPU) need not be waited for: the host runs
+ * the stream in order and puts it on the screen after its draws. Its end waits only until the host
+ * has taken in the frame before (hakios_gl_pace), so the window server makes the next frame while the
+ * host draws this one -- the two took turns, each idle while the other worked -- and stays at most a
+ * frame ahead. Boot-arg glpace=0: waited for, as before.
+ */
+static int pace_frames = 1;
 /*
  * EXT_shader_framebuffer_fetch -- a fragment shader reads the pixel it is about to write -- is
  * what CoreAnimation draws a number of things with where the library offers it: the shadows
@@ -497,10 +506,12 @@ summary(struct eagl *e)
 	say("hakios-gl: after %u frames: %llu calls, %llu draws and %llu triangles a frame on average; the most in one: "
 	    "%u calls, %u triangles; %llu us a frame, of which %llu handing the commands on, %llu waiting for the picture "
 	    "to be drawn and %llu copying it out, and before each %llu making textures of IOSurfaces; %u IOSurfaces were "
-	    "the textures' memory, %u had to be copied; %u shaders, %u programs; biggest texture %u x %u; %u errors\n",
+	    "the textures' memory, %u had to be copied; %u shaders, %u programs; biggest texture %u x %u; %u errors; "
+	    "%u frames paced, not waited for\n",
 	    e->frames, e->all_calls / frames, e->all_draws / frames, e->all_triangles / frames, e->most_calls,
 	    e->most_triangles, e->frame_us / frames, e->flush_us / frames, e->wait_us / frames, e->readback_us / frames,
-	    e->attach_us / frames, e->shared, e->refused, e->shaders, e->programs, widest_texture, tallest_texture, e->errors);
+	    e->attach_us / frames, e->shared, e->refused, e->shaders, e->programs, widest_texture, tallest_texture, e->errors,
+	    e->paced);
 	for (unsigned i = 0; i < sizeof(formats) / sizeof(formats[0]) && formats[i].count; i++) {
 		say("hakios-gl:   textures: %s %#x/%#x/%#x: %u times, up to %u x %u\n", formats[i].how, formats[i].internal,
 		    formats[i].format, formats[i].type, formats[i].count, formats[i].widest, formats[i].tallest);
@@ -1090,7 +1101,9 @@ frame_end(struct eagl *e, bool finished)
 			}
 		}
 	}
-	if (in_place != 0 && !finished && wait_for_frames) {
+	if (in_place != 0 && !finished && pace_frames && presented == in_place && hakios_gl_pace(e->gl)) {
+		e->paced++;             /* every surface of it shown by the host (pace_frames) */
+	} else if (in_place != 0 && !finished && wait_for_frames) {
 		glFinish();             /* the display's driver reads the surface as soon as it is told of it */
 	} else if (in_place != 0 && !finished && sync_frames) {
 		/*
@@ -4216,6 +4229,7 @@ install(void)
 		share_surfaces = strstr(arguments, "glcopy=1") == NULL;
 		blit_targets = strstr(arguments, "glblit=0") == NULL;
 		sync_frames = strstr(arguments, "glsync=0") == NULL;
+		pace_frames = strstr(arguments, "glpace=0") == NULL;
 		if (strstr(arguments, "glwait=0") != NULL || (strstr(arguments, "glwait=1") == NULL && display_waits())) {
 			wait_for_frames = 0;
 		}

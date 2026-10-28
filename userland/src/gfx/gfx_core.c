@@ -43,7 +43,8 @@ gfx_frame_end(struct gfx *c)
 		c->r_up_bytes = c->upload_bytes;
 		c->r_presents = c->presents;
 		c->r_answered = c->answered;
-		c->us_write = c->us_read = 0;
+		c->r_paced = c->paced;
+		c->us_write = c->us_read = c->us_paced = 0;
 		return;
 	}
 	if (now - c->report_at < 5000000) {
@@ -53,7 +54,7 @@ gfx_frame_end(struct gfx *c)
 	if (f) {
 		fprintf(stderr, "gfx: %llu frames in %llu ms (%.1f a second); a frame: %llu round trips (%llu queries answered here), %llu KB out, %llu KB in;"
 		    " %llu us writing, %llu us waiting for replies, %llu us copying back (%llu KB), %llu us uploading (%llu KB);"
-		    " %llu shown by the host\n",
+		    " %llu shown by the host, %llu paced (%llu us waiting for the frame before)\n",
 		    (unsigned long long)f, (unsigned long long)(span / 1000), f * 1e6 / (double)span,
 		    (unsigned long long)((c->round_trips - c->r_trips) / f), (unsigned long long)((c->answered - c->r_answered) / f),
 		    (unsigned long long)((c->bytes_out - c->r_out) / f / 1024),
@@ -61,7 +62,8 @@ gfx_frame_end(struct gfx *c)
 		    (unsigned long long)(c->us_read / f), (unsigned long long)((c->us_download - c->r_down) / f),
 		    (unsigned long long)((c->download_bytes - c->r_down_bytes) / f / 1024),
 		    (unsigned long long)((c->us_upload - c->r_up) / f), (unsigned long long)((c->upload_bytes - c->r_up_bytes) / f / 1024),
-		    (unsigned long long)(c->presents - c->r_presents));
+		    (unsigned long long)(c->presents - c->r_presents), (unsigned long long)(c->paced - c->r_paced),
+		    (unsigned long long)(c->us_paced / f));
 	}
 	c->report_at = now;
 	c->report_frames = c->frames;
@@ -70,7 +72,8 @@ gfx_frame_end(struct gfx *c)
 	c->r_up_bytes = c->upload_bytes;
 	c->r_presents = c->presents;
 	c->r_answered = c->answered;
-	c->us_write = c->us_read = 0;
+	c->r_paced = c->paced;
+	c->us_write = c->us_read = c->us_paced = 0;
 }
 
 /* ---- the stream ------------------------------------------------------------------------- */

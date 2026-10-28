@@ -122,3 +122,10 @@ hakios_gl_present(struct hakios_gl *gl, uint32_t surface)
 	(void)surface;
 	return 0;
 }
+
+int
+hakios_gl_pace(struct hakios_gl *gl)
+{
+	(void)gl;
+	return 0;
+}

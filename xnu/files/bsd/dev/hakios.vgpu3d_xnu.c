@@ -18,6 +18,11 @@
  *                        (hakios_vgpu3d_display_surface, from MiniIOMobileFramebuffer). The gfx library
  *                        then ends such a frame with rcFBPost -- in the stream, after its draws -- instead
  *                        of copying it back for the display to copy out again.
+ *   VGPU3D_IOC_RING_MARK a frame's pace: in a mark this gave before (0: none), out a mark of everything
+ *                        written so far. Waits until the app has run the stream ring past the mark in
+ *                        (ENOTSUP without SCGPU's ring). The gfx library gives the mark of the frame
+ *                        before at the end of each frame the host shows itself: it draws the next frame
+ *                        while the app draws this one, but never gets more than a frame ahead.
  *
  * With scgpu.addr= and scgpu.size= (sys/hakios.scgpu.h) the "device" is the Scion app, which runs
  * gfxstream itself: the same commands go through a mailbox in a region of RAM the app maps too, the
@@ -70,6 +75,7 @@ struct vgpu3d_ioc_xfer {
 #define VGPU3D_IOC_UPLOAD       _IOW('G', 3, struct vgpu3d_ioc_xfer)
 #define VGPU3D_IOC_DOWNLOAD     _IOW('G', 4, struct vgpu3d_ioc_xfer)
 #define VGPU3D_IOC_HOST_SHOWS   _IOWR('G', 5, uint32_t)
+#define VGPU3D_IOC_RING_MARK    _IOWR('G', 6, uint64_t)
 
 #define MAX_OPENS               32
 #define MAX_RES                 1024            /* CoreAnimation shares hundreds of IOSurfaces */
@@ -107,6 +113,8 @@ static uint8_t *attach_scratch;                 /* ATTACH_BACKING commands (unde
 #define SCGPU_BELL_SPIN_US      60              /* ... or, with the doorbell, this long and then asleep, */
 #define SCGPU_BELL_SAFETY_MS    5               /* looking again at least this often (a lost ring) */
 #define SCGPU_TIMEOUT_S         10              /* until this (a first shader compile can take a while) */
+#define SCGPU_MARK_NAP_US       250             /* a frame's pace (ring_mark) is looked at this often, */
+#define SCGPU_MARK_MAX_MS       1000            /* ... and not waited for longer than this */
 
 static volatile struct scgpu_header *scgpu;     /* NULL: the virtio-gpu device, as before */
 static uint8_t *scgpu_va;
@@ -253,6 +261,52 @@ ring_room(uint32_t head, uint32_t need)
 		}
 		__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->guest_waiting, 0, __ATOMIC_RELAXED);
 	}
+	return 0;
+}
+
+/*
+ * VGPU3D_IOC_RING_MARK: until the app has run the ring past `*mark` (a mark from before; 0: none),
+ * then a mark of everything put in so far. A mark is (1 << 32) | ring_head. Not an error to give up
+ * (a host busy compiling shaders): the ring's room holds the writer back then. In naps, not on the
+ * doorbell: the app rings only once it has run the ring dry, and the frame before is usually done
+ * long before that.
+ */
+static uint64_t mark_waits, mark_us, mark_late;
+
+static int
+ring_mark(uint64_t *mark)
+{
+	if (scgpu == NULL || scgpu_ring == NULL) {
+		return ENOTSUP;
+	}
+	volatile uint32_t *tailp = &scgpu->ring_tail, *headp = &scgpu->ring_head;
+	if (*mark >> 32 == 1) {
+		uint32_t until = (uint32_t)*mark;
+		uint64_t began = mach_absolute_time(), give_up;
+
+		nanoseconds_to_absolutetime((uint64_t)SCGPU_MARK_MAX_MS * NSEC_PER_MSEC, &give_up);
+		give_up += began;
+		/* (a head behind the mark: the ring began again since, with the app) */
+		while ((int32_t)(__atomic_load_n((uint32_t *)(uintptr_t)tailp, __ATOMIC_ACQUIRE) - until) < 0 &&
+		    (int32_t)(__atomic_load_n((uint32_t *)(uintptr_t)headp, __ATOMIC_ACQUIRE) - until) >= 0) {
+			if (mach_absolute_time() > give_up) {
+				mark_late++;
+				break;
+			}
+			delay_for_interval(SCGPU_MARK_NAP_US, NSEC_PER_USEC);
+		}
+		uint64_t waited = mach_absolute_time() - began, ns;
+		if (waited != 0) {
+			absolutetime_to_nanoseconds(waited, &ns);
+			mark_us += ns / NSEC_PER_USEC;
+		}
+		mark_waits++;
+		if (mark_waits == 600 || mark_waits % 20000 == 0) {
+			printf("vgpu3d: SCGPU: %llu frames paced, %llu us each on average waiting for the frame before; "
+			    "%llu given up on\n", mark_waits, mark_us / mark_waits, mark_late);
+		}
+	}
+	*mark = (1ull << 32) | __atomic_load_n((uint32_t *)(uintptr_t)headp, __ATOMIC_ACQUIRE);
 	return 0;
 }
 
@@ -1013,6 +1067,9 @@ vgpu3d_dev_ioctl(dev_t dev, u_long cmd, caddr_t data, __unused int flag, __unuse
 		break;
 	case VGPU3D_IOC_HOST_SHOWS:
 		err = host_shows((uint32_t *)data);
+		break;
+	case VGPU3D_IOC_RING_MARK:
+		err = ring_mark((uint64_t *)data);
 		break;
 	default:
 		err = ENOTTY;

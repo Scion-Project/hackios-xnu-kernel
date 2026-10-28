@@ -24,10 +24,14 @@ if [ ! -d "$SRC/.git" ]; then
 	git init -q "$SRC"
 	git -C "$SRC" remote add origin https://github.com/google/gfxstream.git
 fi
-if [ "$(git -C "$SRC" rev-parse -q --verify HEAD 2>/dev/null)" != "$COMMIT" ]; then
-	git -C "$SRC" fetch -q --depth 1 origin "$COMMIT"
-	git -C "$SRC" checkout -q -f FETCH_HEAD
+# (again whenever android-host.patch changes: the tree is put back to the commit and patched anew)
+PATCHED=$(git hash-object "$HERE/android-host.patch")
+if [ "$(git -C "$SRC" rev-parse -q --verify HEAD 2>/dev/null)" != "$COMMIT" ] ||
+   [ "$(cat "$SRC/.git/hakios-patched" 2>/dev/null)" != "$PATCHED" ]; then
+	git -C "$SRC" cat-file -e "$COMMIT^{commit}" 2>/dev/null || git -C "$SRC" fetch -q --depth 1 origin "$COMMIT"
+	git -C "$SRC" checkout -q -f "$COMMIT"
 	git -C "$SRC" apply "$HERE/android-host.patch"
+	echo "$PATCHED" > "$SRC/.git/hakios-patched"
 fi
 cmake -S "$SRC" -B "$OUT/build" -G Ninja -Wno-dev \
 	-DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a \

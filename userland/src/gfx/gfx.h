@@ -58,6 +58,13 @@ struct gfx_transport {
 	 */
 	int (*host_shows)(void *arg, uint32_t key);
 	/*
+	 * Optional: until the host has taken in everything sent before `*mark` (a mark this gave before;
+	 * 0: none), then a mark of everything sent so far in `*mark`. Taken in, not drawn: SCGPU's app runs
+	 * the stream in order, and a frame's rcFBPost waits there until the frame is on the screen. 0, or
+	 * an error when the transport cannot (gfx_pace then does not either).
+	 */
+	int (*ring_mark)(void *arg, uint64_t *mark);
+	/*
 	 * The render thread's first word (the client flags) has been sent already: /dev/vgpu3d sends it
 	 * when it connects the pipe. A second one would be read as the start of a packet, and the
 	 * stream would never line up again (the first reply never comes).
@@ -153,6 +160,9 @@ struct gfx {
 	void (*release)(void *user);
 	uint64_t downloads, download_bytes, uploads, upload_bytes;
 	uint64_t presents;              /* frames the host showed itself (gfx_present_shared) */
+	uint64_t paced_mark;            /* gfx_pace: the mark of the frame before */
+	int pace_off;                   /* ... which the transport cannot give */
+	uint64_t paced, us_paced, r_paced;
 	/* time (us) in each part, and frame ends, for the report every few seconds (gfx_report) */
 	uint64_t us_write, us_read, us_download, us_upload, frames, report_at, report_frames;
 	uint64_t r_trips, r_out, r_in, r_down, r_up, r_down_bytes, r_up_bytes, r_presents;
@@ -214,5 +224,11 @@ void gfx_forget_shared(struct gfx *c, uint64_t key);
  * back as before).
  */
 int gfx_present_shared(struct gfx *c, uint64_t key);
+/*
+ * The end of a frame the host shows itself, without waiting for it: until the host has taken in the
+ * frame before, so this one is drawn there while the next is made here, never more than a frame
+ * behind. 1 when it was, 0 when the transport cannot (wait for the frame as before).
+ */
+int gfx_pace(struct gfx *c);
 
 #endif
