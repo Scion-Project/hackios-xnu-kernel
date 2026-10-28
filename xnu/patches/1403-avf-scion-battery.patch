@@ -1,0 +1,25 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -147,6 +147,7 @@
+ bsd/dev/hakios.vgpu3d_xnu.c	standard
+ bsd/dev/hakios.scsnd.c		standard
+ bsd/dev/hakios.sccam_torch.c	standard
++bsd/dev/hakios.scfb_battery.c	standard
+ bsd/dev/hakios.qmi.c		standard
+ bsd/dev/hakios.nas.c		standard
+ bsd/dev/hakios.wlfw.c		standard
+diff --git a/bsd/dev/hakios.input.c b/bsd/dev/hakios.input.c
+--- a/bsd/dev/hakios.input.c
++++ b/bsd/dev/hakios.input.c
+@@ -226,6 +226,10 @@
+ 	hakios_goodix_init();
+ 	hakios_buttons_init();
+ 	hakios_battery_init();
++	{
++		extern void hakios_scfb_battery_init(void);
++		hakios_scfb_battery_init();      /* scfb.addr=: the phone's battery, from the Scion app (bsd/dev/hakios.scfb_battery.c) */
++	}
+ 	hakios_ufs_init();
+ 	hakios_net_init();
+ 	hakios_adreno_init();
