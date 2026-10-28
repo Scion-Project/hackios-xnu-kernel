@@ -56,7 +56,8 @@
  * fetch_offered), glgroup=0 leaves vibrant layers inside groups as they were (see group_draw_begin()), glprecision=0 leaves the shaders' "lowp" and "mediump" as they are (see all_highp), glenv=NAME=VALUE puts that into the environment for the library to find
  * (its own switches: FD_MESA_DEBUG=sysmem, say), vblur=0 blurs nothing whose radius varies and
  * vblur=2 paints such blurs by their masks instead (see vblur_on), glframes=1 writes a line for
- * every frame (see frame_end()).
+ * every frame (see frame_end()), glerrors=1 asks for an error after every call for as long as the
+ * window server runs, not the first 600 frames.
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
@@ -335,6 +336,7 @@ static __thread struct eagl *current;
 static struct eagl *contexts[8];
 static uint32_t slot_calls[SLOTS];
 static int check_errors = 1;            /* ask the library for an error after every call (the first frames) */
+static int keep_checking;               /* boot-arg glerrors=1: ... and after them too */
 static int share_surfaces = 1;          /* boot-arg glcopy=1: 0 */
 /*
  * A frame is not drawn into its surface's memory but into a texture of the library's own, and the
@@ -1173,8 +1175,13 @@ frame_end(struct eagl *e, bool finished)
 		summary(e);
 	}
 	census_report();
-	if (e->frames == 600 && e->errors == 0) {
+	/*
+	 * Each check is a round trip to the host (about 1,000 a second while a video plays), so they
+	 * stop after the first 600 frames of any context, errors or not: those are told above.
+	 */
+	if (e->frames == 600 && check_errors && !keep_checking) {
 		check_errors = 0;
+		say("hakios-gl: after 600 frames, %u errors; no longer asked for after every call\n", e->errors);
 	}
 	e->last_draws = e->draws;
 	e->calls = e->draws = e->triangles = e->uploads = e->clears = 0;
@@ -4165,6 +4172,7 @@ install(void)
 			trace_placed = 1;
 		}
 		all_shaders = strstr(arguments, "glshaders=1") != NULL;
+		keep_checking = strstr(arguments, "glerrors=1") != NULL;
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;

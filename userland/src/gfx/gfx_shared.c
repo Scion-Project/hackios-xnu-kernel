@@ -25,6 +25,10 @@
 #define GL_READ_FRAMEBUFFER     0x8CA8
 #define GL_COLOR_ATTACHMENT0    0x8CE0
 #define GL_SCISSOR_TEST         0x0C11
+#define GL_BLEND                0x0BE2
+#define GL_NONE                 0
+#define GL_TEXTURE              0x1702
+#define GL_RENDERBUFFER         0x8D41
 
 /* ---- textures and their damage ------------------------------------------------------------ */
 
@@ -90,15 +94,44 @@ damage_all(struct gfx_tex *t)
 	damage(t, 0, 0, t->width ? (int32_t)t->width : 1 << 30, t->height ? (int32_t)t->height : 1 << 30);
 }
 
+struct gfx_fbo *
+gfx_fbo_of(struct gfx *c, GLuint fbo)
+{
+	struct gfx_fbo *f = &c->fbo_color[fbo % GFX_MAX_FBOS];
+	return fbo && f->fbo == fbo ? f : NULL;
+}
+
+/* What colour attachment 0 of `fbo` is from now on (kind GL_NONE: nothing). */
+static void
+fbo_set(struct gfx *c, GLuint fbo, GLenum kind, GLuint name)
+{
+	struct gfx_fbo *f = &c->fbo_color[fbo % GFX_MAX_FBOS];
+	if (fbo) {
+		f->fbo = fbo;
+		f->kind = name ? kind : GL_NONE;
+		f->texture = name;
+	}
+}
+
 static GLuint
 fbo_texture(struct gfx *c, GLuint fbo)
 {
-	for (int i = 0; fbo && i < GFX_MAX_FBOS; i++) {
-		if (c->fbo_color[i].fbo == fbo) {
-			return c->fbo_color[i].texture;
+	struct gfx_fbo *f = gfx_fbo_of(c, fbo);
+	return f != NULL && f->kind == GL_TEXTURE ? f->texture : 0;
+}
+
+/* An attachment deleted: it is let go by the framebuffers bound now (not by others, as GL does). */
+static void
+fbo_forget(struct gfx *c, GLenum kind, GLuint name)
+{
+	GLuint bound[2] = { c->draw_fbo, c->read_fbo };
+	for (int i = 0; i < 2; i++) {
+		struct gfx_fbo *f = gfx_fbo_of(c, bound[i]);
+		if (f != NULL && name && f->kind == kind && f->texture == name) {
+			f->kind = GL_NONE;
+			f->texture = 0;
 		}
 	}
-	return 0;
 }
 
 static struct gfx_shared *
@@ -314,6 +347,7 @@ glActiveTexture(GLenum texture)
 	if (texture >= GL_TEXTURE0 && texture < GL_TEXTURE0 + 16) {
 		c->active_unit = texture - GL_TEXTURE0;
 	}
+	c->unit_over = !(texture >= GL_TEXTURE0 && texture < GL_TEXTURE0 + 16);
 	gfxe_glActiveTexture(c, texture);
 }
 
@@ -358,6 +392,7 @@ glDeleteTextures(GLsizei n, const GLuint *textures)
 				c->bound_2d[u] = 0;
 			}
 		}
+		fbo_forget(c, GL_TEXTURE, textures[i]);
 	}
 	gfxe_glDeleteTextures(c, n, textures);
 }
@@ -387,23 +422,63 @@ glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuin
 		return;
 	}
 	fbo = target == GL_READ_FRAMEBUFFER ? c->read_fbo : c->draw_fbo;
-	if (attachment == GL_COLOR_ATTACHMENT0 && fbo) {
-		int slot = -1;
-		for (int i = 0; i < GFX_MAX_FBOS; i++) {
-			if (c->fbo_color[i].fbo == fbo) {
-				slot = i;
-				break;
-			}
-			if (slot < 0 && c->fbo_color[i].fbo == 0) {
-				slot = i;
-			}
-		}
-		if (slot >= 0) {
-			c->fbo_color[slot].fbo = fbo;
-			c->fbo_color[slot].texture = texture;
-		}
+	if (attachment == GL_COLOR_ATTACHMENT0) {
+		fbo_set(c, fbo, GL_TEXTURE, texture);
 	}
 	gfxe_glFramebufferTexture2D(c, target, attachment, textarget, texture, level);
+}
+
+API void
+glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (attachment == GL_COLOR_ATTACHMENT0) {
+		fbo_set(c, target == GL_READ_FRAMEBUFFER ? c->read_fbo : c->draw_fbo, GL_TEXTURE, texture);
+	}
+	gfxe_glFramebufferTextureLayer(c, target, attachment, texture, level, layer);
+}
+
+API void
+glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (attachment == GL_COLOR_ATTACHMENT0) {
+		fbo_set(c, target == GL_READ_FRAMEBUFFER ? c->read_fbo : c->draw_fbo, GL_RENDERBUFFER, renderbuffer);
+	}
+	gfxe_glFramebufferRenderbuffer(c, target, attachment, renderbuffertarget, renderbuffer);
+}
+
+API void
+glDeleteRenderbuffers(GLsizei n, const GLuint *renderbuffers)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	for (GLsizei i = 0; i < n; i++) {
+		fbo_forget(c, GL_RENDERBUFFER, renderbuffers[i]);
+	}
+	gfxe_glDeleteRenderbuffers(c, n, renderbuffers);
+}
+
+/* A new framebuffer has nothing attached. */
+API void
+glGenFramebuffers(GLsizei n, GLuint *framebuffers)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	gfxe_glGenFramebuffers(c, n, framebuffers);
+	for (GLsizei i = 0; i < n; i++) {
+		fbo_set(c, framebuffers[i], GL_NONE, 0);
+	}
 }
 
 API void
@@ -414,10 +489,9 @@ glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers)
 		return;
 	}
 	for (GLsizei i = 0; i < n; i++) {
-		for (int j = 0; j < GFX_MAX_FBOS; j++) {
-			if (framebuffers[i] && c->fbo_color[j].fbo == framebuffers[i]) {
-				c->fbo_color[j].fbo = c->fbo_color[j].texture = 0;
-			}
+		struct gfx_fbo *f = gfx_fbo_of(c, framebuffers[i]);
+		if (f != NULL) {
+			memset(f, 0, sizeof(*f));
 		}
 		if (c->draw_fbo == framebuffers[i]) {
 			c->draw_fbo = 0;
@@ -438,6 +512,8 @@ glEnable(GLenum cap)
 	}
 	if (cap == GL_SCISSOR_TEST) {
 		c->scissor_on = 1;
+	} else if (cap == GL_BLEND) {
+		c->blend_on = 1;
 	}
 	gfxe_glEnable(c, cap);
 }
@@ -451,6 +527,8 @@ glDisable(GLenum cap)
 	}
 	if (cap == GL_SCISSOR_TEST) {
 		c->scissor_on = 0;
+	} else if (cap == GL_BLEND) {
+		c->blend_on = 0;
 	}
 	gfxe_glDisable(c, cap);
 }
@@ -466,6 +544,7 @@ glScissor(GLint x, GLint y, GLsizei width, GLsizei height)
 	c->scissor[1] = y;
 	c->scissor[2] = width;
 	c->scissor[3] = height;
+	c->scissor_known = width >= 0 && height >= 0;  /* (a negative size is refused, and the box stays) */
 	gfxe_glScissor(c, x, y, width, height);
 }
 
