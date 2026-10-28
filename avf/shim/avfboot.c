@@ -718,6 +718,17 @@ void avfboot_main(uint64_t fdt_pa)
 		uart_kv("+", scgpu_size);
 		uart_putc('\n');
 	}
+	/* Scion's speaker (SCSND, xnu/files/bsd/sys/hakios.scsnd.h): a ring of samples, likewise */
+	uint64_t scsnd_pa = arg_num(m.bootargs, "scsnd.addr="), scsnd_size = arg_num(m.bootargs, "scsnd.size=");
+	if (scsnd_pa || scsnd_size) {
+		if (scsnd_pa < m.ram_lo || scsnd_pa + scsnd_size > m.ram_hi || (scsnd_pa & 0xfff) || scsnd_size < 0x10000)
+			die("scsnd.addr/size do not describe a region in RAM");
+		if (scsnd_pa < win_end)
+			win_end = scsnd_pa & ~(BASE_ALIGN - 1);
+		uart_kv("avfboot: scsnd ", scsnd_pa);
+		uart_kv("+", scsnd_size);
+		uart_putc('\n');
+	}
 	if (win_end <= phys_base)
 		die("not enough RAM");
 	uint64_t win_size = win_end - phys_base;
