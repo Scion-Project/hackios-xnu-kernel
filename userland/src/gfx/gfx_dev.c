@@ -1,6 +1,6 @@
 /*
  * gfx's transport on iOS: /dev/vgpu3d, the kernel's virtio-gpu 3D layer
- * (xnu/files/bsd/dev/hakios.vgpu3d_xnu.c). Every open is a virtio-gpu context with its own gfxstream pipe
+ * (drivers/gpu/hakios.vgpu3d_xnu.c). Every open is a virtio-gpu context with its own gfxstream pipe
  * to a render thread on the host; write and read carry the stream, the ioctls colour-buffer
  * resources.
  */

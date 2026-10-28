@@ -1,17 +1,3 @@
-diff --git a/bsd/conf/files b/bsd/conf/files
-index be702e2..f4eea96 100644
---- a/bsd/conf/files
-+++ b/bsd/conf/files
-@@ -135,6 +135,9 @@ bsd/dev/hakios.wifi.c		standard
- bsd/dev/hakios.adsp.c		standard
- bsd/dev/hakios.mpss.c		standard
- bsd/dev/hakios.image.c		standard
-+bsd/dev/hakios.pci.c		standard
-+bsd/dev/hakios.virtio.c	standard
-+bsd/dev/hakios.virtio_console.c	standard
- bsd/dev/hakios.virtio_blk.c	standard
- bsd/dev/hakios.sparse.c	standard
- bsd/dev/hakios.apfs_check.c	optional apfs
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
 index 4a6e0cc..0250d5e 100644
 --- a/bsd/kern/bsd_init.c

@@ -2,7 +2,7 @@
  * What a Metal driver needs from Mesa, and nothing else.
  *
  * Subsystem (1) made an AIR front end inside Mesa; subsystem (2) is making the Metal object
- * graph in userland/src/hakiosmetal.m. They meet here. The measurement that decided the
+ * graph in userland/src/hakiosmetal_air.m. They meet here. The measurement that decided the
  * shape of this header is in docs/metal.md 10.12: Metal hands a driver one function's LLVM
  * module through -[_MTLFunction bitcodeData], and those bytes are -- checked over all eleven
  * functions of AV1SW.metallib -- exactly what this front end already reads. So the contract
@@ -819,7 +819,7 @@ struct rwa_render_shape {
 
 	/*
 	 * MTLRenderPipelineDescriptor.vertexDescriptor, appended for the reason the
-	 * indexed fields of rwa_draw were appended: userland/src/hakiosmetal.m holds a
+	 * indexed fields of rwa_draw were appended: userland/src/hakiosmetal_air.m holds a
 	 * copy of this struct typed out by hand, and appending leaves every field that
 	 * driver already fills at the offset it already reads. Both still have to be
 	 * rebuilt together.
@@ -838,7 +838,7 @@ struct rwa_render_shape {
 	 * attachment, and APPENDED -- 8 * 32 + 4 = 260 bytes at the END of this struct,
 	 * with every field above it left at the offset it already had.
 	 *
-	 * That is not tidiness. userland/src/hakiosmetal.m holds a copy of this struct
+	 * That is not tidiness. userland/src/hakiosmetal_air.m holds a copy of this struct
 	 * typed out by hand, and this port has paid twice for a field inserted in the
 	 * MIDDLE of a shared struct: once with a primitive type arriving as 1871292816
 	 * (rwa_draw, see there), and once when struct air_resource grew by eight bytes
@@ -1218,7 +1218,7 @@ struct rwa_draw {
 	unsigned vertex_start, vertex_count;
 
 	/* The indexed forms. Appended rather than placed beside `primitive` on purpose:
-	 * userland/src/hakiosmetal.m holds a copy of this struct typed out by hand, and
+	 * userland/src/hakiosmetal_air.m holds a copy of this struct typed out by hand, and
 	 * appending leaves every field that driver already fills at the offset it already
 	 * reads. Both still have to be rebuilt together -- a driver compiled against one
 	 * shape of this struct calling a library built with the other read a primitive

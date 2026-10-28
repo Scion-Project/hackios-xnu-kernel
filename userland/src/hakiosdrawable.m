@@ -484,7 +484,7 @@ rwd_format_of_metal(unsigned metal_pixel_format, uint32_t *fourcc, unsigned *byt
 /*
  * The import call of the compiler library, if it has one.
  *
- * It is looked up rather than linked for the same reason src/hakiosmetal.m dlopens the
+ * It is looked up rather than linked for the same reason src/hakiosmetal_air.m dlopens the
  * library at all, and with RTLD_NOLOAD so that this file never loads a second copy: dyld
  * uniques images by install_name, so a handle asked for this way is the one the driver
  * already has, or nothing when the driver never got one.
