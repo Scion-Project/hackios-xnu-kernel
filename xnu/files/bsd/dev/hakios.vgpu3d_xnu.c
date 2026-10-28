@@ -272,6 +272,7 @@ ring_room(uint32_t head, uint32_t need)
  * long before that.
  */
 static uint64_t mark_waits, mark_us, mark_late;
+static uint64_t ring_posted;          /* (scgpu_ring_post) */
 
 static int
 ring_mark(uint64_t *mark)
@@ -303,7 +304,8 @@ ring_mark(uint64_t *mark)
 		mark_waits++;
 		if (mark_waits == 600 || mark_waits % 20000 == 0) {
 			printf("vgpu3d: SCGPU: %llu frames paced, %llu us each on average waiting for the frame before; "
-			    "%llu given up on\n", mark_waits, mark_us / mark_waits, mark_late);
+			    "%llu given up on; %llu commands posted through the ring, not waited for\n", mark_waits,
+			    mark_us / mark_waits, mark_late, ring_posted);
 		}
 	}
 	*mark = (1ull << 32) | __atomic_load_n((uint32_t *)(uintptr_t)headp, __ATOMIC_ACQUIRE);
@@ -462,9 +464,46 @@ scgpu_attach(void)
 		scgpu_ring_size = SCGPU_RING_SIZE;
 		__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->ring_size, SCGPU_RING_SIZE, __ATOMIC_RELEASE);
 	}
-	printf("vgpu3d: SCGPU: the app's GPU at %#llx (%llu MiB, a pool of %u KiB, a stream ring of %u KiB), %s\n", pa,
+	printf("vgpu3d: SCGPU: the app's GPU at %#llx (%llu MiB, a pool of %u KiB, a stream ring of %u KiB%s), %s\n", pa,
 	    size >> 20, scgpu_chunks * (SCGPU_CHUNK >> 10), scgpu_ring_size >> 10,
+	    scgpu_ring != NULL && (scgpu->flags & SCGPU_F_RING_CMDS) ? " that takes commands too" : "",
 	    scgpu->flags & SCGPU_F_HOST_READY ? "ready" : "NOT READY");
+}
+
+/*
+ * A command posted into the stream ring (SCGPU_REC_CMD, the app's SCGPU_F_RING_CMDS): run by the app in
+ * order with the stream, its reply dropped; the guest waits for nothing but room. ENOTSUP: use the
+ * mailbox.
+ */
+static int
+scgpu_ring_post(const void *cmd, uint32_t len)
+{
+	uint32_t mask = scgpu_ring_size - 1, need = (uint32_t)sizeof(struct scgpu_record) + ((len + 15) & ~15u);
+	int err;
+
+	if (scgpu == NULL || scgpu_ring == NULL || !(scgpu->flags & SCGPU_F_RING_CMDS) || len == 0 ||
+	    need > scgpu_ring_size / 4) {
+		return ENOTSUP;
+	}
+	lck_mtx_lock(&scgpu_ring_lock);
+	uint32_t head = scgpu->ring_head;       /* (ours alone) */
+	if ((err = ring_room(head, need)) == 0) {
+		struct scgpu_record rec = { 0, 0, len, SCGPU_REC_CMD };
+		uint32_t pos = head & mask;
+		memcpy(scgpu_ring + pos, &rec, sizeof(rec));
+		uint32_t at = (pos + (uint32_t)sizeof(rec)) & mask;
+		uint32_t first = len < scgpu_ring_size - at ? len : scgpu_ring_size - at;
+		memcpy(scgpu_ring + at, cmd, first);
+		memcpy(scgpu_ring, (const uint8_t *)cmd + first, len - first);
+		__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->ring_head, head + need, __ATOMIC_RELEASE);
+		ring_posted++;
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
+		if (bell != NULL && __atomic_load_n((uint32_t *)(uintptr_t)&scgpu->host_sleeping, __ATOMIC_RELAXED)) {
+			bell_ring();
+		}
+	}
+	lck_mtx_unlock(&scgpu_ring_lock);
+	return err;
 }
 
 /* ---- the ops ---------------------------------------------------------------------------- */
@@ -522,7 +561,13 @@ xnu_now_ns(__unused void *arg)
 	return ns;
 }
 
-static const struct vgpu3d_ops xnu_ops = { NULL, xnu_ctrl, xnu_dma_alloc, xnu_log, xnu_now_ns };
+static int
+xnu_post(__unused void *arg, const void *cmd, uint32_t cmd_len)
+{
+	return scgpu_ring_post(cmd, cmd_len);
+}
+
+static const struct vgpu3d_ops xnu_ops = { NULL, xnu_ctrl, xnu_dma_alloc, xnu_log, xnu_now_ns, xnu_post };
 
 /*
  * Once: bring the device up through the 2D driver, see that it does 3D, and pick the context

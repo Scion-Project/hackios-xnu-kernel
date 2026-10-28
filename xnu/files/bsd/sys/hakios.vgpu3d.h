@@ -191,6 +191,11 @@ struct vgpu3d_ops {
 	void (*log)(void *arg, const char *line);
 	/* A monotonic clock, for the self-test's timings. */
 	uint64_t (*now_ns)(void *arg);
+	/*
+	 * Optional: send cmd without waiting for its reply, in order with everything sent before and
+	 * after (SCGPU's ring). 0 when it was sent; anything else and ctrl() is used instead.
+	 */
+	int (*post)(void *arg, const void *cmd, uint32_t cmd_len);
 };
 
 #define VGPU3D_MAX_CAPSETS      16

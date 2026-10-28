@@ -40,6 +40,12 @@
  * any mailbox command: so a reply, an upload or a read still comes after every byte written before it.
  * The guest waits only for room (and rings the app, or is rung, as for the mailbox).
  *
+ * With SCGPU_F_RING_CMDS from the app, a record of kind SCGPU_REC_CMD holds a virtio-gpu command
+ * instead of stream bytes, one whose reply nothing waits for: RESOURCE_CREATE_3D,
+ * RESOURCE_ATTACH_BACKING, CTX_ATTACH_RESOURCE, CTX_DETACH_RESOURCE, RESOURCE_UNREF. The app runs it
+ * where it is in the ring, in order with the stream around it, and only logs a failure. A colour
+ * buffer then costs the guest no round trip to make or let go (it was five, each a wait for the app).
+ *
  * Commands are virtio-gpu's (virtio 1.2, 5.7.6), with these meanings at the app:
  *   GET_CAPSET_INFO, GET_CAPSET            gfxstream's capsets (stream_renderer_get_cap_set/fill_caps)
  *   CTX_CREATE, CTX_DESTROY                stream_renderer_context_create/destroy
@@ -77,6 +83,13 @@
  */
 #define SCGPU_G_PRESENTING      (1u << 0)
 
+/* flags: the app runs commands from the ring (records of kind SCGPU_REC_CMD) */
+#define SCGPU_F_RING_CMDS       (1u << 2)
+
+/* struct scgpu_record's kind */
+#define SCGPU_REC_STREAM        0u      /* bytes for the context's pipe */
+#define SCGPU_REC_CMD           1u      /* a virtio-gpu command, its reply dropped (SCGPU_F_RING_CMDS) */
+
 /* the doorbell's virtio-input device (its name, ID_NAME) */
 #define SCGPU_BELL_NAME         "scion-scgpu"
 
@@ -108,8 +121,8 @@ struct scgpu_header {
 
 /* A record of the stream ring: the bytes follow, then padding to 16. */
 struct scgpu_record {
-	uint32_t resource_id, ctx_id;   /* the pipe of a context */
-	uint32_t len, reserved;
+	uint32_t resource_id, ctx_id;   /* the pipe of a context (SCGPU_REC_STREAM) */
+	uint32_t len, kind;             /* SCGPU_REC_*: 0 in apps before SCGPU_F_RING_CMDS */
 };
 
 /* struct virtio_gpu_transfer_host_3d's twin, with the staging buffer instead of the backing */
