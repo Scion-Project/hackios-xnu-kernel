@@ -53,6 +53,13 @@
 #define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE 0x8CD0
 #define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME 0x8CD1
 #define GL_VERTEX_ATTRIB_ARRAY_ENABLED  0x8622
+#define GL_BLEND_DST_RGB                0x80C8
+#define GL_BLEND_SRC_RGB                0x80C9
+#define GL_BLEND_DST_ALPHA              0x80CA
+#define GL_BLEND_SRC_ALPHA              0x80CB
+#define GL_TEXTURE_2D                   0x0DE1
+#define GL_TEXTURE_WIDTH                0x1000
+#define GL_TEXTURE_HEIGHT               0x1001
 
 /* ---- strings, state queries ------------------------------------------------------------- */
 
@@ -117,14 +124,21 @@ spot_check(struct gfx *c)
 	return (c->answered & 255) == 0;
 }
 
+/* What a failed check turns off: each kind of answer on its own, so a host that is wrong about one leaves the rest. */
+#define CHECK_STATE     1u              /* bindings, the scissor, the viewport, blending on, the clear colour, attachments, arrays */
+#define CHECK_BLEND     2u              /* the blend factors */
+#define CHECK_SIZES     4u              /* a texture's size */
+#define CHECK_NAMES     8u              /* uniform locations */
+#define CHECK_VALUES    16u             /* uniform values */
+
 static void
-differs(struct gfx *c, const char *what, GLenum pname, long here, long host)
+differs(struct gfx *c, unsigned kind, const char *what, GLenum pname, long here, long host)
 {
-	if (!(c->check_failed & 1u)) {
-		fprintf(stderr, "gfx: %s %#x was answered %ld here, the host has %ld; asking the host from now on\n",
+	if (!(c->check_failed & kind)) {
+		fprintf(stderr, "gfx: %s %#x was answered %ld here, the host has %ld; asking the host for it from now on\n",
 		    what, pname, here, host);
 	}
-	c->check_failed |= 1u;
+	c->check_failed |= kind;
 }
 
 API void
@@ -135,31 +149,28 @@ glGetIntegerv(GLenum pname, GLint *params)
 	if (c == NULL) {
 		return;
 	}
-	if (c->check_failed) {
-		/* (the pixel store and the buffer bindings were answered here before the checks: they stay) */
-		if ((slot = store_slot(c, pname)) != NULL) {
-			*params = *slot;
-		} else {
-			gfxe_glGetIntegerv(c, pname, params);
-		}
-		return;
-	}
+	/* (the pixel store and the buffer bindings were answered here before the checks: they stay) */
+	int state = !(c->check_failed & CHECK_STATE);
+	int blend = pname >= GL_BLEND_DST_RGB && pname <= GL_BLEND_SRC_ALPHA;
 	if ((slot = store_slot(c, pname)) != NULL) {
 		*params = *slot;
 	} else if (pname == GL_ARRAY_BUFFER_BINDING) {
 		*params = (GLint)c->array_buffer;
 	} else if (pname == GL_ELEMENT_ARRAY_BUFFER_BINDING) {
 		*params = (GLint)c->element_buffer;
-	} else if (pname == GL_TEXTURE_BINDING_2D && !c->unit_over) {
+	} else if (state && pname == GL_TEXTURE_BINDING_2D && !c->unit_over) {
 		*params = (GLint)c->bound_2d[c->active_unit];
-	} else if (pname == GL_DRAW_FRAMEBUFFER_BINDING) {
+	} else if (state && pname == GL_DRAW_FRAMEBUFFER_BINDING) {
 		*params = (GLint)c->draw_fbo;
-	} else if (pname == GL_READ_FRAMEBUFFER_BINDING) {
+	} else if (state && pname == GL_READ_FRAMEBUFFER_BINDING) {
 		*params = (GLint)c->read_fbo;
-	} else if (pname == GL_SCISSOR_BOX && c->scissor_known) {
+	} else if (state && pname == GL_SCISSOR_BOX && c->scissor_known) {
 		memcpy(params, c->scissor, sizeof(c->scissor));
-	} else if (pname == GL_VIEWPORT && c->viewport_known) {
+	} else if (state && pname == GL_VIEWPORT && c->viewport_known) {
 		memcpy(params, c->viewport, sizeof(c->viewport));
+	} else if (blend && c->blend_func_known && !(c->check_failed & CHECK_BLEND)) {
+		static const int which[4] = { 1, 0, 3, 2 };     /* DST_RGB, SRC_RGB, DST_ALPHA, SRC_ALPHA */
+		*params = (GLint)c->blend_func[which[pname - GL_BLEND_DST_RGB]];
 	} else {
 		gfxe_glGetIntegerv(c, pname, params);
 		/* the surface's box, until the client sets one: known from now on */
@@ -180,7 +191,7 @@ glGetIntegerv(GLenum pname, GLint *params)
 		gfxe_glGetIntegerv(c, pname, host);
 		for (int i = 0; i < n; i++) {
 			if (host[i] != params[i]) {
-				differs(c, "glGetIntegerv", pname, params[i], host[i]);
+				differs(c, blend ? CHECK_BLEND : CHECK_STATE, "glGetIntegerv", pname, params[i], host[i]);
 				memcpy(params, host, sizeof(GLint) * (size_t)n);
 				break;
 			}
@@ -195,13 +206,13 @@ glIsEnabled(GLenum cap)
 	if (c == NULL) {
 		return 0;
 	}
-	if ((cap == GL_SCISSOR_TEST || cap == GL_BLEND) && !c->check_failed) {
+	if ((cap == GL_SCISSOR_TEST || cap == GL_BLEND) && !(c->check_failed & CHECK_STATE)) {
 		GLboolean here = (GLboolean)(cap == GL_BLEND ? c->blend_on : c->scissor_on);
 		c->answered++;
 		if (spot_check(c)) {
 			GLboolean host = gfxe_glIsEnabled(c, cap);
 			if (host != here) {
-				differs(c, "glIsEnabled", cap, here, host);
+				differs(c, CHECK_STATE, "glIsEnabled", cap, here, host);
 				return host;
 			}
 		}
@@ -217,14 +228,14 @@ glGetFloatv(GLenum pname, GLfloat *params)
 	if (c == NULL) {
 		return;
 	}
-	if (pname == GL_COLOR_CLEAR_VALUE && !c->clear_unknown && !c->check_failed) {
+	if (pname == GL_COLOR_CLEAR_VALUE && !c->clear_unknown && !(c->check_failed & CHECK_STATE)) {
 		c->answered++;
 		memcpy(params, c->clear_colour, sizeof(c->clear_colour));
 		if (spot_check(c)) {
 			GLfloat host[4];
 			gfxe_glGetFloatv(c, pname, host);
 			if (memcmp(host, params, sizeof(host)) != 0) {
-				differs(c, "glGetFloatv", pname, (long)(params[0] * 1000), (long)(host[0] * 1000));
+				differs(c, CHECK_STATE, "glGetFloatv", pname, (long)(params[0] * 1000), (long)(host[0] * 1000));
 				memcpy(params, host, sizeof(host));
 			}
 		}
@@ -276,7 +287,7 @@ glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum p
 		return;
 	}
 	struct gfx_fbo *f = gfx_fbo_of(c, target == GL_READ_FRAMEBUFFER ? c->read_fbo : c->draw_fbo);
-	if (f != NULL && attachment == GL_COLOR_ATTACHMENT0 && !c->check_failed &&
+	if (f != NULL && attachment == GL_COLOR_ATTACHMENT0 && !(c->check_failed & CHECK_STATE) &&
 	    (pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE || (pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME && f->kind != GL_NONE))) {
 		c->answered++;
 		*params = pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE ? (GLint)f->kind : (GLint)f->texture;
@@ -284,13 +295,324 @@ glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum p
 			GLint host = 0;
 			gfxe_glGetFramebufferAttachmentParameteriv(c, target, attachment, pname, &host);
 			if (host != *params) {
-				differs(c, "glGetFramebufferAttachmentParameteriv", pname, *params, host);
+				differs(c, CHECK_STATE, "glGetFramebufferAttachmentParameteriv", pname, *params, host);
 				*params = host;
 			}
 		}
 		return;
 	}
 	gfxe_glGetFramebufferAttachmentParameteriv(c, target, attachment, pname, params);
+}
+
+/* A blend factor glBlendFunc takes (anything else is refused, and changes nothing). */
+static int
+blend_factor(GLenum f)
+{
+	return f <= 1 || (f >= 0x0300 && f <= 0x0308) || (f >= 0x8001 && f <= 0x8004);
+}
+
+API void
+glBlendFunc(GLenum sfactor, GLenum dfactor)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	c->blend_func_known = blend_factor(sfactor) && blend_factor(dfactor) && dfactor != 0x0308;
+	c->blend_func[0] = c->blend_func[2] = sfactor;
+	c->blend_func[1] = c->blend_func[3] = dfactor;
+	gfxe_glBlendFunc(c, sfactor, dfactor);
+}
+
+API void
+glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	c->blend_func_known = blend_factor(srcRGB) && blend_factor(dstRGB) && blend_factor(srcAlpha) &&
+	    blend_factor(dstAlpha) && dstRGB != 0x0308 && dstAlpha != 0x0308;
+	c->blend_func[0] = srcRGB;
+	c->blend_func[1] = dstRGB;
+	c->blend_func[2] = srcAlpha;
+	c->blend_func[3] = dstAlpha;
+	gfxe_glBlendFuncSeparate(c, srcRGB, dstRGB, srcAlpha, dstAlpha);
+}
+
+/* (one draw buffer's factors: what glGetIntegerv answers for is then not known here) */
+API void
+glBlendFunciEXT(GLuint buf, GLenum sfactor, GLenum dfactor)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		c->blend_func_known = 0;
+		gfxe_glBlendFunciEXT(c, buf, sfactor, dfactor);
+	}
+}
+
+API void
+glBlendFuncSeparateiEXT(GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		c->blend_func_known = 0;
+		gfxe_glBlendFuncSeparateiEXT(c, buf, srcRGB, dstRGB, srcAlpha, dstAlpha);
+	}
+}
+
+/* The width and height of the bound 2D texture's first level, as followed here. */
+API void
+glGetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint *params)
+{
+	struct gfx *c = gfx_current();
+	uint32_t width, height;
+	if (c == NULL) {
+		return;
+	}
+	if (target == GL_TEXTURE_2D && level == 0 && (pname == GL_TEXTURE_WIDTH || pname == GL_TEXTURE_HEIGHT) &&
+	    !c->unit_over && !(c->check_failed & CHECK_SIZES) && gfx_texture_size(c, c->bound_2d[c->active_unit], &width, &height)) {
+		*params = (GLint)(pname == GL_TEXTURE_WIDTH ? width : height);
+		c->answered++;
+		if (spot_check(c)) {
+			GLint host = 0;
+			gfxe_glGetTexLevelParameteriv(c, target, level, pname, &host);
+			if (host != *params) {
+				differs(c, CHECK_SIZES, "glGetTexLevelParameteriv", pname, *params, host);
+				*params = host;
+			}
+		}
+		return;
+	}
+	gfxe_glGetTexLevelParameteriv(c, target, level, pname, params);
+}
+
+/* What else gives a 2D texture's first level its size. */
+API void
+glTexStorage2D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (target == GL_TEXTURE_2D && !c->unit_over) {
+		gfx_note_texture_size(c, c->bound_2d[c->active_unit], (uint32_t)width, (uint32_t)height);
+	}
+	gfxe_glTexStorage2D(c, target, levels, internalformat, width, height);
+}
+
+API void
+glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height,
+    GLint border)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (target == GL_TEXTURE_2D && level == 0 && !c->unit_over) {
+		gfx_note_texture_size(c, c->bound_2d[c->active_unit], (uint32_t)width, (uint32_t)height);
+	}
+	gfxe_glCopyTexImage2D(c, target, level, internalformat, x, y, width, height, border);
+}
+
+API void
+glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border,
+    GLsizei imageSize, const void *data)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (target == GL_TEXTURE_2D && level == 0 && !c->unit_over) {
+		gfx_note_texture_size(c, c->bound_2d[c->active_unit], (uint32_t)width, (uint32_t)height);
+	}
+	gfxe_glCompressedTexImage2D(c, target, level, internalformat, width, height, border, imageSize, data);
+}
+
+API void
+glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (target == GL_TEXTURE_2D && !c->unit_over) {
+		gfx_note_texture_size(c, c->bound_2d[c->active_unit], 0, 0);     /* (the image's: not known here) */
+	}
+	gfxe_glEGLImageTargetTexture2DOES(c, target, image);
+}
+
+/* ---- uniforms ----------------------------------------------------------------------------- */
+
+static uint32_t
+uniform_hash(GLuint program, const char *name, GLint location)
+{
+	uint32_t h = 2166136261u ^ (program * 2654435761u) ^ ((uint32_t)location * 40503u);
+	for (; name != NULL && *name; name++) {
+		h = (h ^ (uint8_t)*name) * 16777619u;
+	}
+	return h % GFX_UNIFORMS;
+}
+
+/* Linking gives a program its locations anew, and every uniform 0; a program deleted takes them with it. */
+static void
+uniforms_forget(struct gfx *c, GLuint program)
+{
+	for (int i = 0; i < GFX_UNIFORMS; i++) {
+		if (c->uniform_names[i].program == program) {
+			c->uniform_names[i].program = 0;
+		}
+		if (c->uniform_values[i].program == program) {
+			c->uniform_values[i].program = 0;
+		}
+	}
+}
+
+API void
+glLinkProgram(GLuint program)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		uniforms_forget(c, program);
+		gfxe_glLinkProgram(c, program);
+	}
+}
+
+API void
+glDeleteProgram(GLuint program)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		uniforms_forget(c, program);
+		gfxe_glDeleteProgram(c, program);
+	}
+}
+
+API void
+glUseProgram(GLuint program)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		c->program = program;
+		gfxe_glUseProgram(c, program);
+	}
+}
+
+API GLint
+glGetUniformLocation(GLuint program, const GLchar *name)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return -1;
+	}
+	if (program == 0 || name == NULL || strlen(name) >= sizeof(c->uniform_names[0].name) ||
+	    (c->check_failed & CHECK_NAMES)) {
+		return gfxe_glGetUniformLocation(c, program, name);
+	}
+	struct gfx_uniform_name *u = &c->uniform_names[uniform_hash(program, name, 0)];
+	if (u->program == program && strcmp(u->name, name) == 0) {
+		c->answered++;
+		if (spot_check(c)) {
+			GLint host = gfxe_glGetUniformLocation(c, program, name);
+			if (host != u->location) {
+				differs(c, CHECK_NAMES, "glGetUniformLocation", 0, u->location, host);
+				return host;
+			}
+		}
+		return u->location;
+	}
+	GLint location = gfxe_glGetUniformLocation(c, program, name);
+	if (!c->err) {
+		u->program = program;
+		u->location = location;
+		strcpy(u->name, name);
+	}
+	return location;
+}
+
+/* A float uniform of the program in use set to n floats (count of them from `location` on). */
+static void
+uniform_set(struct gfx *c, GLint location, GLsizei count, int n, const GLfloat *v)
+{
+	if (c->program == 0 || location < 0 || count < 1) {
+		return;
+	}
+	struct gfx_uniform_value *u = &c->uniform_values[uniform_hash(c->program, NULL, location)];
+	u->program = c->program;
+	u->location = location;
+	u->n = n;
+	memcpy(u->v, v, sizeof(GLfloat) * (size_t)n);
+	/* (an array's other elements: their locations are not known to follow on; forget whatever is there) */
+	for (GLsizei i = 1; i < count && i < 64; i++) {
+		struct gfx_uniform_value *o = &c->uniform_values[uniform_hash(c->program, NULL, location + i)];
+		if (o->program == c->program && o->location == location + i) {
+			o->program = 0;
+		}
+	}
+}
+
+API void
+glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		const GLfloat v[4] = { x, y, z, w };
+		uniform_set(c, location, 1, 4, v);
+		gfxe_glUniform4f(c, location, x, y, z, w);
+	}
+}
+
+API void
+glUniform4fv(GLint location, GLsizei count, const GLfloat *v)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		if (v != NULL) {
+			uniform_set(c, location, count, 4, v);
+		}
+		gfxe_glUniform4fv(c, location, count, v);
+	}
+}
+
+API void
+glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+	struct gfx *c = gfx_current();
+	if (c != NULL) {
+		if (value != NULL && !transpose) {
+			uniform_set(c, location, count, 16, value);
+		}
+		gfxe_glUniformMatrix4fv(c, location, count, transpose, value);
+	}
+}
+
+/*
+ * A uniform's value: what the client set, when it is known here. The host's answer is as big as the
+ * biggest uniform (gfx_uniformType: a mat4) and is read into room for that; only as much as the
+ * uniform has is handed on when that is known, so a vec4 needs room for 4 floats, not 16.
+ */
+API void
+glGetUniformfv(GLuint program, GLint location, GLfloat *params)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	struct gfx_uniform_value *u = &c->uniform_values[uniform_hash(program, NULL, location)];
+	int known = u->program == program && u->location == location && program != 0;
+	if (known && !(c->check_failed & CHECK_VALUES)) {
+		memcpy(params, u->v, sizeof(GLfloat) * (size_t)u->n);
+		c->answered++;
+		if (!spot_check(c)) {
+			return;
+		}
+	}
+	GLfloat host[16] = { 0 };
+	gfxe_glGetUniformfv(c, program, location, host);
+	if (known && !(c->check_failed & CHECK_VALUES) && memcmp(host, u->v, sizeof(GLfloat) * (size_t)u->n) != 0) {
+		differs(c, CHECK_VALUES, "glGetUniformfv", (GLenum)location, (long)(u->v[0] * 1000), (long)(host[0] * 1000));
+	}
+	memcpy(params, host, sizeof(GLfloat) * (size_t)(known ? u->n : 16));
 }
 
 /* ---- pixels ----------------------------------------------------------------------------- */
@@ -340,7 +662,7 @@ glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GL
 		return;
 	}
 	void *p = pixels ? repack(c, (void *)pixels, width, height, format, type, 0, 0, NULL) : NULL;
-	if (target == 0x0DE1 /* GL_TEXTURE_2D */ && level == 0) {
+	if (target == 0x0DE1 /* GL_TEXTURE_2D */ && level == 0 && !c->unit_over) {
 		gfx_note_texture_size(c, c->bound_2d[c->active_unit], (uint32_t)width, (uint32_t)height);
 	}
 	gfxe_glTexImage2D(c, target, level, internalformat, width, height, border, format, type, p);
@@ -494,14 +816,14 @@ glGetVertexAttribiv(GLuint index, GLenum pname, GLint *params)
 	if (c == NULL) {
 		return;
 	}
-	if (pname == GL_VERTEX_ATTRIB_ARRAY_ENABLED && index < GFX_MAX_ATTRIBS && c->vertex_array == 0 && !c->check_failed) {
+	if (pname == GL_VERTEX_ATTRIB_ARRAY_ENABLED && index < GFX_MAX_ATTRIBS && c->vertex_array == 0 && !(c->check_failed & CHECK_STATE)) {
 		c->answered++;
 		*params = c->attrib[index].enabled;
 		if (spot_check(c)) {
 			GLint host = 0;
 			gfxe_glGetVertexAttribiv(c, index, pname, &host);
 			if (host != *params) {
-				differs(c, "glGetVertexAttribiv", pname, *params, host);
+				differs(c, CHECK_STATE, "glGetVertexAttribiv", pname, *params, host);
 				*params = host;
 			}
 		}

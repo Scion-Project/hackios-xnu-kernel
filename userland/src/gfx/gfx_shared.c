@@ -66,6 +66,18 @@ gfx_note_texture_size(struct gfx *c, GLuint texture, uint32_t width, uint32_t he
 	}
 }
 
+int
+gfx_texture_size(struct gfx *c, GLuint texture, uint32_t *width, uint32_t *height)
+{
+	struct gfx_tex *t = tex_of(c, texture, 0);
+	if (t == NULL || t->width == 0 || t->height == 0) {
+		return 0;
+	}
+	*width = t->width;
+	*height = t->height;
+	return 1;
+}
+
 static void
 damage(struct gfx_tex *t, int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
