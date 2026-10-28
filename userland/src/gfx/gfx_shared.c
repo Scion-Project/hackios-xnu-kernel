@@ -509,9 +509,36 @@ glGenFramebuffers(GLsizei n, GLuint *framebuffers)
 	if (c == NULL) {
 		return;
 	}
-	gfxe_glGenFramebuffers(c, n, framebuffers);
 	for (GLsizei i = 0; i < n; i++) {
+		if (c->framebuffer_names_left == 0) {
+			gfxe_glGenFramebuffers(c, GFX_NAMES, c->framebuffer_names);
+			c->framebuffer_names_left = c->err ? 0 : GFX_NAMES;
+			if (c->err) {
+				return;
+			}
+		}
+		framebuffers[i] = c->framebuffer_names[--c->framebuffer_names_left];
 		fbo_set(c, framebuffers[i], GL_NONE, 0);
+	}
+}
+
+/* (the names: GFX_NAMES at a time from the host, as glGenFramebuffers) */
+API void
+glGenTextures(GLsizei n, GLuint *textures)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	for (GLsizei i = 0; i < n; i++) {
+		if (c->texture_names_left == 0) {
+			gfxe_glGenTextures(c, GFX_NAMES, c->texture_names);
+			c->texture_names_left = c->err ? 0 : GFX_NAMES;
+			if (c->err) {
+				return;
+			}
+		}
+		textures[i] = c->texture_names[--c->texture_names_left];
 	}
 }
 

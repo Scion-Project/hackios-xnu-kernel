@@ -86,6 +86,7 @@ struct gfx_shared {
 };
 #define GFX_MAX_SHARED  1024
 #define GFX_MAX_FBOS    1024            /* by name modulo this; one that another pushes out is asked of the host */
+#define GFX_NAMES       32              /* texture and framebuffer names asked of the host at a time */
 #define GFX_UNIFORMS    256             /* uniform locations and values known here, by a hash; ditto */
 
 /* A uniform's location by its name, as the host gave it (gfx_gl.c glGetUniformLocation). */
@@ -175,6 +176,9 @@ struct gfx {
 	 * vibrant layer's group), the size of a 2D texture's first level (gfx_tex), uniform locations by
 	 * name and float uniforms' values (eagl.c reads CoreAnimation's matrices back at those draws).
 	 */
+	/* names the host has made, handed out here: glGen* is a round trip, made once for GFX_NAMES of them */
+	GLuint texture_names[GFX_NAMES], framebuffer_names[GFX_NAMES];
+	int texture_names_left, framebuffer_names_left;
 	GLenum blend_func[4];           /* source RGB, destination RGB, source alpha, destination alpha */
 	int blend_func_known;
 	GLuint program;                 /* glUseProgram */

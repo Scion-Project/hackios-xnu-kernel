@@ -57,8 +57,8 @@
  * (its own switches: FD_MESA_DEBUG=sysmem, say), vblur=0 blurs nothing whose radius varies and
  * vblur=2 paints such blurs by their masks instead (see vblur_on), glframes=1 writes a line for
  * every frame (see frame_end()), glpace=0 waits for every frame the host shows itself (see
- * pace_frames), glerrors=1 asks for an error after every call for as long as the
- * window server runs, not the first 600 frames.
+ * pace_frames), glerrors=1 asks for an error after every call for the first 600 frames and
+ * glerrors=2 for as long as the window server runs (see check_errors).
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
@@ -336,8 +336,13 @@ static struct group_texture *group_of(struct eagl *e, GLuint texture);
 static __thread struct eagl *current;
 static struct eagl *contexts[8];
 static uint32_t slot_calls[SLOTS];
-static int check_errors = 1;            /* ask the library for an error after every call (the first frames) */
-static int keep_checking;               /* boot-arg glerrors=1: ... and after them too */
+/*
+ * Boot-arg glerrors=1: ask the library for an error after every call, for the first 600 frames;
+ * glerrors=2: for as long as the window server runs. Each is a round trip to the host: on by default,
+ * they made the first 600 frames after a boot -- the first minute -- crawl (3,600 a second).
+ */
+static int check_errors;
+static int keep_checking;
 static int share_surfaces = 1;          /* boot-arg glcopy=1: 0 */
 /*
  * A frame is not drawn into its surface's memory but into a texture of the library's own, and the
@@ -4191,7 +4196,8 @@ install(void)
 			trace_placed = 1;
 		}
 		all_shaders = strstr(arguments, "glshaders=1") != NULL;
-		keep_checking = strstr(arguments, "glerrors=1") != NULL;
+		keep_checking = strstr(arguments, "glerrors=2") != NULL;
+		check_errors = keep_checking || strstr(arguments, "glerrors=1") != NULL;
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
