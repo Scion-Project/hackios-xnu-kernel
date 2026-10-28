@@ -80,7 +80,7 @@ index c31cab6..7ad849c 100644
 +    target_link_libraries(gfxstream_host_native_window PUBLIC nativewindow log)
 +endif()
 diff --git a/host/render_control.cpp b/host/render_control.cpp
-index 9b95892..ebbb09c 100644
+index 9b95892..3d1b22a 100644
 --- a/host/render_control.cpp
 +++ b/host/render_control.cpp
 @@ -22,6 +22,15 @@
@@ -107,8 +107,8 @@ index 9b95892..ebbb09c 100644
 +// Scion (hackios-xnu-kernel tools/gfxstream/android-host.patch): the guest's frames are posted from
 +// the one render thread that runs its whole stream, and FrameBuffer::post holds that thread until the
 +// post worker has drawn the frame into the app's window and swapped -- no GL of the next frame is
-+// run meanwhile. With debug.scion.scgpu.post=async the post is handed to the post worker and the
-+// thread goes on; it waits only for the post before (one in flight: the guest draws the next frame
++// run meanwhile. Here the post is handed to the post worker and the thread goes on (with
++// debug.scion.scgpu.post=sync, as before); it waits only for the post before (one in flight: the guest draws the next frame
 +// into another of the display's surfaces, and the one after that into this one again only after it
 +// has been shown). Every 5 s a line of how long the thread spent in rcFBPost (logcat tag scgpu).
 +namespace {
@@ -132,7 +132,7 @@ index 9b95892..ebbb09c 100644
 +    if (s.async < 0) {
 +        char v[PROP_VALUE_MAX] = "";
 +        __system_property_get("debug.scion.scgpu.post", v);
-+        s.async = strcmp(v, "async") == 0;
++        s.async = strcmp(v, "sync") != 0;
 +        __android_log_print(ANDROID_LOG_INFO, "scgpu", "SCGPU: frames are posted %s (debug.scion.scgpu.post)",
 +                            s.async ? "asynchronously, one in flight" : "synchronously");
 +    }
