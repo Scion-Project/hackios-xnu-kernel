@@ -2784,7 +2784,7 @@ an unhandled metadata key), so "features not yet handled" is a ranked list, not 
   and four of the sixteen masks are palindromes (None, All, green|blue, red|alpha), so a suite
   built out of "write everything" and "write nothing" would not notice. Two independent sources pin
   the numbering: Apple's `MTLRenderPipeline.h` for this release, which
-  `userland/src/hakiosmetal.m` `_Static_assert`s against so a disagreement is a *build failure*;
+  `userland/src/hakiosmetal_air.m` `_Static_assert`s against so a disagreement is a *build failure*;
   and `Metal.framework`'s own value-to-string code on the device, where `MTLBlendFactorString`
   (`0x181b08730`) bounds its argument at 18 over a nineteen-entry table and
   `MTLColorWriteMaskString` (`0x181b08754`) tests bit 3 for "R" and bit 0 for "A", which *is* the
@@ -4143,7 +4143,7 @@ exists to enforce.
 ##### 8.2.2 Built: the runtime's half, where an encoder records and nothing is written
 
 The design above says the runtime "cannot be a writer; it has to be a **recorder**". It is one
-now, in the library (`air_metal.c`, `air_metal.h`) and in the driver (`hakiosmetal.m`), and the
+now, in the library (`air_metal.c`, `air_metal.h`) and in the driver (`hakiosmetal_air.m`), and the
 measurement is differential: **the same pixel comes out of an argument buffer as out of direct
 arguments**, and every record deliberately made wrong prints a different picture that is named in
 advance. `tools/air/argbufruncheck.sh` is that run — **20 checks, 0 failed**, on this machine,

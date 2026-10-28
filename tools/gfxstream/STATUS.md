@@ -2,7 +2,7 @@
 
 Goal: CoreAnimation in backboardd composites on the Pixel's PowerVR. The chain is
 eagl.c (src/eagl.c) → a GLES library that **encodes** calls in gfxstream's wire format →
-`/dev/vgpu3d` (kernel, `xnu/files/bsd/dev/hakios.vgpu3d*.c`) → virtio-gpu pipe → gfxstream in
+`/dev/vgpu3d` (kernel, `drivers/gpu/hakios.vgpu3d*.c`) → virtio-gpu pipe → gfxstream in
 AVF's crosvm → PowerVR. The design is in scion `docs/GPU.md`.
 
 ## Done
