@@ -339,6 +339,10 @@ gfx_create(const struct gfx_transport *t, int version)
 	c->buf = malloc(c->cap);
 	c->version = version;
 	c->unpack_alignment = c->pack_alignment = 4;
+	{
+		const char *e = getenv("GFX_ERRORS");
+		c->errors_from_host = e != NULL && strcmp(e, "0") != 0;
+	}
 
 	/* the render thread reads a flags word first (unused) */
 	uint32_t flags = 0;

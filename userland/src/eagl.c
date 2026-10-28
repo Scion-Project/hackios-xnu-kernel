@@ -4198,6 +4198,9 @@ install(void)
 		all_shaders = strstr(arguments, "glshaders=1") != NULL;
 		keep_checking = strstr(arguments, "glerrors=2") != NULL;
 		check_errors = keep_checking || strstr(arguments, "glerrors=1") != NULL;
+		if (check_errors) {
+			setenv("GFX_ERRORS", "1", 1);   /* (the library's glGetError asks the host every time then) */
+		}
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
