@@ -273,6 +273,7 @@ ring_room(uint32_t head, uint32_t need)
  */
 static uint64_t mark_waits, mark_us, mark_late;
 static uint64_t ring_posted;          /* (scgpu_ring_post) */
+static uint64_t ring_uploads, ring_upload_bytes;     /* (scgpu_ring_upload) */
 
 static int
 ring_mark(uint64_t *mark)
@@ -304,8 +305,8 @@ ring_mark(uint64_t *mark)
 		mark_waits++;
 		if (mark_waits == 600 || mark_waits % 20000 == 0) {
 			printf("vgpu3d: SCGPU: %llu frames paced, %llu us each on average waiting for the frame before; "
-			    "%llu given up on; %llu commands posted through the ring, not waited for\n", mark_waits,
-			    mark_us / mark_waits, mark_late, ring_posted);
+			    "%llu given up on; %llu commands and %llu uploads (%llu KB) posted through the ring, not waited "
+			    "for\n", mark_waits, mark_us / mark_waits, mark_late, ring_posted, ring_uploads, ring_upload_bytes >> 10);
 		}
 	}
 	*mark = (1ull << 32) | __atomic_load_n((uint32_t *)(uintptr_t)headp, __ATOMIC_ACQUIRE);
@@ -500,6 +501,73 @@ scgpu_ring_post(const void *cmd, uint32_t len)
 		__atomic_thread_fence(__ATOMIC_SEQ_CST);
 		if (bell != NULL && __atomic_load_n((uint32_t *)(uintptr_t)&scgpu->host_sleeping, __ATOMIC_RELAXED)) {
 			bell_ring();
+		}
+	}
+	lck_mtx_unlock(&scgpu_ring_lock);
+	return err;
+}
+
+/*
+ * An upload posted into the ring (SCGPU_F_RING_CMDS): a SCGPU_CMD_TRANSFER with no staging buffer,
+ * its rows right after it in the record, at the resource's pitch, copied in from user memory here.
+ * The guest goes on at once; the app uploads in order with the stream. Only up to a quarter of the
+ * ring (ENOTSUP for more: the mailbox and a staging buffer, as before).
+ */
+static int
+scgpu_ring_upload(struct vopen *o, struct res *r, struct vgpu3d_ioc_xfer *x)
+{
+	uint32_t mask = scgpu_ring_size - 1;
+	uint64_t row = (uint64_t)x->w * 4, pitch = (uint64_t)r->width * 4;
+	uint64_t len = (uint64_t)(x->h - 1) * pitch + row, total = sizeof(struct scgpu_transfer) + len;
+	struct scgpu_transfer t;
+	int err;
+
+	if (scgpu == NULL || scgpu_ring == NULL || !(scgpu->flags & SCGPU_F_RING_CMDS) ||
+	    sizeof(struct scgpu_record) + ((total + 15) & ~15ull) > scgpu_ring_size / 4) {
+		return ENOTSUP;
+	}
+	uint32_t need = (uint32_t)(sizeof(struct scgpu_record) + ((total + 15) & ~15ull));
+	bzero(&t, sizeof(t));
+	t.type = SCGPU_CMD_TRANSFER;
+	t.ctx_id = o->g.ctx_id;
+	t.resource_id = r->id;
+	t.to_host = 1;
+	t.x = x->x;
+	t.y = x->y;
+	t.w = x->w;
+	t.h = x->h;
+	t.offset = (uint64_t)x->y * pitch + (uint64_t)x->x * 4;
+	t.staging = 0;                          /* (the rows follow) */
+	t.staging_len = len;
+	lck_mtx_lock(&scgpu_ring_lock);
+	uint32_t head = scgpu->ring_head;       /* (ours alone) */
+	if ((err = ring_room(head, need)) == 0) {
+		struct scgpu_record rec = { 0, 0, (uint32_t)total, SCGPU_REC_CMD };
+		uint32_t pos = head & mask;
+		memcpy(scgpu_ring + pos, &rec, sizeof(rec));
+		uint32_t at = (pos + (uint32_t)sizeof(rec)) & mask;
+		uint32_t first = (uint32_t)sizeof(t) < scgpu_ring_size - at ? (uint32_t)sizeof(t) : scgpu_ring_size - at;
+		memcpy(scgpu_ring + at, &t, first);
+		memcpy(scgpu_ring, (const uint8_t *)&t + first, sizeof(t) - first);
+		at = (at + (uint32_t)sizeof(t)) & mask;
+		for (uint32_t y = 0; y < x->h && !err; y++) {
+			uint32_t to = (at + (uint32_t)(y * pitch)) & mask;
+			uint32_t part = row < scgpu_ring_size - to ? (uint32_t)row : scgpu_ring_size - to;
+			user_addr_t from = (user_addr_t)(x->addr + (uint64_t)y * x->stride);
+			err = copyin(from, scgpu_ring + to, part);
+			if (!err && part < row) {
+				err = copyin(from + part, scgpu_ring, row - part);
+			}
+		}
+		if (!err) {
+			/* (published only whole: a fault half way leaves the ring as it was) */
+			__atomic_store_n((uint32_t *)(uintptr_t)&scgpu->ring_head, head + need, __ATOMIC_RELEASE);
+			ring_uploads++;
+			ring_upload_bytes += len;
+			__atomic_thread_fence(__ATOMIC_SEQ_CST);
+			if (bell != NULL && __atomic_load_n((uint32_t *)(uintptr_t)&scgpu->host_sleeping, __ATOMIC_RELAXED)) {
+				bell_ring();
+			}
 		}
 	}
 	lck_mtx_unlock(&scgpu_ring_lock);
@@ -861,7 +929,9 @@ res_xfer(struct vopen *o, struct vgpu3d_ioc_xfer *x, bool upload)
 		return EINVAL;
 	}
 	if (scgpu != NULL) {
-		return scgpu_xfer(o, r, x, upload);
+		/* (an upload into the ring, not waited for, when it fits; the mailbox otherwise) */
+		int posted = upload ? scgpu_ring_upload(o, r, x) : ENOTSUP;
+		return posted == ENOTSUP ? scgpu_xfer(o, r, x, upload) : posted;
 	}
 	size_t row = (size_t)x->w * 4, pitch = (size_t)r->width * 4;
 	uint64_t offset = (uint64_t)x->y * pitch + (uint64_t)x->x * 4;
