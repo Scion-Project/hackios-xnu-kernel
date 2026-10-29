@@ -220,6 +220,8 @@ net_names	k
 net_trace	k
 panel	k
 panel_brightness	k
+panel_gamma	k
+panel_gamma_log	k
 pmic	k
 pmic_list	k
 privs	k

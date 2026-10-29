@@ -67,7 +67,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 |---|---|---|---|---|---|
 | **`HAKIOS_ADRENO`**<br>the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and the window server draw through (gpu=1, adreno_keep=1). Needs the GPU's firmware from the phone (fw-gpu/) | `hakios.adreno.c`<br>`hakios.gpu.cpp` |  | `adreno=`, `adreno_blind=`, `adreno_dirty=`, `adreno_fine=`, `adreno_keep=`, `adreno_only=`, `adreno_pause=`, `adreno_return=` and 12 more |  |  | |
 | **`HAKIOS_MALI`**<br>the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the IOKit service Mesa's panfrost draws through. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported | `hakios.mali.c`<br>`hakios.mali.cpp` | `HAKIOS_EXYNOS_ACPM` | `mali=`, `mali_acpm=`, `mali_fastmap=`, `mali_flush=`, `mali_pll=`, `mali_trace=` |  | built | |
-| **`HAKIOS_S6E3HA8`**<br>the Galaxy S9's panel brightness: its AOR sent through DSIM0's command FIFO (panel=1; kern.hakios.brightness 0-255, panel_brightness=N at start) | `hakios.s6e3ha8.c` |  | `panel=`, `panel_brightness=` |  | built | |
+| **`HAKIOS_S6E3HA8`**<br>the Galaxy S9's panel brightness through DSIM0's command FIFO: the gamma worked out from the panel's MTP as Samsung's kernel does (hakios.s6e3ha8_gamma.h) and the AOR, Samsung's tables for each level (panel=1; kern.hakios.brightness 0-255, panel_brightness=N at start; panel_gamma=0 the AOR alone) | `hakios.s6e3ha8.c` |  | `panel=`, `panel_brightness=`, `panel_gamma=`, `panel_gamma_log=` |  | built | |
 
 ## haptic
 

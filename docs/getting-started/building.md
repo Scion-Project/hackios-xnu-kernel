@@ -68,6 +68,7 @@ python3 tools/docs-gen.py --check       # the made documentation pages are curre
 python3 tools/docs-check.py             # every link of the documentation goes somewhere
 python3 tools/provenance-check.py       # nothing in the tree that must not be
 sh tools/metallib-test.sh               # the Metal plug-in's metallib reader, under sanitizers
+sh tools/s6e3ha8-gamma-test.sh          # the Galaxy S9 panel's gamma calculation, under sanitizers
 tools/metal-plugin-test.sh              # (macOS) the Metal plug-in's objects on the Mac's own Metal
 ```
 

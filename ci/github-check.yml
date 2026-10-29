@@ -68,6 +68,8 @@ jobs:
           python3 tools/docs-check.py
       - name: The Metal plug-in's reading of a .metallib refuses every file cut short or bent (sanitizers)
         run: sh tools/metallib-test.sh
+      - name: The Galaxy S9 panel's gamma, worked out from made-up MTPs, holds together (sanitizers)
+        run: sh tools/s6e3ha8-gamma-test.sh
       - name: The kernel patch applies to Apple's tree
         run: |
           git clone -q --depth 1 --branch xnu-8796.121.2 https://github.com/apple-oss-distributions/xnu.git /tmp/xnu
