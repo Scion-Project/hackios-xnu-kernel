@@ -36,12 +36,22 @@
  *   6  watch it (the default)
  *
  * Boot-arg s6sy761_ipclk=MHz: the HSI2C's input clock, if step 1 says it is not the 200 MHz both other drivers assume.
+ *
+ * When the chip does not answer at step 4, its two supplies are switched off and on again (power_cycle()), and it is
+ * asked again: the mainline Linux port to the S9+ (github.com/SheroAbi/galaxy-s9plus-mainline-linux, s9p-acpm.c; GPL,
+ * read for these facts) finds the controller dead after the hand-over from the previous boot stage until it sees a
+ * power-on reset. The supplies are the S2MPS18's LDO35 (tsp_io, 1.8 V) and LDO43 (tsp_avdd, 3.0 V) on the S9 as on
+ * the S9+ (the phone's device tree); their control registers 0x6C and 0x74, whose bits 7:6 are the on mode (0xC0).
+ * Only those bits of only those two registers are written, through the always-on processor (drivers/core/
+ * hakios.exynos_acpm.c), each read back: off for 2 s, on, then the chip is asked every 500 ms for 12 s; three cycles
+ * at most. Boot-arg s6sy761_ldo=0: never.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
+#include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.exynos_hsi2c.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
@@ -107,6 +117,7 @@ static struct hakios_hsi2c bus = {
 
 static vm_offset_t alive;
 static uint32_t res_x = 4096, res_y = 4096;
+static uint32_t ldo_cycles = 1;       /* s6sy761_ldo=0: never switch the chip's supplies */
 static struct {
 	uint64_t events, downs;
 } stats;
@@ -243,6 +254,54 @@ irq_low(void)
 	return ((rd(alive, GPA1 + 4) >> IRQ_PIN) & 1) == 0;
 }
 
+/* ---- the chip's supplies, switched off and on (see the header) ---- */
+
+#define LDO35_CTRL              0x6c    /* tsp_io */
+#define LDO43_CTRL              0x74    /* tsp_avdd */
+#define LDO_ON_MODE             0xc0
+#define LDO_OFF_MS              2000
+
+static bool
+ldo_set(uint8_t reg, bool on)
+{
+	uint8_t v = 0;
+
+	if (reg != LDO35_CTRL && reg != LDO43_CTRL) {
+		return false;           /* nothing else of the PMIC, ever */
+	}
+	if (hakios_acpm_pmic_update(HAKIOS_ACPM_PMIC_PMIC, reg, on ? LDO_ON_MODE : 0, LDO_ON_MODE) != 0 ||
+	    hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, reg, &v) != 0) {
+		say("s6sy761: the PMIC's register %02x could not be %s\n", reg, on ? "switched on" : "switched off");
+		return false;
+	}
+	if (((v & LDO_ON_MODE) == LDO_ON_MODE) != on) {
+		say("s6sy761: the PMIC's register %02x reads %02x after it was switched %s\n", reg, v, on ? "on" : "off");
+		return false;
+	}
+	return true;
+}
+
+static bool
+power_cycle(void)
+{
+	uint8_t l35 = 0, l43 = 0;
+	bool ok;
+
+	if (!hakios_acpm_init(say)) {
+		say("s6sy761: no ACPM: its supplies cannot be switched\n");
+		return false;
+	}
+	(void)hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, LDO35_CTRL, &l35);
+	(void)hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, LDO43_CTRL, &l43);
+	say("s6sy761: its supplies: LDO35 %02x, LDO43 %02x; off for %u ms, then on\n", l35, l43, LDO_OFF_MS);
+	ok = ldo_set(LDO35_CTRL, false) && ldo_set(LDO43_CTRL, false);
+	delay_for_interval(LDO_OFF_MS, NSEC_PER_MSEC);
+	/* on again whatever happened above: never leave the touch unpowered */
+	ok = ldo_set(LDO35_CTRL, true) && ok;
+	ok = ldo_set(LDO43_CTRL, true) && ok;
+	return ok;
+}
+
 /* ---- the steps ---- */
 
 static void
@@ -276,9 +335,22 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 
 	say("s6sy761: step 4: ask the chip at 0x%x\n", CHIP);
 	error = chip_read(CMD_BOOT_STATUS, answer, 1);
+	for (uint32_t cycle = 1; error != 0 && ldo_cycles != 0 && cycle <= 3; cycle++) {
+		say("s6sy761: no answer (INT_STAT %x): its supplies switched off and on, cycle %u of 3\n", error, cycle);
+		if (!power_cycle()) {
+			break;
+		}
+		for (uint32_t probe = 0; probe < 24 && error != 0; probe++) {
+			delay_for_interval(500, NSEC_PER_MSEC);
+			error = chip_read(CMD_BOOT_STATUS, answer, 1);
+		}
+		if (error == 0) {
+			say("s6sy761: the chip answers after %u cycle(s) of its supplies\n", cycle);
+		}
+	}
 	if (error != 0) {
 		say("s6sy761: no answer (INT_STAT %x): the bus is not working, or the chip has no power (its supplies are "
-		    "the PMIC's LDO35 and LDO43, which this port does not switch)\n", error);
+		    "the PMIC's LDO35 and LDO43%s)\n", error, ldo_cycles ? ", cycled without effect" : "; s6sy761_ldo=0 left them");
 		goto out;
 	}
 	say("s6sy761: boot status %x (%s)\n", answer[0], answer[0] == BOOT_APPLICATION ? "its firmware runs" :
@@ -350,6 +422,7 @@ hakios_s6sy761_init(void)
 		return;
 	}
 	PE_parse_boot_argn("s6sy761_steps", &steps, sizeof(steps));
+	PE_parse_boot_argn("s6sy761_ldo", &ldo_cycles, sizeof(ldo_cycles));
 	PE_parse_boot_argn("s6sy761_ipclk", &bus.ipclk_mhz, sizeof(bus.ipclk_mhz));
 	if (steps == 0 || bus.ipclk_mhz < 26 || bus.ipclk_mhz > 400) {
 		return;

@@ -252,6 +252,7 @@ return_panic	k
 root_apfs	u
 s6sy761	k
 s6sy761_ipclk	k
+s6sy761_ldo	k
 s6sy761_steps	k
 sb_delay	u
 sccam.addr	k
@@ -293,6 +294,7 @@ surftrace	k
 surftrace_of	k
 switcher_wallpaper	u
 syssleep	k
+system_apfs	u
 systrace	k
 systrace_name	k
 thermal	k

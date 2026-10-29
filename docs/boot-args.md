@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **379 arguments**: 325 read by the kernel, 15 by the loader, 49 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **381 arguments**: 326 read by the kernel, 15 by the loader, 50 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -265,7 +265,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_shutter` | K | `hakios.camera.c` | `CONFIG_CAM_SHUTTER` |  |
 | `cam_vblank` | K | `hakios.camera.c` | `CONFIG_CAM_VBLANK` |  |
 
-## Touch and buttons (12)
+## Touch and buttons (13)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -274,6 +274,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `exynos_keys` | K | `hakios.exynos_keys.c` | `CONFIG_EXYNOS_KEYS` |  |
 | `s6sy761` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761` |  |
 | `s6sy761_ipclk` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_IPCLK` |  |
+| `s6sy761_ldo` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_LDO` |  |
 | `s6sy761_steps` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_STEPS` |  |
 | `touch_flip` | K | `hakios.goodix.c` | `CONFIG_TOUCH_FLIP` |  |
 | `touch_poll_us` | K | `hakios.goodix.c` | `CONFIG_TOUCH_POLL_US` |  |
@@ -423,7 +424,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs` | L | `loader.c` | `CONFIG_UFS` |  |
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 
-## User space (39)
+## User space (40)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -460,6 +461,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `scsnd.size` | K | `hakios.scsnd.c` | `CONFIG_SCSND_SIZE` |  |
 | `security` | K | `1002-avf-security-level.patch` | `CONFIG_SECURITY` |  |
 | `switcher_wallpaper` | U | `inject_sb.c` | `CONFIG_SWITCHER_WALLPAPER` |  |
+| `system_apfs` | U | `init.c` | `CONFIG_SYSTEM_APFS` |  |
 | `var_store` | U | `init.c` | `CONFIG_VAR_STORE` |  |
 | `vgpu_height` | K | `hakios.vgpu.c` | `CONFIG_VGPU_HEIGHT` |  |
 | `vgpu_width` | K | `hakios.vgpu.c` | `CONFIG_VGPU_WIDTH` |  |
