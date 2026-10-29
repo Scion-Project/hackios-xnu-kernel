@@ -13,6 +13,7 @@
  * of its conf (SOUND requires ADSP and SPEAKER, MODEM requires QMI and UFS, ...), and tools/hakios-config.py refuses
  * the configuration that would need a stand-in for it.
  */
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/errno.h>
@@ -56,6 +57,21 @@ void hakios_max77705_init(void) {}
 #endif
 #ifndef HAKIOS_S2MPB02_TORCH
 void hakios_s2mpb02_torch_init(void) {}
+#endif
+#ifndef HAKIOS_WIFI
+extern int vprintf(const char *format, va_list ap) __printflike(1, 0);
+/* the station layer's log (WIFI_STA) where the WCN6750's driver, whose log it is, is not built: the console */
+int
+hakios_wifi_tell(const char *format, ...)
+{
+	va_list ap;
+	int n;
+
+	va_start(ap, format);
+	n = vprintf(format, ap);
+	va_end(ap);
+	return n;
+}
 #endif
 #ifndef HAKIOS_EXYNOS_ABOX
 void hakios_exynos_abox_init(void) {}
@@ -108,6 +124,9 @@ void hakios_mali_init(void) {}
 void hakios_wifi_init(void) {}
 void hakios_wifi_stop(void) {}
 void hakios_wifi_quiesce(void) {}
+#endif
+
+#ifndef HAKIOS_WIFI_STA
 errno_t hakios_apple80211_ioctl(__unused u_long command, __unused void *data) { return EOPNOTSUPP; }
 void HakiosWLANStart(__unused const char *interface, __unused const uint8_t *address) {}
 #endif

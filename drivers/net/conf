@@ -7,4 +7,5 @@ standard bsd/dev/hakios.net.c
 
 driver VIRTIO_NET
 	file    bsd/dev/hakios.virtio_net.c
+	requires WIFI_STA
 	help    QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only

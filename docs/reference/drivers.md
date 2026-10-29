@@ -99,7 +99,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 
 | Driver | Files | Requires | Boot arguments | frankel | qemu | starlte | |
 |---|---|---|---|---|---|---|
-| **`HAKIOS_VIRTIO_NET`**<br>QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only | `hakios.virtio_net.c` |  | `virtio_net=`, `virtio_net_ssid=`, `virtio_net_wifi=` |  | built |  | |
+| **`HAKIOS_VIRTIO_NET`**<br>QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only | `hakios.virtio_net.c` | `HAKIOS_WIFI_STA` | `virtio_net=`, `virtio_net_ssid=`, `virtio_net_wifi=` |  | built |  | |
 
 ## power
 
@@ -123,6 +123,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 
 | Driver | Files | Requires | Boot arguments | frankel | qemu | starlte | |
 |---|---|---|---|---|---|---|
-| **`HAKIOS_WIFI`**<br>Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211 surface iOS's wifid talks to. Needs fw-wifi/ from the phone | `hakios.wifi.c`<br>`hakios.wlfw.c`<br>`hakios.lx.c`<br>`hakios.sta.c`<br>`hakios.apple80211.c`<br>`hakios.wlan.cpp` | `HAKIOS_QMI` | `wifi=`, `wifi_again=`, `wifi_ask=`, `wifi_cal=`, `wifi_dirty=`, `wifi_file=`, `wifi_fine=`, `wifi_keep=` and 14 more |  |  |  | |
+| **`HAKIOS_WIFI`**<br>Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211 surface iOS's wifid talks to. Needs fw-wifi/ from the phone | `hakios.wifi.c`<br>`hakios.wlfw.c`<br>`hakios.lx.c` | `HAKIOS_QMI`, `HAKIOS_WIFI_STA` | `wifi=`, `wifi_again=`, `wifi_ask=`, `wifi_cal=`, `wifi_dirty=`, `wifi_file=`, `wifi_fine=`, `wifi_keep=` and 14 more |  |  |  | |
+| **`HAKIOS_WIFI_STA`**<br>the station and the Apple80211 surface iOS's wifid talks to, over whichever link is below: the WCN6750's (WIFI) or QEMU's virtio network device seen as Wi-Fi (VIRTIO_NET, virtio_net_wifi=1) | `hakios.sta.c`<br>`hakios.apple80211.c`<br>`hakios.wlan.cpp` |  |  |  | built |  | |
 
 The columns on the right are the devices' defconfigs: "built" means that defconfig builds the driver in.
