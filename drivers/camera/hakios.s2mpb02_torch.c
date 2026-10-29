@@ -1,0 +1,341 @@
+/*
+ * The Galaxy S9's flashlight (starlte, Exynos 9810): the rear flash LED, driven by the flash block of the S2MPB02 (the
+ * camera's PMIC, 0x59 on the HSI2C of USI10 of PERIC1, 0x10920000), switched by a pin of the SoC. Only with
+ * boot-arg torch=N on this phone (the SoC's registers at 0x10000000; the POCO's driver, hakios.torch.c, is another
+ * phone's and is left out of the S9's kernel). Every address and number below belongs to this phone.
+ *
+ * The way Android lights it (Samsung's leds-s2mpb02.c, its GPIO way): set up once -- FLED_CTRL1 (0x12) bit 3 clear (not
+ * the low-voltage mode), FLED_CUR1 (0x14) [3:0] the torch current (20 mA a step), FLED_TIME1 (0x15) [3:0] the torch
+ * timer (0xF), FLED_CTRL1 [7:6] = 00 (the LED's on and off from the pins, not from here), FLED_CTRL2 (0x13) [3:0] = 4 --
+ * and then: on, the flash pin low and the torch pin high; off, both low. The pins:
+ *   torch1   gpg2 pin 4 of PERIC0's GPIO (CON 0x104300C0 [19:16], DAT 0x104300C4 bit 4)
+ *   flash1   gpg3 pin 5 of PERIC1's GPIO (CON 0x108300C0 [23:20], DAT 0x108300C4 bit 5)
+ * The pins are the SoC's, so a restart -- how every run of this port ends -- puts the LED out whatever happened.
+ * Android's flashlight is 60 mA (code 3); iOS's levels are thousandths of that, never more.
+ *
+ * Writing to a PMIC is not like writing anywhere else: the S2MPB02 makes the cameras' supplies (and the proximity
+ * sensor's LED's) as well. Every write goes through one function that takes the flash block's four registers alone
+ * (0x12-0x15), and is read back; a write that does not read back ends all writing for the run.
+ *
+ *   torch=1    a look, reading only: the bus as found, the chip's ID, the flash block's registers, the two pins
+ *   torch=2    ... and the light on once for torch_secs (default 2), then off
+ *   torch=3    ... the light for iOS until the run ends: /dev/hakios-torch takes a level of 0 to 1000 (a 32-bit number,
+ *              0 off) and a read gives what is lit; on for torch_max_s at a time at most (default 30, never more than
+ *              120), off and staying off while the battery is above 45 C
+ *
+ * Sources: the phone's device tree (hsi2c@10920000, s2mpb02@59 and its flash node: torch1-gpio, flash1-gpio, the
+ * currents and timers), Samsung's leds-s2mpb02.c and s2mpb02-private.h of the S9's kernel, Linux's pinctrl-exynos.c
+ * (GPL: read for these facts, not copied).
+ */
+#include <kern/clock.h>
+#include <kern/thread.h>
+#include <libkern/libkern.h>
+#include <mach/mach_time.h>
+#include <mach/mach_types.h>
+#include <miscfs/devfs/devfs.h>
+#include <pexpert/pexpert.h>
+#include <sys/conf.h>
+#include <sys/hakios.exynos_hsi2c.h>
+#include <sys/hakios.input.h>
+#include <sys/systm.h>
+#include <sys/uio.h>
+
+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern vm_offset_t pe_arm_get_soc_base_phys(void);
+extern kern_return_t thread_terminate(thread_t thread);
+extern void loader_log_putc(char c);
+
+static int say(const char *format, ...) __printflike(1, 2);
+
+static int
+say(const char *format, ...)
+{
+	char line[300];
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(line, sizeof(line), format, list);
+	va_end(list);
+	for (const char *c = line; *c != 0; c++) {
+		loader_log_putc(*c);
+	}
+	return printf("%s", line);
+}
+
+#define CHIP            0x59
+#define REG_ID          0x00
+#define FLED_CTRL1      0x12
+#define FLED_CTRL2      0x13
+#define FLED_CUR1       0x14
+#define FLED_TIME1      0x15
+#define TORCH_CODE_MAX  3               /* 60 mA: Android's flashlight, never more */
+#define HOT_C           45
+
+#define GPIO_PERIC0_PA  0x10430000UL
+#define GPIO_PERIC1_PA  0x10830000UL
+#define GPG2            0x0C0           /* in PERIC0's: torch1 is pin 4 */
+#define GPG3            0x0C0           /* in PERIC1's: flash1 is pin 5 */
+#define TORCH_PIN       4
+#define FLASH_PIN       5
+
+static struct hakios_hsi2c bus = {
+	.name = "s2mpb02",
+	.regs_pa = 0x10920000,                  /* hsi2c@10920000: USI10 of PERIC1 */
+	.usi_mode_pa = 0x1081103C,              /* its mode word */
+	.cmu_pa = 0x10800000, .cmu_size = 0x4000,       /* CMU_PERIC1 */
+	.gates = { 0x2048, 0x20AC, 0x2114, 0x2118 }, .ngates = 4,
+	.qch = 0x3050, .div = 0x1828, .mux = 0x1828,
+	.pins_pa = 0x10830040,                  /* PERIC1's GPIO, bank gpp6: SCL pin 0, SDA pin 1 */
+	.pins_mask = 0xffu, .pins_want = 0x22u,
+	.ipclk_mhz = 200, .bus_hz = 400000,
+};
+
+static vm_offset_t peric0, peric1;
+static uint32_t lit;                    /* the level lit now, 0 to 1000 */
+static uint64_t lit_since;
+static uint32_t max_secs = 30;
+static bool broken;                     /* a write did not read back, or the bus failed: no more writing */
+static lck_mtx_t *torch_lock;
+
+static inline uint32_t
+rd(vm_offset_t base, uint32_t off)
+{
+	return *(volatile uint32_t *)(base + off);
+}
+
+static inline void
+wr(vm_offset_t base, uint32_t off, uint32_t v)
+{
+	*(volatile uint32_t *)(base + off) = v;
+}
+
+static uint32_t
+get(uint8_t reg, uint8_t *value)
+{
+	return hakios_hsi2c_read_reg(&bus, CHIP, reg, value, 1);
+}
+
+/* the flash block's registers only, every write read back */
+static bool
+put(uint8_t reg, uint8_t value)
+{
+	uint8_t buf[2] = { reg, value }, back = 0;
+
+	if (broken || reg < FLED_CTRL1 || reg > FLED_TIME1) {
+		return false;
+	}
+	if (hakios_hsi2c_message(&bus, CHIP, false, buf, 2, true) != 0 || get(reg, &back) != 0 || back != value) {
+		say("s2mpb02: register %#x: wrote %#x, read back %#x (bus %#x): no more writing for this run\n", reg, value, back,
+		    bus.last_error);
+		broken = true;
+		return false;
+	}
+	return true;
+}
+
+static bool
+put_bits(uint8_t reg, uint8_t mask, uint8_t value)
+{
+	uint8_t now;
+
+	return get(reg, &now) == 0 && put(reg, (uint8_t)((now & ~mask) | (value & mask)));
+}
+
+/* a pin: an output (CON nibble 1) at the level given */
+static void
+pin(vm_offset_t bank, uint32_t number, bool high)
+{
+	uint32_t data = rd(bank, 4);
+
+	wr(bank, 4, high ? data | (1u << number) : data & ~(1u << number));
+	wr(bank, 0, (rd(bank, 0) & ~(0xfu << (4 * number))) | (1u << (4 * number)));
+}
+
+static void
+dark(void)
+{
+	pin(peric0 + GPG2, TORCH_PIN, false);
+	pin(peric1 + GPG3, FLASH_PIN, false);
+	lit = 0;
+}
+
+static bool
+light(uint32_t permille)
+{
+	uint32_t code = (TORCH_CODE_MAX * permille + 999) / 1000;
+
+	if (permille == 0) {
+		dark();
+		return true;
+	}
+	if (code < 1) {
+		code = 1;
+	}
+	if (code > TORCH_CODE_MAX) {
+		code = TORCH_CODE_MAX;
+	}
+	if (!put_bits(FLED_CUR1, 0x0f, (uint8_t)code)) {
+		dark();
+		return false;
+	}
+	pin(peric1 + GPG3, FLASH_PIN, false);
+	pin(peric0 + GPG2, TORCH_PIN, true);
+	if (lit == 0) {
+		lit_since = mach_absolute_time();
+	}
+	lit = permille;
+	return true;
+}
+
+static bool
+too_hot(void)
+{
+	int c = hakios_battery_temperature();
+
+	return c != -273 && c > HOT_C;
+}
+
+static bool
+configure(void)
+{
+	return put_bits(FLED_CTRL1, 0x08, 0x00) && put_bits(FLED_CUR1, 0x0f, 1) && put_bits(FLED_TIME1, 0x0f, 0x0f) &&
+	       put_bits(FLED_CTRL1, 0xc0, 0x00) && put_bits(FLED_CTRL2, 0x0f, 0x04);
+}
+
+/* ---- /dev/hakios-torch ---- */
+
+static int
+torch_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	uint32_t level;
+	int error = uiomove((caddr_t)&level, sizeof(level), uio);
+
+	if (error != 0) {
+		return error;
+	}
+	if (level > 1000) {
+		level = 1000;
+	}
+	lck_mtx_lock(torch_lock);
+	if (level != 0 && too_hot()) {
+		say("s2mpb02: the battery is above %d C: the light stays off\n", HOT_C);
+		dark();
+		error = EBUSY;
+	} else if (!light(level)) {
+		error = EIO;
+	}
+	lck_mtx_unlock(torch_lock);
+	return error;
+}
+
+static int
+torch_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	uint32_t level = lit;
+
+	return uiomove((caddr_t)&level, sizeof(level), uio);
+}
+
+static int
+torch_open(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
+{
+	return 0;
+}
+
+static const struct cdevsw torch_cdevsw = {
+	.d_open = torch_open, .d_close = torch_open, .d_read = torch_read, .d_write = torch_write,
+	.d_ioctl = eno_ioctl, .d_stop = eno_stop, .d_reset = eno_reset, .d_select = eno_select,
+	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = 0
+};
+
+static void
+torch_thread(void *arg, __unused wait_result_t result)
+{
+	uint32_t steps = (uint32_t)(uintptr_t)arg, secs = 2;
+	uint8_t id = 0, regs[4] = { 0 };
+
+	say("s2mpb02: 1: map the bus (USI10 of PERIC1) and the two pins' GPIO blocks\n");
+	peric0 = ml_io_map(GPIO_PERIC0_PA, 0x1000);
+	peric1 = ml_io_map(GPIO_PERIC1_PA, 0x1000);
+	if (peric0 == 0 || peric1 == 0 || !hakios_hsi2c_map(&bus, say)) {
+		goto out;
+	}
+	say("s2mpb02: 1: torch1 (gpg2-4): CON %x DAT %x; flash1 (gpg3-5): CON %x DAT %x\n",
+	    (rd(peric0 + GPG2, 0) >> (4 * TORCH_PIN)) & 0xf, (rd(peric0 + GPG2, 4) >> TORCH_PIN) & 1,
+	    (rd(peric1 + GPG3, 0) >> (4 * FLASH_PIN)) & 0xf, (rd(peric1 + GPG3, 4) >> FLASH_PIN) & 1);
+	hakios_hsi2c_power(&bus);
+	hakios_hsi2c_reset(&bus);
+	if (get(REG_ID, &id) != 0) {
+		say("s2mpb02: 1: no answer at 0x%x (%x)\n", CHIP, bus.last_error);
+		goto out;
+	}
+	for (int i = 0; i < 4; i++) {
+		(void)get((uint8_t)(FLED_CTRL1 + i), &regs[i]);
+	}
+	say("s2mpb02: 1: ID %#x; FLED_CTRL1 %#x, CTRL2 %#x, CUR1 %#x, TIME1 %#x\n", id, regs[0], regs[1], regs[2], regs[3]);
+	if (steps < 2) {
+		goto out;
+	}
+	if (!configure()) {
+		say("s2mpb02: 2: the flash block could not be set up\n");
+		goto out;
+	}
+	if (steps == 2) {
+		PE_parse_boot_argn("torch_secs", &secs, sizeof(secs));
+		secs = secs > 10 ? 10 : secs;
+		say("s2mpb02: 2: the light on for %u s at Android's 60 mA\n", secs);
+		light(1000);
+		delay_for_interval(secs * 1000, NSEC_PER_MSEC);
+		dark();
+		say("s2mpb02: 2: off\n");
+		goto out;
+	}
+	PE_parse_boot_argn("torch_max_s", &max_secs, sizeof(max_secs));
+	max_secs = max_secs == 0 ? 30 : max_secs > 120 ? 120 : max_secs;
+	{
+		int major = cdevsw_add(-1, &torch_cdevsw);
+
+		if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-torch") == NULL) {
+			say("s2mpb02: 3: /dev/hakios-torch cannot be made\n");
+			goto out;
+		}
+	}
+	say("s2mpb02: 3: /dev/hakios-torch: the flashlight for iOS, %u s at a time at most\n", max_secs);
+	for (;;) {
+		delay_for_interval(100, NSEC_PER_MSEC);
+		lck_mtx_lock(torch_lock);
+		if (lit != 0) {
+			uint64_t on_ns;
+
+			absolutetime_to_nanoseconds(mach_absolute_time() - lit_since, &on_ns);
+			if (on_ns / NSEC_PER_SEC >= max_secs) {
+				say("s2mpb02: on for %u s: off, until it is asked for anew\n", max_secs);
+				dark();
+			} else if (too_hot()) {
+				say("s2mpb02: the battery is above %d C: off\n", HOT_C);
+				dark();
+			}
+		}
+		lck_mtx_unlock(torch_lock);
+	}
+out:
+	thread_terminate(current_thread());
+}
+
+void
+hakios_s2mpb02_torch_init(void)
+{
+	uint32_t steps = 0;
+	thread_t thread;
+
+	if (!PE_parse_boot_argn("torch", &steps, sizeof(steps)) || steps == 0) {
+		return;
+	}
+	if (pe_arm_get_soc_base_phys() != 0x10000000) {
+		return;                 /* not the Exynos 9810's (the POCO's torch=N is its own driver's) */
+	}
+	torch_lock = lck_mtx_alloc_init(lck_grp_alloc_init("s2mpb02", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
+	if (kernel_thread_start(torch_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
+		thread_deallocate(thread);
+	}
+}

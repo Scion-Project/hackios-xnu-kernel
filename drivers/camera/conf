@@ -11,5 +11,11 @@ driver TORCH
 	file    bsd/dev/hakios.torch.c
 	help    the flashlight: the flash LED module of the PM8350C (torch=1); it stays off while the battery is too warm
 
+driver S2MPB02_TORCH
+	file    bsd/dev/hakios.s2mpb02_torch.c
+	requires EXYNOS_HSI2C
+	help    the Galaxy S9's flashlight: the S2MPB02's flash block on PERIC1's HSI2C, lit by a pin (torch=N there, the same
+	help    steps as the POCO's: 1 a look, 2 once, 3 for iOS through /dev/hakios-torch)
+
 standard bsd/dev/hakios.sccam_torch.c
 	help    the phone's flashlight under AVF, through the Scion app's camera block (patch 1402)

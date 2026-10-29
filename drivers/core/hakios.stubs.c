@@ -53,6 +53,9 @@ void hakios_s6sy761_init(void) {}
 #ifndef HAKIOS_MAX77705
 void hakios_max77705_init(void) {}
 #endif
+#ifndef HAKIOS_S2MPB02_TORCH
+void hakios_s2mpb02_torch_init(void) {}
+#endif
 #ifndef HAKIOS_S6E3HA8
 void hakios_s6e3ha8_init(void) {}
 int hakios_panel_brightness(__unused int level) { return ENODEV; }
