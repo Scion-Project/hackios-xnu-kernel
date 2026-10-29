@@ -92,6 +92,10 @@ void hakios_adreno_stop(void) {}
 void hakios_adreno_minute(void) {}
 #endif
 
+#ifndef HAKIOS_MALI
+void hakios_mali_init(void) {}
+#endif
+
 #ifndef HAKIOS_WIFI
 void hakios_wifi_init(void) {}
 void hakios_wifi_stop(void) {}

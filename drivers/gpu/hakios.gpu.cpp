@@ -261,6 +261,10 @@ MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds)
 	uint32_t fence = surface->drawn;
 	bool done = true;
 
+	if (surface->maliSeq != 0) {
+		/* drawn by the Mali (drivers/gpu/hakios.mali.cpp), in a kernel built with both GPUs' drivers */
+		return HakiosMaliDrawn(surface, milliseconds);
+	}
 	if (fence != 0 && gGPULock != NULL) {
 		IOLockLock(gGPULock);
 		done = !hakios_gpu_ready() || gpuWait(fence, milliseconds);
