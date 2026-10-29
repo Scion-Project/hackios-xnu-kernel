@@ -245,6 +245,7 @@ rec_sound_fed	k
 rec_sound_mic	k
 rec_start	k
 rec_step	k
+recovery	l
 regtrace	k
 return_cpu	k
 return_panic	k

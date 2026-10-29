@@ -106,6 +106,8 @@
 #include <sys/hakios.max98512.h>
 #include <sys/systm.h>
 
+#include "hakios.drivers.h"      /* HAKIOS_EXYNOS_ABOX: ABOX's driver in this kernel */
+
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern kern_return_t thread_terminate(thread_t thread);
 extern void loader_log_putc(char c);
@@ -269,7 +271,6 @@ static LCK_MTX_DECLARE(bus_lock, &max98512_lock_group);        /* one transfer a
 static LCK_MTX_DECLARE(amp_lock, &max98512_lock_group);        /* one start, stop or step at a time; the state below */
 static bool broken;             /* a write did not read back, or the bus failed: no more writing (but to shut down) */
 static bool playing;            /* unmuted by start(), until stop() */
-static bool abox_absent;        /* the stand-in below was called: no ABOX driver in this kernel */
 static unsigned starts, refusals;
 
 /* a moment `us' microseconds from now, by the clock: a loop bounded by it spins, where delay() would sleep a tick */
@@ -706,18 +707,6 @@ static const struct hakios_abox_amp amp_hook = {
 	.name = "max98512", .start = amp_start, .stop = amp_stop,
 };
 
-/*
- * ABOX's hakios_abox_set_amp() (its driver, sys/hakios.exynos_abox.h) when that driver is in the kernel; this stand-in
- * when it is not. XNU's kernel is linked with -static, where ld64 refuses an undefined weak reference
- * (__attribute__((weak_import))) but takes a weak definition and lets a strong one of the same name win, through
- * ld -r as well: so ABOX's, when it is there, replaces this.
- */
-__attribute__((weak)) void
-hakios_abox_set_amp(const struct hakios_abox_amp *amp)
-{
-	abox_absent = amp != NULL;
-}
-
 /* ---- the steps ---- */
 
 static void
@@ -767,9 +756,9 @@ amp_thread(void *arg, __unused wait_result_t result)
 	say("max98512: 3: handed to ABOX's UAIF1: its start turns them on (top +%d dB, bottom +%d dB, both at -3 dB), its "
 	    "stop off\n", 3 * amps[0].gain, 3 * amps[1].gain);
 	hakios_abox_set_amp(&amp_hook);
-	if (abox_absent) {
-		say("max98512: 3: this kernel has no ABOX driver: nothing will turn the amplifiers on\n");
-	}
+#ifndef HAKIOS_EXYNOS_ABOX
+	say("max98512: 3: this kernel has no ABOX driver: nothing will turn the amplifiers on\n");
+#endif
 out:
 	thread_terminate(current_thread());
 }

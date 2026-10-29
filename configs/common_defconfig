@@ -28,7 +28,10 @@ CONFIG_HAKIOS_ADSP=y
 # the two speaker amplifiers on I2C, and their watch of temperature and battery [hakios.speaker.c]
 CONFIG_HAKIOS_SPEAKER=y
 
-# the speakers playing (sound=N): what the DSP's services are told, the feeder, and the speakers' guard that limits ... [hakios.sound.c, hakios.guard.c; requires CONFIG_HAKIOS_ADSP, CONFIG_HAKIOS_SPEAKER]
+# the speakers' guard: what the samples go through on their way to the amplifiers where no DSP protects the speakers ... [hakios.guard.c]
+CONFIG_HAKIOS_GUARD=y
+
+# the speakers playing (sound=N): what the DSP's services are told, and the feeder, through the speakers' guard that ... [hakios.sound.c; requires CONFIG_HAKIOS_ADSP, CONFIG_HAKIOS_SPEAKER, CONFIG_HAKIOS_GUARD]
 CONFIG_HAKIOS_SOUND=y
 
 # the microphones, through the audio DSP (mic=N) [hakios.mic.c; requires CONFIG_HAKIOS_ADSP, CONFIG_HAKIOS_SOUND]
