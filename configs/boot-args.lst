@@ -167,6 +167,7 @@ mali	k
 mali_acpm	k
 mali_fastmap	k
 mali_flush	k
+mali_mhz	k
 mali_pll	k
 mali_trace	k
 max77705	k
@@ -347,6 +348,7 @@ virtio_net_ssid	k
 virtio_net_wifi	k
 virtio_poll	k
 virtio_sound	k
+wdt	l
 wifi	k
 wifi_again	k
 wifi_ask	k

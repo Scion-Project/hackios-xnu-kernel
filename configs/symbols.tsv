@@ -150,10 +150,11 @@ GPU_VA	arg	gpu_va	GPU and display	k	hakios.adreno.c
 HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c	
 MACHINE_NAME	arg	machine_name	CPU, memory and boot	k	GenericARMPE.cpp	
 MALI	arg	mali	GPU and display	k	hakios.mali.c	the first N of the GPU's nine steps of bring-up (9: all, then served); 0 or none: left alone
-MALI_ACPM	arg	mali_acpm	GPU and display	k	hakios.mali.c	
+MALI_ACPM	arg	mali_acpm	GPU and display	k	hakios.mali.c	the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
 MALI_FASTMAP	arg	mali_fastmap	GPU and display	k	hakios.mali.c	the GPU walks its tables through its own caches, and every buffer entered is an UPDATE of AS 0
 MALI_FLUSH	arg	mali_flush	GPU and display	k	hakios.mali.cpp	
-MALI_PLL	arg	mali_pll	GPU and display	k	hakios.mali.c	a PLL_G3D that does not run is left alone, and step 2 stops there
+MALI_MHZ	arg	mali_mhz	GPU and display	k	hakios.mali.c	the GPU's clock: 260 (S-Boot's, the default), 455 or 572, the S9+ port's three rates
+MALI_PLL	arg	mali_pll	GPU and display	k	hakios.mali.c	PLL_G3D left as the boot left it (the step stops if it does not run)
 MALI_TRACE	arg	mali_trace	GPU and display	k	hakios.mali.c	a line for every job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
 MAX77705	arg	max77705	Audio and battery	k	hakios.max77705.c	
 MAX77705_HAPTIC	arg	max77705_haptic	Audio and battery	k	hakios.max77705.c	
@@ -314,6 +315,7 @@ VIRTIO_NET_SSID	arg	virtio_net_ssid	Network	k	hakios.virtio_net.c
 VIRTIO_NET_WIFI	arg	virtio_net_wifi	Network	k	hakios.virtio_net.c	iOS is told that en0 is a radio, the way the phone's is (hakios.net.c, hakios.wlan.cpp, hakios.apple80211.c), and a station of this file's stands
 VIRTIO_POLL	arg	virtio_poll	User space	k	hakios.virtio.c	
 VIRTIO_SOUND	arg	virtio_sound	Audio and battery	k	hakios.virtio_sound.c	
+WDT	arg	wdt	Loader	l	loader.c	the Galaxy S9's hardware watchdog is not armed (a restart still goes to recovery: INFORM3 is written)
 WIFI_AGAIN	arg	wifi_again	Wi-Fi	k	hakios.wifi.c	start the DSP although the one before it was shut down without having acknowledged a stop: THAT HAS RESET THE PHONE, twice of two
 WIFI_ASK	arg	wifi_ask	Wi-Fi	k	hakios.wifi.c	step 14 also asks that service a question (its capabilities) and writes down the beginning of an answer
 WIFI_BA	arg	wifi_ba	Wi-Fi	k	lx_80211.c	
