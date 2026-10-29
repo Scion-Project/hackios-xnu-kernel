@@ -162,7 +162,7 @@ MAX98512	arg	max98512	Audio and battery	k	hakios.max98512.c	a look: the bus brou
 MAX98512_GAIN	arg	max98512_gain	Audio and battery	k	hakios.max98512.c	the bottom speaker's gain at start, 1 to 5 (+3 to +15 dB; 1); the top one's is always 1
 MD0	arg	md0	User space	k	1101-virtio-disk-as-md0.patch	
 MEMBENCH	arg	membench	CPU, memory and boot	k	hakios.cpufreq.c	
-METAL	arg	metal	GPU and display	ku	HakiosMetal.m,MiniIOMobileFramebuffer.cpp	only the program metal_test (userland/src/metal_test.m): the safe level, for seeing what Metal does with the device
+METAL	arg	metal	GPU and display	ku	MiniIOMobileFramebuffer.cpp,hakios_metal_shown.c	say where Metal's device is (docs/metal-plan.md, step 1)
 METAL_PROFILE	arg	metal_profile	User space	u	hakiosmetal_air.m	
 MIC_ADC	arg	mic_adc	Audio and battery	k	hakios.mic.c	
 MIC_INPUT	arg	mic_input	Audio and battery	k	hakios.mic.c	
@@ -269,6 +269,7 @@ SURFTRACE	arg	surftrace	GPU and display	k	MiniIOSurface.cpp	log the first N surf
 SURFTRACE_OF	arg	surftrace_of	GPU and display	k	MiniIOSurface.cpp	
 SWITCHER_WALLPAPER	arg	switcher_wallpaper	User space	u	inject_sb.c	
 SYSSLEEP	arg	syssleep	CPU, memory and boot	k	(patch)	
+SYSTEM_APFS	arg	system_apfs	User space	u	init.c	the root is to be the big system image (userland/system.apfs, a RAM boot's md0) on /dev/DEV, read
 SYSTRACE	arg	systrace	CPU, memory and boot	k	(patch),user_exception_trace.c	
 SYSTRACE_NAME	arg	systrace_name	CPU, memory and boot	k	(patch)	
 THERMAL_LOG	arg	thermal_log	Chip, thermal and PMIC	k	hakios.thermal.c	a summary line this often (0: only on a rise; 60)
