@@ -236,7 +236,12 @@ typedef struct efi_cpu_arch {
 	void *flush_data_cache, *enable_interrupt, *disable_interrupt, *get_interrupt_state, *init;
 	efi_status (EFIAPI *register_interrupt_handler)(struct efi_cpu_arch *self, int64_t type,
 	    void (EFIAPI *handler)(int64_t type, uint64_t *context));
+	void *get_timer_value;
+	/* (attributes: EFI_MEMORY_UC for device registers; on ARM it maps a range the firmware's tables do not have) */
+	efi_status (EFIAPI *set_memory_attributes)(struct efi_cpu_arch *self, uint64_t base, uint64_t length, uint64_t attributes);
 } efi_cpu_arch;
+
+#define EFI_MEMORY_UC           0x1ull
 
 /* Index of fields in EFI_SYSTEM_CONTEXT_AARCH64 viewed as an array of u64 */
 enum { EXC_CTX_FP = 29, EXC_CTX_LR = 30, EXC_CTX_SP = 31, EXC_CTX_ELR = 96, EXC_CTX_SPSR = 97, EXC_CTX_ESR = 99, EXC_CTX_FAR = 100 };

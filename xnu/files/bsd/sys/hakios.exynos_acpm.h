@@ -9,7 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define HAKIOS_ACPM_CH_DVFS     0       /* set and get a domain's rate */
+#define HAKIOS_ACPM_CH_DVFS     0       /* set and get a domain's rate (where Samsung's kernel sends them; see the .c) */
 #define HAKIOS_ACPM_CH_PMIC     2       /* the S2MPS18's registers, over SPEEDY */
 
 #define HAKIOS_ACPM_PMIC_TOP    0       /* the S2MPS18's blocks ("type") */
@@ -20,10 +20,14 @@
 bool hakios_acpm_init(int (*say)(const char *, ...));
 /* One request on a channel: four words out, the reply's four back in their place. 0, or an errno. */
 int hakios_acpm_request(uint32_t channel, uint32_t cmd[4]);
-/* The PMIC: read a register, or update the bits of `mask` to `value`. 0, or an errno (EIO: SPEEDY failed). */
+/*
+ * The PMIC: read a register, write one, or update the bits of `mask` to `value`. 0, or an errno (EIO: SPEEDY failed).
+ * A caller writes only registers it names in an allow-list of its own, and reads each write back.
+ */
 int hakios_acpm_pmic_read(uint32_t type, uint32_t reg, uint8_t *value);
+int hakios_acpm_pmic_write(uint32_t type, uint32_t reg, uint8_t value);
 int hakios_acpm_pmic_update(uint32_t type, uint32_t reg, uint8_t value, uint8_t mask);
-/* A DVFS domain's rate (its index: the low bits of the CAL id, 4 for G3D), in kHz. */
+/* A DVFS domain's rate (its index: the low bits of the CAL id, 4 for G3D, 9 for AUD), in kHz. */
 int hakios_acpm_dvfs_get(uint32_t index, uint32_t *khz);
 int hakios_acpm_dvfs_set(uint32_t index, uint32_t khz);
 
