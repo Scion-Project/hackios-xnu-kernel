@@ -16,3 +16,8 @@ standard bsd/dev/hakios.vgpu3d.c
 
 standard bsd/dev/hakios.vgpu3d_xnu.c
 	help    SCGPU's glue to XNU: memory, mapping and waiting
+
+driver S6E3HA8
+	file    bsd/dev/hakios.s6e3ha8.c
+	help    the Galaxy S9's panel brightness: its AOR sent through DSIM0's command FIFO (panel=1; kern.hakios.brightness
+	help    0-255, panel_brightness=N at start)

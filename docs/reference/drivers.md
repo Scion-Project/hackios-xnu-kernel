@@ -64,6 +64,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | Driver | Files | Requires | Boot arguments | qemu | starlte | |
 |---|---|---|---|---|---|
 | **`HAKIOS_ADRENO`**<br>the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and the window server draw through (gpu=1, adreno_keep=1). Needs the GPU's firmware from the phone (fw-gpu/) | `hakios.adreno.c`<br>`hakios.gpu.cpp` |  | `adreno=`, `adreno_blind=`, `adreno_dirty=`, `adreno_fine=`, `adreno_keep=`, `adreno_only=`, `adreno_pause=`, `adreno_return=` and 12 more |  |  | |
+| **`HAKIOS_S6E3HA8`**<br>the Galaxy S9's panel brightness: its AOR sent through DSIM0's command FIFO (panel=1; kern.hakios.brightness 0-255, panel_brightness=N at start) | `hakios.s6e3ha8.c` |  | `panel=`, `panel_brightness=` | built | built | |
 
 ## haptic
 

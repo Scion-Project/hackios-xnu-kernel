@@ -133,10 +133,22 @@ information, else 0-4095 on both axes), spread over the whole panel, which is wh
 iOS's power source. It never writes the chip. The temperature is the battery's thermistor (channel 4 of CMGP's ADC,
 through the phone's own table), as Android reads it. Touch and battery share `drivers/core/hakios.exynos_hsi2c.c`.
 
+## Brightness
+
+`drivers/gpu/hakios.s6e3ha8.c` (`panel=1`, on by default here). The S6E3HA8 has no DCS brightness command, so the driver
+sends Samsung's AOR, the part of each frame the pixels are off, through DSIM0's command FIFO. The range runs from
+the boot loader's level down to about 2 % of it; the gamma for the panel's full range is this panel's own and comes
+from Android's boot log (`dmesg | grep 'gamma\['`). `sysctl kern.hakios.brightness=0..255` sets it, and
+`panel_brightness=N` sets it at start. Which property iOS sets when its slider moves is not known yet: the display
+service logs every key it is sent (`IOMobileFramebuffer: ... sets ...`), and a key named `brightness` already works.
+
 ## What comes next
 
 | Step | How |
 |---|---|
+| iOS's brightness slider | read what the display service is sent (above), then map it to `hakios_panel_brightness()` |
+| Speaker audio | ABOX: a register dump from Android while sound plays decides whether its DMA can run without its firmware (1-3 weeks) |
+| Wi-Fi | BCM4361 on PCIe: the root complex and its PHY, then ISC brcmfmac through the Linux layer (3-4 weeks; bcmdhd is GPL) |
 | A longer log | 16 KB of pstore holds a panic but not a whole boot: a partition of the phone's, or USB |
 | Storage, writing | /private/var kept between runs needs a writable partition of the port's own (the POCO's `darwin`) |
 | Buttons | GPIO keys: a driver, the pins from `gpio_keys` |
