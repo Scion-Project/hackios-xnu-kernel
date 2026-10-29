@@ -1,7 +1,8 @@
 /*
  * gl_test: one triangle through the OpenGL ES library of the image (lib/libOSMesa.8.dylib: Mesa,
- * with its Adreno driver when the kernel has kept the GPU on -- boot-arg adreno_keep=1 -- and its
- * software one when not), read back and put on the panel. It says which driver drew, how long
+ * with its Adreno driver when the kernel has kept the GPU on -- boot-arg adreno_keep=1 --, its
+ * Mali driver on the Galaxy S9 when the kernel serves the GPU -- mali=9 --, and its software one
+ * when neither), read back and put on the panel. It says which driver drew, how long
  * it took and what a few pixels are, so that the picture need not be seen to be believed.
  *
  *   gl_test [SECONDS [WIDTH HEIGHT]]   keep the picture on the panel for so long (default 6: the
@@ -350,6 +351,10 @@ main(int argc, char **argv)
 	    (unsigned)(width * height), (unsigned)((uint64_t)coloured * 100 / (uint64_t)(width * height)));
 
 	service = IOServiceGetMatchingService(0, IOServiceMatching("HakiosGPU"));
+	if (service == 0) {
+		/* the Galaxy S9's Mali instead: the same request and structure (hakios.mali.cpp: kHakiosMaliShow) */
+		service = IOServiceGetMatchingService(0, IOServiceMatching("HakiosMali"));
+	}
 	if (service == 0 || IOServiceOpen(service, mach_task_self(), 0, &connection) != 0) {
 		printf("gl_test: no GPU service in this kernel to put the picture on the panel with\n");
 		return 0;
