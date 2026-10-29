@@ -204,6 +204,9 @@ REGTRACE	arg	regtrace	CPU, memory and boot	k	(patch)
 RETURN_CPU	arg	return_cpu	CPU, memory and boot	k	loader_return.c	
 RETURN_PANIC	arg	return_panic	CPU, memory and boot	k	loader_return.c	
 ROOT_APFS	arg	root_apfs	User space	u	init.c	the root is to be the iOS root volume on /dev/DEV -- the phone's flash, read only
+S6SY761	arg	s6sy761	Touch and buttons	k	hakios.s6sy761.c	every address below belongs to this phone
+S6SY761_IPCLK	arg	s6sy761_ipclk	Touch and buttons	k	hakios.s6sy761.c	the HSI2C's input clock, if step 1 says it is not the 200 MHz both other drivers assume
+S6SY761_STEPS	arg	s6sy761_steps	Touch and buttons	k	hakios.s6sy761.c	
 SCCAM_ADDR	arg	sccam.addr	User space	k	1400-avf-scion-camera.patch,hakios.sccam_torch.c	
 SCCAM_H	arg	sccam.h	User space	k	1400-avf-scion-camera.patch	
 SCCAM_SIZE	arg	sccam.size	User space	k	1400-avf-scion-camera.patch	

@@ -78,6 +78,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | **`HAKIOS_GOODIX`**<br>the touch screen: a Goodix GT9916 ("Berlin-D") or a FocalTech FT3680 on SPI (touchscreen=1). The bus, pins and supplies are the POCO X5 Pro's; another phone with one of these controllers changes those | `hakios.goodix.c` |  | `touch_flip=`, `touch_poll_us=`, `touch_rate=`, `touch_spi_hz=`, `touchscreen=` |  |  | |
 | **`HAKIOS_BUTTONS`**<br>the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1) | `hakios.buttons.c` |  | `buttons=`, `buttons_steps=`, `touchscreen=` |  |  | |
 | **`HAKIOS_EXYNOS_KEYS`**<br>the Galaxy S9's power, volume and Bixby keys, pins of the Exynos 9810's ALIVE GPIO block (exynos_keys=1). Bixby is the home button | `hakios.exynos_keys.c` |  | `exynos_keys=` | built | built | |
+| **`HAKIOS_S6SY761`**<br>the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz) | `hakios.s6sy761.c` |  | `s6sy761=`, `s6sy761_ipclk=`, `s6sy761_steps=` | built | built | |
 
 ## modem
 
