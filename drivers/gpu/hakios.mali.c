@@ -12,38 +12,68 @@
  * waits, the kept lines and the minute's report. On the X6826B it drew iOS's window server through Mesa's panfrost and a
  * Metal driver (that repository's README, "GPU: works"). Here it has not run.
  *
- * THE GPU. A Bifrost Mali needs no firmware: bringing it up is power and a clock, then its own registers, which are Linux
- * panfrost's (drivers/gpu/drm/panfrost/panfrost_regs.h) and the same on the G72 as on the G52 for all that is used here.
+ * THE GPU. A Bifrost Mali needs no firmware: bringing it up is a supply, a clock and power, then its own registers,
+ * which are Linux panfrost's (drivers/gpu/drm/panfrost/panfrost_regs.h) and the same on the G72 as on the G52 for all
+ * that is used here.
  *   registers     0x17500000, 0x5000 bytes (the device tree's mali@17500000). GPU_ID >> 16 reads 0x6221: architecture
  *                 6.2, revision 2, product 1, the G72 ("tHEx"); Mesa's panfrost knows it by that number
- *   interrupts    SPI 282 job, 281 MMU, 283 GPU: GIC INTIDs 314, 313 and 315 on the GIC-400. Not used: as the original
- *                 did, the driver asks the registers (a moment of polling, then asleep 200 us at a time)
+ *   interrupts    SPI 282 job, 281 MMU, 283 GPU: GIC INTIDs 314, 313 and 315 on the GIC-400 (the S9+ port's device tree
+ *                 has the same three). Not used: as the original did, the driver asks the registers (a moment of
+ *                 polling, then asleep 200 us at a time)
+ *   supply        the S2MPS18's BUCK6, vdd_g3d: B6CTRL (0x2A) [7:6] its on mode -- 10 on this phone, the G3D power
+ *                 pin's (the device tree's g3d_en): the PMU's power-on of the domain turns it on -- and B6OUT (0x2B)
+ *                 its voltage, 300 mV + 6.25 mV a step, 950 mV (0x68) the regulator's most. Reached only through ACPM
+ *                 (drivers/core/hakios.exynos_acpm.c). S-BOOT LEAVES IT AT 644 mV WITH THE GPU AT 260 MHz, and on the
+ *                 S9+ that is a combination the GPU does not work on: panfrost had DATA_INVALID_FAULTs every few seconds,
+ *                 and two kernels whose panfrost reset and read the GPU before the rail was raised never came back (the
+ *                 SoC hung). So step 2 writes B6OUT = 0x68 (950 mV, that port's value at every rate) and reads it back
+ *                 BEFORE THE GPU'S REGISTERS ARE FIRST TOUCHED, which is step 4
  *   power         the domain pd-embedded_g3d of the PMU (0x14060000): its configuration at 0x14064040, [3:0] = 0xF asks
- *                 for it on; its status at 0x14064044, [3:0] = 0xF when it is
- *   clock         PLL_G3D of CMU_G3D (0x17400000). Its PLL_CON0 is CMU_G3D +0x140: S [2:0], P [13:8], M [25:16], STABLE
- *                 bit 29, ENABLE bit 31, fed by 26 MHz, so 26 MHz x M / (P x 2^S). Its rate is set by ACPM's DVFS (260 to
- *                 572 MHz); this driver never programs it, only reads it and says what it is
+ *                 for it on; its status at 0x14064044, [3:0] = 0xF when it is. A read of the GPU while it is off is a
+ *                 bus hang, not an error
+ *   clock         PLL_G3D of CMU_G3D (0x17400000, outside the domain: it keeps its settings when the domain is off).
+ *                 PLL_CON0 at +0x140: S [2:0], P [13:8], M [25:16], MUX_SEL bit 4 (the G3D's clock from the PLL, not
+ *                 the 26 MHz oscillator), MUX_BUSY bit 7, STABLE bit 29, ENABLE bit 31; 26 MHz x M / (P x 2^S). PLL_CON2
+ *                 at +0x148 must hold 0x30000003 while the PLL locks (S-Boot's 0x10000001 keeps it from ever reaching
+ *                 STABLE); PLL_LOCKTIME at +0x0, P x 150. The rates this driver sets are the three the S9+ port runs
+ *                 (points of the stock GPU table, validated on that phone): 260 MHz (M 160, P 4, S 2: S-Boot's own),
+ *                 455 (455, 26, 0), 572 (286, 13, 0).
+ *                 The G3D's own mux at +0x100 (bit 4: CMU's clock), and its bus dividers: MUX_CLK_G3D_BUSD +0x1000,
+ *                 DIV_CLK_G3D_BUSD +0x1800, DIV_CLK_G3D_BUSP +0x1804 (bit 16 busy)
  *   coherency     none: the GPU does not look into the processors' caches. COHERENCY_ENABLE = 31 (none) after every
  *                 reset; the processor cleans its cache to memory around what the GPU reads and writes of the kernel's
  *                 (job pages, page tables), and the buffers of programs are write-combined, as in the original
  *
- * Samsung's power-on of the G3D, as the kernel's register writes (the CAL of the GPL kernel named below):
- *   CMU_G3D +0x148 = 0x30000003; CMU_G3D +0x140 |= bit 4; CMU_G3D +0x100 |= bit 4; PMU 0x14064040 [3:0] = 0xF; then wait
- *   until 0x14064044 [3:0] == 0xF. The CMU_G3D writes come before the domain has power, so (an inference, which step 1
- *   relies on to read them) those registers answer without it.
- * After it, the CAL makes an SMC, 0x82000410 with (1, 0x17410204): the DTZPC restore, the G3D's TrustZone protection
- * controller set up again by EL3. Under this port Carbon Hypervisor has EL2 and passes an SMC it does not know on to EL3.
- * Power-off is the same in reverse, ending with CMU_G3D +0x148 = 0x10000001.
+ * THE SEQUENCE, as the mainline Linux port to the S9+ runs it (panfrost from S-Boot's state, the same SoC and almost the
+ * same board), and Samsung's CAL before it:
+ *   the rail      B6OUT = 950 mV through ACPM, read back, 200 us; before anything else
+ *   a rate        PLL_CON2 = 0x30000003; PLL_LOCKTIME = P x 150; PLL_CON0 MUX_SEL cleared and MUX_BUSY waited for (the
+ *                 G3D on the oscillator first, as a step of its own: cleared together with ENABLE, the G3D is left with
+ *                 no clock at all for a moment); ENABLE and the dividers cleared, then M/P/S, then ENABLE; STABLE (20
+ *                 ms); MUX_SEL set and MUX_BUSY waited for again. Nothing, if the PLL already runs at the rate wanted
+ *   power on      (only if the domain is off) PLL_CON2 = 0x30000003, PLL_CON0 |= MUX_SEL, +0x100 |= bit 4, the PMU's
+ *                 configuration [3:0] = 0xF, its status waited for; then SMC 0x82000410 (1, 0x17410204, 0), the DTZPC
+ *                 restore -- without it the first access to the GPU is refused by the bus, an SError -- 0 back for
+ *                 success; then the bus dividers: +0x1000 = 0, +0x1800 = 0 (BUSD = the PLL's), +0x1804 = 3 (BUSP = BUSD
+ *                 / 4), and the busy bit waited for. A domain the boot left on is used as it is: no SMC, no dividers
+ *   power off     the five low-power settings of Samsung's pmucal_lpm_init (masked: PMU +0x4690 [1:0] = 2, +0x4680 bit
+ *                 1 = 0, +0x4684 [11:0] = 0x363, +0x15A8 bit 0 = 1, +0x15AC bit 0 = 1) -- without them the S9+'s domain
+ *                 stopped half off (STATUS 0x002F000E) and the next access was an SError --; SMC 0x82000410 (0,
+ *                 0x17410204, 0), the DTZPC SAVE; the configuration [3:0] = 0 and the status waited for; then +0x100 and
+ *                 PLL_CON0 MUX_SEL cleared and PLL_CON2 = 0x10000001. A domain that does not go off is switched on
+ *                 again and its protection restored, and left on; one that never came on gets no save (its protection
+ *                 controller is inside it), only the configuration [3:0] = 0
+ * Under this port Carbon Hypervisor has EL2 and passes an SMC it does not know on to EL3.
  *
- * A KNOWN GAP. Before it powers the G3D on, Samsung's CAL also sends ACPM (the always-on power manager's firmware) a PMIC
- * update: type 3, register 0x2a of the S2MPS18, bits [7:6] = 11 -- its BUCK6, vdd_g3d, handed over. THAT IS NOT DONE
- * HERE: this kernel has no ACPM driver, and a write to a PMIC is made only where tools/provenance.allow says why. If the
- * rail is off as the phone's boot leaves it, step 2 waits for a domain that does not come up, says so, and stops; if the
- * domain says on without its supply, step 4's first read of the GPU is where the run would end. Step 2 says this too.
- *
- * Every Exynos fact above is from the GPL-2.0 kernel of the Exynos 9810 (github.com/ExyHyperBrick/
- * android_kernel_samsung_exynos9810, branch lineage-24.0: the G3D's CAL and power domain, the Mali's platform code) and
- * Samsung's device tree (Silicium's starlte.dts), through a fact sheet: read for these numbers, not one line copied.
+ * Sources. The S9+ port: github.com/SheroAbi/galaxy-s9plus-mainline-linux, src/soc/s9p-g3d.c (the rail, the rates, the
+ * PLL's switch), src/soc/s9p-g3d-pd.c (the domain on and off, the SMCs, the dividers, the low-power settings),
+ * src/soc/s9p-acpm.c (ACPM), src/soc/s9p-clkgate.c, src/mainline-dts/exynos9810-star2lte.dts (the GPU's, the domain's
+ * and the clock's nodes) and its docs/04-drivers.md, 06-known-issues.md, 07-validation.md -- GPL-2.0 (the device tree
+ * GPL-2.0 OR BSD-3-Clause): read for these facts, not one line copied. Samsung's GPL-2.0 kernel of the Exynos 9810
+ * (github.com/ExyHyperBrick/android_kernel_samsung_exynos9810, branch lineage-24.0, forked to Scion-Project: the G3D's
+ * CAL and power domain, cal-if.c, the S2MPS18's registers, the Mali's platform code) and Samsung's device tree (the
+ * phone's own, and Silicium's starlte.dts), through a fact sheet. Linux panfrost (panfrost_gpu.c, panfrost_regs.h) for
+ * what it does at a reset and at power-up.
  *
  * WHAT CHANGED FROM THE ORIGINAL, AND WHY
  *   - MediaTek's clock mux, SPM power domains, bus protection and MFG clock gate are gone; the Exynos 9810's sequence is
@@ -55,6 +85,10 @@
  *     to go on with fewer, or with fewer than 36 bits of physical address: the S9's memory reaches 0x8FFFFFFFF.
  *   - Step 4 refuses a GPU that is not a G72, or whose shader cores do not fit the 32 bits of affinity the jobs are given.
  *   - COHERENCY_ENABLE = 31 after every reset, the one of a hung job's recovery included (a reset may clear it).
+ *   - A reset is panfrost's: the reset interrupt cleared first, a hard reset when the soft one does not finish, and the
+ *     one setting panfrost makes on a G72 after it: L2_MMU_CONFIG's limits on outstanding external reads and writes
+ *     ([25:24], [27:26]) cleared. The cores come up as panfrost brings them: the L2 first and waited for, then the
+ *     shader cores, then the tiler.
  *   - A physical address is checked to be memory the kernel manages (pmap_valid_address()) before the kernel's address
  *     of it is asked for and the cache cleaned over it -- a table of the GPU's, found through an entry -- and before a
  *     page is entered into the GPU's tables. phystokv() panics on an address outside, and PixOS, on another phone,
@@ -63,16 +97,21 @@
  *   - NR_CORE_GROUPS is the number of L2 caches present, as Linux panfrost answers it, not a fixed 1.
  *   - The steps' lines go to the loader's log as they are said (say()), as this tree's drivers do: the end of a run
  *     that dies in a step is what is kept. The minute's report and the per-job lines stay in the kernel's log only.
+ *   - Waits are bounded by the clock, not by a count of delay()s (which may each sleep far longer than asked).
  *
  * THE STEPS. mali=N makes the first N and stops; 0, or no mali= at all, leaves the GPU alone. A step says what it will
  * touch before it does, and one that does not find what it needs ends the sequence:
- *   1  reads   the PMU's G3D configuration and status; CMU_G3D +0x100, +0x140 (PLL_G3D, and the rate it gives) and
- *              +0x148; GPU_ID only if the domain reads as on. Nothing is written
- *   2  writes  the power-on above (nothing, if the domain is on already); then PLL_G3D must read stable
- *   3  asks    EL3, through Carbon, for the DTZPC restore: SMC 0x82000410 (1, 0x17410204)
+ *   1  reads   the PMU's G3D configuration and status; CMU_G3D (PLL_G3D and the rate it gives, the muxes, the bus
+ *              dividers); through ACPM the S2MPS18's B6CTRL and B6OUT. Nothing is written; THE GPU IS NOT READ (the
+ *              rail is as S-Boot left it)
+ *   2  writes  B6OUT = 950 mV through ACPM, read back (or the steps end: the GPU is not touched at the boot's voltage);
+ *              PLL_G3D to the rate (mali_mhz, 260 MHz unless said) by the switch above; then, if the domain is off,
+ *              its power-on
+ *   3  asks    if step 2 switched the domain on: EL3, through Carbon, for the DTZPC restore, SMC 0x82000410 (1,
+ *              0x17410204, 0); then the bus dividers. A domain the boot left on: nothing
  *   4  reads   GPU_ID (a G72, or nothing more is done), MMU_FEATURES (35 bits of GPU address at least), the cores
- *   5  writes  a soft reset; COHERENCY_ENABLE = 31
- *   6  writes  the L2, the tiler and the shader cores powered up
+ *   5  writes  a reset (soft; hard if that does not finish); COHERENCY_ENABLE = 31; L2_MMU_CONFIG's limits cleared
+ *   6  writes  the L2, then the shader cores, then the tiler powered up
  *   7  runs    one job, the smallest there is (write a value into memory), through address space 0 in identity mode
  *   8  runs    the same job through the GPU's own page tables, at a GPU address of their making
  *   9  serves  HakiosMali started: programs can open the GPU (the original's "step 6 of 6" and RedwoodMaliStart())
@@ -80,14 +119,17 @@
  *
  * Boot-args:
  *   mali=N           the first N of the GPU's nine steps of bring-up (9: all, then served); 0 or none: left alone
+ *   mali_mhz=MHZ     the GPU's clock: 260 (S-Boot's, the default), 455 or 572, the S9+ port's three rates
+ *   mali_pll=0       PLL_G3D left as the boot left it (the step stops if it does not run)
+ *   mali_acpm=0      the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
  *   mali_fastmap=0   the GPU walks its tables through its own caches, and every buffer entered is an UPDATE of AS 0
  *   mali_trace=1     a line for every job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
  *
  * The user client is opened by the window server's process, backboardd, which does not run as root (PixOS learned that
  * on another phone): nothing here or in hakios.mali.cpp asks for root.
  *
- * Status: written, not yet run on the phone, and not compiled: the XNU interfaces are the original's, as it used them
- * against the same xnu-8796.121.2.
+ * Status: written, not yet run on the phone. The S9+ port's sequence has run panfrost on the same SoC from S-Boot's
+ * state; what is ours (the steps, the jobs, the tables) has run only on the X6826B's G52.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -139,37 +181,49 @@ say(const char *format, ...)
 #define PMU_G3D_CONFIGURATION   0x4040          /* 0x14064040: [3:0] = 0xF asks for pd-embedded_g3d on, 0 off */
 #define PMU_G3D_STATUS          0x4044          /* 0x14064044: [3:0] = 0xF when it is on */
 #define G3D_ON                  0xfu
-#define G3D_WAIT_MS             100u
+#define G3D_WAIT_US             100000u         /* (the S9+ port waits 10 ms) */
+/* the G3D's low-power settings of Samsung's pmucal_lpm_init, made before the domain is switched off: offset, mask, value */
+static const struct { uint32_t at, mask, value; const char *name; } g3d_lpm[] = {
+	{ 0x4690, 0x3u, 0x2u, "MEMORY_EMBEDDED_G3D_OPTION" },
+	{ 0x4680, 0x2u, 0x0u, "PWR_EMBEDDED_G3D_OPTION" },
+	{ 0x4684, 0xfffu, 0x363u, "PWR_EMBEDDED_G3D_DURATION" },
+	{ 0x15a8, 0x1u, 0x1u, "SCI_CRPPORTPWRDN" },
+	{ 0x15ac, 0x1u, 0x1u, "PWR_EMBEDDED_G3D" },
+};
 
 #define CMU_G3D_PHYS            0x17400000UL
-#define CMU_G3D_SIZE            0x1000
-#define CMU_G3D_100             0x100           /* bit 4 set on, cleared off */
-#define CMU_G3D_PLL_CON0        0x140           /* PLL_G3D's PLL_CON0; bit 4 set on, cleared off */
-#define CMU_G3D_148             0x148           /* written CMU_G3D_148_ON first on, CMU_G3D_148_OFF last off */
-#define CMU_G3D_BIT4            (1u << 4)
-#define CMU_G3D_148_ON          0x30000003u
-#define CMU_G3D_148_OFF         0x10000001u
+#define CMU_G3D_SIZE            0x2000          /* the bus dividers are at +0x1800 */
+#define PLL_LOCKTIME            0x000
+#define MUX_G3D_USER            0x100           /* PLL_CON0_MUX_CLKCMU_EMBEDDED_G3D_USER: MUX_SEL set on, cleared off */
+#define PLL_CON0                0x140           /* PLL_G3D */
+#define PLL_CON2                0x148           /* PLL_CON2_LOCK while the PLL locks and the domain is on, _OFF after */
+#define MUX_CLK_G3D_BUSD        0x1000
+#define DIV_CLK_G3D_BUSD        0x1800
+#define DIV_CLK_G3D_BUSP        0x1804
+#define CLK_CON_BUSY            (1u << 16)
+#define MUX_SEL                 (1u << 4)       /* PLL_CON0: the PLL's output, not the oscillator; +0x100: CMU's clock */
+#define MUX_BUSY                (1u << 7)       /* PLL_CON0: the mux still moving */
 #define PLL_ENABLE              (1u << 31)
 #define PLL_STABLE              (1u << 29)
+#define PLL_PMS                 ((0x3ffu << 16) | (0x3fu << 8) | 7u)
+#define PLL_CON2_LOCK           0x30000003u
+#define PLL_CON2_OFF            0x10000001u
 #define PLL_FIN_KHZ             26000ull
-#define PLL_STABLE_MS           10u
-/*
- * When the boot leaves PLL_G3D off (its rate is ACPM's DVFS's to set, and nothing here speaks to ACPM yet), step 2 starts
- * it itself the way Samsung's CAL programs a PLL_1018X (cal-if/ra.c, ra_pll_set_pmsk(); the rate from cmucal-node.c's
- * pll_g3d_rate_table): its lock time (PLL_LOCKTIME at +0x0: P x 150), then P, M, S with ENABLE and the output mux in one
- * write of PLL_CON0, then STABLE waited for. 320 MHz (M 320, P 13, S 1: a VCO of 640 MHz from 26 MHz), the table's lowest
- * and under every DVFS level the GPU is normally run at, so that the rail's voltage, whatever it is, is enough.
- * Boot-arg mali_pll=0: a PLL_G3D that does not run is left alone, and step 2 stops there.
- */
-#define CMU_G3D_PLL_LOCKTIME    0x000
-#define PLL_1018X_LOCK_FACTOR   150u
-#define PLL_FALLBACK_M          320u
-#define PLL_FALLBACK_P          13u
-#define PLL_FALLBACK_S          1u
-static uint32_t mali_pll = 1;
+#define PLL_LOCK_FACTOR         150u            /* PLL_LOCKTIME = P x 150 */
+#define PLL_STABLE_US           20000u
+#define MUX_BUSY_US             1000u
+/* the rates (mali_mhz): the S9+ port's three, M, P, S on the 26 MHz oscillator */
+static const struct g3d_rate { uint32_t mhz, m, p, s; } g3d_rates[] = {
+	{ 260, 160, 4, 2 },                     /* S-Boot's own */
+	{ 455, 455, 26, 0 },
+	{ 572, 286, 13, 0 },
+};
+static uint32_t mali_mhz = 260;
+static uint32_t mali_pll = 1;                   /* mali_pll=0: PLL_G3D as the boot left it */
 
-#define DTZPC_RESTORE           0x82000410u     /* Samsung's SiP call, as the CAL makes it after power-on */
-#define DTZPC_ARGUMENT          1u
+#define DTZPC_SMC               0x82000410u     /* Samsung's SiP call, SMC_CMD_PREPARE_PD_ONOFF */
+#define DTZPC_SAVE              0u              /* before the domain's power goes */
+#define DTZPC_RESTORE           1u              /* after it has come */
 #define DTZPC_G3D               0x17410204u
 
 #define MALI_PHYS               0x17500000UL
@@ -183,20 +237,19 @@ static uint32_t reached, gpu_id, shader_mask, l2_mask, last_step, step;
 static bool powered_here;               /* step 2 switched the domain on: off again if the steps end short */
 static bool gpu_answered;               /* step 4 read a G72: a soft reset before the power goes */
 /*
- * The supply and the clock through ACPM (drivers/core/hakios.exynos_acpm.c), as Samsung's kernel has them made: the
- * S2MPS18's BUCK6 (vdd_g3d) held on before the domain's power-on -- PMIC register 0x2a, bits [7:6] = 11; the CAL sends
- * it as an update of "type" 3 (cal-if.c:178-186), the regulator driver addresses the same register as type 1, so it is
- * read back through type 1 and sent that way as well if type 3 left it unchanged -- and, once the domain is on, the
- * GPU's DVFS rate set (index 4, kHz) so that ACPM programs PLL_G3D and the voltage together from its own tables. Bits
- * [7:6] are put back as found when the domain goes off again. Boot-arg mali_acpm=0: none of it.
+ * The supply, through ACPM (drivers/core/hakios.exynos_acpm.c): the S2MPS18's BUCK6 (vdd_g3d). Only B6OUT is ever
+ * written, never above 0x68 (950 mV, the regulator's most in the phone's device tree), and read back; B6CTRL is read,
+ * for the log. Put back as found when this driver switches the domain off again. Boot-arg mali_acpm=0: none of it.
  */
-#define B6CTRL                  0x2a
-#define B6CTRL_ON               0xc0u           /* [7:6] = 11: always on; 10 the G3D power pin's, 00 off */
-#define DVFS_G3D                4               /* GET_IDX(0x0B040004), cal-if */
-#define DVFS_G3D_KHZ            260000u         /* the lowest of the device tree's levels */
+#define B6CTRL                  0x2a            /* [7:6]: 11 always on, 10 the G3D power pin's (g3d_en), 00 off */
+#define B6OUT                   0x2b            /* 300 mV + 6.25 mV a step */
+#define B6OUT_950MV             0x68
+#define B6OUT_MOST              0x68
+#define RAIL_SETTLE_US          200
+#define RAIL_TRIES              10              /* 100 ms apart: the APM may not answer at once */
 static uint32_t mali_acpm = 1;
-static bool acpm_ok, b6_changed;
-static uint8_t b6_found;
+static bool acpm_ok, rail_changed, b6out_known;  /* b6out_known: B6OUT was read before it was written */
+static uint8_t b6out_found;
 
 SYSCTL_UINT(_kern_hakios, OID_AUTO, mali, CTLFLAG_RD | CTLFLAG_LOCKED, &reached, 0,
     "how far the Mali came up: 9 is the GPU there for programs (drivers/gpu/hakios.mali.c)");
@@ -315,17 +368,32 @@ wr(vm_offset_t base, uint32_t at, uint32_t value)
 	__asm__ volatile ("dsb sy");
 }
 
-/* Until (register & mask) == want, for at most `ms`. */
+/* Until (register & mask) == want, for at most `us` microseconds by the clock (delay() may sleep far longer than asked). */
 static bool
-wait_for(vm_offset_t base, uint32_t at, uint32_t mask, uint32_t want, uint32_t ms)
+wait_for(vm_offset_t base, uint32_t at, uint32_t mask, uint32_t want, uint32_t us)
 {
-	for (uint32_t us = 0; us < ms * 1000; us += 10) {
-		if ((rd(base, at) & mask) == want) {
-			return true;
+	uint64_t deadline;
+
+	nanoseconds_to_absolutetime((uint64_t)us * NSEC_PER_USEC, &deadline);
+	deadline += mach_absolute_time();
+	while ((rd(base, at) & mask) != want) {
+		if (mach_absolute_time() >= deadline) {
+			return (rd(base, at) & mask) == want;
 		}
-		delay(10);
 	}
-	return (rd(base, at) & mask) == want;
+	return true;
+}
+
+/* `us` microseconds, by the clock */
+static void
+pause_us(uint32_t us)
+{
+	uint64_t deadline;
+
+	nanoseconds_to_absolutetime((uint64_t)us * NSEC_PER_USEC, &deadline);
+	deadline += mach_absolute_time();
+	while (mach_absolute_time() < deadline) {
+	}
 }
 
 /* ---- the GPU's registers (Linux drivers/gpu/drm/panfrost/panfrost_regs.h) ---- */
@@ -358,6 +426,15 @@ wait_for(vm_offset_t base, uint32_t at, uint32_t mask, uint32_t want, uint32_t m
 #define COHERENCY_NONE      31u
 #define THREAD_TLS_ALLOC    0x310
 #define IRQ_RESET_COMPLETED (1u << 8)
+#define GPU_CMD_SOFT_RESET  1u
+#define GPU_CMD_HARD_RESET  2u
+#define GPU_JM_CONFIG       0xf00
+#define GPU_SHADER_CONFIG   0xf04
+#define GPU_TILER_CONFIG    0xf08
+#define GPU_L2_MMU_CONFIG   0xf0c
+#define L2_MMU_LIMIT_EXTERNAL (0xfu << 24)    /* outstanding external reads [25:24], writes [27:26]: 0, no limit */
+#define RESET_WAIT_US       100000
+#define CORES_WAIT_US       50000
 
 #define JOB_INT_RAWSTAT     0x1000
 #define JOB_INT_CLEAR       0x1004
@@ -380,24 +457,62 @@ wait_for(vm_offset_t base, uint32_t at, uint32_t mask, uint32_t want, uint32_t m
 #define AS_COMMAND          0x18
 #define AS_FAULTSTATUS      0x1c
 #define AS_STATUS           0x28
+#define AS_ACTIVE           1u
+#define AS_WAIT_US          50000
 #define AS_TRANSCFG_LO      0x30
 #define AS_TRANSCFG_HI      0x34
 
 /*
- * A soft reset, and what a reset clears put back: COHERENCY_ENABLE, which says the GPU is to expect no coherency from
- * the rest of the chip (the original left it as the reset made it). False if the reset did not finish.
+ * A reset as Linux panfrost makes one (panfrost_gpu_soft_reset(), panfrost_gpu_init_quirks()): interrupts masked, the
+ * reset's own interrupt cleared, a soft reset, and a hard one (GPU_CMD = 2) when that does not finish; everything
+ * cleared. Then what a reset clears put back: COHERENCY_ENABLE, which says the GPU is to expect no coherency from the
+ * rest of the chip (the original left it as the reset made it), and the one setting panfrost makes on a G72 after a
+ * reset: L2_MMU_CONFIG's limits on outstanding external reads and writes cleared (the G72 has the two-bit fields).
+ * False if no reset finished.
  */
 static bool
 gpu_reset(void)
 {
 	wr(mali, GPU_INT_MASK, 0);
-	wr(mali, GPU_INT_CLEAR, 0xffffffffu);
-	wr(mali, GPU_CMD, 1);                   /* soft reset */
-	if (!wait_for(mali, GPU_INT_RAWSTAT, IRQ_RESET_COMPLETED, IRQ_RESET_COMPLETED, 100)) {
-		return false;
+	wr(mali, GPU_INT_CLEAR, IRQ_RESET_COMPLETED);
+	wr(mali, GPU_CMD, GPU_CMD_SOFT_RESET);
+	if (!wait_for(mali, GPU_INT_RAWSTAT, IRQ_RESET_COMPLETED, IRQ_RESET_COMPLETED, RESET_WAIT_US)) {
+		say("mali: the soft reset did not finish (GPU_INT_RAWSTAT %#x): a hard reset\n", rd(mali, GPU_INT_RAWSTAT));
+		wr(mali, GPU_CMD, GPU_CMD_HARD_RESET);
+		if (!wait_for(mali, GPU_INT_RAWSTAT, IRQ_RESET_COMPLETED, IRQ_RESET_COMPLETED, RESET_WAIT_US)) {
+			return false;
+		}
 	}
 	wr(mali, GPU_INT_CLEAR, 0xffffffffu);
 	wr(mali, COHERENCY_ENABLE, COHERENCY_NONE);
+	wr(mali, GPU_L2_MMU_CONFIG, rd(mali, GPU_L2_MMU_CONFIG) & ~L2_MMU_LIMIT_EXTERNAL);
+	return true;
+}
+
+/*
+ * The cores, as panfrost powers them (panfrost_gpu_power_on()): the L2 and waited for, then the shader cores, then the
+ * tiler. False, and which did not come, if one did not.
+ */
+static bool
+gpu_cores_on(const char **which)
+{
+	uint32_t tiler = rd(mali, TILER_PRESENT);
+
+	wr(mali, L2_PWRON, l2_mask);
+	if (!wait_for(mali, L2_READY, l2_mask, l2_mask, CORES_WAIT_US)) {
+		*which = "the L2";
+		return false;
+	}
+	wr(mali, SHADER_PWRON, shader_mask);
+	if (!wait_for(mali, SHADER_READY, shader_mask, shader_mask, CORES_WAIT_US)) {
+		*which = "the shader cores";
+		return false;
+	}
+	wr(mali, TILER_PWRON, tiler);
+	if (!wait_for(mali, TILER_READY, tiler, tiler, CORES_WAIT_US)) {
+		*which = "the tiler";
+		return false;
+	}
 	return true;
 }
 
@@ -431,7 +546,7 @@ run_write_job(vm_offset_t page, uint64_t gpu, const char *what)
 	wr(mali, JS1 + JS_AFFINITY_NEXT_HI, 0);
 	wr(mali, JS1 + JS_CONFIG_NEXT, JS_CONFIG);
 	wr(mali, JS1 + JS_COMMAND_NEXT, 1);     /* start */
-	(void)wait_for(mali, JOB_INT_RAWSTAT, (1u << 1) | (1u << 17), 1u << 1, 100);
+	(void)wait_for(mali, JOB_INT_RAWSTAT, (1u << 1) | (1u << 17), 1u << 1, 100000);
 
 	FlushPoC_DcacheRegion(page, PAGE_SIZE);
 	ok = *target == 0xc0ffee01u;
@@ -445,6 +560,7 @@ run_write_job(vm_offset_t page, uint64_t gpu, const char *what)
 static void
 as0_update(uint64_t transtab, uint32_t transcfg)
 {
+	(void)wait_for(mali, AS0 + AS_STATUS, AS_ACTIVE, 0, AS_WAIT_US);   /* no command while one runs (panfrost) */
 	wr(mali, AS0 + AS_TRANSTAB_LO, (uint32_t)transtab);
 	wr(mali, AS0 + AS_TRANSTAB_HI, (uint32_t)(transtab >> 32));
 	wr(mali, AS0 + AS_TRANSCFG_LO, transcfg);
@@ -452,7 +568,7 @@ as0_update(uint64_t transtab, uint32_t transcfg)
 	wr(mali, AS0 + AS_MEMATTR_LO, 0x88888888u);     /* every attribute: write-back, the GPU's own caches */
 	wr(mali, AS0 + AS_MEMATTR_HI, 0x88888888u);
 	wr(mali, AS0 + AS_COMMAND, 1);                  /* update */
-	(void)wait_for(mali, AS0 + AS_STATUS, 1, 0, 50);
+	(void)wait_for(mali, AS0 + AS_STATUS, AS_ACTIVE, 0, AS_WAIT_US);
 }
 
 /* ---- the GPU's own page tables ---- */
@@ -599,56 +715,135 @@ unmap_pages(uint64_t gpu, uint64_t size)
 	}
 }
 
-/* ---- the Exynos 9810's side: power, the clock, the TrustZone protection controller ---- */
+/* ---- the Exynos 9810's side: the supply, the clock, power, the TrustZone protection controller ---- */
 
 /* PLL_G3D as it is, said; its PLL_CON0 back. */
 static uint32_t
 pll_say(const char *when)
 {
-	uint32_t con0 = rd(cmu_g3d, CMU_G3D_PLL_CON0);
+	uint32_t con0 = rd(cmu_g3d, PLL_CON0);
 	uint32_t m = (con0 >> 16) & 0x3ff, p = (con0 >> 8) & 0x3f, s = con0 & 7;
 	uint32_t khz = p != 0 ? (uint32_t)(PLL_FIN_KHZ * m / ((uint64_t)p << s)) : 0;
 
-	say("mali: %u: PLL_G3D %s: PLL_CON0 %#x: M %u, P %u, S %u, %u.%03u MHz from 26 MHz; %s, %s%s\n", step, when, con0, m,
-	    p, s, khz / 1000, khz % 1000, (con0 & PLL_ENABLE) ? "enabled" : "not enabled",
-	    (con0 & PLL_STABLE) ? "stable" : "NOT STABLE",
-	    khz != 0 && (khz < 260000 || khz > 572000) ? " (outside the 260 to 572 MHz of ACPM's DVFS)" : "");
+	say("mali: %u: PLL_G3D %s: PLL_CON0 %#x: M %u, P %u, S %u, %u.%03u MHz from 26 MHz; %s, %s; the G3D on %s%s; "
+	    "PLL_CON2 %#x\n", step, when, con0, m, p, s, khz / 1000, khz % 1000, (con0 & PLL_ENABLE) ? "enabled" :
+	    "not enabled", (con0 & PLL_STABLE) ? "stable" : "NOT STABLE", (con0 & MUX_SEL) ? "the PLL" : "the oscillator",
+	    (con0 & MUX_BUSY) ? " (the mux still moving)" : "", rd(cmu_g3d, PLL_CON2));
 	return con0;
 }
 
-/*
- * The domain off again, the power-on in reverse: the PMU's G3D configuration [3:0] = 0 and its status waited for, then
- * CMU_G3D +0x100 and +0x140 bit 4 cleared, and last CMU_G3D +0x148 = 0x10000001. A GPU that has answered is reset first,
- * so that nothing of it is running when the power goes.
- */
-static void
-g3d_off(void)
+static bool
+pll_is(const struct g3d_rate *r)
 {
-	if (gpu_answered) {
-		say("mali: before the power goes: a soft reset (GPU_CMD = 1)\n");
-		if (!gpu_reset()) {
-			say("mali: the reset did not finish (GPU_INT_RAWSTAT %#x): the power goes anyway\n", rd(mali, GPU_INT_RAWSTAT));
+	uint32_t con0 = rd(cmu_g3d, PLL_CON0);
+
+	return ((con0 >> 16) & 0x3ff) == r->m && ((con0 >> 8) & 0x3f) == r->p && (con0 & 7) == r->s &&
+	       (con0 & (PLL_ENABLE | PLL_STABLE | MUX_SEL)) == (PLL_ENABLE | PLL_STABLE | MUX_SEL);
+}
+
+/*
+ * PLL_G3D to rate `r`, as the S9+ port switches it (s9p-g3d.c): PLL_CON2 = 0x30000003 (with S-Boot's 0x10000001 the PLL
+ * never locks), the lock time; the G3D over to the oscillator and the mux waited for, as a step of its own; the PLL
+ * stopped and its dividers cleared, then M/P/S, then ENABLE; STABLE waited for; the G3D back on the PLL and the mux
+ * waited for. On a failure the PLL as it was found, on the oscillator if it does not lock again.
+ */
+static bool
+pll_switch(const struct g3d_rate *r)
+{
+	uint32_t old_con0 = rd(cmu_g3d, PLL_CON0), old_locktime = rd(cmu_g3d, PLL_LOCKTIME), v;
+	const char *failed;
+
+	say("mali: %u: PLL_G3D to %u MHz (M %u, P %u, S %u): PLL_CON2 = %#x, PLL_LOCKTIME = %u, the G3D on the oscillator, "
+	    "the PLL relocked, the G3D back on it\n", step, r->mhz, r->m, r->p, r->s, PLL_CON2_LOCK, r->p * PLL_LOCK_FACTOR);
+	wr(cmu_g3d, PLL_CON2, PLL_CON2_LOCK);
+	wr(cmu_g3d, PLL_LOCKTIME, r->p * PLL_LOCK_FACTOR);
+	wr(cmu_g3d, PLL_CON0, rd(cmu_g3d, PLL_CON0) & ~MUX_SEL);
+	if (!wait_for(cmu_g3d, PLL_CON0, MUX_BUSY, 0, MUX_BUSY_US)) {
+		failed = "the mux did not move to the oscillator";
+		goto restore;
+	}
+	v = rd(cmu_g3d, PLL_CON0) & ~(PLL_ENABLE | PLL_PMS);
+	wr(cmu_g3d, PLL_CON0, v);
+	v |= r->m << 16 | r->p << 8 | r->s;
+	wr(cmu_g3d, PLL_CON0, v);
+	wr(cmu_g3d, PLL_CON0, v | PLL_ENABLE);
+	if (!wait_for(cmu_g3d, PLL_CON0, PLL_STABLE, PLL_STABLE, PLL_STABLE_US)) {
+		failed = "the PLL did not lock";
+		goto restore;
+	}
+	wr(cmu_g3d, PLL_CON0, rd(cmu_g3d, PLL_CON0) | MUX_SEL);
+	if (!wait_for(cmu_g3d, PLL_CON0, MUX_BUSY, 0, MUX_BUSY_US) || !pll_is(r)) {
+		failed = "the mux did not move back to the PLL";
+		goto restore;
+	}
+	(void)pll_say("switched");
+	return true;
+
+restore:
+	(void)pll_say(failed);
+	say("mali: %u: %s: PLL_G3D put back as it was found (PLL_CON0 %#x)\n", step, failed, old_con0);
+	wr(cmu_g3d, PLL_CON0, rd(cmu_g3d, PLL_CON0) & ~MUX_SEL);
+	if (wait_for(cmu_g3d, PLL_CON0, MUX_BUSY, 0, MUX_BUSY_US)) {
+		wr(cmu_g3d, PLL_CON0, rd(cmu_g3d, PLL_CON0) & ~PLL_ENABLE);
+		wr(cmu_g3d, PLL_LOCKTIME, old_locktime);
+		wr(cmu_g3d, PLL_CON0, old_con0 & ~MUX_SEL);
+		if (!(old_con0 & PLL_ENABLE) || wait_for(cmu_g3d, PLL_CON0, PLL_STABLE, PLL_STABLE, PLL_STABLE_US)) {
+			wr(cmu_g3d, PLL_CON0, old_con0);
+			(void)wait_for(cmu_g3d, PLL_CON0, MUX_BUSY, 0, MUX_BUSY_US);
 		}
-		gpu_answered = false;
 	}
-	say("mali: switching the G3D domain off again, as it was found: PMU configuration [3:0] = 0, then CMU_G3D +0x100 and "
-	    "+0x140 bit 4 cleared, +0x148 = %#x\n", CMU_G3D_148_OFF);
-	wr(pmu, PMU_G3D_CONFIGURATION, rd(pmu, PMU_G3D_CONFIGURATION) & ~G3D_ON);
-	if (!wait_for(pmu, PMU_G3D_STATUS, G3D_ON, 0, G3D_WAIT_MS)) {
-		say("mali: the domain did not go off: status %#x after %u ms\n", rd(pmu, PMU_G3D_STATUS), G3D_WAIT_MS);
+	(void)pll_say("put back");
+	return false;
+}
+
+/* The rail's voltage, said; its B6OUT in `out`. False if ACPM did not answer. */
+static bool
+rail_read(const char *when, uint8_t *out)
+{
+	uint8_t ctrl = 0, vsel = 0;
+	int error = hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, &ctrl);
+
+	if (error == 0) {
+		error = hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6OUT, &vsel);
 	}
-	wr(cmu_g3d, CMU_G3D_100, rd(cmu_g3d, CMU_G3D_100) & ~CMU_G3D_BIT4);
-	wr(cmu_g3d, CMU_G3D_PLL_CON0, rd(cmu_g3d, CMU_G3D_PLL_CON0) & ~CMU_G3D_BIT4);
-	wr(cmu_g3d, CMU_G3D_148, CMU_G3D_148_OFF);
-	if (b6_changed) {
-		say("mali: BUCK6 back as it was found: B6CTRL bits [7:6] = %u\n", (b6_found >> 6) & 3);
-		(void)hakios_acpm_pmic_update(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, b6_found & B6CTRL_ON, B6CTRL_ON);
-		b6_changed = false;
+	if (error != 0) {
+		say("mali: %u: ACPM: BUCK6 (vdd_g3d) %s: NOT READ, error %d\n", step, when, error);
+		return false;
 	}
-	say("mali: the G3D domain: configuration %#x, status %#x; CMU_G3D +0x100 %#x, +0x140 %#x, +0x148 %#x\n",
-	    rd(pmu, PMU_G3D_CONFIGURATION), rd(pmu, PMU_G3D_STATUS), rd(cmu_g3d, CMU_G3D_100), rd(cmu_g3d, CMU_G3D_PLL_CON0),
-	    rd(cmu_g3d, CMU_G3D_148));
-	powered_here = false;
+	say("mali: %u: ACPM: BUCK6 (vdd_g3d) %s: B6CTRL %#x ([7:6] = %u: %s), B6OUT %#x = %u mV\n", step, when, ctrl,
+	    (ctrl >> 6) & 3, (ctrl >> 6) == 3 ? "always on" : (ctrl >> 6) == 2 ? "the G3D power pin's" : (ctrl >> 6) == 1 ?
+	    "on in standby" : "OFF", vsel, 300 + vsel * 25 / 4);
+	*out = vsel;
+	return true;
+}
+
+/*
+ * B6OUT = `vsel`, and read back. The only PMIC register this driver writes, never above 950 mV: nothing else, ever.
+ * Tried RAIL_TRIES times, 100 ms apart (the S9+ port found the APM not answering yet early in the boot).
+ */
+static bool
+rail_set(uint8_t vsel)
+{
+	uint8_t now = 0;
+
+	if (vsel > B6OUT_MOST) {
+		return false;
+	}
+	for (int attempt = 1; attempt <= RAIL_TRIES; attempt++) {
+		int error = hakios_acpm_pmic_write(HAKIOS_ACPM_PMIC_PMIC, B6OUT, vsel);
+
+		if (error == 0) {
+			error = hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6OUT, &now);
+		}
+		if (error == 0 && now == vsel) {
+			pause_us(RAIL_SETTLE_US);
+			return true;
+		}
+		say("mali: %u: ACPM: B6OUT = %#x, attempt %d of %d: %s %#x\n", step, vsel, attempt, RAIL_TRIES,
+		    error ? "error" : "it reads", error ? (unsigned)error : now);
+		delay_for_interval(100, NSEC_PER_MSEC);
+	}
+	return false;
 }
 
 /* One SMC to EL3 (through Carbon at EL2): x0 back. */
@@ -665,13 +860,84 @@ smc(uint64_t function, uint64_t first, uint64_t second, uint64_t third)
 	return x0;
 }
 
+/*
+ * The domain off again (see the header's "power off"): a GPU that has answered is reset first, so that nothing of it is
+ * running when the power goes. A domain that does not go off is switched on again with its protection restored, and
+ * left on: it is not one the GPU can be read in, half off. The rail is put back as found once the domain is off.
+ */
+static void
+g3d_off(void)
+{
+	uint64_t answer;
+
+	if (gpu_answered) {
+		say("mali: before the power goes: a reset\n");
+		if (!gpu_reset()) {
+			say("mali: the reset did not finish (GPU_INT_RAWSTAT %#x): the power goes anyway\n", rd(mali, GPU_INT_RAWSTAT));
+		}
+		gpu_answered = false;
+	}
+	if ((rd(pmu, PMU_G3D_STATUS) & G3D_ON) != G3D_ON) {
+		/* (never on: its protection controller is in it, and EL3 is not to save it from a block without power) */
+		say("mali: the G3D domain is not on (status %#x): no DTZPC save; its configuration [3:0] = 0\n",
+		    rd(pmu, PMU_G3D_STATUS));
+		wr(pmu, PMU_G3D_CONFIGURATION, rd(pmu, PMU_G3D_CONFIGURATION) & ~G3D_ON);
+		(void)wait_for(pmu, PMU_G3D_STATUS, G3D_ON, 0, G3D_WAIT_US);
+		goto clocks;
+	}
+	say("mali: switching the G3D domain off again, as it was found: first Samsung's low-power settings for it\n");
+	for (unsigned i = 0; i < sizeof(g3d_lpm) / sizeof(g3d_lpm[0]); i++) {
+		uint32_t was = rd(pmu, g3d_lpm[i].at);
+
+		wr(pmu, g3d_lpm[i].at, (was & ~g3d_lpm[i].mask) | g3d_lpm[i].value);
+		say("mali: PMU +%#x %s: %#x -> %#x\n", g3d_lpm[i].at, g3d_lpm[i].name, was, rd(pmu, g3d_lpm[i].at));
+	}
+	answer = smc(DTZPC_SMC, DTZPC_SAVE, DTZPC_G3D, 0);
+	say("mali: SMC %#x (%u, %#x): the DTZPC save, returned %#llx\n", DTZPC_SMC, DTZPC_SAVE, DTZPC_G3D, answer);
+	if ((uint32_t)answer != 0) {
+		say("mali: the protection was not saved: the domain is left ON\n");
+		powered_here = false;
+		return;
+	}
+	wr(pmu, PMU_G3D_CONFIGURATION, rd(pmu, PMU_G3D_CONFIGURATION) & ~G3D_ON);
+	if (!wait_for(pmu, PMU_G3D_STATUS, G3D_ON, 0, G3D_WAIT_US)) {
+		say("mali: the domain did not go off: status %#x after %u ms; switching it on again\n", rd(pmu, PMU_G3D_STATUS),
+		    G3D_WAIT_US / 1000);
+		wr(pmu, PMU_G3D_CONFIGURATION, rd(pmu, PMU_G3D_CONFIGURATION) | G3D_ON);
+		if (wait_for(pmu, PMU_G3D_STATUS, G3D_ON, G3D_ON, G3D_WAIT_US)) {
+			answer = smc(DTZPC_SMC, DTZPC_RESTORE, DTZPC_G3D, 0);
+			say("mali: on again; the DTZPC restore returned %#llx; the domain is left ON\n", answer);
+		} else {
+			say("mali: NOT ON AGAIN EITHER: status %#x; nothing of the G3D is to be touched\n", rd(pmu, PMU_G3D_STATUS));
+		}
+		powered_here = false;
+		return;
+	}
+clocks:
+	wr(cmu_g3d, MUX_G3D_USER, rd(cmu_g3d, MUX_G3D_USER) & ~MUX_SEL);
+	wr(cmu_g3d, PLL_CON0, rd(cmu_g3d, PLL_CON0) & ~MUX_SEL);
+	wr(cmu_g3d, PLL_CON2, PLL_CON2_OFF);
+	say("mali: the G3D domain: configuration %#x, status %#x; CMU_G3D +0x100 %#x, PLL_CON0 %#x, PLL_CON2 %#x\n",
+	    rd(pmu, PMU_G3D_CONFIGURATION), rd(pmu, PMU_G3D_STATUS), rd(cmu_g3d, MUX_G3D_USER), rd(cmu_g3d, PLL_CON0),
+	    rd(cmu_g3d, PLL_CON2));
+	if (rail_changed) {
+		say("mali: BUCK6 back as it was found: B6OUT %#x (%u mV)\n", b6out_found, 300 + b6out_found * 25 / 4);
+		if (b6out_found <= B6OUT_MOST && rail_set(b6out_found)) {
+			rail_changed = false;
+		} else {
+			say("mali: B6OUT not put back (it reads otherwise, or ACPM did not answer)\n");
+		}
+	}
+	powered_here = false;
+}
+
 /* ---- the steps ---- */
 
-/* 1: what the boot has left, read only. */
+/* 1: what the boot has left, read only; not the GPU itself. */
 static bool
 step_look(void)
 {
-	uint32_t status, word;
+	uint32_t status;
 
 	say("mali: 1: mapping the PMU (%#lx), CMU_G3D (%#lx) and the GPU (%#lx); nothing is written in this step\n", PMU_PHYS,
 	    CMU_G3D_PHYS, MALI_PHYS);
@@ -687,133 +953,129 @@ step_look(void)
 	status = rd(pmu, PMU_G3D_STATUS);
 	say("mali: 1: G3D configuration %#x, status %#x: the domain is %s\n", rd(pmu, PMU_G3D_CONFIGURATION), status,
 	    (status & G3D_ON) == G3D_ON ? "on" : (status & G3D_ON) == 0 ? "off" : "NEITHER ON NOR OFF");
-	say("mali: 1: reading CMU_G3D +0x100, +0x140 and +0x148 (outside the domain: Samsung's sequence writes them before "
-	    "it has power)\n");
-	word = rd(cmu_g3d, CMU_G3D_148);
-	say("mali: 1: CMU_G3D +0x100 %#x (bit 4 %s), +0x148 %#x (%#x is what switching on writes, %#x switching off)\n",
-	    rd(cmu_g3d, CMU_G3D_100), (rd(cmu_g3d, CMU_G3D_100) & CMU_G3D_BIT4) ? "set" : "clear", word, CMU_G3D_148_ON,
-	    CMU_G3D_148_OFF);
+	say("mali: 1: reading CMU_G3D (outside the domain: it answers with the domain off)\n");
 	(void)pll_say("as found");
-	if ((status & G3D_ON) == G3D_ON) {
-		say("mali: 1: the domain is on: reading GPU_ID\n");
-		say("mali: 1: GPU_ID %#x\n", rd(mali, GPU_ID));
-	} else {
-		say("mali: 1: the domain is not on: the GPU's own registers are not read\n");
-	}
+	say("mali: 1: CMU_G3D +0x100 %#x (the G3D on %s), MUX_CLK_G3D_BUSD %#x, DIV_CLK_G3D_BUSD %#x, DIV_CLK_G3D_BUSP %#x\n",
+	    rd(cmu_g3d, MUX_G3D_USER), (rd(cmu_g3d, MUX_G3D_USER) & MUX_SEL) ? "CMU's clock" : "the oscillator",
+	    rd(cmu_g3d, MUX_CLK_G3D_BUSD), rd(cmu_g3d, DIV_CLK_G3D_BUSD), rd(cmu_g3d, DIV_CLK_G3D_BUSP));
+	say("mali: 1: the GPU's own registers are not read before step 2 has raised its supply (S-Boot's 260 MHz at 644 mV "
+	    "hung the S9+'s SoC when its GPU was read and reset)\n");
 	if (mali_acpm && (acpm_ok = hakios_acpm_init(say))) {
-		uint8_t b6 = 0;
-		uint32_t khz = 0;
-		int error = hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, &b6);
-
-		say("mali: 1: ACPM: the S2MPS18's B6CTRL (vdd_g3d) %s %#x: [7:6] = %u (%s)\n", error ? "NOT READ, error" : "is",
-		    error ? (unsigned)error : b6, (b6 >> 6) & 3, error ? "?" : (b6 >> 6) == 3 ? "always on" :
-		    (b6 >> 6) == 2 ? "the G3D power pin's" : (b6 >> 6) == 1 ? "on in standby" : "OFF");
-		error = hakios_acpm_dvfs_get(DVFS_G3D, &khz);
-		say("mali: 1: ACPM: the GPU's DVFS rate %s %u kHz\n", error ? "NOT READ, error" : "is", error ? (unsigned)error : khz);
+		b6out_known = rail_read("as found", &b6out_found);
+	} else if (mali_acpm) {
+		say("mali: 1: no ACPM: the rail cannot be raised, and step 2 will stop there\n");
 	}
 	return true;
 }
 
-/* 2: power, and a clock that runs. */
+/* 2: the supply, the clock, power. */
 static bool
 step_power(void)
 {
+	const struct g3d_rate *rate = NULL;
 	uint32_t status = rd(pmu, PMU_G3D_STATUS) & G3D_ON;
 
-	if (status == G3D_ON) {
-		say("mali: 2: the domain is on already: nothing written, and it is left on whatever happens\n");
-	} else if (status != 0) {
+	if (status != G3D_ON && status != 0) {
 		say("mali: 2: the domain is neither on nor off (status %#x): left alone\n", rd(pmu, PMU_G3D_STATUS));
 		return false;
+	}
+	/* the rail first, before the clock moves and before anything of the GPU is touched */
+	if (!mali_acpm) {
+		say("mali: 2: mali_acpm=0: BUCK6 left as found -- the GPU will be touched at the boot's voltage\n");
+	} else if (!acpm_ok) {
+		say("mali: 2: no ACPM: BUCK6 cannot be raised; the GPU is not touched at the boot's voltage\n");
+		return false;
+	} else if (!b6out_known && !(b6out_known = rail_read("as found, read again", &b6out_found))) {
+		say("mali: 2: B6OUT cannot be read: not written either (ACPM does not answer); the GPU is not touched at the "
+		    "boot's voltage\n");
+		return false;
+	} else if (b6out_found >= B6OUT_950MV) {
+		say("mali: 2: B6OUT is %#x (%u mV) already: not written\n", b6out_found, 300 + b6out_found * 25 / 4);
 	} else {
-		uint32_t con0 = rd(cmu_g3d, CMU_G3D_PLL_CON0);
+		uint8_t now = 0;
 
-		if (!(con0 & PLL_ENABLE) && mali_pll) {
-			uint32_t want = (con0 & ~((0x3ffu << 16) | (0x3fu << 8) | 7u)) | PLL_FALLBACK_M << 16 | PLL_FALLBACK_P << 8 |
-			    PLL_FALLBACK_S | CMU_G3D_BIT4 | PLL_ENABLE;
-
-			say("mali: 2: PLL_G3D is off (PLL_CON0 %#x): starting it at 320 MHz as the CAL starts a PLL_1018X: "
-			    "PLL_LOCKTIME = %u, then PLL_CON0 = %#x (mali_pll=0 would not)\n", con0,
-			    PLL_FALLBACK_P * PLL_1018X_LOCK_FACTOR, want);
-			wr(cmu_g3d, CMU_G3D_PLL_LOCKTIME, PLL_FALLBACK_P * PLL_1018X_LOCK_FACTOR);
-			wr(cmu_g3d, CMU_G3D_PLL_CON0, want);
-			if (!wait_for(cmu_g3d, CMU_G3D_PLL_CON0, PLL_STABLE, PLL_STABLE, PLL_STABLE_MS)) {
-				(void)pll_say("started here");
-				say("mali: 2: PLL_G3D did not become stable in %u ms: stopping it again\n", PLL_STABLE_MS);
-				wr(cmu_g3d, CMU_G3D_PLL_CON0, con0);
-				return false;
-			}
-			(void)pll_say("started here");
-		}
-		if (acpm_ok && hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, &b6_found) == 0) {
-			uint8_t now = b6_found;
-
-			if ((b6_found & B6CTRL_ON) != B6CTRL_ON) {
-				say("mali: 2: ACPM: holding BUCK6 (vdd_g3d) on as Samsung's CAL does: PMIC update type 3, register %#x, "
-				    "bits [7:6] = 11 (B6CTRL was %#x)\n", B6CTRL, b6_found);
-				b6_changed = true;
-				(void)hakios_acpm_pmic_update(3, B6CTRL, B6CTRL_ON, B6CTRL_ON);
-				if (hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, &now) == 0 && (now & B6CTRL_ON) != B6CTRL_ON) {
-					say("mali: 2: ACPM: type 3 left B6CTRL at %#x: the same through type 1, the regulator driver's\n", now);
-					(void)hakios_acpm_pmic_update(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, B6CTRL_ON, B6CTRL_ON);
-					(void)hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, &now);
-				}
-			}
-			say("mali: 2: ACPM: B6CTRL %#x: BUCK6 %s\n", now, (now & B6CTRL_ON) == B6CTRL_ON ? "held on" :
-			    "NOT HELD ON (the domain may not come up, or the GPU not answer)");
-		} else {
-			say("mali: 2: no ACPM (mali_acpm=0, or it did not answer): BUCK6 (vdd_g3d) is left as it is, under the G3D "
-			    "power pin if the PMIC is set so\n");
-		}
-		say("mali: 2: writing CMU_G3D +0x148 = %#x (was %#x)\n", CMU_G3D_148_ON, rd(cmu_g3d, CMU_G3D_148));
-		powered_here = true;            /* from the first write on, the way back is g3d_off() */
-		wr(cmu_g3d, CMU_G3D_148, CMU_G3D_148_ON);
-		say("mali: 2: writing CMU_G3D +0x140 |= bit 4 (was %#x)\n", rd(cmu_g3d, CMU_G3D_PLL_CON0));
-		wr(cmu_g3d, CMU_G3D_PLL_CON0, rd(cmu_g3d, CMU_G3D_PLL_CON0) | CMU_G3D_BIT4);
-		say("mali: 2: writing CMU_G3D +0x100 |= bit 4 (was %#x)\n", rd(cmu_g3d, CMU_G3D_100));
-		wr(cmu_g3d, CMU_G3D_100, rd(cmu_g3d, CMU_G3D_100) | CMU_G3D_BIT4);
-		say("mali: 2: writing the PMU's G3D configuration [3:0] = 0xf (was %#x), then waiting up to %u ms for its status\n",
-		    rd(pmu, PMU_G3D_CONFIGURATION), G3D_WAIT_MS);
-		wr(pmu, PMU_G3D_CONFIGURATION, (rd(pmu, PMU_G3D_CONFIGURATION) & ~G3D_ON) | G3D_ON);
-		if (!wait_for(pmu, PMU_G3D_STATUS, G3D_ON, G3D_ON, G3D_WAIT_MS)) {
-			say("mali: 2: the domain did not come up: status %#x after %u ms (its supply, the known gap above?)\n",
-			    rd(pmu, PMU_G3D_STATUS), G3D_WAIT_MS);
+		say("mali: 2: ACPM: B6OUT = %#x (950 mV, was %#x = %u mV), read back, then %u us\n", B6OUT_950MV, b6out_found,
+		    300 + b6out_found * 25 / 4, RAIL_SETTLE_US);
+		rail_changed = true;
+		if (!rail_set(B6OUT_950MV)) {
+			say("mali: 2: BUCK6 is not at 950 mV: the GPU is not touched at the boot's voltage\n");
+			(void)rail_read("now", &now);
 			return false;
 		}
-		say("mali: 2: the domain is on: status %#x\n", rd(pmu, PMU_G3D_STATUS));
+		(void)rail_read("now", &now);
 	}
-	if (acpm_ok) {
-		uint32_t khz = 0;
-		int error = hakios_acpm_dvfs_set(DVFS_G3D, DVFS_G3D_KHZ);
+	/* the clock: PLL_G3D at the rate asked for */
+	for (unsigned i = 0; i < sizeof(g3d_rates) / sizeof(g3d_rates[0]); i++) {
+		if (g3d_rates[i].mhz == mali_mhz) {
+			rate = &g3d_rates[i];
+		}
+	}
+	if (rate == NULL) {
+		say("mali: 2: mali_mhz=%u is not one of 260, 455, 572: 260\n", mali_mhz);
+		rate = &g3d_rates[0];
+	}
+	if (pll_is(rate)) {
+		say("mali: 2: PLL_G3D runs at %u MHz already, the G3D on it: not touched\n", rate->mhz);
+	} else if (!mali_pll) {
+		uint32_t con0 = pll_say("left as found (mali_pll=0)");
 
-		(void)hakios_acpm_dvfs_get(DVFS_G3D, &khz);
-		say("mali: 2: ACPM: the GPU's DVFS rate set to %u kHz (%s): it reads %u kHz\n", DVFS_G3D_KHZ,
-		    error ? "the request failed" : "asked", khz);
-	}
-	/* only looked at here (ACPM's DVFS sets its rate, or step 2 started it): without it running, the GPU has no clock */
-	if (!wait_for(cmu_g3d, CMU_G3D_PLL_CON0, PLL_STABLE, PLL_STABLE, PLL_STABLE_MS)) {
-		(void)pll_say("with the domain on");
-		say("mali: 2: PLL_G3D is not stable after %u ms: the GPU would have no clock to answer with\n", PLL_STABLE_MS);
+		if ((con0 & (PLL_ENABLE | PLL_STABLE)) != (PLL_ENABLE | PLL_STABLE)) {
+			say("mali: 2: PLL_G3D does not run, and mali_pll=0 leaves it so: the GPU would have no clock\n");
+			return false;
+		}
+	} else if (!pll_switch(rate)) {
 		return false;
 	}
-	(void)pll_say("with the domain on");
+	if (status == G3D_ON) {
+		say("mali: 2: the domain is on already: no power-on; it is left on whatever happens\n");
+		return true;
+	}
+	/* the power-on: PLL_CON2 and PLL_CON0's MUX_SEL as the switch left them (or the boot, with mali_pll=0) */
+	say("mali: 2: the power-on: PLL_CON2 = %#x (was %#x), PLL_CON0 |= MUX_SEL, CMU_G3D +0x100 |= bit 4 (was %#x)\n",
+	    PLL_CON2_LOCK, rd(cmu_g3d, PLL_CON2), rd(cmu_g3d, MUX_G3D_USER));
+	powered_here = true;            /* from the first write on, the way back is g3d_off() */
+	wr(cmu_g3d, PLL_CON2, PLL_CON2_LOCK);
+	wr(cmu_g3d, PLL_CON0, rd(cmu_g3d, PLL_CON0) | MUX_SEL);
+	wr(cmu_g3d, MUX_G3D_USER, rd(cmu_g3d, MUX_G3D_USER) | MUX_SEL);
+	say("mali: 2: writing the PMU's G3D configuration [3:0] = 0xf (was %#x), then waiting up to %u ms for its status\n",
+	    rd(pmu, PMU_G3D_CONFIGURATION), G3D_WAIT_US / 1000);
+	wr(pmu, PMU_G3D_CONFIGURATION, (rd(pmu, PMU_G3D_CONFIGURATION) & ~G3D_ON) | G3D_ON);
+	if (!wait_for(pmu, PMU_G3D_STATUS, G3D_ON, G3D_ON, G3D_WAIT_US)) {
+		say("mali: 2: the domain did not come up: status %#x after %u ms\n", rd(pmu, PMU_G3D_STATUS), G3D_WAIT_US / 1000);
+		return false;
+	}
+	say("mali: 2: the domain is on: status %#x\n", rd(pmu, PMU_G3D_STATUS));
 	return true;
 }
 
-/* 3: the G3D's TrustZone protection controller set up again by EL3. */
+/* 3: after a power-on of ours, the G3D's TrustZone protection controller set up again by EL3, and the bus dividers. */
 static bool
 step_dtzpc(void)
 {
 	uint64_t answer;
 
-	say("mali: 3: about to make SMC %#x (%u, %#x): the DTZPC restore Samsung's CAL makes once the G3D has power; Carbon, "
-	    "at EL2, passes it on to EL3\n", DTZPC_RESTORE, DTZPC_ARGUMENT, DTZPC_G3D);
-	answer = smc(DTZPC_RESTORE, DTZPC_ARGUMENT, DTZPC_G3D, 0);
-	say("mali: 3: SMC %#x returned %#llx\n", DTZPC_RESTORE, answer);
+	if (!powered_here) {
+		say("mali: 3: the boot left the domain on: its protection and bus dividers stand (the S9+ port restores them only "
+		    "after a power-on of its own); nothing done\n");
+		return true;
+	}
+	say("mali: 3: about to make SMC %#x (%u, %#x, 0): the DTZPC restore, after the G3D's power-on; Carbon, at EL2, passes "
+	    "it on to EL3\n", DTZPC_SMC, DTZPC_RESTORE, DTZPC_G3D);
+	answer = smc(DTZPC_SMC, DTZPC_RESTORE, DTZPC_G3D, 0);
+	say("mali: 3: SMC %#x returned %#llx\n", DTZPC_SMC, answer);
 	if ((uint32_t)answer != 0) {
-		/* (an assumption: 0 is taken for success; the facts this driver comes from do not say what success returns) */
-		say("mali: 3: not 0: %s\n", (uint32_t)answer == 0xffffffffu ?
-		    "the call is not known to whoever answered it (SMCCC's NOT_SUPPORTED)" : "taken as a refusal");
+		say("mali: 3: not 0: %s; the GPU is not read (it would be an SError)\n", (uint32_t)answer == 0xffffffffu ?
+		    "the call is not known to whoever answered it (SMCCC's NOT_SUPPORTED)" : "a refusal");
+		return false;
+	}
+	say("mali: 3: the bus dividers: MUX_CLK_G3D_BUSD = 0, DIV_CLK_G3D_BUSD = 0 (the PLL's rate), DIV_CLK_G3D_BUSP = 3 (a "
+	    "quarter of it); were %#x, %#x, %#x\n", rd(cmu_g3d, MUX_CLK_G3D_BUSD), rd(cmu_g3d, DIV_CLK_G3D_BUSD),
+	    rd(cmu_g3d, DIV_CLK_G3D_BUSP));
+	wr(cmu_g3d, MUX_CLK_G3D_BUSD, 0);
+	wr(cmu_g3d, DIV_CLK_G3D_BUSD, 0);
+	wr(cmu_g3d, DIV_CLK_G3D_BUSP, 3);
+	if (!wait_for(cmu_g3d, DIV_CLK_G3D_BUSP, CLK_CON_BUSY, 0, MUX_BUSY_US)) {
+		say("mali: 3: DIV_CLK_G3D_BUSP still busy: %#x\n", rd(cmu_g3d, DIV_CLK_G3D_BUSP));
 		return false;
 	}
 	return true;
@@ -825,8 +1087,8 @@ step_gpu(void)
 {
 	uint32_t mmu, va_bits, pa_bits, shaders_hi, as_present, js_present, tiler;
 
-	say("mali: 4: reading GPU_ID at %#lx: should the run end here, the domain says on and the GPU does not answer "
-	    "(its supply, the known gap, or the DTZPC)\n", MALI_PHYS);
+	say("mali: 4: reading GPU_ID at %#lx, the first read of the GPU: should the run end here, the domain says on and the "
+	    "GPU does not answer (its supply, its clock, or its protection)\n", MALI_PHYS);
 	gpu_id = rd(mali, GPU_ID);
 	say("mali: 4: GPU_ID %#x: architecture %u.%u revision %u, product %u, version r%up%u, status %u\n", gpu_id,
 	    gpu_id >> 28, (gpu_id >> 24) & 0xf, (gpu_id >> 20) & 0xf, (gpu_id >> 16) & 0xf, (gpu_id >> 12) & 0xf,
@@ -876,16 +1138,20 @@ step_gpu(void)
 	return true;
 }
 
-/* 5: a soft reset, and no coherency. */
+/* 5: a reset, no coherency, and panfrost's setting after a reset. */
 static bool
 step_reset(void)
 {
-	say("mali: 5: writing GPU_INT_MASK = 0, GPU_CMD = 1 (soft reset), then COHERENCY_ENABLE = %u (none)\n", COHERENCY_NONE);
+	say("mali: 5: JM_CONFIG %#x, SHADER_CONFIG %#x, TILER_CONFIG %#x, L2_MMU_CONFIG %#x before the reset\n",
+	    rd(mali, GPU_JM_CONFIG), rd(mali, GPU_SHADER_CONFIG), rd(mali, GPU_TILER_CONFIG), rd(mali, GPU_L2_MMU_CONFIG));
+	say("mali: 5: writing GPU_INT_MASK = 0, GPU_CMD = 1 (soft reset; 2, hard, if it does not finish), then "
+	    "COHERENCY_ENABLE = %u (none) and L2_MMU_CONFIG &= ~%#x\n", COHERENCY_NONE, L2_MMU_LIMIT_EXTERNAL);
 	if (!gpu_reset()) {
-		say("mali: 5: GPU_ID %#x, but it did not finish its reset (GPU_INT_RAWSTAT %#x)\n", gpu_id, rd(mali, GPU_INT_RAWSTAT));
+		say("mali: 5: GPU_ID %#x, but it did not finish a reset (GPU_INT_RAWSTAT %#x)\n", gpu_id, rd(mali, GPU_INT_RAWSTAT));
 		return false;
 	}
-	say("mali: 5: reset; COHERENCY_ENABLE reads %#x\n", rd(mali, COHERENCY_ENABLE));
+	say("mali: 5: reset; COHERENCY_ENABLE reads %#x, L2_MMU_CONFIG %#x\n", rd(mali, COHERENCY_ENABLE),
+	    rd(mali, GPU_L2_MMU_CONFIG));
 	return true;
 }
 
@@ -894,15 +1160,13 @@ static bool
 step_cores(void)
 {
 	uint32_t tiler = rd(mali, TILER_PRESENT);
+	const char *which = NULL;
 
-	say("mali: 6: writing L2_PWRON %#x, TILER_PWRON %#x, SHADER_PWRON %#x\n", l2_mask, tiler, shader_mask);
-	wr(mali, L2_PWRON, l2_mask);
-	wr(mali, TILER_PWRON, tiler);
-	wr(mali, SHADER_PWRON, shader_mask);
-	if (!wait_for(mali, L2_READY, l2_mask, l2_mask, 50) || !wait_for(mali, TILER_READY, tiler, tiler, 50) ||
-	    !wait_for(mali, SHADER_READY, shader_mask, shader_mask, 50)) {
-		say("mali: 6: its cores did not all power up: L2 ready %#x, tiler %#x, shaders %#x\n", rd(mali, L2_READY),
-		    rd(mali, TILER_READY), rd(mali, SHADER_READY));
+	say("mali: 6: writing L2_PWRON %#x, then SHADER_PWRON %#x, then TILER_PWRON %#x, each waited for\n", l2_mask,
+	    shader_mask, tiler);
+	if (!gpu_cores_on(&which)) {
+		say("mali: 6: %s did not power up: L2 ready %#x, shaders %#x, tiler %#x\n", which, rd(mali, L2_READY),
+		    rd(mali, SHADER_READY), rd(mali, TILER_READY));
 		return false;
 	}
 	say("mali: 6: GPU_ID %#x (Mali-G72 r%up%u), %u shader cores %#x, tiler %#x, L2 %#x: all powered\n", gpu_id,
@@ -960,10 +1224,10 @@ static const struct {
 	bool (*make)(void);
 } steps[] = {
 	{ "what the boot left, read only", step_look },
-	{ "power on", step_power },
-	{ "the DTZPC restore", step_dtzpc },
+	{ "the supply, the clock, power", step_power },
+	{ "after a power-on: the DTZPC restore, the bus dividers", step_dtzpc },
 	{ "GPU_ID and what the GPU has", step_gpu },
-	{ "a soft reset", step_reset },
+	{ "a reset", step_reset },
 	{ "the cores", step_cores },
 	{ "a job in identity mode", step_job_identity },
 	{ "a job through page tables", step_job_tables },
@@ -1306,11 +1570,12 @@ hakios_mali_submit(uint64_t chain, bool fragment)
 		printf("mali: a job on slot %u did not finish: interrupts %#x, status %#x, MMU %#x fault %#x at %#x\n", slot, raw,
 		    last_failure.status, last_failure.mmu, last_failure.fault, last_failure.fault_address);
 		describe_address(last_failure.fault_address | ((uint64_t)rd(mali, AS0 + 0x24) << 32));
-		(void)gpu_reset();                      /* soft reset, then everything back as it was */
-		wr(mali, L2_PWRON, rd(mali, L2_PRESENT));
-		wr(mali, TILER_PWRON, rd(mali, TILER_PRESENT));
-		wr(mali, SHADER_PWRON, shader_mask);
-		(void)wait_for(mali, SHADER_READY, shader_mask, shader_mask, 50);
+		const char *which = NULL;
+
+		(void)gpu_reset();                      /* a reset, then everything back as it was */
+		if (!gpu_cores_on(&which)) {
+			printf("mali: after the reset, %s did not power up again\n", which);
+		}
 		as0_update(pt_top_phys, TRANSCFG_AARCH64_4K);
 		wr(mali, MMU_INT_CLEAR, 0xffffffffu);
 	}
@@ -1488,7 +1753,12 @@ mali_thread(__unused void *parameter, __unused wait_result_t result)
 		if (powered_here) {
 			g3d_off();
 		} else if (reached >= 2) {
-			say("mali: the G3D domain was on when found: left on\n");
+			say("mali: the G3D domain was on when found: left on%s\n", rail_changed ? ", and BUCK6 at 950 mV under it" : "");
+		} else if (rail_changed && (rd(pmu, PMU_G3D_STATUS) & G3D_ON) == 0) {
+			say("mali: BUCK6 back as it was found: B6OUT %#x\n", b6out_found);
+			if (rail_set(b6out_found)) {
+				rail_changed = false;
+			}
 		}
 		say("mali: came up to step %u of %u: not there for programs\n", reached, STEPS);
 		return;
@@ -1535,6 +1805,7 @@ hakios_mali_init(void)
 	(void)PE_parse_boot_argn("mali_fastmap", &mali_fastmap, sizeof(mali_fastmap));
 	(void)PE_parse_boot_argn("mali_trace", &mali_trace, sizeof(mali_trace));
 	(void)PE_parse_boot_argn("mali_pll", &mali_pll, sizeof(mali_pll));
+	(void)PE_parse_boot_argn("mali_mhz", &mali_mhz, sizeof(mali_mhz));
 	(void)PE_parse_boot_argn("mali_acpm", &mali_acpm, sizeof(mali_acpm));
 	if (!PE_parse_boot_argn("mali", &last_step, sizeof(last_step)) || last_step == 0) {
 		return;
