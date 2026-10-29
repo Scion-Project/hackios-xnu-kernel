@@ -35,9 +35,11 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 |---|---|---|---|---|---|
 | **`HAKIOS_ADSP`**<br>the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's firmware from the phone (fw-audio/) | `hakios.adsp.c` |  | `adsp=`, `adsp_again=`, `adsp_apr_wait=`, `adsp_keep=`, `adsp_listen=`, `adsp_new=`, `adsp_pause=`, `adsp_return=` and 3 more |  |  | |
 | **`HAKIOS_SPEAKER`**<br>the two speaker amplifiers on I2C, and their watch of temperature and battery | `hakios.speaker.c` |  | `speaker_probe=` |  |  | |
-| **`HAKIOS_SOUND`**<br>the speakers playing (sound=N): what the DSP's services are told, the feeder, and the speakers' guard that limits what the amplifiers get | `hakios.sound.c`<br>`hakios.guard.c` | `HAKIOS_ADSP`, `HAKIOS_SPEAKER` | `sound=`, `sound_below=`, `sound_gain=`, `sound_guard_as=`, `sound_pause=`, `sound_secs=` |  |  | |
+| **`HAKIOS_GUARD`**<br>the speakers' guard: what the samples go through on their way to the amplifiers where no DSP protects the speakers (a high-pass, three power averages, a peak limiter); for SOUND and EXYNOS_ABOX, nothing of its own | `hakios.guard.c` |  |  |  | built | |
+| **`HAKIOS_SOUND`**<br>the speakers playing (sound=N): what the DSP's services are told, and the feeder, through the speakers' guard that limits what the amplifiers get | `hakios.sound.c` | `HAKIOS_ADSP`, `HAKIOS_SPEAKER`, `HAKIOS_GUARD` | `sound=`, `sound_below=`, `sound_gain=`, `sound_guard_as=`, `sound_pause=`, `sound_secs=` |  |  | |
 | **`HAKIOS_MIC`**<br>the microphones, through the audio DSP (mic=N) | `hakios.mic.c` | `HAKIOS_ADSP`, `HAKIOS_SOUND` | `mic=`, `mic_adc=`, `mic_input=`, `mic_main=`, `mic_secs=`, `mic_tap=`, `mic_test=` |  |  | |
 | **`HAKIOS_VIRTIO_SOUND`**<br>QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only | `hakios.virtio_sound.c` |  | `virtio_sound=` | built |  | |
+| **`HAKIOS_EXYNOS_ABOX`**<br>the Galaxy S9's speaker path through ABOX, Samsung's audio block, with its CPU off (abox=N, the first N of 8 steps: power, clocks, pins, UAIF1, the route, RDMA0 with a tone, then /dev/hakios-audio's sink); the MAX98512s through their driver's hook (sys/hakios.exynos_abox.h) | `hakios.exynos_abox.c` | `HAKIOS_GUARD`, `HAKIOS_EXYNOS_ACPM` | `abox=`, `abox_bclk_on=`, `abox_dvfs=`, `abox_gain=`, `abox_rdma_ctrl0=`, `abox_rdma_ctrl1=`, `abox_route=`, `abox_secs=` and 1 more |  | built | |
 
 ## bluetooth
 

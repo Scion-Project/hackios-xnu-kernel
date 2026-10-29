@@ -15,11 +15,15 @@ driver SPEAKER
 	file    bsd/dev/hakios.speaker.c
 	help    the two speaker amplifiers on I2C, and their watch of temperature and battery
 
+driver GUARD
+	file    bsd/dev/hakios.guard.c
+	help    the speakers' guard: what the samples go through on their way to the amplifiers where no DSP protects the
+	help    speakers (a high-pass, three power averages, a peak limiter); for SOUND and EXYNOS_ABOX, nothing of its own
+
 driver SOUND
 	file    bsd/dev/hakios.sound.c
-	file    bsd/dev/hakios.guard.c
-	requires ADSP SPEAKER
-	help    the speakers playing (sound=N): what the DSP's services are told, the feeder, and the speakers' guard
+	requires ADSP SPEAKER GUARD
+	help    the speakers playing (sound=N): what the DSP's services are told, and the feeder, through the speakers' guard
 	help    that limits what the amplifiers get
 
 driver MIC
@@ -33,3 +37,10 @@ driver VIRTIO_SOUND
 
 standard bsd/dev/hakios.scsnd.c
 	help    SCSND: what iOS plays, to the Scion app's audio ring in the shared framebuffer (patch 1401)
+
+driver EXYNOS_ABOX
+	file    bsd/dev/hakios.exynos_abox.c
+	requires GUARD EXYNOS_ACPM
+	help    the Galaxy S9's speaker path through ABOX, Samsung's audio block, with its CPU off (abox=N, the first N of 8 steps:
+	help    power, clocks, pins, UAIF1, the route, RDMA0 with a tone, then /dev/hakios-audio's sink); the MAX98512s through
+	help    their driver's hook (sys/hakios.exynos_abox.h)
