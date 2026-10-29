@@ -21,7 +21,7 @@
 | buttons | partly | power, volume, Bixby as home (exynos_keys=1): written, not yet seen on the phone |
 | storage | partly | UFS read through the loader and Silicium's UEFI (ufs=2): written, not yet seen on the phone |
 | gpu | partly | Mali-G72 MP18 (mali=N, nine steps; HakiosMali for Mesa's panfrost): written, not yet run on the phone |
-| audio | no |  |
+| audio | partly | ABOX, its CPU off: RDMA0 -> SIFS0 -> UAIF1, I2S 48 kHz 2 x 16 bits, a tone, then iOS's sound (abox=N, 8 steps); the MAX98512s another driver's: written, not yet heard |
 | battery | partly | the MAX77705's gauge and charger, read only, and the thermistor (ADC), into iOS's battery (max77705=1): written, not yet seen |
 | wifi | no | BCM4361 on PCIe |
 | cellular | no |  |
