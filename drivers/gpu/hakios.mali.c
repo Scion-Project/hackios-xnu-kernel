@@ -152,6 +152,20 @@ say(const char *format, ...)
 #define PLL_STABLE              (1u << 29)
 #define PLL_FIN_KHZ             26000ull
 #define PLL_STABLE_MS           10u
+/*
+ * When the boot leaves PLL_G3D off (its rate is ACPM's DVFS's to set, and nothing here speaks to ACPM yet), step 2 starts
+ * it itself the way Samsung's CAL programs a PLL_1018X (cal-if/ra.c, ra_pll_set_pmsk(); the rate from cmucal-node.c's
+ * pll_g3d_rate_table): its lock time (PLL_LOCKTIME at +0x0: P x 150), then P, M, S with ENABLE and the output mux in one
+ * write of PLL_CON0, then STABLE waited for. 320 MHz (M 320, P 13, S 1: a VCO of 640 MHz from 26 MHz), the table's lowest
+ * and under every DVFS level the GPU is normally run at, so that the rail's voltage, whatever it is, is enough.
+ * Boot-arg mali_pll=0: a PLL_G3D that does not run is left alone, and step 2 stops there.
+ */
+#define CMU_G3D_PLL_LOCKTIME    0x000
+#define PLL_1018X_LOCK_FACTOR   150u
+#define PLL_FALLBACK_M          320u
+#define PLL_FALLBACK_P          13u
+#define PLL_FALLBACK_S          1u
+static uint32_t mali_pll = 1;
 
 #define DTZPC_RESTORE           0x82000410u     /* Samsung's SiP call, as the CAL makes it after power-on */
 #define DTZPC_ARGUMENT          1u
@@ -680,6 +694,25 @@ step_power(void)
 		say("mali: 2: the domain is neither on nor off (status %#x): left alone\n", rd(pmu, PMU_G3D_STATUS));
 		return false;
 	} else {
+		uint32_t con0 = rd(cmu_g3d, CMU_G3D_PLL_CON0);
+
+		if (!(con0 & PLL_ENABLE) && mali_pll) {
+			uint32_t want = (con0 & ~((0x3ffu << 16) | (0x3fu << 8) | 7u)) | PLL_FALLBACK_M << 16 | PLL_FALLBACK_P << 8 |
+			    PLL_FALLBACK_S | CMU_G3D_BIT4 | PLL_ENABLE;
+
+			say("mali: 2: PLL_G3D is off (PLL_CON0 %#x): starting it at 320 MHz as the CAL starts a PLL_1018X: "
+			    "PLL_LOCKTIME = %u, then PLL_CON0 = %#x (mali_pll=0 would not)\n", con0,
+			    PLL_FALLBACK_P * PLL_1018X_LOCK_FACTOR, want);
+			wr(cmu_g3d, CMU_G3D_PLL_LOCKTIME, PLL_FALLBACK_P * PLL_1018X_LOCK_FACTOR);
+			wr(cmu_g3d, CMU_G3D_PLL_CON0, want);
+			if (!wait_for(cmu_g3d, CMU_G3D_PLL_CON0, PLL_STABLE, PLL_STABLE, PLL_STABLE_MS)) {
+				(void)pll_say("started here");
+				say("mali: 2: PLL_G3D did not become stable in %u ms: stopping it again\n", PLL_STABLE_MS);
+				wr(cmu_g3d, CMU_G3D_PLL_CON0, con0);
+				return false;
+			}
+			(void)pll_say("started here");
+		}
 		say("mali: 2: KNOWN GAP: Samsung's kernel first has ACPM hand over the S2MPS18's BUCK6 (vdd_g3d: PMIC register "
 		    "0x2a, bits [7:6] = 11). Not done here: if that rail is off, the domain will not come up\n");
 		say("mali: 2: writing CMU_G3D +0x148 = %#x (was %#x)\n", CMU_G3D_148_ON, rd(cmu_g3d, CMU_G3D_148));
@@ -1443,6 +1476,7 @@ hakios_mali_init(void)
 
 	(void)PE_parse_boot_argn("mali_fastmap", &mali_fastmap, sizeof(mali_fastmap));
 	(void)PE_parse_boot_argn("mali_trace", &mali_trace, sizeof(mali_trace));
+	(void)PE_parse_boot_argn("mali_pll", &mali_pll, sizeof(mali_pll));
 	if (!PE_parse_boot_argn("mali", &last_step, sizeof(last_step)) || last_step == 0) {
 		return;
 	}

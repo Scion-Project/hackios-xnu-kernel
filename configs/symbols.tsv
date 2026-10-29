@@ -142,6 +142,7 @@ HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c
 MACHINE_NAME	arg	machine_name	CPU, memory and boot	k	GenericARMPE.cpp	
 MALI	arg	mali	GPU and display	k	hakios.mali.c	the first N of the GPU's nine steps of bring-up (9: all, then served); 0 or none: left alone
 MALI_FASTMAP	arg	mali_fastmap	GPU and display	k	hakios.mali.c	the GPU walks its tables through its own caches, and every buffer entered is an UPDATE of AS 0
+MALI_PLL	arg	mali_pll	GPU and display	k	hakios.mali.c	a PLL_G3D that does not run is left alone, and step 2 stops there
 MALI_TRACE	arg	mali_trace	GPU and display	k	hakios.mali.c	a line for every job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
 MAX77705	arg	max77705	Audio and battery	k	hakios.max77705.c	
 MAX77705_STEPS	arg	max77705_steps	Audio and battery	k	hakios.max77705.c	
