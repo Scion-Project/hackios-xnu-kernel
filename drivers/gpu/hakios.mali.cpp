@@ -46,6 +46,7 @@
 #include <sys/systm.h>
 
 #include "MiniIOSurface.h"
+#include <pexpert/pexpert.h>
 
 extern "C" void hakios_keep(const char * format, ...) __printflike(1, 2);
 
@@ -65,6 +66,7 @@ bool hakios_mali_wait(uint64_t seq, uint64_t timeout_ns);
 
 void HakiosMaliStart(void);
 void MiniIOMobileFramebufferShow(const uint8_t * pixels, uint32_t width, uint32_t height, uint32_t rowBytes);
+void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);      /* osfmk/arm64/caches_asm.s */
 
 /* what programs have done with the GPU so far, for drivers/gpu/hakios.mali.c to repeat in the log */
 uint32_t gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShown;
@@ -183,6 +185,29 @@ static IOLock * gMaliLock;
  */
 #define MALI_ASK_AGAIN_US       200
 
+/*
+ * The GPU here is not coherent with the processors (COHERENCY_ENABLE = 31, drivers/gpu/hakios.mali.c): it reads and
+ * writes memory, never the processors' caches. The buffers this client makes are mapped write-combining and need
+ * nothing; an IOSurface's pixels are ordinary cached memory, written by programs (CoreAnimation's layers drawn by the
+ * processor, uploads) and read by the processor (the display, which copies them to the panel; a program reading back).
+ * So their cache lines are written back and invalidated, to the point of coherency, around the GPU's use of them:
+ *   - before a job that names one is queued (what a processor wrote, in memory for the GPU to read);
+ *   - after a job that wrote one is waited for, by the display (HakiosMaliDrawn()) or by the program (WAIT_BO): what
+ *     the GPU wrote is not hidden behind lines the processor fetched before.
+ * Through the kernel's own mapping of the pixels (kpixels): the data caches are physically tagged, so that covers every
+ * mapping of the same pages. An upstream port on a non-coherent Mali (the Infinix Hot 20's G52) saw some frames drawn
+ * wrong and nothing here did this. Boot-arg mali_flush=0: not done (for measuring what it costs).
+ */
+static uint32_t gMaliFlush = 1;
+
+static void
+flushSurface(MiniIOSurface * s)
+{
+	if (gMaliFlush && s != NULL && s->kpixels != NULL && s->info.allocSize != 0) {
+		FlushPoC_DcacheRegion((vm_offset_t) s->kpixels, s->info.allocSize);
+	}
+}
+
 bool
 HakiosMaliDrawn(MiniIOSurface * surface, uint64_t milliseconds)
 {
@@ -206,7 +231,11 @@ HakiosMaliDrawn(MiniIOSurface * surface, uint64_t milliseconds)
 	if (now < deadline) {
 		absolutetime_to_nanoseconds(deadline - now, &left);
 	}
-	return hakios_mali_wait(seq, left);
+	if (!hakios_mali_wait(seq, left)) {
+		return false;
+	}
+	flushSurface(surface);                  /* what the GPU drew, not lines the processor read before it */
+	return true;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
@@ -240,6 +269,7 @@ HakiosMaliStart(void)
 	HakiosMali * gpu;
 
 	gMaliLock = IOLockAlloc();
+	(void)PE_parse_boot_argn("mali_flush", &gMaliFlush, sizeof(gMaliFlush));
 	gpu = OSTypeAlloc(HakiosMali);
 	if (gpu == NULL || provider == NULL || !gpu->init() || !gpu->attach(provider)) {
 		OSSafeReleaseNULL(gpu);
@@ -556,6 +586,15 @@ HakiosMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
 			}
 		}
 		ret = seq == 0 || hakios_mali_wait(seq, timeout > 0 ? (uint64_t) timeout : 0) ? kIOReturnSuccess : kIOReturnTimeout;
+		if (selector == kPanfrostWaitBO && ret == kIOReturnSuccess && seq != 0) {
+			/* the program is about to read what the GPU wrote: a surface's lines invalidated (flushSurface) */
+			IOLockLock(gMaliLock);
+			b = buffer(r.wait.handle);
+			if (b != NULL && b->surface != NULL) {
+				flushSurface(b->surface);
+			}
+			IOLockUnlock(gMaliLock);
+		}
 		if (args->structureOutput != NULL && args->structureOutputSize >= size) {
 			memcpy(args->structureOutput, &r, size);
 			args->structureOutputSize = (uint32_t) size;
@@ -591,6 +630,21 @@ HakiosMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
 
 		fSubmits++;
 		gMaliSubmits++;
+		/* first what the processors wrote into the surfaces it names, out to memory (flushSurface) */
+		for (uint32_t i = 0; gMaliFlush && r.submit.jc != 0 && i < r.submit.bo_handle_count && i < 4096; i += 64) {
+			uint32_t handles[64];
+			uint32_t n = r.submit.bo_handle_count - i < 64 ? r.submit.bo_handle_count - i : 64;
+
+			if (copyin((user_addr_t) (r.submit.bo_handles + i * sizeof(uint32_t)), handles, n * sizeof(uint32_t)) != 0) {
+				break;
+			}
+			for (uint32_t k = 0; k < n; k++) {
+				b = buffer(handles[k]);
+				if (b != NULL && b->surface != NULL) {
+					flushSurface(b->surface);
+				}
+			}
+		}
 		if (r.submit.jc != 0) {
 			seq = hakios_mali_enqueue(r.submit.jc, r.submit.requirements & PANFROST_JD_REQ_FS);
 		}

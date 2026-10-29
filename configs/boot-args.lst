@@ -156,6 +156,7 @@ loader_return_after	kl
 machine_name	k
 mali	k
 mali_fastmap	k
+mali_flush	k
 mali_pll	k
 mali_trace	k
 max77705	k
