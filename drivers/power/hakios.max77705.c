@@ -37,10 +37,15 @@
  *   5  report every 5 seconds (the default)
  */
 #include <kern/clock.h>
+#include <kern/locks.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
+#include <mach/mach_time.h>
 #include <mach/mach_types.h>
+#include <miscfs/devfs/devfs.h>
 #include <pexpert/pexpert.h>
+#include <sys/conf.h>
+#include <sys/uio.h>
 #include <sys/hakios.exynos_hsi2c.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
@@ -113,11 +118,25 @@ static struct hakios_hsi2c bus = {
 	.ipclk_mhz = 200, .bus_hz = 400000,
 };
 
+/* The bus is the battery's and the motor's (max77705_haptic=1): one transfer at a time, whoever asks. */
+static lck_mtx_t *bus_lock;
+
+static uint32_t
+locked_read(uint8_t addr, uint8_t reg, uint8_t *buf, uint32_t len)
+{
+	uint32_t error;
+
+	lck_mtx_lock(bus_lock);
+	error = hakios_hsi2c_read_reg(&bus, addr, reg, buf, len);
+	lck_mtx_unlock(bus_lock);
+	return error;
+}
+
 static uint32_t
 read16(uint8_t addr, uint8_t reg, uint16_t *value)
 {
 	uint8_t b[2];
-	uint32_t error = hakios_hsi2c_read_reg(&bus, addr, reg, b, 2);
+	uint32_t error = locked_read(addr, reg, b, 2);
 
 	if (error == 0) {
 		*value = (uint16_t)(b[1] << 8 | b[0]);
@@ -128,7 +147,7 @@ read16(uint8_t addr, uint8_t reg, uint16_t *value)
 static uint32_t
 read8(uint8_t addr, uint8_t reg, uint8_t *value)
 {
-	return hakios_hsi2c_read_reg(&bus, addr, reg, value, 1);
+	return locked_read(addr, reg, value, 1);
 }
 
 static inline uint32_t
@@ -277,6 +296,260 @@ say_state(const char *when, const struct hakios_battery_state *b)
 	    b->full_uah / 1000, b->cycles);
 }
 
+/* ---- the motor: the MAX77705's haptic block, driven by a PWM of the SoC (max77705_haptic=1) ------------------------ */
+
+/*
+ * The S9's vibration motor is an LRA driven by the MAX77705's haptic block (0x66, the chip's "top"), its strength the
+ * duty of a PWM from the SoC: channel 1 of pwm@10510000 at 20.48 kHz (period 48828 ns), which the block divides by 128
+ * to drive the motor at 160 Hz; 50 % duty does not drive it, the further from 50 % the stronger, 70 % (34179 ns) as far
+ * as Samsung goes. Set up once: the PWM's clock gate on (CMU_PERIC0 +0x2044, its Q-channel +0x3010), the PWM pin
+ * (gpp3-1) to its function, the motor's boost (gpg1-7) on, channel 1 inverted and stopped, then in the chip
+ * MAINCTRL1 (0x02) bit 7 (the bias) and MCONFIG (0x10) LRA (bit 7) with the divide-by-128 (bit 1), external PWM
+ * (bit 5 clear), not enabled (bit 6). A buzz: the duty set, the channel started (auto-reload), MCONFIG bits 7 and 6
+ * set; still: MCONFIG bits 7 and 6 clear, the duty back to 50 %, the channel stopped.
+ *
+ * THE CHIP IS THE PHONE'S CHARGER as well. Two registers are written and those only in the bits above (MAINCTRL1 0x80,
+ * MCONFIG 0xC2), each change read back; one that does not read back ends the motor for the run.
+ *
+ * What iOS plays on the motor arrives as a waveform (the audio plug-in's actuator, /dev/hakios-haptic: samples of one
+ * channel), as on the POCO (drivers/haptic/hakios.haptic.c, whose rules this follows): a write that is not silence keeps
+ * the motor going for 30 ms; its loudness is the strength. A run of it is cut at a second. Facts from the phone's
+ * device tree (/haptic, the PWM and its pins) and the S9 kernel's max77705_haptic.c, sec_haptic.c and pwm-samsung.c
+ * (GPL: read, not copied).
+ */
+#define TOP                     0x66
+#define MAINCTRL1               0x02
+#define MCONFIG                 0x10
+#define PWM_PA                  0x10510000UL
+#define PWM_TCFG0               0x00
+#define PWM_TCFG1               0x04
+#define PWM_TCON                0x08
+#define PWM_TCNTB1              0x18
+#define PWM_TCMPB1              0x1C
+#define TCON1_START             (1u << 8)
+#define TCON1_UPDATE            (1u << 9)
+#define TCON1_INVERT            (1u << 10)
+#define TCON1_RELOAD            (1u << 11)
+#define PWM_PERIOD_NS           48828u
+#define PWM_MAX_DUTY_NS         34179u
+#define OSC_HZ                  26000000u
+#define CMU_PERIC0_PA           0x10400000UL
+#define GPIO_PERIC0_PA          0x10430000UL
+#define GPP3                    0x060           /* pin 1: the PWM's output (function 2) */
+#define GPG1                    0x0A0           /* pin 7: the motor's boost, an output held high */
+#define HAPTIC_ACTIVE_US        30000
+#define HAPTIC_SILENT_BELOW     256
+#define HAPTIC_MAX_MS           1000
+
+static vm_offset_t pwm, peric0_gpio, peric0_cmu;
+static uint32_t pwm_count;                      /* the period in the PWM's ticks */
+static bool motor_broken, motor_on;
+static volatile uint64_t heard_us;
+static volatile uint32_t heard_peak;
+static uint64_t motor_since_us;
+static unsigned buzzes, capped;
+
+static uint64_t
+now_us(void)
+{
+	uint64_t ns;
+
+	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+	return ns / NSEC_PER_USEC;
+}
+
+/* a change of the haptic block's own bits, read back */
+static bool
+motor_bits(uint8_t reg, uint8_t mask, uint8_t value)
+{
+	uint8_t now = 0, back = 0, buf[2];
+	bool ok;
+
+	if (motor_broken || !((reg == MAINCTRL1 && (mask & ~0x80) == 0) || (reg == MCONFIG && (mask & ~0xC2) == 0))) {
+		return false;
+	}
+	lck_mtx_lock(bus_lock);
+	ok = hakios_hsi2c_read_reg(&bus, TOP, reg, &now, 1) == 0;
+	if (ok) {
+		buf[0] = reg;
+		buf[1] = (uint8_t)((now & ~mask) | (value & mask));
+		ok = hakios_hsi2c_message(&bus, TOP, false, buf, 2, true) == 0 &&
+		    hakios_hsi2c_read_reg(&bus, TOP, reg, &back, 1) == 0 && back == buf[1];
+	}
+	lck_mtx_unlock(bus_lock);
+	if (!ok) {
+		say("max77705: haptic: register %#x did not take %#x (read %#x, then %#x): the motor stays still for this run\n",
+		    reg, value & mask, now, back);
+		motor_broken = true;
+	}
+	return ok;
+}
+
+static void
+pwm_duty(uint32_t strength)                     /* 0 (50 %, still) to 10000 (70 %) */
+{
+	uint32_t duty_ns = PWM_PERIOD_NS / 2 + (PWM_MAX_DUTY_NS - PWM_PERIOD_NS / 2) * strength / 10000;
+	uint32_t duty = (uint32_t)(((uint64_t)duty_ns * pwm_count + PWM_PERIOD_NS / 2) / PWM_PERIOD_NS);
+
+	*(volatile uint32_t *)(pwm + PWM_TCNTB1) = pwm_count - 1;
+	*(volatile uint32_t *)(pwm + PWM_TCMPB1) = pwm_count - duty - 1;
+}
+
+static void
+motor_go(uint32_t strength)
+{
+	volatile uint32_t *tcon = (volatile uint32_t *)(pwm + PWM_TCON);
+
+	pwm_duty(strength);
+	if (!motor_on) {
+		*tcon = (*tcon & ~TCON1_START) | TCON1_UPDATE | TCON1_INVERT;
+		*tcon = (*tcon & ~TCON1_UPDATE) | TCON1_START | TCON1_RELOAD;
+		if (!motor_bits(MCONFIG, 0xC0, 0xC0)) {
+			*tcon &= ~(TCON1_START | TCON1_RELOAD);
+			return;
+		}
+		motor_on = true;
+		motor_since_us = now_us();
+		buzzes++;
+	}
+}
+
+static void
+motor_still(void)
+{
+	volatile uint32_t *tcon = (volatile uint32_t *)(pwm + PWM_TCON);
+
+	if (!motor_on) {
+		return;
+	}
+	(void)motor_bits(MCONFIG, 0xC0, 0x00);
+	pwm_duty(0);
+	*tcon &= ~(TCON1_START | TCON1_RELOAD);
+	motor_on = false;
+}
+
+/* From the audio server's I/O thread: never waits. */
+static int
+haptic_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	int16_t samples[256];
+	int error = 0;
+
+	while (uio_resid(uio) >= 2) {
+		user_ssize_t bytes = uio_resid(uio);
+		uint32_t peak = 0;
+
+		bytes = bytes > (user_ssize_t)sizeof(samples) ? (user_ssize_t)sizeof(samples) : bytes & ~(user_ssize_t)1;
+		if ((error = uiomove((caddr_t)samples, (int)bytes, uio)) != 0) {
+			break;
+		}
+		for (unsigned i = 0; i < bytes / 2; i++) {
+			uint32_t v = samples[i] < 0 ? (uint32_t)-(int32_t)samples[i] : (uint32_t)samples[i];
+
+			peak = v > peak ? v : peak;
+		}
+		if (peak > HAPTIC_SILENT_BELOW) {
+			heard_us = now_us();
+			heard_peak = peak;
+		}
+	}
+	return error;
+}
+
+static int
+haptic_open(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
+{
+	return 0;
+}
+
+static const struct cdevsw haptic_cdevsw = {
+	.d_open = haptic_open, .d_close = haptic_open, .d_read = eno_rdwrt, .d_write = haptic_write,
+	.d_ioctl = eno_ioctl, .d_stop = eno_stop, .d_reset = eno_reset, .d_select = eno_select,
+	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = 0
+};
+
+static void
+haptic_thread(__unused void *arg, __unused wait_result_t result)
+{
+	for (unsigned tick = 1;; tick++) {
+		uint64_t now = now_us();
+		bool wanted = heard_us != 0 && now - heard_us < HAPTIC_ACTIVE_US;
+
+		if (wanted && motor_on && now - motor_since_us >= HAPTIC_MAX_MS * 1000ull) {
+			capped++;
+			motor_still();
+			heard_us = 0;           /* (until iOS plays anew) */
+		} else if (wanted && !motor_broken) {
+			/* the strength from iOS's loudness, with a floor a tap can be felt at */
+			uint32_t strength = heard_peak * 10000u / 32768u;
+
+			motor_go(strength < 3000 ? 3000 : strength);
+		} else {
+			motor_still();
+		}
+		if (tick % (60 * 500) == 0) {
+			say("max77705: haptic: a minute: %u buzzes, %u cut at %u ms\n", buzzes, capped, HAPTIC_MAX_MS);
+		}
+		delay_for_interval(2, NSEC_PER_MSEC);
+	}
+}
+
+/* the PWM, its pins and the haptic block set up; /dev/hakios-haptic made. In the battery's thread, after the bus. */
+static void
+haptic_start(void)
+{
+	uint32_t tcfg0, tcfg1, prescale, divider, tick_hz;
+	thread_t thread;
+	int major;
+
+	pwm = ml_io_map(PWM_PA, 0x1000);
+	peric0_gpio = ml_io_map(GPIO_PERIC0_PA, 0x1000);
+	peric0_cmu = ml_io_map(CMU_PERIC0_PA, 0x4000);
+	if (!pwm || !peric0_gpio || !peric0_cmu) {
+		say("max77705: haptic: the PWM or its pins could not be mapped\n");
+		return;
+	}
+	*(volatile uint32_t *)(peric0_cmu + 0x2044) |= (1u << 20) | (1u << 21);
+	*(volatile uint32_t *)(peric0_cmu + 0x3010) |= 3u;
+	{
+		volatile uint32_t *con = (volatile uint32_t *)(peric0_gpio + GPP3);
+
+		*con = (*con & ~(0xfu << 4)) | (2u << 4);                       /* gpp3-1: TOUT1 */
+		con = (volatile uint32_t *)(peric0_gpio + GPG1);
+		*(volatile uint32_t *)(peric0_gpio + GPG1 + 4) |= 1u << 7;      /* gpg1-7 high ... */
+		*con = (*con & ~(0xfu << 28)) | (1u << 28);                     /* ... an output */
+	}
+	/* channel 1's clock as it is set (timers 0 and 1 share the prescaler: left alone), its own divider 1 */
+	tcfg0 = *(volatile uint32_t *)(pwm + PWM_TCFG0);
+	*(volatile uint32_t *)(pwm + PWM_TCFG1) &= ~(0xfu << 4);
+	tcfg1 = *(volatile uint32_t *)(pwm + PWM_TCFG1);
+	prescale = (tcfg0 & 0xff) + 1;
+	divider = 1u << ((tcfg1 >> 4) & 0x7);
+	tick_hz = OSC_HZ / prescale / divider;
+	pwm_count = (uint32_t)(((uint64_t)PWM_PERIOD_NS * tick_hz + 500000000ull) / 1000000000ull);
+	if (pwm_count < 16) {
+		say("max77705: haptic: the PWM's tick (%u Hz) is too slow for its period: no motor\n", tick_hz);
+		return;
+	}
+	pwm_duty(0);
+	*(volatile uint32_t *)(pwm + PWM_TCON) = (*(volatile uint32_t *)(pwm + PWM_TCON) &
+	    ~(TCON1_START | TCON1_RELOAD)) | TCON1_UPDATE | TCON1_INVERT;
+	*(volatile uint32_t *)(pwm + PWM_TCON) &= ~TCON1_UPDATE;
+	if (!motor_bits(MAINCTRL1, 0x80, 0x80) || !motor_bits(MCONFIG, 0xC2, 0x82)) {
+		return;
+	}
+	major = cdevsw_add(-1, &haptic_cdevsw);
+	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-haptic") == NULL) {
+		say("max77705: haptic: /dev/hakios-haptic cannot be made\n");
+		return;
+	}
+	say("max77705: haptic: the motor for iOS (/dev/hakios-haptic): PWM %u ticks of %u Hz a period, up to %u ms a run\n",
+	    pwm_count, tick_hz, HAPTIC_MAX_MS);
+	if (kernel_thread_start(haptic_thread, NULL, &thread) == KERN_SUCCESS) {
+		thread_deallocate(thread);
+	}
+}
+
 static void
 battery_thread(void *arg, __unused wait_result_t result)
 {
@@ -314,6 +587,13 @@ battery_thread(void *arg, __unused wait_result_t result)
 	if (++step >= steps) {
 		goto out;
 	}
+	{
+		uint32_t haptic = 0;
+
+		if (PE_parse_boot_argn("max77705_haptic", &haptic, sizeof(haptic)) && haptic != 0) {
+			haptic_start();
+		}
+	}
 	say("max77705: step 5: reporting every %u s\n", POLL_MS / 1000);
 	for (unsigned tick = 0;; tick++) {
 		if (battery_read(&b)) {
@@ -347,6 +627,7 @@ hakios_max77705_init(void)
 	if (steps == 0) {
 		return;
 	}
+	bus_lock = lck_mtx_alloc_init(lck_grp_alloc_init("max77705", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
 	if (kernel_thread_start(battery_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}

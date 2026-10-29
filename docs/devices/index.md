@@ -5,10 +5,10 @@
 
 Every device with a repository, and how far each part of it works. A device of yours: [Port a device](../porting/index.md).
 
-| Device | SoC | display | touch | buttons | cpu | gpu | storage | audio | battery | wifi | cellular | network |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| [QEMU virt (aarch64)](qemu.md) | `none` | yes | yes | yes |  | no | yes | yes |  |  |  | yes |
-| [Galaxy S9](starlte.md) | `exynos9810` | partly | partly | partly | partly | partly | partly | no | partly | no | no |  |
+| Device | SoC | display | touch | buttons | cpu | gpu | storage | audio | battery | haptic | torch | wifi | cellular | network |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| [QEMU virt (aarch64)](qemu.md) | `none` | yes | yes | yes |  | no | yes | yes |  |  |  |  |  | yes |
+| [Galaxy S9](starlte.md) | `exynos9810` | partly | partly | partly | partly | partly | partly | no | partly | partly | partly | no | no |  |
 
 An empty cell is a part nobody has looked at on that device yet.
 

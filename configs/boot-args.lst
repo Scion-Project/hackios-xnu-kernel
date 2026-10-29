@@ -161,6 +161,7 @@ mali_flush	k
 mali_pll	k
 mali_trace	k
 max77705	k
+max77705_haptic	k
 max77705_steps	k
 md0	k
 membench	k
