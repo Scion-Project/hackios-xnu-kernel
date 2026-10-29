@@ -217,6 +217,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			{ ${LDID:-ldid} -Ssrc/record_test.entitlements obj/record_test 2>/dev/null ||
 			  echo "build.sh: no ldid: record_test is unsigned, and the system may not let it record"; }
 		$DYN -o obj/cpu_test src/cpu_test.c
+		# the Galaxy S9's GPU through HakiosMali, without Mesa (src/mali_test.c)
+		$DYN -framework IOKit -o obj/mali_test src/mali_test.c
 		$DYN -framework CoreFoundation -framework IOSurface -o obj/cow_test src/cow_test.c
 		$DYN -framework CoreFoundation -framework CoreGraphics -framework IOSurface -o obj/cg_test src/cg_test.c
 		# what iOS here believes about Metal, and what CoreImage does without it (src/metal_test.m);
@@ -371,6 +373,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		[ -f obj/$f ] && cp obj/$f root/bin/
 	done
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
+	[ -f obj/mali_test ] && cp obj/mali_test root/bin/      # (likewise)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
 	[ -f obj/cg_test ] && cp obj/cg_test root/bin/

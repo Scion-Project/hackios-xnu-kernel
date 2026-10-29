@@ -6,4 +6,6 @@
 /redwood/bin/mg_test
 # the processors: how many, and -- once the system has settled -- whether they work at the same time
 /redwood/bin/cpu_test
+# the Galaxy S9's GPU from a program (says one line and stops where there is no HakiosMali: anywhere but mali=9)
+/redwood/bin/mali_test
 /redwood/bin/cpu_test 240 &
