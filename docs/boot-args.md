@@ -2,13 +2,13 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **319 arguments**: 270 read by the kernel, 14 by the loader, 45 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **351 arguments**: 298 read by the kernel, 14 by the loader, 49 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
 Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl kern.bootargs`).
 
-## GPU and display (68)
+## GPU and display (72)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -39,10 +39,12 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `glcensus` | U | `eagl.c` | `CONFIG_GLCENSUS` |  |
 | `glcopy` | U | `eagl.c` | `CONFIG_GLCOPY` |  |
 | `glenv` | U | `eagl.c` | `CONFIG_GLENV` |  |
+| `glerrors` | U | `eagl.c` | `CONFIG_GLERRORS` |  |
 | `glfetch` | U | `eagl.c` | `CONFIG_GLFETCH` |  |
 | `glframes` | U | `eagl.c` | `CONFIG_GLFRAMES` |  |
 | `glgroup` | U | `eagl.c` | `CONFIG_GLGROUP` |  |
 | `glnumbers` | U | `eagl.c` | `CONFIG_GLNUMBERS` |  |
+| `glpace` | U | `eagl.c` | `CONFIG_GLPACE` |  |
 | `glplain` | U | `eagl.c` | `CONFIG_GLPLAIN` |  |
 | `glprecision` | U | `eagl.c` | `CONFIG_GLPRECISION` |  |
 | `glshaders` | U | `eagl.c` | `CONFIG_GLSHADERS` |  |
@@ -69,6 +71,8 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `gpu_exact` | K | `hakios.adreno.c` | `CONFIG_GPU_EXACT` |  |
 | `gpu_keep` | K | `hakios.gpu.cpp` | `CONFIG_GPU_KEEP` |  |
 | `gpu_log` | K | `hakios.adreno.c` | `CONFIG_GPU_LOG` |  |
+| `gpu_recover` | K | `hakios.adreno.c` | `CONFIG_GPU_RECOVER` |  |
+| `gpu_va` | K | `hakios.adreno.c` | `CONFIG_GPU_VA` |  |
 | `metal` | KU | `HakiosMetal.m`, `MiniIOMobileFramebuffer.cpp` | `CONFIG_METAL` |  |
 | `rec_mb` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_MB` |  |
 | `rec_ring` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_RING` |  |
@@ -195,7 +199,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `adsp_return` | K | `hakios.adsp.c` | `CONFIG_ADSP_RETURN` |  |
 | `adsp_step` | K | `hakios.adsp.c` | `CONFIG_ADSP_STEP` |  |
 | `adsp_wait` | K | `hakios.adsp.c` | `CONFIG_ADSP_WAIT` |  |
-| `battery` | KL | `hakios.adsp.c`, `hakios.battery.c`, `loader.c` | `CONFIG_BATTERY` |  |
+| `battery` | KL | `hakios.adsp.c`, `hakios.battery.c`, `hakios.scfb_battery.c`, `loader.c` | `CONFIG_BATTERY` |  |
 | `battery_shared_pa` | K | `hakios.battery.c` |  | the loader (the address of its charger page) |
 | `battery_stop` | K | `hakios.battguard.c` | `CONFIG_BATTERY_STOP` |  |
 | `battery_stop_poll` | K | `hakios.battguard.c` | `CONFIG_BATTERY_STOP_POLL` |  |
@@ -223,9 +227,9 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
-| `cam` | KL | `hakios.camera.c`, `loader.c` | `CONFIG_CAM` |  |
+| `cam` | KL | `1400-avf-scion-camera.patch`, `hakios.camera.c`, `loader.c` | `CONFIG_CAM` |  |
 | `cam_after` | K | `hakios.camera.c` | `CONFIG_CAM_AFTER` |  |
-| `cam_fake` | K | `hakios.camera.c` | `CONFIG_CAM_FAKE` |  |
+| `cam_fake` | K | `1400-avf-scion-camera.patch`, `hakios.camera.c` | `CONFIG_CAM_FAKE` |  |
 | `cam_fake_fps` | K | `hakios.camera.c` | `CONFIG_CAM_FAKE_FPS` |  |
 | `cam_frames` | K | `hakios.camera.c` | `CONFIG_CAM_FRAMES` |  |
 | `cam_gain` | K | `hakios.camera.c` | `CONFIG_CAM_GAIN` |  |
@@ -237,12 +241,13 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_shutter` | K | `hakios.camera.c` | `CONFIG_CAM_SHUTTER` |  |
 | `cam_vblank` | K | `hakios.camera.c` | `CONFIG_CAM_VBLANK` |  |
 
-## Touch and buttons (8)
+## Touch and buttons (9)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `buttons` | K | `hakios.buttons.c` | `CONFIG_BUTTONS` |  |
 | `buttons_steps` | K | `hakios.buttons.c` | `CONFIG_BUTTONS_STEPS` |  |
+| `exynos_keys` | K | `hakios.exynos_keys.c` | `CONFIG_EXYNOS_KEYS` |  |
 | `touch_flip` | K | `hakios.goodix.c` | `CONFIG_TOUCH_FLIP` |  |
 | `touch_poll_us` | K | `hakios.goodix.c` | `CONFIG_TOUCH_POLL_US` |  |
 | `touch_rate` | K | `hakios.goodix.c` | `CONFIG_TOUCH_RATE` |  |
@@ -250,7 +255,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `touchscreen` | K | `hakios.buttons.c`, `hakios.goodix.c` | `CONFIG_TOUCHSCREEN` |  |
 | `virtio_input` | K | `hakios.virtio_input.c` | `CONFIG_VIRTIO_INPUT` |  |
 
-## Storage and APFS (43)
+## Storage and APFS (44)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -297,14 +302,17 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_write` | KL | `hakios.ufs.c`, `loader.c` | `CONFIG_UFS_WRITE` |  |
 | `var_save_ms` | K | `hakios.ufs.c` | `CONFIG_VAR_SAVE_MS` |  |
 | `virtio_blk` | K | `hakios.virtio_blk.c` | `CONFIG_VIRTIO_BLK` |  |
+| `virtio_blk_rw` | K | `hakios.virtio_blk.c` | `CONFIG_VIRTIO_BLK_RW` |  |
 
-## Network (3)
+## Network (5)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `net_names` | K | `hakios.net.c` | `CONFIG_NET_NAMES` |  |
 | `net_trace` | K | `hakios.net.c` | `CONFIG_NET_TRACE` |  |
 | `virtio_net` | K | `hakios.virtio_net.c` | `CONFIG_VIRTIO_NET` |  |
+| `virtio_net_ssid` | K | `hakios.virtio_net.c` | `CONFIG_VIRTIO_NET_SSID` |  |
+| `virtio_net_wifi` | K | `hakios.virtio_net.c` | `CONFIG_VIRTIO_NET_WIFI` |  |
 
 ## Haptics and torch (5)
 
@@ -312,7 +320,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 |---|---|---|---|---|
 | `haptic` | K | `hakios.haptic.c` | `CONFIG_HAPTIC` |  |
 | `haptic_effect` | K | `hakios.haptic.c` | `CONFIG_HAPTIC_EFFECT` |  |
-| `torch` | KL | `hakios.torch.c`, `loader.c` | `CONFIG_TORCH` |  |
+| `torch` | KL | `hakios.sccam_torch.c`, `hakios.torch.c`, `loader.c` | `CONFIG_TORCH` |  |
 | `torch_max_s` | K | `hakios.torch.c` | `CONFIG_TORCH_MAX_S` |  |
 | `torch_secs` | K | `hakios.torch.c` | `CONFIG_TORCH_SECS` |  |
 
@@ -354,7 +362,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `loader_return_after` | KL | `loader.c`, `loader_return.c` |  | xl (XL_SECS) |
 | `machine_name` | K | `GenericARMPE.cpp` | `CONFIG_MACHINE_NAME` |  |
 | `membench` | K | `hakios.cpufreq.c` | `CONFIG_MEMBENCH` |  |
-| `rd` | KL | `(patch)`, `loader.c` | `CONFIG_RD` |  |
+| `rd` | KL | `(patch)`, `1100-virtio-pci-transport.patch`, `loader.c` | `CONFIG_RD` |  |
 | `regtrace` | K | `(patch)` | `CONFIG_REGTRACE` |  |
 | `return_cpu` | K | `loader_return.c` | `CONFIG_RETURN_CPU` |  |
 | `return_panic` | K | `loader_return.c` | `CONFIG_RETURN_PANIC` |  |
@@ -387,22 +395,46 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs` | L | `loader.c` | `CONFIG_UFS` |  |
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 
-## User space (15)
+## User space (39)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `autounlock` | U | `inject_sb.c` | `CONFIG_AUTOUNLOCK` |  |
+| `avf_exit` | K | `1001-avf-psci-system-off.patch` | `CONFIG_AVF_EXIT` |  |
 | `bt` | K | `hakios.bt.c` | `CONFIG_BT` |  |
 | `bt_again` | K | `hakios.bt.c` | `CONFIG_BT_AGAIN` |  |
 | `ca_vbl` | U | `inject.c` | `CONFIG_CA_VBL` |  |
 | `caenv` | U | `inject.c` | `CONFIG_CAENV` |  |
+| `camtl` | U | `inject.c` | `CONFIG_CAMTL` |  |
 | `cc_fade` | U | `inject_sb.c` | `CONFIG_CC_FADE` |  |
+| `console_quiet` | K | `1003-avf-console-quiet.patch` | `CONFIG_CONSOLE_QUIET` |  |
+| `cs_relax_platform_task_ports` | K | `1002-avf-security-level.patch` | `CONFIG_CS_RELAX_PLATFORM_TASK_PORTS` |  |
 | `gl` | U | `inject.c`, `inject_sb.c` | `CONFIG_GL` |  |
 | `glcompile` | U | `inject.c` | `CONFIG_GLCOMPILE` |  |
 | `glno` | U | `inject.c` | `CONFIG_GLNO` |  |
 | `glsb3` | U | `inject.c` | `CONFIG_GLSB3` |  |
 | `glyes` | U | `inject.c` | `CONFIG_GLYES` |  |
+| `gpu3d` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D` |  |
+| `gpu3d_size` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D_SIZE` |  |
+| `md0` | K | `1101-virtio-disk-as-md0.patch` | `CONFIG_MD0` |  |
+| `metal_profile` | U | `hakiosmetal_air.m` | `CONFIG_METAL_PROFILE` |  |
 | `root_apfs` | U | `init.c` | `CONFIG_ROOT_APFS` |  |
 | `sb_delay` | U | `inject_sb.c` |  | xl (XL_SB_DELAY) |
+| `sccam.addr` | K | `1400-avf-scion-camera.patch`, `hakios.sccam_torch.c` | `CONFIG_SCCAM_ADDR` |  |
+| `sccam.h` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_H` |  |
+| `sccam.size` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_SIZE` |  |
+| `sccam.turn` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_TURN` |  |
+| `sccam.w` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_W` |  |
+| `scfb.addr` | K | `1200-avf-scfb-display.patch`, `1202-virtio-gpu-2d.patch`, `hakios.scfb_battery.c` | `CONFIG_SCFB_ADDR` |  |
+| `scgpu.addr` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_SCGPU_ADDR` |  |
+| `scgpu.size` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_SCGPU_SIZE` |  |
+| `scsnd.addr` | K | `hakios.scsnd.c` | `CONFIG_SCSND_ADDR` |  |
+| `scsnd.size` | K | `hakios.scsnd.c` | `CONFIG_SCSND_SIZE` |  |
+| `security` | K | `1002-avf-security-level.patch` | `CONFIG_SECURITY` |  |
 | `switcher_wallpaper` | U | `inject_sb.c` | `CONFIG_SWITCHER_WALLPAPER` |  |
 | `var_store` | U | `init.c` | `CONFIG_VAR_STORE` |  |
+| `vgpu_height` | K | `hakios.vgpu.c` | `CONFIG_VGPU_HEIGHT` |  |
+| `vgpu_width` | K | `hakios.vgpu.c` | `CONFIG_VGPU_WIDTH` |  |
+| `virtio_console` | K | `hakios.virtio_console.c` | `CONFIG_VIRTIO_CONSOLE` |  |
+| `virtio_mmio` | K | `hakios.virtio.c` | `CONFIG_VIRTIO_MMIO` |  |
+| `virtio_poll` | K | `hakios.virtio.c` | `CONFIG_VIRTIO_POLL` |  |

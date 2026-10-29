@@ -51,7 +51,8 @@ APFS_WRITE_PATH	arg	apfs_write_path	Storage and APFS	k	hakios.apfs_check.c	the f
 APPLOG	arg	applog	CPU, memory and boot	k	(patch)	
 APPLOG_NAME	arg	applog_name	CPU, memory and boot	k	(patch)	
 AUTOUNLOCK	arg	autounlock	User space	u	inject_sb.c	
-BATTERY	arg	battery	Audio and battery	kl	hakios.adsp.c,hakios.battery.c,loader.c	
+AVF_EXIT	arg	avf_exit	User space	k	1001-avf-psci-system-off.patch	
+BATTERY	arg	battery	Audio and battery	kl	hakios.adsp.c,hakios.battery.c,hakios.scfb_battery.c,loader.c	
 BATTMGR	arg	battmgr	Audio and battery	k	hakios.adsp.c	every property once, for the log (which number is which on this phone's firmware)
 BT	arg	bt	User space	k	hakios.bt.c	
 BT_AGAIN	arg	bt_again	User space	k	hakios.bt.c	the second look this many seconds later (0: no second look; 30)
@@ -60,7 +61,7 @@ BUTTONS_STEPS	arg	buttons_steps	Touch and buttons	k	hakios.buttons.c
 CA_VBL	arg	ca_vbl	User space	u	inject.c	CoreAnimation's frame clock from the display driver's refresh notifications
 CAENV	arg	caenv	User space	u	inject.c	
 CAM_AFTER	arg	cam_after	Cameras	k	hakios.camera.c	
-CAM_FAKE	arg	cam_fake	Cameras	k	hakios.camera.c	
+CAM_FAKE	arg	cam_fake	Cameras	k	1400-avf-scion-camera.patch,hakios.camera.c	
 CAM_FAKE_FPS	arg	cam_fake_fps	Cameras	k	hakios.camera.c	
 CAM_FRAMES	arg	cam_frames	Cameras	k	hakios.camera.c	
 CAM_GAIN	arg	cam_gain	Cameras	k	hakios.camera.c	
@@ -71,13 +72,17 @@ CAM_SENSOR	arg	cam_sensor	Cameras	k	hakios.camera.c
 CAM_SETTLE	arg	cam_settle	Cameras	k	hakios.camera.c	
 CAM_SHUTTER	arg	cam_shutter	Cameras	k	hakios.camera.c	
 CAM_VBLANK	arg	cam_vblank	Cameras	k	hakios.camera.c	
+CAMTL	arg	camtl	User space	u	inject.c	
 CC_FADE	arg	cc_fade	User space	u	inject_sb.c	
+CONSOLE_QUIET	arg	console_quiet	User space	k	1003-avf-console-quiet.patch	
 CPULOAD	arg	cpuload	CPU, memory and boot	k	hakios.cpufreq.c	every MS milliseconds, how busy each of our cores was meanwhile, in percent, to the loader's log (tools/frames.py shows it per gesture)
 CPUMASK	arg	cpumask	Loader	l	loader.c	
+CS_RELAX_PLATFORM_TASK_PORTS	arg	cs_relax_platform_task_ports	User space	k	1002-avf-security-level.patch	
 DDR	arg	ddr	CPU, memory and boot	k	hakios.cpufreq.c	the memory's bus clock managers ("BCM") in the command database the boot loader left, with what is needed to vote for bandwidth on them -- only read
 DDR_REST	arg	ddr_rest	CPU, memory and boot	k	hakios.cpufreq.c	
 DDR_VOTE	arg	ddr_vote	CPU, memory and boot	k	hakios.cpufreq.c	
 DISPLAY_PROBE	arg	display_probe	GPU and display	k	hakios.adreno.c	before any step: read what the firmware left the display controller doing (display_probe() below; two clocks are turned on, nothing else written)
+EXYNOS_KEYS	arg	exynos_keys	Touch and buttons	k	hakios.exynos_keys.c	
 FB_BEAT	arg	fb_beat	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_DIFF	arg	fb_diff	GPU and display	k	MiniIOMobileFramebuffer.cpp	which pixels of the panel each frame changed (it costs: the panel's memory is slow to read)
 FB_FILTER	arg	fb_filter	GPU and display	k	MiniIOMobileFramebuffer.cpp	the picture is scaled to the panel nearest neighbour, as it once was
@@ -95,11 +100,13 @@ GLCENSUS	arg	glcensus	GPU and display	u	eagl.c
 GLCOMPILE	arg	glcompile	User space	u	inject.c	
 GLCOPY	arg	glcopy	GPU and display	u	eagl.c	
 GLENV	arg	glenv	GPU and display	u	eagl.c	
+GLERRORS	arg	glerrors	GPU and display	u	eagl.c	ask the library for an error after every call, for the first 600 frames
 GLFETCH	arg	glfetch	GPU and display	u	eagl.c	
 GLFRAMES	arg	glframes	GPU and display	u	eagl.c	
 GLGROUP	arg	glgroup	GPU and display	u	eagl.c	
 GLNO	arg	glno	User space	u	inject.c	
 GLNUMBERS	arg	glnumbers	GPU and display	u	eagl.c	
+GLPACE	arg	glpace	GPU and display	u	eagl.c	
 GLPLAIN	arg	glplain	GPU and display	u	eagl.c	leave such draws as they are; 2: also those without a texture; 3: the two with a colour matrix drawn plainly too
 GLPRECISION	arg	glprecision	GPU and display	u	eagl.c	as the shaders say.
 GLSB3	arg	glsb3	User space	u	inject.c	
@@ -123,14 +130,20 @@ GLTRACE_SHADERS	arg	gltrace_shaders	GPU and display	u	eagl.c	the text of the sha
 GLTRACE_UNIFORMS	arg	gltrace_uniforms	GPU and display	u	eagl.c	what the program of a traced draw was given, by the names its shaders use (coord_arg, texmat0, ...)
 GLWAIT	arg	glwait	GPU and display	u	eagl.c	
 GLYES	arg	glyes	User space	u	inject.c	the renderer is made to answer that it has those functions after all
+GPU3D	arg	gpu3d	User space	k	hakios.vgpu3d_xnu.c	
+GPU3D_SIZE	arg	gpu3d_size	User space	k	hakios.vgpu3d_xnu.c	
 GPU_CACHED	arg	gpu_cached	GPU and display	k	hakios.gpu.cpp	
 GPU_EXACT	arg	gpu_exact	GPU and display	k	hakios.adreno.c	
 GPU_KEEP	arg	gpu_keep	GPU and display	k	hakios.gpu.cpp	
 GPU_LOG	arg	gpu_log	GPU and display	k	hakios.adreno.c	
+GPU_RECOVER	arg	gpu_recover	GPU and display	k	hakios.adreno.c	a submission the core never finishes does not cost the rest of the run
+GPU_VA	arg	gpu_va	GPU and display	k	hakios.adreno.c	
 HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c	
 MACHINE_NAME	arg	machine_name	CPU, memory and boot	k	GenericARMPE.cpp	
+MD0	arg	md0	User space	k	1101-virtio-disk-as-md0.patch	
 MEMBENCH	arg	membench	CPU, memory and boot	k	hakios.cpufreq.c	
 METAL	arg	metal	GPU and display	ku	HakiosMetal.m,MiniIOMobileFramebuffer.cpp	only the program metal_test (userland/src/metal_test.m): the safe level, for seeing what Metal does with the device
+METAL_PROFILE	arg	metal_profile	User space	u	hakiosmetal_air.m	
 MIC_ADC	arg	mic_adc	Audio and battery	k	hakios.mic.c	
 MIC_INPUT	arg	mic_input	Audio and battery	k	hakios.mic.c	
 MIC_MAIN	arg	mic_main	Audio and battery	k	hakios.mic.c	
@@ -178,7 +191,7 @@ MODEM_WAIT	arg	modem_wait	Cellular	k	hakios.mpss.c
 MODEM_WDA_OFF	arg	modem_wda_off	Cellular	k	hakios.mpss.c	
 PMIC_LIST	arg	pmic_list	Chip, thermal and PMIC	k	hakios.pmic.c	only the clock, not the inventory of every block
 PRIVS	arg	privs	Security stand-ins	k	kern_minimac.c	
-RD	arg	rd	CPU, memory and boot	kl	(patch),loader.c	
+RD	arg	rd	CPU, memory and boot	kl	(patch),1100-virtio-pci-transport.patch,loader.c	
 REC_MB	arg	rec_mb	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 REC_RING	arg	rec_ring	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 REC_SECS	arg	rec_secs	GPU and display	k	MiniIOMobileFramebuffer.cpp	
@@ -191,6 +204,17 @@ REGTRACE	arg	regtrace	CPU, memory and boot	k	(patch)
 RETURN_CPU	arg	return_cpu	CPU, memory and boot	k	loader_return.c	
 RETURN_PANIC	arg	return_panic	CPU, memory and boot	k	loader_return.c	
 ROOT_APFS	arg	root_apfs	User space	u	init.c	the root is to be the iOS root volume on /dev/DEV -- the phone's flash, read only
+SCCAM_ADDR	arg	sccam.addr	User space	k	1400-avf-scion-camera.patch,hakios.sccam_torch.c	
+SCCAM_H	arg	sccam.h	User space	k	1400-avf-scion-camera.patch	
+SCCAM_SIZE	arg	sccam.size	User space	k	1400-avf-scion-camera.patch	
+SCCAM_TURN	arg	sccam.turn	User space	k	1400-avf-scion-camera.patch	
+SCCAM_W	arg	sccam.w	User space	k	1400-avf-scion-camera.patch	
+SCFB_ADDR	arg	scfb.addr	User space	k	1200-avf-scfb-display.patch,1202-virtio-gpu-2d.patch,hakios.scfb_battery.c	
+SCGPU_ADDR	arg	scgpu.addr	User space	k	hakios.vgpu3d_xnu.c	
+SCGPU_SIZE	arg	scgpu.size	User space	k	hakios.vgpu3d_xnu.c	
+SCSND_ADDR	arg	scsnd.addr	User space	k	hakios.scsnd.c	
+SCSND_SIZE	arg	scsnd.size	User space	k	hakios.scsnd.c	
+SECURITY	arg	security	User space	k	1002-avf-security-level.patch	
 SERIAL	arg	serial	Loader	l	loader.c	
 SMALL_CORES	arg	small_cores	CPU, memory and boot	k	(patch)	
 SMALL_CORES_AFTER	arg	small_cores_after	CPU, memory and boot	k	GenericARMPE.cpp	
@@ -222,7 +246,7 @@ SYSTRACE_NAME	arg	systrace_name	CPU, memory and boot	k	(patch)
 THERMAL_LOG	arg	thermal_log	Chip, thermal and PMIC	k	hakios.thermal.c	a summary line this often (0: only on a rise; 60)
 THERMAL_TM0	arg	thermal_tm0	Chip, thermal and PMIC	k	hakios.thermal.c	
 THERMAL_TM1	arg	thermal_tm1	Chip, thermal and PMIC	k	hakios.thermal.c	
-TORCH	arg	torch	Haptics and torch	kl	hakios.torch.c,loader.c	a look, reading only: the arbiter's channel for the module and who may write through it, the module's type, its registers, the PMIC's temperature
+TORCH	arg	torch	Haptics and torch	kl	hakios.sccam_torch.c,hakios.torch.c,loader.c	a look, reading only: the arbiter's channel for the module and who may write through it, the module's type, its registers, the PMIC's temperature
 TORCH_MAX_S	arg	torch_max_s	Haptics and torch	k	hakios.torch.c	
 TORCH_SECS	arg	torch_secs	Haptics and torch	k	hakios.torch.c	
 TOUCH_FLIP	arg	touch_flip	Touch and buttons	k	hakios.goodix.c	
@@ -249,8 +273,16 @@ USTACKS_THREADS	arg	ustacks_threads	Debugging	k	user_exception_trace.c
 USTACKS_TNAME	arg	ustacks_tname	Debugging	k	user_exception_trace.c	
 VAR_SAVE_MS	arg	var_save_ms	Storage and APFS	k	hakios.ufs.c	
 VBLUR	arg	vblur	GPU and display	u	eagl.c	
+VGPU_HEIGHT	arg	vgpu_height	User space	k	hakios.vgpu.c	
+VGPU_WIDTH	arg	vgpu_width	User space	k	hakios.vgpu.c	
 VIRTIO_BLK	arg	virtio_blk	Storage and APFS	k	hakios.virtio_blk.c	
+VIRTIO_BLK_RW	arg	virtio_blk_rw	Storage and APFS	k	hakios.virtio_blk.c	
+VIRTIO_CONSOLE	arg	virtio_console	User space	k	hakios.virtio_console.c	none. Without it: the first, when there is no UART.
 VIRTIO_INPUT	arg	virtio_input	Touch and buttons	k	hakios.virtio_input.c	
+VIRTIO_MMIO	arg	virtio_mmio	User space	k	hakios.virtio.c	
+VIRTIO_NET_SSID	arg	virtio_net_ssid	Network	k	hakios.virtio_net.c	
+VIRTIO_NET_WIFI	arg	virtio_net_wifi	Network	k	hakios.virtio_net.c	iOS is told that en0 is a radio, the way the phone's is (hakios.net.c, hakios.wlan.cpp, hakios.apple80211.c), and a station of this file's stands
+VIRTIO_POLL	arg	virtio_poll	User space	k	hakios.virtio.c	
 VIRTIO_SOUND	arg	virtio_sound	Audio and battery	k	hakios.virtio_sound.c	
 WIFI_AGAIN	arg	wifi_again	Wi-Fi	k	hakios.wifi.c	start the DSP although the one before it was shut down without having acknowledged a stop: THAT HAS RESET THE PHONE, twice of two
 WIFI_ASK	arg	wifi_ask	Wi-Fi	k	hakios.wifi.c	step 14 also asks that service a question (its capabilities) and writes down the beginning of an answer
