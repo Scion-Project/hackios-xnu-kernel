@@ -93,11 +93,8 @@ pub fn wrap(name: &CStr, driver: Void) -> Void {
     let Ok(name) = name.to_str() else { return driver };
     let Some(index) = NAMES.iter().position(|n| *n == name) else { return driver };
     let _ = REAL[index].compare_exchange(0, pointer as usize, Ordering::AcqRel, Ordering::Acquire);
-    // The memory queries and vkGetDeviceProcAddr are always this file's (they decide, and they hand out the rest); the others only
-    // once it is on, so a driver with coherent memory runs untouched.
-    if index > 3 && !ON.load(Ordering::Acquire) {
-        return driver;
-    }
+    // Always this file's: the runtime takes its device's functions before it first asks for the memory types, which is when this
+    // file decides (`adjust`). Until it is on, a mapping is not kept, so the submits and waits find nothing to do.
     let ours: unsafe extern "system" fn() = unsafe {
         match index {
             0 => std::mem::transmute(memory_properties as unsafe extern "system" fn(_, _)),
@@ -285,6 +282,9 @@ unsafe extern "system" fn map_memory(device: vk::Device, memory: vk::DeviceMemor
         return result;
     }
     let pointer = unsafe { *out } as usize;
+    if !ON.load(Ordering::Acquire) {
+        return result;
+    }
     with(|s| {
         let whole = s.sizes.get(&memory.as_raw()).copied().unwrap_or(0);
         let size = if size == vk::WHOLE_SIZE { whole.saturating_sub(offset) } else { size } as usize;

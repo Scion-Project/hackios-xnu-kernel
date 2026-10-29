@@ -19,6 +19,9 @@ pub mod icd;
 // Scion: coherent host memory where the driver has none (gfxstream's guest driver).
 #[path = "coherence.rs"]
 pub mod coherence;
+// Scion: a test, any driver as one without coherent host memory (HAKIOS_VK_INCOHERENT=1).
+#[path = "incoherent.rs"]
+pub mod incoherent;
 
 use metal2vulkan::metal::{PixelFormat, PrimitiveType, TextureUsage};
 use metal2vulkan::pipeline::{ColorAttachmentDescriptor, RenderPipelineDescriptor, StageSource};

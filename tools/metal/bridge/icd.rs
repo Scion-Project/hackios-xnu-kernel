@@ -57,8 +57,11 @@ pub unsafe extern "system" fn vkGetInstanceProcAddr(instance: *mut c_void, name:
     }
     // SAFETY: ENTRY only ever holds a driver's GetInstanceProcAddr, and the driver stays loaded for the life of the process.
     let get: GetInstanceProcAddr = unsafe { std::mem::transmute(entry) };
-    // a driver without coherent host memory gets it stood in for (coherence.rs)
-    crate::coherence::wrap(unsafe { CStr::from_ptr(name) }, unsafe { get(instance, name) })
+    // a driver without coherent host memory gets it stood in for (coherence.rs); HAKIOS_VK_INCOHERENT=1 makes any driver one
+    // (incoherent.rs, a test)
+    let driver = unsafe { get(instance, name) };
+    let name = unsafe { CStr::from_ptr(name) };
+    crate::coherence::wrap(name, crate::incoherent::wrap(name, driver))
 }
 
 fn last_dl_error() -> String {
