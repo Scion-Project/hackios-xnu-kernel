@@ -21,6 +21,7 @@
 #include <sys/hakios.exynos_abox.h>
 #include <sys/hakios.input.h>
 #include <sys/hakios.net.h>
+#include <sys/hakios.sta.h>
 #include <sys/hakios.virtio_blk.h>
 
 /* the ends of a run (loader_return.c, the guards), which have no header of their own */
@@ -110,6 +111,9 @@ void hakios_wifi_stop(void) {}
 void hakios_wifi_quiesce(void) {}
 errno_t hakios_apple80211_ioctl(__unused u_long command, __unused void *data) { return EOPNOTSUPP; }
 void HakiosWLANStart(__unused const char *interface, __unused const uint8_t *address) {}
+/* the station of the virtio network (hakios.virtio_net.c), which offers iOS's Wi-Fi a network through this one */
+void hakios_sta_attach(__unused const struct hakios_sta_ops *ops) {}
+int hakios_sta_ask_join_standing(__unused const struct hakios_sta_join *what) { return ENODEV; }
 #endif
 
 #ifndef HAKIOS_ADSP
