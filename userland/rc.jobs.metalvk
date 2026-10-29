@@ -1,0 +1,9 @@
+# Commands run by the launchd job com.hakios.demo (see com.hakios.demo.plist).
+# Metal on Vulkan (an image built with METAL=vk; docs/metal-plan.md, "Metal on Vulkan"). First metal2vulkan's runtime on the guest's
+# Vulkan driver through the C ABI the plug-in uses: m2v_test runs the bridge's self-test, three compute kernels and a triangle, and
+# checks every number against the CPU, as tools/metal/mk-metal2vulkan.sh mac does on a Mac (its last line says whether all of it
+# held). The driver is gfxstream's on the Pixel; on another device, the path HakiosMetal.icd names. Then what Metal itself makes of
+# the plug-in: metal_test, with boot-arg metal=1, which shows the device to that program only.
+/redwood/bin/m2v_test /redwood/lib/libhakios.vk.dylib /tmp/m2v /redwood/share/m2v_test.metallib
+/redwood/bin/rwtouch wait 25
+/redwood/bin/metal_test

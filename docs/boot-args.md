@@ -79,7 +79,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `mali_flush` | K | `hakios.mali.cpp` | `CONFIG_MALI_FLUSH` |  |
 | `mali_pll` | K | `hakios.mali.c` | `CONFIG_MALI_PLL` |  |
 | `mali_trace` | K | `hakios.mali.c` | `CONFIG_MALI_TRACE` |  |
-| `metal` | KU | `HakiosMetal.m`, `MiniIOMobileFramebuffer.cpp` | `CONFIG_METAL` |  |
+| `metal` | KU | `MiniIOMobileFramebuffer.cpp`, `hakios_metal_shown.c` | `CONFIG_METAL` |  |
 | `panel` | K | `hakios.s6e3ha8.c` | `CONFIG_PANEL` |  |
 | `panel_brightness` | K | `hakios.s6e3ha8.c` | `CONFIG_PANEL_BRIGHTNESS` |  |
 | `panel_gamma` | K | `hakios.s6e3ha8.c` | `CONFIG_PANEL_GAMMA` |  |

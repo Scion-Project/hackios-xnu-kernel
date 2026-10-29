@@ -1,0 +1,36 @@
+# libmetal2vulkan.dylib: metal2vulkan's runtime (the Metal API on Vulkan) and translator (AIR to SPIR-V) with AdrenoMetal's C-ABI
+# bridge over them (NativeMetalObjects.rs, NativeMetalBridge.rs; MIT) and Scion's driver shim (icd.rs). The runtime is
+# GPL-2.0-or-later OR LGPL-3.0-or-later and is fetched, patched and linked in by tools/metal/mk-metal2vulkan.sh, which copies this
+# directory beside the fetched source (xnu-deps/build/metal2vulkan/bridge) and builds it there: the paths below are relative to
+# that copy. The library is one file of its own so that it can be replaced (the LGPL's condition); the plug-in links it by its
+# install name.
+[package]
+name = "hakios-metal2vulkan"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "metal2vulkan_bridge"
+path = "NativeMetalBridge.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+metal2vulkan = { path = "../src/crates/metal2vulkan", features = ["ash"] }
+metal2vulkan-runtime = { path = "../src/crates/metal2vulkan-runtime" }
+libc = "0.2"
+# Vulkan's types only, for coherence.rs (the runtime's own ash; nothing is loaded through it here)
+ash = { version = "0.38", default-features = false, features = ["std"] }
+
+# Its own workspace: not one of metal2vulkan's.
+[workspace]
+
+[profile.release]
+# the bridge turns panics into errors (catch_unwind) and must unwind
+panic = "unwind"
+opt-level = 2
+debug = false
+codegen-units = 16
+incremental = false
