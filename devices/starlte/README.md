@@ -85,13 +85,18 @@ What to look for, in this order:
 3. The kernel's log, `gic: v2 ... cpu 0 is interface 0`, `4 of 4 processors are running`.
 4. launchd.
 
-Photograph the screen. There is no log partition on this phone yet: the loader's `logdump` is a Qualcomm partition.
+Photograph the screen as well. The loader's `logdump` is a Qualcomm partition, and this phone has none. Instead, the
+loader keeps the log in Samsung's pstore RAM (0xFED14000, 16 KB: the head of the loader's log and the tail of the kernel's),
+which a restart leaves alone. Restart into TWRP or Android (Vol Down + Power) and read it:
+`adb shell su -c 'ls /sys/fs/pstore; cat /sys/fs/pstore/pmsg-ramoops-0'`. If no file shows up there, the phone's own kernel
+lays the zones out differently: `cat /sys/module/ramoops/parameters/*` and the `log_pstore` node say how, and
+`platform_starlte.ram_log` in `xnuloader/loader.c` is the one number to change.
 
 ## What comes next
 
 | Step | How |
 |---|---|
-| A log that survives a restart | the Samsung ramoops region (`log_pstore`, 0xFEC10000) read back from Android or TWRP, or a partition of the phone's |
+| A longer log | 16 KB of pstore holds a panic but not a whole boot: a partition of the phone's, or USB |
 | Storage | Silicium's UEFI drives the UFS (`PlatformUfsLib`): the loader's block service (as redwood reads its UFS) can serve the system image without an Exynos UFS driver in XNU |
 | Buttons | GPIO keys: a driver, the pins from `gpio_keys` |
 | Touch | S6SY761 on HSI2C: an I2C controller driver and the touch protocol (the WoA port's are BSD and GPL; facts only) |

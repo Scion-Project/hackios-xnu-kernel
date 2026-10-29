@@ -336,12 +336,47 @@ static int hc_log_skips;                /* logs not written this run (said twice
 static void hc_print_state(const char *when);
 static void hc_take_back(const char *when);
 
+/*
+ * A phone with no log partition (the Galaxy S9: logdump is Qualcomm's) keeps the log in RAM that a restart leaves
+ * alone, as one of Linux's persistent RAM buffers (fs/pstore/ram_core.c: "DBGC", the start, the size, the bytes), in a
+ * place its own kernel's pstore reads back from: after the next start of Android or TWRP the log is a file in
+ * /sys/fs/pstore. What fits: the head of the loader's log and the tail of everything after it.
+ */
+static uint64_t ram_log_base, ram_log_size;     /* the platform's; 0: none */
+
+static void
+write_ram_log(void)
+{
+	struct { uint32_t sig, start, size; } *h = (void *)(uintptr_t)ram_log_base;
+	uint8_t *data = (uint8_t *)(uintptr_t)ram_log_base + sizeof(*h);
+	uint64_t room = ram_log_size - sizeof(*h), head = 3072, n = staged_len;
+	static const char cut[] = "\n[...]\n";
+
+	if (ram_log_base == 0 || ram_log_size <= sizeof(*h) + head + sizeof(cut)) {
+		return;
+	}
+	if (n <= room) {
+		memcpy(data, staged_data, n);
+	} else {
+		memcpy(data, staged_data, head);
+		memcpy(data + head, cut, sizeof(cut) - 1);
+		memcpy(data + head + sizeof(cut) - 1, staged_data + n - (room - head - (sizeof(cut) - 1)),
+		    room - head - (sizeof(cut) - 1));
+		n = room;
+	}
+	h->sig = 0x43474244;    /* "DBGC" */
+	h->start = 0;
+	h->size = (uint32_t)n;
+	clean_dcache(ram_log_base, ram_log_base + sizeof(*h) + n);
+}
+
 static void
 write_logs(const char *klog, uint64_t klog_len)
 {
 	efi_block_io *bio = find_log_partition();
 
 	compose_logs(klog, klog_len);
+	write_ram_log();
 	if (bio == NULL) {
 		/* No log partition (QEMU): echo the returned kernel log on the console instead. */
 		if (klog != NULL) {
@@ -555,6 +590,7 @@ struct platform {
 	uint32_t timeout_scale;          /* a kernel on several cores gets this much longer to wait for a lock, 0: as it is */
 	uint32_t small_cores;            /* a bit for each of the slower cores, by number: "small-core" in the device tree */
 	uint64_t fb_base;                /* the framebuffer the firmware reports (GOP): it tells this device apart */
+	uint64_t ram_log, ram_log_size;  /* where the log is kept across a restart when there is no log partition (write_ram_log) */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -598,6 +634,12 @@ static const struct platform platform_starlte = {
 	 */
 	.cores = 4, .core_shift = 0,
 	.fb_base = 0xCC000000,
+	/*
+	 * Samsung's pstore (exynos-snapshot's log_pstore, 0xFED10000 + 32 KB), its second half: the pmsg zone, where the
+	 * WoA port for the S9+ kept its notes across restarts and read them back in TWRP. Reserved in this port's UEFI
+	 * memory map (devices/starlte/uefi).
+	 */
+	.ram_log = 0xFED14000, .ram_log_size = 0x4000,
 };
 
 /*
@@ -4734,6 +4776,7 @@ efi_main(efi_handle image, efi_system_table *st)
 		print("platform %s: a GICv3 by its description, but this processor has no GICv3 registers\n", PLAT->name);
 	}
 	loader_gic_sysregs = PLAT->gic_cpu == 0;
+	ram_log_base = PLAT->ram_log, ram_log_size = PLAT->ram_log_size;
 	print("platform %s, %s\n", PLAT->name, PLAT->gic_cpu != 0 ? "GICv2" : "GICv3");
 	pci_probe(PLAT);
 
