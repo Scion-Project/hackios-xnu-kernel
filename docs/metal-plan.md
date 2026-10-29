@@ -309,16 +309,64 @@ looks for MoltenVK):
    memory types, so the wrappers are always installed and idle until it decides), but marking the types coherent turns the
    runtime's own flushing off. The same holds for coherence emulated in the driver: for this runtime the driver had better list its
    types as they are, not coherent; an emulating driver that follows explicit ranges could use `METAL2VULKAN_HOST_SYNC=always`.
-5. **Then it deadlocks, every run.** The runtime calls Vulkan from several threads (the caller's, its pipeline workers, its
-   completion threads); gfxstream's driver opens one stream per thread, and in this harness each stream is a virtio-gpu context of its
-   own, while the host orders one process's commands per context. A sample of the hang: the main thread in `vkCreateQueryPool` (the
-   GPU-timing pool made at a commit), two `metal2vulkan-pipelines` workers in `vkCreatePipelineCache`, all three in
-   `ScionStream::readFully`, the host's render threads in `VkDecoder::decode`. `VULKAN.md` names the cure (stage 3, kernel 2): one
-   context per process, a pipe per open, in the Mac transport and in the kernel's `/dev/vgpu3d`. A single-threaded run of the runtime
-   is not a knob away: besides the pipeline pool (which already runs a piece on the caller's thread where it cannot start one), each
-   `VkQueue` has a waiter thread in `vkWaitSemaphores`/`vkWaitForFences`, and a completion thread reads timestamps.
+5. **It deadlocked, every run**, until the driver's threading fix (`gpu/vk-icd-threads`, #89). The runtime calls Vulkan from
+   several threads (the caller's, its pipeline workers, a waiter per `VkQueue`, its completion thread), and gfxstream's driver opened
+   one stream per thread, each a virtio-gpu context of its own, which the host ordered apart: a sample of the hang had the main
+   thread in `vkCreateQueryPool`, two `metal2vulkan-pipelines` workers in `vkCreatePipelineCache`, all in `ScionStream::readFully`.
+   Now each stream has its own sequence numbers, each `VkQueue` its own stream, waits are polled from the guest, and the Mac harness
+   serialises its host calls as the phone's serve thread does; host-visible types are not coherent by default, which is what the
+   patched runtime wants.
 
-So nothing has yet been computed through gfxstream; what stands between is the driver's threading (one context per process).
+**Through gfxstream, end to end (29 October, the driver rebuilt from `main` with `tools/gfxstream/mk-vk.sh mac`).** Metal compute
+and render go through: AIR translated by metal2vulkan in the guest's process, SPIR-V and commands encoded by gfxstream's guest
+driver, decoded by the emulator's gfxstream host, run by its MoltenVK on the M1 Pro, and the results read back through the
+runtime's own flushes and invalidates. `m2v_test` (the emulator's environment, `lib64` linked beside the program):
+
+```
+FAIL  self-test: step 0x6505: no-copy buffer: Unsupported(Unsupported { feature: HostMemory, needs: AnyOf([[Extension(ExtExte
+      self-test before it: compute 0 of 1000 wrong, render 0 of 64 wrong
+      device: Apple M1 Pro; driver .../gfxstream-vk/out-mac/libhakios.vk.dylib (vk_icdGetInstanceProcAddr, ICD interface 5); runtime metal2vulkan-720ef1ce9ae2-148519d95eb4633a
+      library: 5 functions from .../out/mac/m2v_test.metallib (18978 bytes)
+ok    axpb: 4096 floats, 0 wrong (out[1234] = 3564.0, the CPU says 3564.0)
+ok    collatz: 4096 numbers, 0 wrong (the longest: 237 steps from 3711)
+FAIL  group_sum: 65536 numbers in 256 groups, total 134177445 (the CPU: 134183984), 255 group sums wrong
+ok    triangle: 64x64 RGBA8, 1062 pixels inside and 2619 outside judged (415 on edges not), 0 wrong
+m2v_test: FAILED
+```
+
+and the plug-in through the Metal API (`GFXSTREAM_LIB=~/Library/Android/sdk/emulator/lib64 tools/metal/metalvk-plugin-test.sh
+xnu-deps/build/gfxstream-vk/out-mac/libhakios.vk.dylib`):
+
+```
+ok    the plug-in registered HakiosMetalDevice, a subclass of _MTLDevice
+ok    -initWithAcceleratorPort: gives the frontend's device (NativeBridgeMetalDevice, on _MTLDevice): Apple M1 Pro
+ok    maxBufferLength 9534832640, unified memory
+ok    newLibraryWithURL: axpb collatz group_sum triangle_vertex triangle_fragment ((null))
+ok    newComputePipelineStateWithFunction: axpb ((null))
+ok    axpb through the Metal API: 0 of 4096 floats wrong
+ok    the completion handler ran, with the status completed
+FAIL  group_sum through the Metal API: 134177445 (the CPU: 134183984)
+ok    newRenderPipelineStateWithDescriptor: RGBA8 ((null))
+ok    the triangle through the Metal API: 1062 pixels inside judged, 0 wrong
+FAIL  newTextureWithDescriptor:iosurface:plane: a 128x96 BGRA8 texture over the surface (512 bytes a row)
+ok    replaceRegion: into a Shared texture, the GPU's copy of it out is the CPU's bytes
+ok    getBytes: of the triangle rendered into a Shared texture: 1062 pixels inside judged, 0 wrong
+metalvk_plugin_test: FAILED
+```
+
+The two walls, each placed:
+
+- **`group_sum` is the Mac host's MoltenVK, not gfxstream.** The emulator's host runs its own MoltenVK (`lib64/vulkan`, 1.2.11,
+  `driverVersion` 10211). Run directly on that library, with no gfxstream at all, `m2v_test` and the plug-in give the same wrong total
+  to the digit (134177445); on Homebrew's MoltenVK 1.4.2, KosmicKrisp and lavapipe the kernel is right. The kernel is a tree sum in
+  threadgroup memory with a `threadgroup_barrier` in a loop and a device atomic; each group's sum is a little short. The phone's
+  host runs the PowerVR's own Vulkan, not MoltenVK, so this says nothing about it either way.
+- **IOSurface textures need host memory the driver can import.** gfxstream's guest driver has no external memory, so a no-copy
+  buffer, and every texture over an IOSurface, is refused (`Unsupported`, `VK_EXT_external_memory_host`): the self-test's import step
+  and the plug-in's IOSurface check. This is the wall for drawables (below, "What is stubbed").
+
+The run was the same three times. What it does not show: anything on the phone (its host, its PowerVR, `/dev/vgpu3d` and SCGPU
+between them), or speed (the Mac harness serialises the host).
 
 ### What is built for the guest
 
@@ -335,10 +383,8 @@ None of it has run on iOS: there is no Vulkan driver in the guest yet.
 
 ### What is stubbed or missing, plainly
 
-- **The driver.** gfxstream's guest Vulkan driver (`libhakios.vk.dylib`, branch `gpu/gfxstream-vulkan`) is built for iOS and runs
-  on a Mac against the emulator's host, but has not run in the guest, and the runtime does not get through it yet (the section
-  above: its threads; coherent memory the patched runtime now does without). Until then this route has computed and drawn on the
-  Mac's own drivers only, and on lavapipe made to behave like gfxstream's.
+- **The driver.** gfxstream's guest Vulkan driver (`libhakios.vk.dylib`) carries Metal compute and render on its Mac twin (above);
+  it has not run in the guest yet, and nothing of this route has run on the phone.
 - **IOSurfaces, and with them drawables, need the driver to import host memory.** A texture over an IOSurface is a no-copy buffer
   over the surface's pages (the frontend's `newTextureWithDescriptor:iosurface:plane:`), and at this pin the runtime makes one only
   through `VK_EXT_external_memory_host` (or dma-bufs on Linux); without it the texture is refused, logged
@@ -369,16 +415,14 @@ None of it has run on iOS: there is no Vulkan driver in the guest yet.
   toolchain (0.6 GB in `xnu-deps/rust`, installed by the script when missing), and about 0.4 GB of intermediates per platform,
   removed after the build unless `KEEP=1`.
 
-### What is needed once the gfxstream driver lands
+### What is needed next, for the guest
 
 1. The driver at `/redwood/lib/libhakios.vk.dylib` (or anywhere, with `METAL_ICD=PATH`), exporting `vk_icdGetInstanceProcAddr` or
    `vkGetInstanceProcAddr`, giving a Vulkan 1.2 device with `timelineSemaphore` and a queue family with graphics and compute.
-   gfxstream's has all of that. What it still needs for this runtime: **one virtio-gpu context per process** (its Mac transport
-   and the kernel's `/dev/vgpu3d`), since the runtime calls Vulkan from several threads. Coherent memory it does not need (the
-   patch above). Then `m2v_test` on its Mac twin is the check to run first (the section above says how).
-2. An image with `METAL=vk` and whatever the driver needs of the kernel (gfxstream's `/dev/vgpu3d` path), booted with `metal=1`
-   and `RC_JOBS=rc.jobs.metalvk`: `m2v_test`'s lines are the first result, the same lines as the Mac's above; `metal_test` the
-   second (does iOS 16.5's Metal take the device?).
+   gfxstream's has all of that, and with its threading fix (#89) the runtime goes through it on the Mac (above).
+2. An image with `METAL=vk` and the driver (`VK_DIR=` with `tools/gfxstream/mk-vk.sh ios`'s output), booted with `metal=1` and
+   `RC_JOBS=rc.jobs.metalvk`: `m2v_test`'s lines are the first result, to set beside the Mac's above (the phone's host runs the
+   PowerVR's Vulkan, not the Mac's old MoltenVK: `group_sum` is expected right there, not yet seen); `metal_test` the second (does iOS 16.5's Metal take the device?).
 3. IOSurfaces (the point above), one of: the driver offering `VK_EXT_external_memory_host` over guest pages; IOSurfaces allocated
    from memory the driver can import (gfxstream's blob resources) and the runtime taught that kind of import; or the pin moved to a
    metal2vulkan with copied host buffers, which means porting the bridge to the runtime's newer API and checking AdrenoMetal's
