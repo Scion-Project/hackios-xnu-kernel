@@ -63,6 +63,14 @@ pub fn on() -> bool {
     *ON.get_or_init(|| std::env::var("HAKIOS_VK_INCOHERENT").is_ok_and(|v| v == "1"))
 }
 
+/// Whether the driver's host-memory import is hidden (`HAKIOS_VK_NO_HOST_IMPORT=1`, alone or with the test above): it then lists
+/// no `VK_EXT_external_memory_host`, as gfxstream's driver does, so no-copy buffers and IOSurface textures take the runtime's
+/// copies (tools/metal/m2v/0002-copied-host-memory.patch).
+pub fn no_import() -> bool {
+    static NO: OnceLock<bool> = OnceLock::new();
+    *NO.get_or_init(|| std::env::var("HAKIOS_VK_NO_HOST_IMPORT").is_ok_and(|v| v == "1"))
+}
+
 fn real<F: Copy>(index: usize) -> F {
     let pointer = REAL[index].load(Ordering::Acquire);
     assert!(pointer != 0, "incoherent: {} was never resolved", NAMES[index]);
@@ -72,12 +80,16 @@ fn real<F: Copy>(index: usize) -> F {
 
 /// The function to hand out for `name` while the test is on: this file's where it has one, else the driver's.
 pub fn wrap(name: &CStr, driver: Void) -> Void {
-    if !on() {
+    if !on() && !no_import() {
         return driver;
     }
     let Some(pointer) = driver else { return None };
     let Ok(name) = name.to_str() else { return driver };
     let Some(index) = NAMES.iter().position(|n| *n == name) else { return driver };
+    // the import hidden alone: only the device's extensions are this file's
+    if !on() && index != 10 && index != 3 {
+        return driver;
+    }
     let _ = REAL[index].compare_exchange(0, pointer as usize, Ordering::AcqRel, Ordering::Acquire);
     let ours: unsafe extern "system" fn() = unsafe {
         match index {
@@ -233,7 +245,11 @@ unsafe extern "system" fn device_extensions(physical: vk::PhysicalDevice, layer:
         return result;
     }
     all.truncate(n as usize);
-    all.retain(|e| e.extension_name_as_c_str().map_or(true, |name| name != c"VK_EXT_host_image_copy"));
+    all.retain(|e| {
+        e.extension_name_as_c_str().map_or(true, |name| {
+            !(on() && name == c"VK_EXT_host_image_copy") && !(no_import() && name == c"VK_EXT_external_memory_host")
+        })
+    });
     unsafe {
         if out.is_null() {
             *count = all.len() as u32;
