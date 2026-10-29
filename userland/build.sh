@@ -12,6 +12,10 @@
 #                                   otherwise -- init's checks, then a wait while the kernel's drivers log.
 #                                   With RC=rc.launchd and boot-arg system_apfs=ufs_NAME, init makes the system
 #                                   image on that partition the root and the boot goes on as a RAM boot's
+#                      VK_DIR=DIR   with the Vulkan library of the guest (gfxstream's Vulkan over /dev/vgpu3d,
+#                                   tools/gfxstream/VULKAN.md) and its test, built by tools/gfxstream/mk-vk.sh ios
+#                                   (which needs Xcode's clang): DIR/libhakios.vk.dylib into lib/, DIR/vk_test
+#                                   into bin/ (rc.jobs runs it once; without it that line just says "not found")
 #                      RC=<file>    etc/rc: rc.launchd (default) hands process 1 to the iOS launchd
 #                                   after init's checks; rc.ios runs a few iOS programs and halts
 #                      JOBS="..."   labels of the stock iOS launchd jobs to load (default: IOS_JOBS)
@@ -183,6 +187,14 @@ rm -rf root
 mkdir -p root/sbin root/bin root/etc root/share root/LaunchDaemons
 cp obj/init root/sbin/init
 cp obj/child root/bin/child
+if [ -n "$VK_DIR" ]; then
+	[ -f "$VK_DIR/libhakios.vk.dylib" ] && [ -f "$VK_DIR/vk_test" ] ||
+		{ echo "build.sh: VK_DIR=$VK_DIR has no libhakios.vk.dylib and vk_test (tools/gfxstream/mk-vk.sh ios)" >&2; exit 1; }
+	mkdir -p root/lib
+	install -m 0755 "$VK_DIR/libhakios.vk.dylib" root/lib/libhakios.vk.dylib
+	install -m 0755 "$VK_DIR/vk_test" root/bin/vk_test
+	echo "build.sh: the guest's Vulkan (libhakios.vk.dylib, vk_test) from $VK_DIR"
+fi
 # ALONE=1: the kernel starts this image's /sbin/launchd as process 1 (rd=md0), with no stage0 to mount it on /redwood:
 # so init is that file too, and finds its image at / (src/init.c, base); /redwood is the image again for the paths
 # that name it (the jobs' plists, etc/rc lines)

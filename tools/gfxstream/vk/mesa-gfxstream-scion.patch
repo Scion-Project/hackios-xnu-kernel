@@ -1,0 +1,281 @@
+Scion: gfxstream's guest Vulkan driver (Mesa src/gfxstream) on iOS over /dev/vgpu3d, and on the Mac
+against the Android emulator's gfxstream. Applied by tools/gfxstream/mk-vk.sh (see VULKAN.md there).
+
+Upstream: Mesa 25.0.7, https://archive.mesa3d.org/mesa-25.0.7.tar.xz (the release tools/mk-mesa.sh
+pins), src/gfxstream: gfxstream's guest side, Copyright Google LLC / Android Open Source Project,
+SPDX-License-Identifier: MIT (Mesa's licence for those files). The changes below are under the same
+licence.
+
+- a darwin platform: platform/scion (copied in from tools/gfxstream/vk/scion), a transport of its own
+  (GFXSTREAM_TRANSPORT_SCION: a byte pipe to a "pipe:opengles" render thread, as the GL path uses)
+- the core Vulkan commands exported from the library (no loader on iOS); the weak entry points of
+  Mesa's tables resolved at load (-undefined dynamic_lookup), as ELF resolves them at link
+- no direct mapping when the device cannot map host memory (kParamHostVisible 0): host-visible
+  memory is a guest copy, and vkFlushMappedMemoryRanges / vkInvalidateMappedMemoryRanges carry its
+  bytes over the stream (gfxstream's own non-direct mode; the host side is unchanged)
+- the encoder reads exactly the bytes an invalidate returns (the host rounds its allocations up to a
+  page, so for VK_WHOLE_SIZE it sends more than the guest mapped, and the stream went out of step),
+  and clamps VK_WHOLE_SIZE with an offset to the rest of the memory
+- darwin build fixes in ResourceTracker (drm_fourcc.h from Mesa's include/drm-uapi)
+
+--- a/src/gfxstream/codegen/scripts/cereal/encoder.py
++++ b/src/gfxstream/codegen/scripts/cereal/encoder.py
+@@ -560,7 +560,10 @@
+         cgen.stmt("uint64_t streamSize = 0")
+         cgen.stmt("if (!memory) { %s->write(&streamSize, sizeof(uint64_t)); continue; }" % streamVar)
+         cgen.stmt("auto hostPtr = sResourceTracker->getMappedPointer(memory)")
+-        cgen.stmt("auto actualSize = size == VK_WHOLE_SIZE ? sResourceTracker->getMappedSize(memory) : size")
++        cgen.stmt("auto mappedSize = sResourceTracker->getMappedSize(memory)")
++        # Scion: VK_WHOLE_SIZE is the rest of the memory after offset, and never past its end
++        cgen.stmt("auto actualSize = size == VK_WHOLE_SIZE ? (mappedSize > offset ? mappedSize - offset : 0) : size")
++        cgen.stmt("if (offset > mappedSize || actualSize > mappedSize - offset) actualSize = 0")
+         cgen.stmt("if (!hostPtr) { %s->write(&streamSize, sizeof(uint64_t)); continue; }" % streamVar)
+         cgen.stmt("streamSize = actualSize")
+         cgen.stmt("%s->write(&streamSize, sizeof(uint64_t))" % streamVar)
+@@ -596,15 +599,17 @@
+         cgen.stmt("auto memory = range.memory")
+         cgen.stmt("auto size = range.size")
+         cgen.stmt("auto offset = range.offset")
+-        cgen.stmt("uint64_t streamSize = 0")
+-        cgen.stmt("if (!memory) { %s->read(&streamSize, sizeof(uint64_t)); continue; }" % streamVar)
+-        cgen.stmt("auto hostPtr = sResourceTracker->getMappedPointer(memory)")
+-        cgen.stmt("auto actualSize = size == VK_WHOLE_SIZE ? sResourceTracker->getMappedSize(memory) : size")
+-        cgen.stmt("if (!hostPtr) { %s->read(&streamSize, sizeof(uint64_t)); continue; }" % streamVar)
+-        cgen.stmt("streamSize = actualSize")
++        # Scion: the host says how many bytes follow (for VK_WHOLE_SIZE, the rest of ITS
++        # allocation, which it rounds up to a page): exactly those are read, as many as fit the
++        # guest's copy are kept, the rest skipped, so that the stream stays in step.
++        cgen.stmt("uint64_t streamSize = 0")
+         cgen.stmt("%s->read(&streamSize, sizeof(uint64_t))" % streamVar)
+-        cgen.stmt("uint8_t* targetRange = hostPtr + offset")
+-        cgen.stmt("%s->read(targetRange, actualSize)" % streamVar)
++        cgen.stmt("auto hostPtr = memory ? sResourceTracker->getMappedPointer(memory) : nullptr")
++        cgen.stmt("auto mappedSize = memory ? sResourceTracker->getMappedSize(memory) : 0")
++        cgen.stmt("uint64_t keep = (!hostPtr || offset >= mappedSize) ? 0 : std::min<uint64_t>(streamSize, mappedSize - offset)")
++        cgen.stmt("if (keep) %s->read(hostPtr + offset, keep)" % streamVar)
++        cgen.stmt("for (uint64_t left = streamSize - keep; left; ) { uint8_t skip[4096]; uint64_t k = left < sizeof(skip) ? left : sizeof(skip); %s->read(skip, k); left -= k; }" % streamVar)
++        cgen.stmt("(void)size")
+         cgen.endFor()
+         cgen.endIf()
+ 
+--- a/src/gfxstream/guest/connection-manager/GfxStreamConnectionManager.cpp
++++ b/src/gfxstream/guest/connection-manager/GfxStreamConnectionManager.cpp
+@@ -12,7 +12,11 @@
+ #include "VirtGpu.h"
+ #include "VirtioGpuAddressSpaceStream.h"
+ #include "VirtioGpuPipeStream.h"
++#include "util/detect_os.h"
+ #include "util/log.h"
++#if DETECT_OS_APPLE
++#include "ScionStream.h"
++#endif
+ 
+ #define STREAM_BUFFER_SIZE (4 * 1024 * 1024)
+ 
+@@ -84,6 +88,21 @@
+ 
+             break;
+         }
++#if DETECT_OS_APPLE
++        case GFXSTREAM_TRANSPORT_SCION: {
++            bool flagsSent = false;
++            mStream = createScionStream(STREAM_BUFFER_SIZE, &flagsSent);
++            if (!mStream) {
++                mesa_loge("Failed to connect to host (Scion)\n");
++                return false;
++            }
++            VirtGpuDevice::getInstance(mCapset);
++            if (flagsSent) {
++                return true;  // the kernel sent them with the service name
++            }
++            break;
++        }
++#endif
+         default:
+             return false;
+     }
+--- a/src/gfxstream/guest/connection-manager/GfxStreamConnectionManager.h
++++ b/src/gfxstream/guest/connection-manager/GfxStreamConnectionManager.h
+@@ -25,6 +25,8 @@
+     GFXSTREAM_TRANSPORT_ADDRESS_SPACE = 2,
+     GFXSTREAM_TRANSPORT_VIRTIO_GPU_PIPE = 3,
+     GFXSTREAM_TRANSPORT_VIRTIO_GPU_ADDRESS_SPACE = 4,
++    // Scion: a byte pipe to a "pipe:opengles" render thread (platform/scion)
++    GFXSTREAM_TRANSPORT_SCION = 5,
+ };
+ 
+ class GfxStreamConnectionManager {
+--- a/src/gfxstream/guest/connection-manager/meson.build
++++ b/src/gfxstream/guest/connection-manager/meson.build
+@@ -16,7 +16,8 @@
+    cpp_args: gfxstream_guest_args,
+    include_directories: [inc_connection_manager, inc_guest_iostream,
+                          inc_guest_iostream, inc_goldfish_address_space,
+-                         inc_platform_virtgpu, inc_src, inc_aemu],
++                         inc_platform_virtgpu, inc_src, inc_aemu] +
++                        (host_machine.system() == 'darwin' ? [inc_platform_scion] : []),
+    link_with: [lib_goldfish_address_space, libplatform_virtgpu],
+    dependencies: dep_libdrm
+ )
+--- a/src/gfxstream/guest/platform/meson.build
++++ b/src/gfxstream/guest/platform/meson.build
+@@ -10,6 +10,10 @@
+ if system_has_kms_drm
+   subdir('linux')
+   libplatform_virtgpu += libplatform_virtgpu_linux
++elif host_machine.system() == 'darwin'
++  # Scion: iOS (/dev/vgpu3d) and its Mac test harness
++  subdir('scion')
++  libplatform_virtgpu += libplatform_virtgpu_scion
+ elif host_machine.system() == 'windows'
+   subdir('windows')
+   libplatform_virtgpu += libplatform_virtgpu_windows
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -37,6 +37,8 @@
+ 
+ #if DETECT_OS_LINUX
+ #include <drm_fourcc.h>
++#elif defined(LINUX_GUEST_BUILD)
++#include "drm-uapi/drm_fourcc.h"
+ #endif
+ 
+ #ifndef VK_USE_PLATFORM_FUCHSIA
+@@ -1521,7 +1523,17 @@
+     ResourceTracker::threadingCallbacks = callbacks;
+ }
+ 
+-bool ResourceTracker::usingDirectMapping() const { return true; }
++bool ResourceTracker::usingDirectMapping() const {
++#if DETECT_OS_APPLE
++    // Scion: a device that cannot map host memory into the guest (kParamHostVisible 0, a byte
++    // pipe) keeps a guest copy of host-visible memory, and vkFlushMappedMemoryRanges /
++    // vkInvalidateMappedMemoryRanges carry its bytes over the stream (VkEncoder). The host must
++    // agree: it does when neither GlDirectMem nor VirtioGpuNext is enabled.
++    return mCaps.params[kParamHostVisible] != 0;
++#else
++    return true;
++#endif
++}
+ 
+ uint32_t ResourceTracker::getStreamFeatures() const { return ResourceTracker::streamFeatureBits; }
+ 
+@@ -2223,7 +2235,7 @@
+     }
+ }
+ 
+-#if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
++#if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX || defined(LINUX_GUEST_BUILD)
+ void updateMemoryTypeBits(uint32_t* memoryTypeBits, uint32_t memoryIndex) {
+     *memoryTypeBits = 1u << memoryIndex;
+ }
+@@ -4042,6 +4054,32 @@
+         return VK_SUCCESS;
+     }
+ #endif
++
++    if (!usingDirectMapping()) {
++        // Scion: the host's allocation, and a page-aligned guest copy that vkMapMemory hands out
++        input_result =
++            enc->vkAllocateMemory(device, &finalAllocInfo, pAllocator, pMemory, true /* do lock */);
++        if (input_result != VK_SUCCESS) _RETURN_FAILURE_WITH_DEVICE_MEMORY_REPORT(input_result);
++        void* shadow = nullptr;
++        size_t shadowSize = ALIGN_POT(finalAllocInfo.allocationSize, 4096);
++        if (posix_memalign(&shadow, 4096, shadowSize ? shadowSize : 4096)) {
++            enc->vkFreeMemory(device, *pMemory, pAllocator, true /* do lock */);
++            *pMemory = VK_NULL_HANDLE;
++            _RETURN_FAILURE_WITH_DEVICE_MEMORY_REPORT(VK_ERROR_OUT_OF_HOST_MEMORY);
++        }
++        memset(shadow, 0, shadowSize);
++        setDeviceMemoryInfo(device, *pMemory, finalAllocInfo.allocationSize, (uint8_t*)shadow,
++                            finalAllocInfo.memoryTypeIndex, ahw, isImport, vmo_handle, nullptr);
++        {
++            std::lock_guard<std::recursive_mutex> lock(mLock);
++            info_VkDeviceMemory[*pMemory].shadow = true;
++        }
++        emitDeviceMemoryReport(info_VkDevice[device], VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_ALLOCATE_EXT,
++                               (uint64_t)(void*)*pMemory, pAllocateInfo->allocationSize,
++                               VK_OBJECT_TYPE_DEVICE_MEMORY, (uint64_t)(void*)*pMemory,
++                               pAllocateInfo->memoryTypeIndex);
++        return VK_SUCCESS;
++    }
+ 
+     // Host visible memory with direct mapping
+     VkResult result = getCoherentMemory(&finalAllocInfo, enc, device, pMemory);
+@@ -4096,6 +4134,10 @@
+ #endif
+ 
+     if (!info.coherentMemory) {
++        if (info.shadow) {
++            free(info.ptr);  // Scion's guest copy
++            info.ptr = nullptr;
++        }
+         lock.unlock();
+         VkEncoder* enc = (VkEncoder*)context;
+         enc->vkFreeMemory(device, memory, pAllocateInfo, true /* do lock */);
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+@@ -764,6 +764,8 @@
+ #endif  // DETECT_OS_ANDROID
+         CoherentMemoryPtr coherentMemory = nullptr;
+         VirtGpuResourcePtr blobPtr = nullptr;
++        // Scion: ptr is a guest copy of host-visible memory (no direct mapping)
++        bool shadow = false;
+     };
+ 
+     struct VkCommandBuffer_Info {
+--- a/src/gfxstream/guest/vulkan/meson.build
++++ b/src/gfxstream/guest/vulkan/meson.build
+@@ -18,6 +18,16 @@
+    gfxstream_vk_wsi_args += '-DGFXSTREAM_VK_WAYLAND'
+ endif
+ 
++gfxstream_vk_link_args = []
++if host_machine.system() == 'darwin'
++   # Scion: the core Vulkan commands exported (no loader on iOS) and nothing else, and the
++   # weak entry points Mesa's tables name and nothing defines resolved to NULL at load, as ELF
++   # does at link
++   files_lib_vulkan_gfxstream += scion_vk_exports
++   gfxstream_vk_link_args += ['-Wl,-undefined,dynamic_lookup',
++                              '-Wl,-exported_symbol,_vk[A-Z]*', '-Wl,-exported_symbol,_vk_icd*']
++endif
++
+ lib_vulkan_gfxstream = shared_library(
+    'vulkan_gfxstream',
+    files_lib_vulkan_gfxstream + files_lib_vulkan_enc + gfxstream_vk_entrypoints +
+@@ -30,7 +40,7 @@
+                          inc_platform_virtgpu, inc_connection_manager],
+    link_with: [libgfxstream_vk_stubs, libvulkan_wsi, libplatform_virtgpu,
+                libconnection_manager, libaemu],
+-   link_args: [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections],
++   link_args: [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections, gfxstream_vk_link_args],
+    link_depends: vulkan_icd_link_depends,
+    dependencies: [dep_libdrm, idep_vulkan_wsi_headers,
+                   idep_vulkan_lite_runtime, idep_vulkan_util_headers,
+--- a/src/gfxstream/guest/vulkan/stubs/GfxStreamRenderControl.cpp
++++ b/src/gfxstream/guest/vulkan/stubs/GfxStreamRenderControl.cpp
+@@ -6,8 +6,14 @@
+ #include "GfxStreamRenderControl.h"
+ #include <cerrno>
+ 
++#include "util/detect_os.h"
++
+ GfxStreamTransportType renderControlGetTransport() {
++#if DETECT_OS_APPLE
++    return GFXSTREAM_TRANSPORT_SCION;
++#else
+     return GFXSTREAM_TRANSPORT_VIRTIO_GPU_ADDRESS_SPACE;
++#endif
+ }
+ 
+ int32_t renderControlInit(GfxStreamConnectionManager* mgr, void* vkInfo) { return -EINVAL; }
+--- a/src/gfxstream/guest/vulkan/stubs/meson.build
++++ b/src/gfxstream/guest/vulkan/stubs/meson.build
+@@ -10,6 +10,6 @@
+    'gfxstream_vk_stubs',
+    files_libgfxstream_vk_stubs,
+    cpp_args: gfxstream_guest_args,
+-   include_directories: [inc_connection_manager, inc_platform_virtgpu,
++   include_directories: [inc_connection_manager, inc_platform_virtgpu, inc_src,
+                          inc_guest_iostream],
+ )
