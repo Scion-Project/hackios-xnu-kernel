@@ -19,15 +19,19 @@
  * The gauge learns the battery on its own and keeps that while the battery is connected (it is not removable); no model
  * is loaded by the host on Android either. The charge iOS sees is RepSOC; Android's own percentage is the same scaled to
  * a learnt maximum, so near full the two may differ by some percent. The temperature is not the gauge's (Android writes
- * an ADC thermistor's reading into it): until that ADC is read here, the battery is said to be at 25 C.
+ * an ADC thermistor's reading into it): it is the thermistor's, channel 4 of the CMGP block's ADC (0x14230000, 12 bits),
+ * read as Android does (five conversions, the highest and the lowest dropped) and turned into degrees by the phone's own
+ * table (battery,temp_table_adc and _data in its device tree). The ADC: CON1 0x00 (bit 2 reset, bit 1 out of reset,
+ * bit 0 start), CON2 0x04 ([6:4] conversion time, [3:0] the channel), DAT 0x08 [11:0], INT_EN 0x10, INT_ST 0x14 (bit 0
+ * done, 1 clears it); its clock gates CMU_CMGP +0x2018 and +0x201C, its Q-channels +0x3008 and +0x300C.
  * Sources: the phone's device tree (hsi2c@14360000, max77705 at 0x66, the fuel gauge's settings: fg_resistor 2, capacity
- * 2967 mAh), Linux's drivers/battery_v2/max77705_fuelgauge.c and _charger.c and drivers/mfd/max77705.c of the S9's kernel
- * (GPL: read for these facts, not copied).
+ * 2967 mAh; adc@14230000, the temperature table), Linux's drivers/battery_v2/max77705_fuelgauge.c, _charger.c, sec_adc.c,
+ * drivers/mfd/max77705.c and drivers/iio/adc/exynos_adc.c of the S9's kernel (GPL: read for these facts, not copied).
  *
  * The bring-up is made in steps, each said in the log before it is made. Boot-arg max77705_steps=N stops after the
  * first N:
  *   1  map the bus's blocks and read what they are set to   (nothing written)
- *   2  the bus's clocks on and USI03 to I2C                  (the first writes)
+ *   2  the bus's clocks on and USI03 to I2C, the ADC's on    (the first writes)
  *   3  the bus reset and set to 400 kHz
  *   4  read the chip's revision, the gauge and the charger once
  *   5  report every 5 seconds (the default)
@@ -42,6 +46,8 @@
 #include <sys/systm.h>
 
 extern kern_return_t thread_terminate(thread_t thread);
+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern void delay(int usec);
 
 /* (every line to the loader's log as well, as the other drivers do: see hakios.buttons.c) */
 extern void loader_log_putc(char c);
@@ -78,6 +84,22 @@ say(const char *format, ...)
 #define CHG_DTLS_01     0xB4
 
 #define DESIGN_MAH      2967            /* the device tree's fuelgauge,capacity */
+
+#define ADC_PA          0x14230000UL
+#define ADC_CON1        0x00
+#define ADC_CON2        0x04
+#define ADC_DAT         0x08
+#define ADC_INT_EN      0x10
+#define ADC_INT_ST      0x14
+#define ADC_CHANNEL     4               /* the battery's thermistor (sec-battery's adc-temp) */
+static const uint32_t adc_gates[] = { 0x2018, 0x201C }, adc_qch[] = { 0x3008, 0x300C };
+
+/* the device tree's battery,temp_table_adc and _data: the ADC's reading, and tenths of a degree */
+static const uint16_t temp_adc[] = { 275, 327, 385, 451, 535, 626, 737, 864, 1013, 1210, 1361, 1554, 1769, 2007, 2239,
+	                             2476, 2702, 2924, 3116, 3294, 3446, 3564, 3676 };
+static const int16_t temp_data[] = { 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150, 100,
+	                             50, 0, -50, -100, -150, -200 };
+static vm_offset_t adc;
 #define POLL_MS         5000
 
 static struct hakios_hsi2c bus = {
@@ -109,6 +131,96 @@ read8(uint8_t addr, uint8_t reg, uint8_t *value)
 	return hakios_hsi2c_read_reg(&bus, addr, reg, value, 1);
 }
 
+static inline uint32_t
+adc_rd(uint32_t off)
+{
+	return *(volatile uint32_t *)(adc + off);
+}
+
+static inline void
+adc_wr(uint32_t off, uint32_t v)
+{
+	*(volatile uint32_t *)(adc + off) = v;
+}
+
+/* the ADC's clocks on (in CMU_CMGP, which the bus has mapped), reset, its conversion time set */
+static void
+adc_init(void)
+{
+	adc = ml_io_map(ADC_PA, 0x1000);
+	if (!adc || !bus.cmu) {
+		adc = 0;
+		return;
+	}
+	for (unsigned i = 0; i < 2; i++) {
+		*(volatile uint32_t *)(bus.cmu + adc_gates[i]) |= (1u << 20) | (1u << 21);
+		*(volatile uint32_t *)(bus.cmu + adc_qch[i]) |= 3;
+	}
+	adc_wr(ADC_CON1, 1u << 2);
+	adc_wr(ADC_CON1, 1u << 1);
+	adc_wr(ADC_CON2, 6u << 4);
+	adc_wr(ADC_INT_EN, 1);
+}
+
+/* one conversion of the thermistor's channel; -1 if it does not finish */
+static int
+adc_convert(void)
+{
+	adc_wr(ADC_CON2, (adc_rd(ADC_CON2) & ~0xfu) | ADC_CHANNEL);
+	adc_wr(ADC_CON1, adc_rd(ADC_CON1) | 1);
+	for (int waited = 0; waited < 10000; waited++) {
+		if (adc_rd(ADC_INT_ST) & 1) {
+			int value = (int)(adc_rd(ADC_DAT) & 0xfff);
+
+			adc_wr(ADC_INT_ST, 1);
+			return value;
+		}
+		delay(1);
+	}
+	return -1;
+}
+
+/* the battery's temperature in hundredths of a degree, or 2500 (25 C) when the ADC does not answer */
+static int32_t
+battery_temperature(int *raw_out)
+{
+	int sample[5], low = 0, high = 0, sum = 0, raw;
+	unsigned n = sizeof(temp_adc) / sizeof(temp_adc[0]);
+
+	*raw_out = -1;
+	if (!adc) {
+		return 2500;
+	}
+	for (int i = 0; i < 5; i++) {
+		if ((sample[i] = adc_convert()) < 0) {
+			return 2500;
+		}
+		low = (i == 0 || sample[i] < sample[low]) ? i : low;
+		high = (i == 0 || sample[i] > sample[high]) ? i : high;
+	}
+	for (int i = 0; i < 5; i++) {
+		sum += (i == low || i == high) ? 0 : sample[i];
+	}
+	raw = sum / (low == high ? 4 : 3);
+	*raw_out = raw;
+	if (raw <= temp_adc[0]) {
+		return temp_data[0] * 10;
+	}
+	if (raw >= temp_adc[n - 1]) {
+		return temp_data[n - 1] * 10;
+	}
+	for (unsigned i = 1; i < n; i++) {
+		if (raw <= temp_adc[i]) {
+			/* between two points of the table, on the line through them (tenths of a degree, to hundredths) */
+			return (temp_data[i - 1] * 10) + (temp_data[i] - temp_data[i - 1]) * 10 * (raw - temp_adc[i - 1]) /
+			       (temp_adc[i] - temp_adc[i - 1]);
+		}
+	}
+	return 2500;
+}
+
+static int last_adc = -1;              /* the thermistor's last reading, for the log */
+
 /* the gauge and the charger as one state; false if a read failed */
 static bool
 battery_read(struct hakios_battery_state *b)
@@ -131,7 +243,7 @@ battery_read(struct hakios_battery_state *b)
 	}
 	b->voltage_uv = (int32_t)((uint64_t)vcell * 78125 / 1000);
 	b->current_ua = (int32_t)current * 3125 / 10;
-	b->temperature_hundredths = 2500;               /* (not the gauge's: see the top of this file) */
+	b->temperature_hundredths = battery_temperature(&last_adc);    /* (the thermistor's: see the top of this file) */
 	b->present = !(status & (1u << 3));
 	b->external = (ok & (3u << 5)) != 0;           /* the USB input or the wireless one */
 	switch (dtls & 0xf) {
@@ -156,8 +268,10 @@ battery_read(struct hakios_battery_state *b)
 static void
 say_state(const char *when, const struct hakios_battery_state *b)
 {
-	say("max77705: %s: %d.%02d%%, %d mV, %d mA, %s, %s, %d of %d mAh (full %d), %d cycles\n", when,
+	say("max77705: %s: %d.%02d%%, %d mV, %d mA, %d.%d C (ADC %d), %s, %s, %d of %d mAh (full %d), %d cycles\n", when,
 	    b->percent_hundredths / 100, b->percent_hundredths % 100, b->voltage_uv / 1000, b->current_ua / 1000,
+	    b->temperature_hundredths / 100, (b->temperature_hundredths < 0 ? -b->temperature_hundredths : b->temperature_hundredths) % 100 / 10,
+	    last_adc,
 	    b->present ? "a battery" : "NO BATTERY", b->status == 1 ? "charging" : b->status == 4 ? "full" :
 	    b->status == 3 ? "on a charger, not charging" : "discharging", b->charge_uah / 1000, b->design_uah / 1000,
 	    b->full_uah / 1000, b->cycles);
@@ -174,8 +288,9 @@ battery_thread(void *arg, __unused wait_result_t result)
 	if (!hakios_hsi2c_map(&bus, say) || ++step >= steps) {
 		goto out;
 	}
-	say("max77705: step 2: the clocks of CMGP's USI03 on, USI03 to I2C\n");
+	say("max77705: step 2: the clocks of CMGP's USI03 on, USI03 to I2C; the ADC's clocks on, the ADC reset\n");
 	hakios_hsi2c_power(&bus);
+	adc_init();
 	if (++step >= steps) {
 		goto out;
 	}
