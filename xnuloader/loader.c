@@ -595,6 +595,8 @@ struct platform {
 	uint64_t ufs_hc;                 /* the UFS host controller the kernel's own driver may take over (ufs_native=); 0: none */
 	uint64_t timer_hz;               /* the timer's frequency where CNTFRQ_EL0 reads 0 (the firmware never set it), 0: none */
 	uint64_t recovery_pmu;           /* Samsung: the PMU whose INFORM registers send a restart into recovery (recovery_after_reset) */
+	uint64_t gic_redist_size;        /* the redistributors' region, where it is not 1 MB (GICv4 frames are 256 KB a core) */
+	const char *compatible;          /* told apart by this in the device tree's root "compatible" instead (platform_from_fdt) */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -664,6 +666,58 @@ static const struct platform platform_starlte = {
 	.recovery_pmu = 0x14060000,
 };
 
+static const struct platform platform_frankel = {
+	/*
+	 * Google Pixel 10 (frankel), Tensor G5 ("laguna", lga), bare metal. There is no UEFI for this phone: Google's boot
+	 * loader (ABL) starts the SoC's boot shim (socs/lga/shim), which offers the few UEFI services this loader uses
+	 * over the boot loader's device tree, and stays at EL2 to pass PSCI on to EL3. Its framebuffer has no fixed address
+	 * either (the boot loader's own), so the phone is told apart by the root "compatible" of that device tree.
+	 * Every value is from the mainline device tree (arch/arm64/boot/dts/google/lga.dtsi, Linux 7.4, GPL-2.0 OR
+	 * BSD-3-Clause) and Google's kernel for the phone (private/devices/google/lga/dts/lga-base.dtsi, -rmem.dtsi);
+	 * devices/frankel/README.md has each one's source.
+	 */
+	.name = "frankel", .compatible = "google,lga-frankel",
+	/* the SoC's registers from the GIC (0x05880000) to the UFS host (0x3C400000) and the PWM (0x3BD90000) */
+	.io_base = 0x04000000, .io_size = 0x3C000000,
+	/* a GICv3 ("arm,gic-v3"): distributor 0x05880000, redistributors 0x05900000 + 2 MB, GICv4 frames of 256 KB */
+	.gic_dist = 0x05880000, .gic_redist = 0x05900000, .gic_redist_size = 0x200000,
+	/* the console UART (0x0DB62000) is a DesignWare 16550, not a PL011, and reaches the USB-C port only after `fastboot oem uart enable` */
+	.uart = 0,
+	/* PSCI by HVC: to the shim at EL2, which makes the SMC and starts a core at EL1 where the firmware would start it at EL2 */
+	.psci_hvc = 1,
+	/*
+	 * Each core in an affinity field of its own (MPIDR 0x000-0x700, Aff1 = the core): 0-1 Cortex-A520, 2-6 Cortex-A725,
+	 * 7 Cortex-X4. All ARMv9.2: any one of them may be the boot core.
+	 */
+	.cores = 8, .core_shift = 8,
+	.small_cores = 0x03,
+	/*
+	 * Linux's ramoops (reserved-memory ramoops@95200000, 4 MB: 2 MB console, then 2 MB pmsg), its pmsg zone, which the
+	 * boot loader leaves alone across a warm restart (the region is reserved "for access by the ABL following a
+	 * crash-reset"): Android reads it back as /sys/fs/pstore/pmsg-ramoops-0.
+	 */
+	.ram_log = 0x95400000, .ram_log_size = 0x10000,
+	/* CNTFRQ_EL0: set by the firmware (no clock-frequency in the timer's node) */
+	.timer_hz = 0,
+	/* the framebuffer is the boot loader's, wherever it is: not a way to tell this phone apart */
+	.fb_base = 0,
+};
+
+/*
+ * Not a phone: QEMU virt as close to the Pixel 10 as it goes (socs/lga/shim/qemu-test.sh): EL2 (virtualization=on) for
+ * the boot shim, which starts this loader without UEFI and passes PSCI on; a GICv4 (gic-version=4: 256 KB redistributor
+ * frames, 2 MB of them for 8 cores); eight cores, two of them small. QEMU numbers its cores in Aff0 whatever -smp says,
+ * so the core numbering is QEMU's (core_shift 0); the Pixel's, Aff1, is redwood's. Told apart by the root "compatible"
+ * of the test's device tree.
+ */
+static const struct platform platform_qemu_lga = {
+	.name = "qemu-lga", .compatible = "scion,qemu-lga",
+	.io_base = 0x08000000, .io_size = 0x08000000,
+	.gic_dist = 0x08000000, .gic_redist = 0x080A0000, .gic_redist_size = 0x200000, .uart = 0x09000000, .psci_hvc = 1,
+	.cores = 8, .core_shift = 0, .small_cores = 0x03,
+	.timeout_scale = 20,
+};
+
 /*
  * The devices the loader knows, told apart by the framebuffer base their UEFI reports. A port to another
  * device adds its description here (devices/<name>/README.md says where each value comes from); a
@@ -672,6 +726,8 @@ static const struct platform platform_starlte = {
 static const struct platform *const platforms[] = {
 	&platform_redwood,
 	&platform_starlte,
+	&platform_frankel,
+	&platform_qemu_lga,
 };
 
 /* Core N's MPIDR (its affinity fields), and the number of the core with that MPIDR (-1: none of the platform's) */
@@ -959,6 +1015,57 @@ gic_v2_from_fdt(const uint8_t *fdt, uint64_t *dist, uint64_t *cpu)
 		}
 	}
 	return 0;
+}
+
+/*
+ * A platform with a .compatible (one whose framebuffer does not tell it apart: the Pixel 10's is wherever its boot loader
+ * put it) found by the root node's "compatible" in the device tree the firmware publishes (UEFI configuration table;
+ * socs/lga/shim publishes the boot loader's). `plat` if none matches.
+ */
+static const struct platform *
+platform_from_fdt(const struct platform *plat)
+{
+	static const efi_guid dtb_guid = EFI_DTB_TABLE_GUID;
+
+	for (uint64_t i = 0; ST->tables != NULL && i < ST->nr_tables; i++) {
+		const uint8_t *fdt = ST->tables[i].table;
+
+		if (!guid_eq(&ST->tables[i].guid, &dtb_guid) || fdt == NULL || fdt32(fdt) != 0xd00dfeed) {
+			continue;
+		}
+		const uint8_t *st = fdt + fdt32(fdt + 8);
+		const char *strs = (const char *)fdt + fdt32(fdt + 12);
+		uint32_t st_size = fdt32(fdt + 36), at = 0;
+
+		/* the root node: BEGIN_NODE "", then its properties, up to its first child */
+		while (at + 4 <= st_size && fdt32(st + at) == 4) {      /* NOP */
+			at += 4;
+		}
+		if (at + 8 > st_size || fdt32(st + at) != 1) {
+			continue;
+		}
+		at += 4;
+		at += ((uint32_t)str_len((const char *)st + at) + 1 + 3) & ~3u;
+		while (at + 12 <= st_size && (fdt32(st + at) == 3 || fdt32(st + at) == 4)) {
+			if (fdt32(st + at) == 4) {
+				at += 4;
+				continue;
+			}
+			uint32_t len = fdt32(st + at + 4), nameoff = fdt32(st + at + 8);
+			const char *v = (const char *)st + at + 12;
+
+			if (str_eq(strs + nameoff, "compatible")) {
+				for (unsigned p = 0; p < sizeof(platforms) / sizeof(platforms[0]); p++) {
+					if (platforms[p]->compatible != NULL && compat_has(v, len, platforms[p]->compatible)) {
+						return platforms[p];
+					}
+				}
+				return plat;
+			}
+			at += 12 + ((len + 3) & ~3u);
+		}
+	}
+	return plat;
 }
 
 /* QEMU virt (gic-version=3, highmem): what its FDT says, for firmware that publishes ACPI instead */
@@ -3945,7 +4052,8 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
 	} else {
 		dt_prop_str(&w, "compatible", "arm,gic-v3");
-		uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base, 0x100000 };
+		uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base,
+		    plat->gic_redist_size != 0 ? plat->gic_redist_size : 0x100000 };
 		dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
 	}
 	dt_end(&w);
@@ -4835,7 +4943,7 @@ efi_main(efi_handle image, efi_system_table *st)
 	print("CurrentEL=%x MIDR=%x MMFR0=%x CNTFRQ=%d image=%x\n", READ_SYSREG(CurrentEL) >> 2, READ_SYSREG(MIDR_EL1),
 	    READ_SYSREG(ID_AA64MMFR0_EL1), READ_SYSREG(CNTFRQ_EL0) /* the register itself */, (uint64_t)(uintptr_t)&__ImageBase);
 
-	PLAT = &platform_qemu_virt;
+	PLAT = platform_from_fdt(&platform_qemu_virt);  /* (the Pixel 10: by its device tree, before the framebuffer) */
 	if (EFI_ERROR(BS->locate_protocol(&gop_guid, NULL, (void **)&GOP)) || GOP->mode == NULL ||
 	    GOP->mode->info == NULL || GOP->mode->fb_base == 0) {
 		GOP = NULL;                     /* no display (QEMU without -device ramfb) */
