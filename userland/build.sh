@@ -40,11 +40,13 @@
 #                                   air_run grew --buffer.
 #                      GL=1         with an OpenGL ES implementation for the window server: Mesa
 #                                   (tools/mk-mesa.sh fetches and builds it) behind src/eagl.c, as
-#                                   lib/libOSMesa.8.dylib (15 MB) and lib/libhakios.gl.dylib. Where the
-#                                   kernel has started the phone's GPU, CoreAnimation then draws with its
-#                                   OpenGL ES renderer, by that GPU (boot-arg gpu=1); anywhere else -- QEMU,
-#                                   no boot-arg, no firmware in ../fw-gpu -- the library is not even loaded
-#                                   and nothing changes (src/inject.c, opengl_es()).
+#                                   lib/libOSMesa.8.dylib (16 MB, freedreno and panfrost) and
+#                                   lib/libhakios.gl.dylib. Where the kernel has started the phone's GPU,
+#                                   CoreAnimation then draws with its OpenGL ES renderer, by that GPU
+#                                   (boot-arg gpu=1); anywhere else -- QEMU, no boot-arg, no firmware in
+#                                   ../fw-gpu -- the library is not even loaded and nothing changes
+#                                   (src/inject.c, opengl_es()). The Galaxy S9's Mali counts as well: its
+#                                   service, HakiosMali, is there once the kernel's mali=9 has brought it up.
 #                                   GL=gfx: the library draws with the HOST's GPU instead: gfxstream over
 #                                   virtio-gpu (src/gfx, /dev/vgpu3d; AVF on the Pixel: the PowerVR), as
 #                                   lib/libhakios.gl.dylib (no Mesa), plus bin/gfx_test. Boot-arg gl=1 loads
