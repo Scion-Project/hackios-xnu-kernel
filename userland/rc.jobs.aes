@@ -1,0 +1,8 @@
+# Commands run by the launchd job com.hakios.demo (see com.hakios.demo.plist).
+# IOAESAccelerator (the kernel's MiniIOAESAccelerator.cpp, UniXNU's SoftwareAES): AES-CBC round trips
+# through the user client against NIST SP 800-38A's vectors, and the refusals (src/aes_test.c). Then a
+# while for iOS's own clients (online-auth-agent, mobilerepaird ...) to come and ask: the kernel logs
+# each hardware key a program asks for once ("asked for hardware key 0x...").
+/redwood/bin/aes_test
+sleep 60
+/bin/ps -A

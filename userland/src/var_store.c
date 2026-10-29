@@ -19,6 +19,7 @@
  *   var_store erase         forget both slots (the next boot starts empty again)
  *   var_store stamp PATH    write a line into PATH saying when: a marker for a run
  *   var_store bootok        tell the loader's boot guard that this generation came up
+ *   var_store seed [FILE]   unpack a seed into /private/var (init, at boot, with var_seed=1; see below)
  *
  * Under the Android Virtualization Framework (crosvm on the Pixel) there is no flash partition of
  * ours: the store is then a second virtio disk, /dev/rrvblk1 (a writable disk image of the Scion
@@ -52,6 +53,16 @@
  * bundle in a block of darwin's boot area and gives up on a generation that was started three times
  * without coming up. `bootok` is the "came up": the watcher says it once the run has lasted
  * BOOTOK_AFTER seconds, so a kernel or a userland that dies early is rolled back by itself.
+ *
+ * A seed (boot-arg var_seed=1): the data volume to start from, instead of the empty one the template
+ * makes -- the idea of UniXNU's RamBlock (github.com/UniXNU/RamBlock), whose RAM-backed Data volume
+ * starts from a seed image with the first-boot work already done. Here the volume is a tree in ramfs,
+ * not a disk, so the seed is a tree too: one slot of a store (its header block, then the archive),
+ * taken out of a store's disk image by tools/var-seed.py and carried in the small image as
+ * /redwood/share/var.seed (userland/build.sh SEED=FILE), or on a read-only disk of its own, which costs
+ * no memory until it is unpacked (var_seed=DEV, e.g. rvblk1). init unpacks it after the template and before
+ * a store, so what the last boot kept (var_store=1) still goes in over it. Read only: nothing is ever
+ * written into a seed.
  *
  * What is left out: sockets and devices, which the daemons of a new boot make for themselves, and
  * the directories in SKIP below, which hold what only this boot can mean (its runtime sockets, its
@@ -182,11 +193,20 @@ sysctl_set_int(const char *name, int value)
 	return sysctlbyname(name, NULL, NULL, &value, sizeof(value));
 }
 
+static const char *device;              /* the store's device: see pick_device() */
+
 /* The claim on the store: nothing may be written without it, and only one program may hold it. */
 static int
 claim(void)
 {
 	if (sysctl_set_int("kern.hakios.var_busy", 1) != 0) {
+		/*
+		 * The claim is the UFS driver's (drivers/storage/hakios.ufs.c), and a kernel built without it -- QEMU's
+		 * qemu_defconfig -- has none to take. The virtio disk does not ask for one: go on there.
+		 */
+		if (errno == 2 /* ENOENT */ && strcmp(device, VIRTIO_DEVICE) == 0) {
+			return 1;
+		}
 		printf("var_store: the store is claimed by another saver (%s)\n", strerror(errno));
 		return 0;
 	}
@@ -318,6 +338,8 @@ boot_arg_number(const char *name)
 static const char *device = DEVICE;
 static off_t store_at = STORE_AT;
 static off_t slot_bytes = SLOT_BYTES;
+static int slots = SLOTS;               /* a seed is one slot */
+static int seeding;                     /* load from a seed file: its one slot is slot 0, whatever its header says */
 
 /*
  * The phone's partition when there is one; otherwise the second virtio disk, split in two slots.
@@ -578,11 +600,14 @@ read_head(int slot, struct head *into)
 		return 0;
 	}
 	if (memcmp(h->magic, HEAD_MAGIC, sizeof(h->magic)) != 0 || h->version != HEAD_VERSION ||
-	    h->slot != (uint32_t)slot || h->bytes > (uint64_t)slot_bytes - BLOCK ||
+	    (h->slot != (uint32_t)slot && !seeding) || h->bytes > (uint64_t)slot_bytes - BLOCK ||
 	    h->head_crc != head_checksum(h)) {
 		return 0;
 	}
 	*into = *h;
+	if (seeding) {
+		into->slot = (uint32_t)slot;    /* where it is in the seed file, not where it was in the store */
+	}
 	return 1;
 }
 
@@ -592,7 +617,7 @@ newest(struct head *out_head)
 {
 	int best = -1;
 
-	for (int slot = 0; slot < SLOTS; slot++) {
+	for (int slot = 0; slot < slots; slot++) {
 		struct head h;
 
 		if (!read_head(slot, &h)) {
@@ -1299,7 +1324,7 @@ load(void)
 		int left = -1;
 
 		/* the newest is torn: the one before it, which a save never touches, may still be whole */
-		for (int slot = 0; slot < SLOTS; slot++) {
+		for (int slot = 0; slot < slots; slot++) {
 			if (slot != best && read_head(slot, &other) && pass(&other, 0)) {
 				left = slot;
 				break;
@@ -1567,6 +1592,52 @@ stamp(const char *where)
 	return 1;
 }
 
+/* Unpack a seed (see the top of this file): FILE is one slot, its header block and its archive. */
+static int
+seed(const char *file)
+{
+	struct stat st;
+	struct timeval t0, t1;
+	int ok;
+
+	gettimeofday(&t0, NULL);
+	fd = open(file, O_RDONLY, 0);
+	if (fd >= 0 && fstat(fd, &st) != 0) {
+		close(fd);
+		fd = -1;
+	}
+	if (fd >= 0 && st.st_size == 0) {
+		/* a disk (var_seed=DEV): its size is its blocks, which fstat does not give */
+		uint64_t count = 0;
+		uint32_t size = 0;
+
+		if (mini_syscall(SYS_ioctl, fd, DKIOCGETBLOCKCOUNT, (long)&count, 0, 0, 0) >= 0 &&
+		    mini_syscall(SYS_ioctl, fd, DKIOCGETBLOCKSIZE, (long)&size, 0, 0, 0) >= 0) {
+			st.st_size = (off_t)(count * size);
+		}
+	}
+	if (fd < 0 || st.st_size < 2 * BLOCK) {
+		printf("var_store: seed %s: %s: /private/var stays as init made it\n", file,
+		    fd < 0 ? strerror(errno) : "too short to be one");
+		if (fd >= 0) {
+			close(fd);
+		}
+		return 0;
+	}
+	device = file;
+	store_at = 0;
+	slot_bytes = st.st_size;
+	slots = 1;
+	seeding = 1;
+	printf("var_store: seed %s, %lld bytes\n", file, (long long)st.st_size);
+	ok = load();
+	close(fd);
+	gettimeofday(&t1, NULL);
+	printf("var_store: seed unpacked in %lld ms\n",
+	    (long long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000);
+	return ok;
+}
+
 int
 main(int argc, char **argv, char **envp)
 {
@@ -1591,6 +1662,9 @@ main(int argc, char **argv, char **envp)
 	already = mmap(NULL, BUFFER, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 	if (already == MAP_FAILED) {
 		already = NULL;
+	}
+	if (strcmp(what, "seed") == 0) {
+		return seed(argc > 2 ? argv[2] : "/redwood/share/var.seed") ? 0 : 1;
 	}
 	pick_device();
 	if (strcmp(what, "watch") == 0) {
