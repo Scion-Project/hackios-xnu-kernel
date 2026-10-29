@@ -66,7 +66,9 @@
 #define GICD_IROUTER(n)         (0x6000 + 8 * (n))
 
 #define GICR_FRAME_SIZE         0x20000     /* RD_base + SGI_base per CPU */
+#define GICR_FRAME_SIZE_V4      0x40000     /* ... and VLPI_base and a reserved 64 KB, where GICR_TYPER.VLPIS says so */
 #define GICR_TYPER              0x0008
+#define GICR_TYPER_VLPIS        (1u << 1)
 #define GICR_TYPER_LAST         (1u << 4)
 #define GICR_WAKER              0x0014
 #define GICR_WAKER_PROCSLEEP    (1u << 1)
@@ -491,7 +493,13 @@ gic_find_redistributor(void)
 	/* GICR_TYPER[63:32] packs Aff3.Aff2.Aff1.Aff0 */
 	uint32_t affinity = (uint32_t)(((mpidr >> 32) & 0xff) << 24 | (mpidr & 0xffffff));
 
-	for (vm_offset_t frame = gicr_base; frame + GICR_FRAME_SIZE <= gicr_base + gicr_size; frame += GICR_FRAME_SIZE) {
+	/*
+	 * A redistributor that can take virtual LPIs (GICv4: GICR_TYPER.VLPIS) is four 64 KB frames, not two
+	 * (Arm's GIC architecture specification, IHI 0069, "Redistributor memory map"): the Google Tensor G5's
+	 * GIC is laid out so, 2 MB of redistributors for 8 cores (devices/frankel/README.md).
+	 */
+	vm_offset_t step = GICR_FRAME_SIZE;
+	for (vm_offset_t frame = gicr_base; frame + GICR_FRAME_SIZE <= gicr_base + gicr_size; frame += step) {
 		uint64_t typer = *(volatile uint64_t *)(frame + GICR_TYPER);
 
 		if ((uint32_t)(typer >> 32) == affinity) {
@@ -500,6 +508,7 @@ gic_find_redistributor(void)
 		if (typer & GICR_TYPER_LAST) {
 			break;
 		}
+		step = (typer & GICR_TYPER_VLPIS) ? GICR_FRAME_SIZE_V4 : GICR_FRAME_SIZE;
 	}
 	panic("gic: no redistributor for MPIDR 0x%llx", mpidr);
 }

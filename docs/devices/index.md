@@ -5,10 +5,11 @@
 
 Every device with a repository, and how far each part of it works. A device of yours: [Port a device](../porting/index.md).
 
-| Device | SoC | display | touch | buttons | cpu | gpu | storage | audio | battery | haptic | torch | wifi | cellular | network |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| [QEMU virt (aarch64)](qemu.md) | `none` | yes | yes | yes |  | no | yes | yes |  |  |  |  |  | yes |
-| [Galaxy S9](starlte.md) | `exynos9810` | partly | partly | partly | partly | partly | partly | partly | partly | partly | partly | no | no |  |
+| Device | SoC | display | touch | buttons | cpu | gpu | storage | audio | battery | haptic | torch | wifi | bluetooth | cellular | network | thermal | usb |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| [Pixel 10](frankel.md) | `lga` | partly | no | no | partly | no | no | no | no |  |  | no | no | no |  | no | no |
+| [QEMU virt (aarch64)](qemu.md) | `none` | yes | yes | yes |  | no | yes | yes |  |  |  |  |  |  | yes |  |  |
+| [Galaxy S9](starlte.md) | `exynos9810` | partly | partly | partly | partly | partly | partly | partly | partly | partly | partly | no |  | no |  |  |  |
 
 An empty cell is a part nobody has looked at on that device yet.
 
@@ -17,3 +18,4 @@ An empty cell is a part nobody has looked at on that device yet.
 | SoC | What | |
 |---|---|---|
 | `exynos9810` | Samsung Exynos 9810 (S5E9810) | carried by starlte (`devices/starlte/soc/`) |
+| `lga` | Google Tensor G5 (laguna, "lga") | `socs/lga/` |
