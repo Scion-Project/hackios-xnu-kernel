@@ -1,0 +1,6 @@
+# Commands init runs after its own checks when the small image is the whole root (build.sh ALONE=1: the Galaxy S9's
+# BOOT image, which has room for nothing more). There is no iOS here to hand process 1 to -- no launchd, no dyld, no
+# shared cache -- so only programs built on libmini would run; what such a boot is for is the kernel's own log: the
+# drivers' bring-up, the touches, the buttons and the battery they report while the run lasts. The run ends at the
+# loader's loader_return_after=, and until then process 1 waits here.
+sleep 3600
