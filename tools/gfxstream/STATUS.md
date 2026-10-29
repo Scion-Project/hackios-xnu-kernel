@@ -1,5 +1,7 @@
 # gfxstream GLES encoder for eagl.c: status (paused 2026-10-22)
 
+(Vulkan over the same pipe: VULKAN.md and mk-vk.sh.)
+
 Goal: CoreAnimation in backboardd composites on the Pixel's PowerVR. The chain is
 eagl.c (src/eagl.c) → a GLES library that **encodes** calls in gfxstream's wire format →
 `/dev/vgpu3d` (kernel, `drivers/gpu/hakios.vgpu3d*.c`) → virtio-gpu pipe → gfxstream in
