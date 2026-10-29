@@ -27,6 +27,16 @@
 
 static int failures;
 
+/* libmetal2vulkan.dylib's count of its copies of no-copy buffers the driver could not import (tools/metal/m2v/0002) */
+extern void nmb_host_copies(uint64_t out[4]);
+
+static double
+now_ms(void)
+{
+	return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e6;
+}
+
+
 static void
 check(BOOL ok, NSString *what)
 {
@@ -120,6 +130,79 @@ drawTriangle(id<MTLDevice> device, id<MTLCommandQueue> queue, id<MTLRenderPipeli
 	}
 	completed(commands, [NSString stringWithFormat:@"triangle into %@", target.iosurface ? @"an IOSurface" : @"a texture"]);
 	(void)device;
+}
+
+/*
+ * METALVK_BENCH=1: what a frame costs on a full-screen surface of the iPhone X (1125 x 2436 BGRA8, 10.96 MB), the drawable's case:
+ * each frame clears it to a colour of its own and draws the triangle, commits and waits; the same frames into a Private texture of
+ * the same size are the frame without any copy. Where the driver imports the surface's pages, nothing is copied; where it does not,
+ * the runtime copies the surface in where it changed (here it does not: only the GPU writes it) and the GPU's frame out
+ * (tools/metal/m2v/0002-copied-host-memory.patch). The difference of the two times is what the copies cost a frame.
+ */
+static void
+bench(id<MTLDevice> device, id<MTLCommandQueue> queue, id<MTLRenderPipelineState> bgra, const float corners[3][2])
+{
+	enum { W = 1125, H = 2436, FRAMES = 30 };
+	IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef) @{
+		(id)kIOSurfaceWidth: @(W), (id)kIOSurfaceHeight: @(H), (id)kIOSurfaceBytesPerElement: @4,
+		(id)kIOSurfacePixelFormat: @((uint32_t)'BGRA') });
+	MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:W height:H mipmapped:NO];
+	d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+	d.storageMode = MTLStorageModeShared;
+	id<MTLTexture> onSurface = surface ? [device newTextureWithDescriptor:d iosurface:surface plane:0] : nil;
+	d.storageMode = MTLStorageModePrivate;
+	id<MTLTexture> private = [device newTextureWithDescriptor:d];
+	if (onSurface == nil || private == nil) {
+		check(NO, @"bench: the full-screen textures");
+		return;
+	}
+	double ms[2];
+	uint64_t before[4], after[4];
+	for (int k = 0; k < 2; k++) {
+		id<MTLTexture> target = k == 0 ? onSurface : private;
+		if (k == 0) {
+			nmb_host_copies(before);
+		}
+		double began = 0;
+		for (int i = -2; i < FRAMES; i++) {             /* two frames first, not timed: pipelines made, memory placed */
+			if (i == 0) {
+				began = now_ms();
+			}
+			MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+			pass.colorAttachments[0].texture = target;
+			pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+			pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+			pass.colorAttachments[0].clearColor = MTLClearColorMake((i & 7) / 7.0, 0.5, 1.0 - (i & 3) / 3.0, 1);
+			id<MTLCommandBuffer> commands = [queue commandBuffer];
+			id<MTLRenderCommandEncoder> render = [commands renderCommandEncoderWithDescriptor:pass];
+			[render setRenderPipelineState:bgra];
+			[render setVertexBytes:corners length:sizeof(float) * 6 atIndex:0];
+			[render drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+			[render endEncoding];
+			if (!completed(commands, @"bench frame")) {
+				return;
+			}
+		}
+		ms[k] = (now_ms() - began) / FRAMES;
+		if (k == 0) {
+			nmb_host_copies(after);
+		}
+	}
+	/* the last frame's clear colour, in the surface's own memory, at its top-left corner (outside the triangle) */
+	IOSurfaceLock(surface, kIOSurfaceLockReadOnly, NULL);
+	const uint8_t *p = IOSurfaceGetBaseAddress(surface);
+	const int last = FRAMES - 1;
+	const int b = (int)lround((1.0 - (last & 3) / 3.0) * 255), g = 128, r = (int)lround((last & 7) / 7.0 * 255);
+	BOOL right = abs(p[0] - b) <= 1 && abs(p[1] - g) <= 1 && abs(p[2] - r) <= 1;
+	printf("      surface's corner after the last frame: %u,%u,%u (BGR; the clear colour %d,%d,%d)\n", p[0], p[1], p[2], b, g, r);
+	IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL);
+	check(right, @"bench: the last frame is in the IOSurface's memory");
+	const double in = (after[0] - before[0]) / (double)FRAMES / 1e6, out = (after[1] - before[1]) / (double)FRAMES / 1e6;
+	printf("      bench: 1125x2436 BGRA8, %d frames: %.2f ms a frame into the IOSurface, %.2f ms into a Private texture: "
+	    "%.2f ms of copies a frame;\n      the runtime's copies a frame: %.2f MB in (%.2f ms), %.2f MB out (%.2f ms)\n",
+	    FRAMES, ms[0], ms[1], ms[0] - ms[1], in, (after[2] - before[2]) / (double)FRAMES / 1e6, out,
+	    (after[3] - before[3]) / (double)FRAMES / 1e6);
+	CFRelease(surface);
 }
 
 int
@@ -298,6 +381,15 @@ main(int argc, char **argv)
 		}
 		free(pattern);
 		free(got);
+		uint64_t copies[4];
+		nmb_host_copies(copies);
+		if (copies[0] || copies[1]) {
+			printf("      no-copy buffers copied, the driver importing none: %llu bytes in (%.2f ms), %llu out (%.2f ms)\n",
+			    (unsigned long long)copies[0], copies[2] / 1e6, (unsigned long long)copies[1], copies[3] / 1e6);
+		}
+		if (getenv("METALVK_BENCH") != NULL && bgra != nil) {
+			bench(device, queue, bgra, corners);
+		}
 		printf("%s\n", failures ? "metalvk_plugin_test: FAILED" : "metalvk_plugin_test: the plug-in did everything asked, every number the CPU's");
 	}
 	return failures != 0;

@@ -191,7 +191,7 @@ them; moving the pin forward is a port of the bridge (below, "what is needed").
 **One dylib, replaceable.** The runtime is LGPL (or GPL): it is only ever in `/redwood/lib/libmetal2vulkan.dylib`, a library of
 its own that the bundle links by install name, so a user can rebuild and replace it (`tools/metal/mk-metal2vulkan.sh ios`, from
 the pinned source). No line of metal2vulkan is in any MIT or APSL file here; our changes to it are patch files in
-`tools/metal/m2v/`, under its licence and saying so in their headers (one: host memory that is not coherent, below).
+`tools/metal/m2v/`, under its licence and saying so in their headers (two, both below: host memory that is not coherent; no-copy buffers and IOSurfaces where the driver imports no host memory).
 
 ### How the plug-in reaches the Vulkan driver
 
@@ -361,12 +361,59 @@ The two walls, each placed:
   to the digit (134177445); on Homebrew's MoltenVK 1.4.2, KosmicKrisp and lavapipe the kernel is right. The kernel is a tree sum in
   threadgroup memory with a `threadgroup_barrier` in a loop and a device atomic; each group's sum is a little short. The phone's
   host runs the PowerVR's own Vulkan, not MoltenVK, so this says nothing about it either way.
-- **IOSurface textures need host memory the driver can import.** gfxstream's guest driver has no external memory, so a no-copy
-  buffer, and every texture over an IOSurface, is refused (`Unsupported`, `VK_EXT_external_memory_host`): the self-test's import step
-  and the plug-in's IOSurface check. This is the wall for drawables (below, "What is stubbed").
+- **IOSurface textures needed host memory the driver can import**, which gfxstream's guest driver has not: a no-copy buffer, and
+  every texture over an IOSurface, was refused (`Unsupported`, `VK_EXT_external_memory_host`). That wall is gone (the next
+  section).
 
 The run was the same three times. What it does not show: anything on the phone (its host, its PowerVR, `/dev/vgpu3d` and SCGPU
 between them), or speed (the Mac harness serialises the host).
+
+### IOSurfaces on a driver that imports no host memory: copies (29 October)
+
+A texture over an IOSurface is, in the frontend, a no-copy buffer over the surface's pages and a texture over that buffer; a
+CAMetalLayer's drawables are such textures. The runtime makes a no-copy buffer by importing the pages
+(`VK_EXT_external_memory_host`); gfxstream's guest driver imports nothing, so it refused them all. Now
+`tools/metal/m2v/0002-copied-host-memory.patch` (metal2vulkan's licence, applied after 0001) falls back to copies:
+
+- Where the import is refused as `Unsupported(HostMemory)`, the no-copy buffer is an ordinary `Shared` buffer of the device's that
+  stands for the caller's bytes: `contents` is the caller's pointer, as Metal's is, and the deallocator runs as the buffer goes.
+- Before a command buffer's first batch, with 0001's flush of the program buffers it uses: the caller's bytes of each such buffer it
+  uses go in where they changed (compared 4 KiB at a time), and only those ranges are flushed.
+- As it completes, with 0001's invalidate of what it wrote: each such buffer it wrote (a tracked write, or an untracked use) is
+  invalidated and copied back into the caller's bytes where they changed. One the GPU only read is left alone, so the host's writes
+  to it meanwhile are kept.
+- A texture over the buffer is the runtime's ordinary texture over a buffer, and its uses are the buffer's.
+
+Why in the runtime and not in the bridge or the frontend: the two moments are exactly 0001's (the program buffers a command
+buffer uses, at its first batch; those it wrote, as it completes), and only the runtime knows which buffers a command buffer
+wrote (its tracker's write uses); the bridge sees bindings, not writes, so it would have to copy every surface back after every
+command buffer, the ones the GPU only sampled too. Moving the pin to a metal2vulkan with copied host buffers would be more: the
+bridge follows the runtime's API, and 13 of AdrenoMetal's 16 patches do not apply there.
+
+Checked. Through gfxstream's guest driver on its Mac twin: `m2v_test`'s self-test passes whole, its import step (0x6505) included
+(`ok    self-test: compute 0 of 1000 wrong, render 0 of 64 wrong, import 0 of 4096 wrong`), and the plug-in's
+`newTextureWithDescriptor:iosurface:plane:` and `the triangle read from the IOSurface's own memory` are `ok`; the one failure left
+is `group_sum`, the Mac host's MoltenVK (above). On lavapipe with the import hidden (`HAKIOS_VK_NO_HOST_IMPORT=1`, which makes
+any driver list no `VK_EXT_external_memory_host`), and with host memory not coherent as well (`HAKIOS_VK_INCOHERENT=1`), every
+check of both programs passes. Lavapipe and MoltenVK as they are, which import, copy nothing.
+
+What it costs. `METALVK_BENCH=1 tools/metal/metalvk-plugin-test.sh` renders a full-screen surface of the iPhone X (1125 x 2436
+BGRA8; its allocation is 11.98 MB) 30 times, a clear of a colour of its own and a triangle each frame, waiting for each, and the
+same frames into a `Private` texture of the size; nothing on the CPU writes the surface (a drawable's case), so the copy in only
+compares, and the copy out takes the whole frame:
+
+| Vulkan driver | a frame into the IOSurface | into a `Private` texture | difference | the runtime's copies a frame |
+|---|---|---|---|---|
+| lavapipe, importing (no copies) | 3.12 ms | 2.58 ms | 0.54 ms | none |
+| lavapipe, import hidden | 4.10 ms | 2.62 ms | 1.48 ms | compare 0.42 ms; 11.98 MB out in 0.51 ms |
+| lavapipe, import hidden, memory not coherent | 4.68 ms | 2.71 ms | 1.96 ms | compare 0.42 ms; 11.98 MB out in 0.59 ms |
+| gfxstream's driver (Mac twin, MoltenVK under it) | 9.43 ms | 4.21 ms | 5.22 ms | compare 0.41 ms; 11.98 MB out in 0.65 ms |
+
+On gfxstream about 1.1 ms of the 5.2 is the runtime's own compare and copy; the rest is the invalidate of the 12 MB the GPU wrote,
+which that driver brings back through its stream (in-process on the Mac: memory copies and calls; on the phone `/dev/vgpu3d` and
+SCGPU's ring add theirs, not measured). Cheaper, later: invalidate and copy back only the rows a frame's passes wrote (the render
+area), not the whole surface; or surfaces whose memory the host's GPU can reach without a copy (gfxstream's colour buffers or
+blob memory behind IOSurfaces), which needs the driver's external memory.
 
 ### What is built for the guest
 
@@ -385,14 +432,9 @@ None of it has run on iOS: there is no Vulkan driver in the guest yet.
 
 - **The driver.** gfxstream's guest Vulkan driver (`libhakios.vk.dylib`) carries Metal compute and render on its Mac twin (above);
   it has not run in the guest yet, and nothing of this route has run on the phone.
-- **IOSurfaces, and with them drawables, need the driver to import host memory.** A texture over an IOSurface is a no-copy buffer
-  over the surface's pages (the frontend's `newTextureWithDescriptor:iosurface:plane:`), and at this pin the runtime makes one only
-  through `VK_EXT_external_memory_host` (or dma-bufs on Linux); without it the texture is refused, logged
-  (`native-metal: surface import refused`), and the caller gets nil. CAMetalLayer's drawables and every surface CoreAnimation hands
-  Metal are such textures. gfxstream's guest driver has no external memory (its `VULKAN.md`), so on it every IOSurface texture is
-  refused today. metal2vulkan's master (after 26 October) has *copied host buffers*: where a driver cannot import the pages, the
-  no-copy object is a copy of them, compared and synced at each commit. That needs the pin moved, or a copy of the same kind in the
-  bridge (a texture of its own, filled from the surface before a command buffer reads it and written back after one writes it).
+- **IOSurfaces, and with them drawables, are copies where the driver imports no host memory** (the section above): correct, and
+  a full-screen frame costs 5.2 ms more through gfxstream on the Mac. The copies follow what each command buffer uses and writes,
+  but a buffer's whole range: a frame that redraws a corner of a surface still copies the surface.
 - **Present.** The frontend has no drawable or present code of its own (AdrenoMetal's scanout client, `GpuScanout*`, is the
   tablet's display hand-off and is not taken). A CAMetalLayer presents through CoreAnimation, which composites the drawable's
   IOSurface: so it is the point above, and then the window server's own path to `MiniIOMobileFramebuffer`.
@@ -423,10 +465,8 @@ None of it has run on iOS: there is no Vulkan driver in the guest yet.
 2. An image with `METAL=vk` and the driver (`VK_DIR=` with `tools/gfxstream/mk-vk.sh ios`'s output), booted with `metal=1` and
    `RC_JOBS=rc.jobs.metalvk`: `m2v_test`'s lines are the first result, to set beside the Mac's above (the phone's host runs the
    PowerVR's Vulkan, not the Mac's old MoltenVK: `group_sum` is expected right there, not yet seen); `metal_test` the second (does iOS 16.5's Metal take the device?).
-3. IOSurfaces (the point above), one of: the driver offering `VK_EXT_external_memory_host` over guest pages; IOSurfaces allocated
-   from memory the driver can import (gfxstream's blob resources) and the runtime taught that kind of import; or the pin moved to a
-   metal2vulkan with copied host buffers, which means porting the bridge to the runtime's newer API and checking AdrenoMetal's
-   patches again (they will have moved upstream or need redoing).
+3. IOSurfaces work by copies (above); to make them cheaper, copy only the rows a frame wrote, or give IOSurfaces memory the host's
+   GPU reaches without a copy (the driver's external memory, gfxstream's colour buffers).
 4. Then `metal=2` for clients other than the window server (CoreImage, RenderBox), reading the `asked and not implemented` lines
    as the next list, as steps 1 and 2 above did.
 

@@ -40,6 +40,9 @@ const void *nmb_function_constant_air(size_t *length);
 NmbDevice *nmb_device_open(const char *loader, const char *cache);
 /* Scion: the driver in use, its entry and its negotiated loader-ICD interface version, as one line; the line's length. */
 size_t nmb_icd_describe(char *out, size_t size);
+/* Scion: what the runtime's copies of no-copy buffers it could not import moved (tools/metal/m2v/0002): bytes in, bytes out,
+ * nanoseconds in, nanoseconds out. */
+void nmb_host_copies(uint64_t out[4]);
 void nmb_device_release(NmbDevice *);
 size_t nmb_device_name(const NmbDevice *, char *out, size_t size);
 uint64_t nmb_device_max_buffer_length(const NmbDevice *);

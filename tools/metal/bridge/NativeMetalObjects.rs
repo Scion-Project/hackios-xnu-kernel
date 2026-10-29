@@ -152,6 +152,20 @@ impl NmbDevice {
     }
 }
 
+/// Scion: what the runtime's copies of no-copy buffers it could not import moved (tools/metal/m2v/0002): bytes copied in, bytes
+/// copied out, nanoseconds copying in, nanoseconds copying out, into the caller's four words.
+///
+/// # Safety
+/// `out` is null or writable for four words.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nmb_host_copies(out: *mut u64) {
+    if !out.is_null() {
+        let counts = metal2vulkan_runtime::copied_host_counts();
+        // SAFETY: the caller's contract.
+        unsafe { std::ptr::copy_nonoverlapping(counts.as_ptr(), out, 4) };
+    }
+}
+
 /// # Safety
 /// `loader` and `cache` are C strings.
 #[unsafe(no_mangle)]

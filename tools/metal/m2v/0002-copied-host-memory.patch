@@ -1,0 +1,355 @@
+metal2vulkan runtime: no-copy buffers and IOSurface textures on a device that imports no host memory (Scion)
+
+Upstream:  metal2vulkan, https://github.com/steelbrain/metal2vulkan, at 720ef1ce9ae2a2068999a8675717418b9416283e, after
+           AdrenoMetal's 16 patches to it and Scion's 0001-host-memory-not-coherent.patch; tools/metal/mk-metal2vulkan.sh applies
+           them in that order, then this.
+Licence:   GPL-2.0-or-later OR LGPL-3.0-or-later, metal2vulkan's (its LICENSE); this patch is a change to it and under the same
+           terms. Nothing of it is in Scion's MIT or APSL files.
+Author:    the HakiOS authors (Scion), 29 October 2026.
+
+Why. A no-copy buffer (newBufferWithBytesNoCopy:), and with it every texture over an IOSurface (the frontend makes one over the
+surface's pages), is an import of the caller's pages (VK_EXT_external_memory_host). gfxstream's guest driver for Scion imports
+none, so every such buffer was refused (Unsupported, HostMemory), and every drawable with it.
+
+What. A copy fallback, on the same two points as 0001's flushes:
+- buffer_descriptor.rs: where the import is refused as Unsupported(HostMemory), the no-copy buffer is an ordinary Shared
+  buffer of the device's that stands for the caller's bytes (buffer.rs, CopiedHost); its `contents` is the caller's pointer,
+  as Metal's is, and the deallocator (kept apart while the import is tried) runs as the buffer goes.
+- before a command buffer's first batch (with 0001's flush of the program buffers it uses): the caller's bytes of each such
+  buffer it uses go into the buffer's own memory where they changed, compared 4 KiB at a time, and only those ranges are
+  flushed;
+- as it completes (with 0001's invalidate of what it wrote): each such buffer its tracked uses write (or it uses untracked) is
+  invalidated whole and copied back into the caller's bytes where they changed. A buffer the GPU only reads is not copied
+  back, so the host's writes to it meanwhile are kept.
+- metal2vulkan_runtime::copied_host_counts(): bytes copied in and out, and the time each took.
+A texture over such a buffer is the runtime's ordinary texture over a buffer; its uses are the buffer's.
+
+Checked (tools/metal/m2v_test.c, tools/metal/metalvk-plugin-test.sh): through gfxstream's guest driver on its Mac twin, the
+self-test's import step and the plug-in's newTextureWithDescriptor:iosurface:plane: (rendered into, read from the surface's
+memory) pass; on lavapipe with the import hidden (HAKIOS_VK_NO_HOST_IMPORT=1), with and without host memory that is not
+coherent (HAKIOS_VK_INCOHERENT=1), every check passes. A full-screen 1125x2436 BGRA8 surface rendered every frame costs, on
+the Mac twin of gfxstream, 5.2 ms a frame more than a Private texture: 0.4 ms comparing, 0.65 ms copying 12 MB back, the rest
+the invalidate through the driver.
+
+diff --git a/crates/metal2vulkan-runtime/src/buffer.rs b/crates/metal2vulkan-runtime/src/buffer.rs
+index 3dd4294..d491b83 100644
+--- a/crates/metal2vulkan-runtime/src/buffer.rs
++++ b/crates/metal2vulkan-runtime/src/buffer.rs
+@@ -30,7 +30,7 @@ use super::exit_guard;
+ use super::generated_commands::PREPROCESS_BUFFER;
+ use super::heap::{Heap, HeapType};
+ use super::host_aliases::Alias;
+-use super::host_memory::{KeepAlive, Release};
++use super::host_memory::{Deallocator, KeepAlive, Release};
+ use super::memory::{MemoryClass, Placement, BLOCK_BYTES};
+ use super::rebind::Unexact;
+ use super::resource::{Identity, ObjectId, ResourceKey};
+@@ -78,6 +78,34 @@ struct BufferShared {
+     address: GpuAddress,
+     attributes: ResourceAttributes,
+     bytes: Bytes,
++    /// Scion (`host_sync.rs`): a no-copy buffer on a device that imports no host memory stands
++    /// for the caller's bytes, which `contents` answers, in memory of its own.
++    copied: OnceLock<CopiedHost>,
++}
++
++/// Scion (`host_sync.rs`): the caller's bytes a no-copy buffer stands for where the device imports
++/// no host memory (gfxstream's guest driver): copied into the buffer's own memory before the first
++/// batch of a command buffer that uses it, where they changed, and back once a command buffer that
++/// writes it completed. Its deallocator runs as the buffer goes: no import holds the bytes.
++pub(super) struct CopiedHost {
++    pointer: NonNull<u8>,
++    length: u64,
++    deallocator: Mutex<Option<Deallocator>>,
++}
++
++// SAFETY: the caller's bytes, which the no-copy contract keeps mapped while the buffer lives; the
++// runtime reads and writes them only in the copies, at the points `host_sync.rs` names.
++unsafe impl Send for CopiedHost {}
++// SAFETY: as above.
++unsafe impl Sync for CopiedHost {}
++
++impl Drop for CopiedHost {
++    fn drop(&mut self) {
++        let deallocator = self.deallocator.get_mut().ok().and_then(Option::take);
++        if let Some(deallocator) = deallocator {
++            deallocator(self.pointer, self.length);
++        }
++    }
+ }
+ 
+ /// Where a buffer's bytes are.
+@@ -1415,6 +1443,7 @@ impl Device {
+             address,
+             attributes: ResourceAttributes::new(),
+             bytes: Bytes::Own(own),
++            copied: OnceLock::new(),
+         }))
+     }
+ 
+@@ -1593,6 +1622,7 @@ impl Heap {
+                 // (EVs SPH-alias1-m3, -m4).
+                 aliasable: AtomicBool::new(self.heap_type() == HeapType::Placement),
+             }),
++            copied: OnceLock::new(),
+         }))
+     }
+ }
+@@ -1983,6 +2013,72 @@ impl Buffer {
+         }
+     }
+ 
++    /// Scion (`host_sync.rs`): make this new buffer, `Shared` and of its own memory, stand for the
++    /// caller's `length()` bytes at `pointer`, a no-copy buffer the device could not import; the
++    /// deallocator runs as the buffer goes.
++    pub(super) fn copy_host(&self, pointer: NonNull<u8>, deallocator: Option<Deallocator>) {
++        let copied = CopiedHost {
++            pointer,
++            length: self.length(),
++            deallocator: Mutex::new(deallocator),
++        };
++        let _ = self.0.copied.set(copied);
++    }
++
++    /// Scion (`host_sync.rs`): whether the buffer stands for the caller's bytes it could not import.
++    pub(super) fn copies_host(&self) -> bool {
++        self.0.copied.get().is_some()
++    }
++
++    /// Scion (`host_sync.rs`): copy the caller's bytes into the buffer's own memory where they
++    /// differ, 4 KiB at a time (`in_` true), or the buffer's into the caller's (false). The spans
++    /// of its own memory the copy in changed, for a flush; and the bytes copied.
++    pub(super) fn copy_host_bytes(&self, in_: bool) -> (Vec<crate::host_sync::HostSpan>, u64) {
++        const CHUNK: usize = 4096;
++        let (Some(copied), Some(own), Some(span)) = (self.0.copied.get(), self.own_contents(), self.host_span())
++        else {
++            return (Vec::new(), 0);
++        };
++        let length = self.length() as usize;
++        let (caller, own) = (copied.pointer.as_ptr(), own.as_ptr());
++        let mut spans: Vec<crate::host_sync::HostSpan> = Vec::new();
++        let mut copied_bytes = 0;
++        let mut at = 0;
++        while at < length {
++            let end = (at + CHUNK).min(length);
++            // SAFETY: both hold `length` bytes from their start (the caller's by the no-copy
++            // contract, the buffer's by its placement); no command reads or writes them meanwhile
++            // (a copy in runs before the batch is submitted, a copy out after its work completed).
++            let (from, to) = unsafe {
++                match in_ {
++                    true => (
++                        std::slice::from_raw_parts(caller.add(at), end - at),
++                        std::slice::from_raw_parts_mut(own.add(at), end - at),
++                    ),
++                    false => (
++                        std::slice::from_raw_parts(own.add(at), end - at),
++                        std::slice::from_raw_parts_mut(caller.add(at), end - at),
++                    ),
++                }
++            };
++            if from != to {
++                to.copy_from_slice(from);
++                copied_bytes += (end - at) as u64;
++                let offset = span.offset + at as u64;
++                match spans.last_mut() {
++                    Some(last) if last.offset + last.size == offset => last.size += (end - at) as u64,
++                    _ => spans.push(crate::host_sync::HostSpan {
++                        offset,
++                        size: (end - at) as u64,
++                        ..span
++                    }),
++                }
++            }
++            at = end;
++        }
++        (spans, copied_bytes)
++    }
++
+     pub(super) fn caller_memory(&self) -> Option<CallerMemory> {
+         match &self.0.bytes {
+             Bytes::Own(OwnBytes {
+@@ -2135,6 +2231,20 @@ impl Buffer {
+     /// no-copy buffer's is the caller's pointer. Reading or writing through it while the GPU
+     /// writes those bytes is a data race, as in Metal.
+     pub fn contents(&self) -> Option<NonNull<u8>> {
++        if self.storage_mode() == StorageMode::Private {
++            return None;
++        }
++        // Scion: a no-copy buffer the device could not import answers the caller's pointer, as
++        // Metal's does (`host_sync.rs`).
++        if let Some(copied) = self.0.copied.get() {
++            return Some(copied.pointer);
++        }
++        self.own_contents()
++    }
++
++    /// Where the buffer's own bytes are mapped: `contents`, but a copied no-copy buffer's own memory
++    /// rather than the caller's bytes (Scion, `host_sync.rs`).
++    fn own_contents(&self) -> Option<NonNull<u8>> {
+         if self.storage_mode() == StorageMode::Private {
+             return None;
+         }
+diff --git a/crates/metal2vulkan-runtime/src/buffer_descriptor.rs b/crates/metal2vulkan-runtime/src/buffer_descriptor.rs
+index a40e181..7e4ea3d 100644
+--- a/crates/metal2vulkan-runtime/src/buffer_descriptor.rs
++++ b/crates/metal2vulkan-runtime/src/buffer_descriptor.rs
+@@ -298,22 +298,47 @@ impl Device {
+     ) -> Result<Buffer, Error> {
+         const CALL: &str = "new_buffer_with_bytes_no_copy";
+         let options = self.take_options(CALL, options);
++        // Scion (`host_sync.rs`): the deallocator is kept apart, so that a device that imports no
++        // host memory can give it to a buffer that copies the bytes instead.
++        let pointer = memory.pointer();
++        let kept = std::sync::Arc::new(std::sync::Mutex::new(deallocator));
++        let forward: Deallocator = {
++            let kept = kept.clone();
++            Box::new(move |pointer, length| {
++                let deallocator = kept.lock().ok().and_then(|mut kept| kept.take());
++                if let Some(deallocator) = deallocator {
++                    deallocator(pointer, length);
++                }
++            })
++        };
+         // SAFETY: the caller's contract.
+-        let buffer = unsafe {
++        let imported = unsafe {
+             self.buffer_over_host_memory(
+                 CALL,
+                 memory,
+                 length,
+                 options,
+                 HostRelease {
+-                    deallocator,
++                    deallocator: Some(forward),
+                     keep_alive: None,
+                 },
+                 AddressPlacement::Any.into(),
+                 false,
+             )
+-        }?;
+-        Ok(self.visible(buffer))
++        };
++        match imported {
++            Ok(buffer) => Ok(self.visible(buffer)),
++            // Scion: the device imports no host memory (no `VK_EXT_external_memory_host`, or it
++            // refuses these pages): a buffer of its own memory that copies the caller's bytes in
++            // and out around the command buffers that use it (`host_sync.rs`).
++            Err(Error::Unsupported(refusal)) if refusal.feature == metal2vulkan::error::Feature::HostMemory => {
++                let buffer = self.new_buffer(length, options)?;
++                let deallocator = kept.lock().ok().and_then(|mut kept| kept.take());
++                buffer.copy_host(pointer, deallocator);
++                Ok(buffer)
++            }
++            Err(error) => Err(error),
++        }
+     }
+ 
+     /// Tell the device that the pages under the `length` host bytes at `bytes` were replaced (an
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/mod.rs b/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
+index c4a4382..c986cb3 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
+@@ -2659,8 +2659,11 @@ impl CommandBufferShared {
+                             .collect();
+                         let buffers = self.device.shared().owners.buffers(&invalidated);
+                         let mut spans = state.uploads.host_spans();
+-                        spans.extend(crate::host_sync::buffer_spans(&buffers));
++                        spans.extend(crate::host_sync::all_spans(&buffers));
+                         crate::host_sync::sync(&self.device, &spans, false);
++                        // Scion: what the GPU wrote of a no-copy buffer the device could not
++                        // import goes back to the caller's bytes (`host_sync.rs`).
++                        crate::host_sync::copy_out(&buffers);
+                     }
+                     state.status = CommandBufferStatus::Completed;
+                     // The queue's timeline reached the last batch's value, and every batch ends
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/submit.rs b/crates/metal2vulkan-runtime/src/command_buffer/submit.rs
+index 8d3c85e..fb4bac9 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/submit.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/submit.rs
+@@ -556,6 +556,9 @@ impl CommandBufferShared {
+                     .collect();
+                 let used = shared.owners.buffers(&keys);
+                 spans.extend(crate::host_sync::buffer_spans(&used));
++                // Scion: a no-copy buffer the device could not import takes the caller's bytes
++                // that changed (`host_sync.rs`).
++                spans.extend(crate::host_sync::copy_in(&used));
+             }
+             crate::host_sync::sync(device, &spans, true);
+         }
+diff --git a/crates/metal2vulkan-runtime/src/host_sync.rs b/crates/metal2vulkan-runtime/src/host_sync.rs
+index 68b36b4..e35c2f0 100644
+--- a/crates/metal2vulkan-runtime/src/host_sync.rs
++++ b/crates/metal2vulkan-runtime/src/host_sync.rs
+@@ -114,7 +114,59 @@ pub(super) fn will_read(buffer: &Buffer) {
+     }
+ }
+ 
+-/// The spans of `buffers`' bytes, where they lie in host-visible memory.
++/// What the copies of no-copy buffers the device could not import moved: bytes in, bytes out, and
++/// the nanoseconds each took (Scion).
++static COPIED: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
++
++/// The counts of the copies of no-copy buffers the device could not import, since the process
++/// started: bytes copied in, bytes copied out, nanoseconds copying in, nanoseconds copying out. Not
++/// a Metal call (Scion).
++pub fn copied_host_counts() -> [u64; 4] {
++    std::array::from_fn(|i| COPIED[i].load(std::sync::atomic::Ordering::Relaxed))
++}
++
++/// The caller's bytes of the copied no-copy buffers among `buffers` into their own memory, where
++/// they changed (before a command buffer's first batch): the spans changed, to flush.
++pub(super) fn copy_in(buffers: &[Buffer]) -> Vec<HostSpan> {
++    let began = std::time::Instant::now();
++    let mut spans = Vec::new();
++    let mut bytes = 0;
++    for buffer in buffers.iter().filter(|buffer| buffer.copies_host()) {
++        let (changed, copied) = buffer.copy_host_bytes(true);
++        spans.extend(changed);
++        bytes += copied;
++    }
++    // the time counts whether anything changed or not: the comparison is the copy in's cost too
++    if buffers.iter().any(Buffer::copies_host) {
++        use std::sync::atomic::Ordering::Relaxed;
++        COPIED[0].fetch_add(bytes, Relaxed);
++        COPIED[2].fetch_add(began.elapsed().as_nanos() as u64, Relaxed);
++    }
++    spans
++}
++
++/// The copied no-copy buffers among `buffers` back into the caller's bytes, where they changed
++/// (as a command buffer that writes them completes, after the invalidate).
++pub(super) fn copy_out(buffers: &[Buffer]) {
++    let began = std::time::Instant::now();
++    let mut bytes = 0;
++    for buffer in buffers.iter().filter(|buffer| buffer.copies_host()) {
++        bytes += buffer.copy_host_bytes(false).1;
++    }
++    if buffers.iter().any(Buffer::copies_host) {
++        use std::sync::atomic::Ordering::Relaxed;
++        COPIED[1].fetch_add(bytes, Relaxed);
++        COPIED[3].fetch_add(began.elapsed().as_nanos() as u64, Relaxed);
++    }
++}
++
++/// The spans of `buffers`' bytes, where they lie in host-visible memory, but the copied no-copy
++/// buffers' (their copy in says which of theirs changed).
+ pub(super) fn buffer_spans<'a>(buffers: impl IntoIterator<Item = &'a Buffer>) -> Vec<HostSpan> {
++    buffers.into_iter().filter(|buffer| !buffer.copies_host()).filter_map(Buffer::host_span).collect()
++}
++
++/// The spans of `buffers`' bytes, where they lie in host-visible memory, every one.
++pub(super) fn all_spans<'a>(buffers: impl IntoIterator<Item = &'a Buffer>) -> Vec<HostSpan> {
+     buffers.into_iter().filter_map(Buffer::host_span).collect()
+ }
+diff --git a/crates/metal2vulkan-runtime/src/lib.rs b/crates/metal2vulkan-runtime/src/lib.rs
+index cad61e4..424bfa0 100644
+--- a/crates/metal2vulkan-runtime/src/lib.rs
++++ b/crates/metal2vulkan-runtime/src/lib.rs
+@@ -108,6 +108,7 @@ mod host_aliases;
+ mod host_memory;
+ // Scion: host-visible memory that is not coherent (tools/metal/m2v/).
+ mod host_sync;
++pub use host_sync::copied_host_counts;
+ mod image_plan;
+ mod index_bounds;
+ mod index_rewrite;

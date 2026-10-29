@@ -392,6 +392,12 @@ main(int argc, char **argv)
 	nmb_device_release(device);
 	nmb_icd_describe(icd, sizeof(icd));
 	printf("      driver at the end: %s\n", icd);
+	uint64_t copies[4];
+	nmb_host_copies(copies);
+	if (copies[0] || copies[1]) {
+		printf("      no-copy buffers copied, the driver importing none: %llu bytes in (%.2f ms), %llu out (%.2f ms)\n",
+		    (unsigned long long)copies[0], copies[2] / 1e6, (unsigned long long)copies[1], copies[3] / 1e6);
+	}
 	free(bytes);
 	printf("%s\n", failures ? "m2v_test: FAILED" : "m2v_test: everything ran and every number is the CPU's");
 	return failures != 0;
