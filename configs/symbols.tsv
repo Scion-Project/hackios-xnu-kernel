@@ -259,9 +259,9 @@ SYSTRACE_NAME	arg	systrace_name	CPU, memory and boot	k	(patch)
 THERMAL_LOG	arg	thermal_log	Chip, thermal and PMIC	k	hakios.thermal.c	a summary line this often (0: only on a rise; 60)
 THERMAL_TM0	arg	thermal_tm0	Chip, thermal and PMIC	k	hakios.thermal.c	
 THERMAL_TM1	arg	thermal_tm1	Chip, thermal and PMIC	k	hakios.thermal.c	
-TORCH	arg	torch	Haptics and torch	kl	hakios.sccam_torch.c,hakios.torch.c,loader.c	a look, reading only: the arbiter's channel for the module and who may write through it, the module's type, its registers, the PMIC's temperature
-TORCH_MAX_S	arg	torch_max_s	Haptics and torch	k	hakios.torch.c	
-TORCH_SECS	arg	torch_secs	Haptics and torch	k	hakios.torch.c	
+TORCH	arg	torch	Haptics and torch	kl	hakios.s2mpb02_torch.c,hakios.sccam_torch.c,hakios.torch.c,loader.c	a look, reading only: the bus as found, the chip's ID, the flash block's registers, the two pins
+TORCH_MAX_S	arg	torch_max_s	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.torch.c	
+TORCH_SECS	arg	torch_secs	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.torch.c	
 TOUCH_FLIP	arg	touch_flip	Touch and buttons	k	hakios.goodix.c	
 TOUCH_LAT	arg	touch_lat	GPU and display	ku	MiniIOMobileFramebuffer.cpp,eagl.c,hakios.goodix.c,hakios.gpu.cpp,hakios.input.c,inject.c,inject_sb.c	a line for every wait of a program's for the GPU that took a millisecond or more ("tl: f KIND US at US"), for telling apart what holds a frame up
 TOUCH_POLL_US	arg	touch_poll_us	Touch and buttons	k	hakios.goodix.c	
