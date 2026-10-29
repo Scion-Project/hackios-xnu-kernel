@@ -267,6 +267,36 @@ On MoltenVK (`tools/metal/metalvk-plugin-test.sh /opt/homebrew/lib/libMoltenVK.d
 macOS's Metal is not iOS 16.5's: this shows the frontend, the bridge and the runtime doing what the Metal API asks on a real Vulkan
 driver from the plug-in's own entry. It does not show that iOS's `MTLAddDevice` takes the device; `metal_test` on the guest says that.
 
+### On gfxstream's guest Vulkan driver (its Mac twin, 29 October)
+
+The driver Scion's guest will use (`libhakios.vk.dylib`, branch `gpu/gfxstream-vulkan`, `tools/gfxstream/VULKAN.md` there) has a
+Mac build linked against the Android emulator's gfxstream host, MoltenVK under it: the same guest code and the same wire, in one
+process. `m2v_test` on it (with `mk-vk.sh mac run`'s environment, and the emulator's `lib64` linked beside the program, where the host
+looks for MoltenVK):
+
+1. **Coherent memory.** The runtime (this pin, and metal2vulkan's master as well) puts Metal's `Shared`, `Managed` and `WriteCombined`
+   memory, and its own host-visible blocks (64 MiB, mapped whole and kept mapped), only in a type that is
+   `HOST_VISIBLE | HOST_COHERENT`, and never flushes or invalidates a mapped range. gfxstream's driver, which keeps a copy of each
+   mapping in the guest (it cannot map the host's memory), lists none: `vkCreateDevice` succeeds, the runtime's first allocation finds
+   no type, and the device is refused, `device: OutOfMemory(Device)`. No Vulkan 1.3 feature is wanted: the runtime's instance is 1.2,
+   and it took the 1.2 device.
+2. **`tools/metal/bridge/coherence.rs` stands in for it**, between the runtime and a driver that has no coherent host-visible type
+   (and only then; `HAKIOS_VK_COHERENCE=off` turns it off): those types are marked coherent, the 4 KiB chunks the CPU changed are
+   flushed before every `vkQueueSubmit[2]`, and every mapping is invalidated after every wait that succeeded, the chunks the CPU
+   changed meanwhile kept. With it the device is made ("Apple M1 Pro", seen through gfxstream) and the kernels translated into
+   compute pipelines. It is slow by construction (a comparison of all mapped memory per submit, a transfer of all of it per wait); the
+   cheap place for it is the driver, or the runtime, which knows each command buffer's ranges. If the driver comes to list coherent
+   memory, this file stays out of the way by itself.
+3. **Then it deadlocks, every run.** The runtime calls Vulkan from several threads (the caller's, its pipeline workers, its
+   completion threads); gfxstream's driver opens one stream per thread, and in this harness each stream is a virtio-gpu context of its
+   own, while the host orders one process's commands per context. A sample of the hang: the main thread in `vkCreateQueryPool` (the
+   GPU-timing pool made at a commit), two `metal2vulkan-pipelines` workers in `vkCreatePipelineCache`, all three in
+   `ScionStream::readFully`, the host's render threads in `VkDecoder::decode`. `VULKAN.md` names the cure (stage 3, kernel 2): one
+   context per process, a pipe per open, in the Mac transport and in the kernel's `/dev/vgpu3d`.
+
+So nothing has yet been computed through gfxstream; what stands between is the driver's threading (one context per process) and,
+until the driver has coherent memory, the speed of `coherence.rs`.
+
 ### What is built for the guest
 
 - `xnu-deps/build/metal2vulkan/out/ios/libmetal2vulkan.dylib`: arm64, iOS (`LC_BUILD_VERSION` platform 2, minos 16.0), install name
@@ -282,8 +312,9 @@ None of it has run on iOS: there is no Vulkan driver in the guest yet.
 
 ### What is stubbed or missing, plainly
 
-- **The driver.** gfxstream's guest Vulkan driver (`libhakios.vk.dylib`, branch `gpu/gfxstream-vulkan`) is not finished. Until it
-  is, `METAL=vk` gives a plug-in that makes no device, and this route has computed and drawn on a Mac only.
+- **The driver.** gfxstream's guest Vulkan driver (`libhakios.vk.dylib`, branch `gpu/gfxstream-vulkan`) is built for iOS and runs
+  on a Mac against the emulator's host, but has not run in the guest, and the runtime does not get through it yet (the section
+  above: threads, and coherent memory). Until both are settled this route has computed and drawn on the Mac's own drivers only.
 - **IOSurfaces, and with them drawables, need the driver to import host memory.** A texture over an IOSurface is a no-copy buffer
   over the surface's pages (the frontend's `newTextureWithDescriptor:iosurface:plane:`), and at this pin the runtime makes one only
   through `VK_EXT_external_memory_host` (or dma-bufs on Linux); without it the texture is refused, logged
@@ -317,6 +348,9 @@ None of it has run on iOS: there is no Vulkan driver in the guest yet.
 
 1. The driver at `/redwood/lib/libhakios.vk.dylib` (or anywhere, with `METAL_ICD=PATH`), exporting `vk_icdGetInstanceProcAddr` or
    `vkGetInstanceProcAddr`, giving a Vulkan 1.2 device with `timelineSemaphore` and a queue family with graphics and compute.
+   gfxstream's has all of that. What it still needs for this runtime: **one virtio-gpu context per process** (its Mac transport
+   and the kernel's `/dev/vgpu3d`), since the runtime calls Vulkan from several threads; and coherent host-visible memory, in the
+   driver or by `coherence.rs` (slowly). Then `m2v_test` on its Mac twin is the check to run first (the section above says how).
 2. An image with `METAL=vk` and whatever the driver needs of the kernel (gfxstream's `/dev/vgpu3d` path), booted with `metal=1`
    and `RC_JOBS=rc.jobs.metalvk`: `m2v_test`'s lines are the first result, the same lines as the Mac's above; `metal_test` the
    second (does iOS 16.5's Metal take the device?).

@@ -334,11 +334,12 @@ main(int argc, char **argv)
 	long length;
 	void *bytes;
 
+	setvbuf(stdout, NULL, _IOLBF, 0);       /* a line at a time: a run that hangs still says how far it got */
 	if (argc < 4) {
 		fprintf(stderr, "usage: %s ICD CACHE METALLIB [PPM]\n", argv[0]);
 		return 2;
 	}
-	mkdir(argv[2], 0700);           /* the shader cache: the runtime wants it to exist */
+	mkdir(argv[2], 0700);          /* the shader cache: the runtime wants it to exist */
 	/* 1. the bridge's self-test, on its own device */
 	uint32_t stage = nmb_selftest(argv[1], argv[2], NULL, 0, NULL, &self);
 	if (stage != 0) {

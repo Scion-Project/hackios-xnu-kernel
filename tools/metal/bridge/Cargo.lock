@@ -69,6 +69,7 @@ dependencies = [
 name = "hakios-metal2vulkan"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "libc",
  "metal2vulkan",
  "metal2vulkan-runtime",

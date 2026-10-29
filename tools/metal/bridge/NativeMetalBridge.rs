@@ -16,6 +16,9 @@ pub mod objects;
 // Scion: the Vulkan driver by path, without a loader (icd.rs).
 #[path = "icd.rs"]
 pub mod icd;
+// Scion: coherent host memory where the driver has none (gfxstream's guest driver).
+#[path = "coherence.rs"]
+pub mod coherence;
 
 use metal2vulkan::metal::{PixelFormat, PrimitiveType, TextureUsage};
 use metal2vulkan::pipeline::{ColorAttachmentDescriptor, RenderPipelineDescriptor, StageSource};

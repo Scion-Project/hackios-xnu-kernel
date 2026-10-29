@@ -21,6 +21,8 @@ crate-type = ["cdylib"]
 metal2vulkan = { path = "../src/crates/metal2vulkan", features = ["ash"] }
 metal2vulkan-runtime = { path = "../src/crates/metal2vulkan-runtime" }
 libc = "0.2"
+# Vulkan's types only, for coherence.rs (the runtime's own ash; nothing is loaded through it here)
+ash = { version = "0.38", default-features = false, features = ["std"] }
 
 # Its own workspace: not one of metal2vulkan's.
 [workspace]

@@ -8,6 +8,9 @@
 //! with. So this library exports `vkGetInstanceProcAddr` itself, forwarding to the driver `select` opened, and the runtime is given
 //! this library's own path as its "loader": opening it again gives the same image, whose `vkGetInstanceProcAddr` is the one below.
 //!
+//! The one thing it adds: where the driver has no coherent host-visible memory, which the runtime needs, coherence.rs stands in for
+//! it between the two.
+//!
 //! What a loader would do and this does not: no layers, no dispatch table patched into the driver's dispatchable objects (every call
 //! goes straight to the driver's entry points, which is how a driver is used without a loader), one driver per process.
 
@@ -54,7 +57,8 @@ pub unsafe extern "system" fn vkGetInstanceProcAddr(instance: *mut c_void, name:
     }
     // SAFETY: ENTRY only ever holds a driver's GetInstanceProcAddr, and the driver stays loaded for the life of the process.
     let get: GetInstanceProcAddr = unsafe { std::mem::transmute(entry) };
-    unsafe { get(instance, name) }
+    // a driver without coherent host memory gets it stood in for (coherence.rs)
+    crate::coherence::wrap(unsafe { CStr::from_ptr(name) }, unsafe { get(instance, name) })
 }
 
 fn last_dl_error() -> String {
@@ -133,7 +137,8 @@ pub fn select(path: &CStr) -> Result<PathBuf, String> {
 #[unsafe(no_mangle)]
 pub extern "C" fn nmb_icd_describe(out: *mut c_char, size: usize) -> usize {
     let text = match SELECTED.lock().ok().and_then(|s| s.as_ref().map(|s| (s.path.clone(), s.entry_name, s.interface))) {
-        Some((path, entry, interface)) => format!("{} ({entry}, ICD interface {interface})", path.to_string_lossy()),
+        Some((path, entry, interface)) => format!("{} ({entry}, ICD interface {interface}{})", path.to_string_lossy(),
+            if crate::coherence::emulating() { "; coherent host memory emulated" } else { "" }),
         None => "no Vulkan driver selected".into(),
     };
     if !out.is_null() && size > 0 {
