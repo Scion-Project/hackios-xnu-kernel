@@ -27,6 +27,8 @@ storage  bsd/dev/hakios.virtio_blk.c
 gpu      bsd/dev/hakios.adreno.c
 gpu      bsd/dev/hakios.s6e3ha8.c
 gpu      iokit/Kernel/hakios.gpu.cpp
+gpu      bsd/dev/hakios.mali.c
+gpu      iokit/Kernel/hakios.mali.cpp
 
 camera   bsd/dev/hakios.camera.c
 camera   bsd/dev/hakios.torch.c

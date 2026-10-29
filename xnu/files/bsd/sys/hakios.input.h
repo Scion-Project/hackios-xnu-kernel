@@ -85,6 +85,7 @@ void hakios_adreno_init(void);         /* boot-arg adreno=N: the first N steps o
 void hakios_adreno_quiesce(void);      /* on the way back to the loader: the GPU block stopped, out of our memory */
 void hakios_adreno_stop(void);         /* before that, where the ending is no panic's: the GPU given back in order */
 void hakios_adreno_minute(void);       /* once a minute: a line about how warm the GPU is, if it is in use */
+void hakios_mali_init(void);           /* boot-arg mali=N: the first N steps of bringing up the Galaxy S9's Mali-G72 */
 void hakios_wifi_init(void);           /* boot-arg wifi=1: the phone's Wi-Fi; wifi_step=N: the first N steps of it */
 void hakios_adsp_init(void);           /* boot-arg adsp=1: the phone's audio DSP started and linked; adsp_step=N: the first N steps */
 void hakios_mpss_init(void);           /* boot-arg modem=1: the phone's modem started and linked; modem_step=N: the first N steps */
@@ -132,6 +133,23 @@ void hakios_gpu_worked(uint64_t *microseconds, uint32_t *submissions, uint32_t b
 void hakios_gpu_report(const char *why);
 bool hakios_gpu_recover(void);
 void hakios_gpu_stop(void);
+
+/*
+ * The Mali brought up to its last step (mali=9), for drivers/gpu/hakios.mali.cpp: see "what the service that programs
+ * talk to uses" in drivers/gpu/hakios.mali.c. hakios_keep(): a line of the kernel's own, said again every minute.
+ */
+bool hakios_mali_ready(void);
+bool hakios_mali_parameter(uint32_t which, uint64_t *value);
+uint64_t hakios_mali_address(uint64_t size);
+bool hakios_mali_map(uint64_t gpu, uint64_t phys);
+void hakios_mali_mapped(void);
+void hakios_mali_unmap(uint64_t gpu, uint64_t size);
+void hakios_mali_tag(uint64_t address, uint32_t kind, uint32_t width, uint32_t height, uint32_t row_bytes,
+    uint32_t format, uint32_t offset);
+uint32_t hakios_mali_submit(uint64_t chain, bool fragment);
+uint64_t hakios_mali_enqueue(uint64_t chain, bool fragment);
+bool hakios_mali_wait(uint64_t seq, uint64_t timeout_ns);
+void hakios_keep(const char *format, ...) __printflike(1, 2);
 #endif
 
 #endif /* _SYS_HAKIOS_INPUT_H_ */

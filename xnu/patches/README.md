@@ -18,9 +18,9 @@ The patches change Apple's files and upstream's drivers. The AVF guest's own dri
 fast completion and interrupt count, were changes to `hakios.vgpu.c` alone, and are in `drivers/gpu/hakios.vgpu.c` now;
 1403, which started the AVF battery from `hakios.input.c`, is a line of that file now.)
 
-**Change upstream's files (`xnu/files/`) by a patch here, never in place:** these patches apply on top of them, and
-an edit in place breaks the context of a patch that touches the same file (#59 broke 1200 so; 1500 carries that change
-now). After any change here, `XNU_URL=file://$PWD/xnu-src/xnu-8796.121.2 bash xnu/apply.sh /tmp/t` must end in
+**A file one of these patches touches is changed by a patch here, never in place** (`grep '^+++ b/' xnu/patches/*.patch`
+lists them): these patches apply on top of it, and an edit in place breaks their context (#59 broke 1200 so; 1500
+carries that change now). After any change here, `XNU_URL=file://$PWD/xnu-src/xnu-8796.121.2 bash xnu/apply.sh /tmp/t` must end in
 "N numbered patches".
 
 Make one with `git diff` in the kernel tree against the state after `apply.sh`, and mind that

@@ -118,6 +118,11 @@ public:
 	mach_vm_address_t               clientAddress;  /* ... and where it is there */
 	uint8_t *                       kpixels;        /* where the pixel memory starts in the kernel, either way */
 	uint32_t                        drawn;          /* the GPU's last submission that names the pixels (0: none; hakios.gpu.cpp) */
+	/*
+	 * ... and the Mali's (drivers/gpu/hakios.mali.cpp): the number of its last job that names the pixels (0: none), or
+	 * ~0 while the program drawing into them has its frame still to send
+	 */
+	uint64_t                        maliSeq;
 	struct minisurf_result          info;           /* addresses not filled in */
 	struct minisurf_plane           planes[MINISURF_MAX_PLANES];
 	OSDictionary *                  values;
@@ -165,6 +170,8 @@ void            MiniIOSurfaceCost(uint32_t * made, uint64_t * making, uint32_t *
 void            MiniIOSurfaceClearKept(void);
 /* Wait, for so many milliseconds at most, until the GPU is done with a surface's pixels (hakios.gpu.cpp). */
 bool            MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds);
+/* The same for the Mali's jobs (`maliSeq`; drivers/gpu/hakios.mali.cpp): what MiniIOSurfaceDrawn() asks, whoever's it is. */
+bool            HakiosMaliDrawn(MiniIOSurface * surface, uint64_t milliseconds);
 MiniIOSurface * MiniIOSurfaceCreateSimple(uint32_t width, uint32_t height, uint32_t pixelFormat);
 void            MiniIOSurfaceDrop(MiniIOSurface * surface);
 /* A Mach send right for the surface in the task (what IOSurfaceCreateMachPort gives); 0 on failure. */

@@ -24,7 +24,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | `hakios.vgpu3d_xnu.c` | SCGPU's glue to XNU: memory, mapping and waiting |
 | `hakios.input.c` | /dev/hakios-touch, the queue of touches and buttons, and where the phone's drivers are started from |
 | `hakios.net.c` | en0, an interface that is Ethernet to the rest of the kernel, for whatever link carries its frames |
-| `hakios.scfb_battery.c` | the phone's battery under AVF, as the Scion app writes it into the shared framebuffer (patch 1403) |
+| `hakios.scfb_battery.c` | the phone's battery under AVF, as the Scion app writes it into the shared framebuffer (scfb.addr=) |
 | `hakios.image.c` | a file of one of the RAM disks by path, for the drivers that load firmware before there is a root |
 | `hakios.sparse.c` | /dev/rsp0, a block device over an image that holds only some of its blocks (apfs_sparse=) |
 | `hakios.apfs_check.c` | a walk of the APFS volume on /dev/rvblk0 through VFS, to compare with tools/apfs/apfs.py (with XNU's `apfs`) |
@@ -64,6 +64,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | Driver | Files | Requires | Boot arguments | qemu | starlte | |
 |---|---|---|---|---|---|
 | **`HAKIOS_ADRENO`**<br>the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and the window server draw through (gpu=1, adreno_keep=1). Needs the GPU's firmware from the phone (fw-gpu/) | `hakios.adreno.c`<br>`hakios.gpu.cpp` |  | `adreno=`, `adreno_blind=`, `adreno_dirty=`, `adreno_fine=`, `adreno_keep=`, `adreno_only=`, `adreno_pause=`, `adreno_return=` and 12 more |  |  | |
+| **`HAKIOS_MALI`**<br>the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the IOKit service Mesa's panfrost draws through. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported | `hakios.mali.c`<br>`hakios.mali.cpp` |  | `mali=`, `mali_fastmap=`, `mali_trace=` | built | built | |
 | **`HAKIOS_S6E3HA8`**<br>the Galaxy S9's panel brightness: its AOR sent through DSIM0's command FIFO (panel=1; kern.hakios.brightness 0-255, panel_brightness=N at start) | `hakios.s6e3ha8.c` |  | `panel=`, `panel_brightness=` | built | built | |
 
 ## haptic
