@@ -44,6 +44,9 @@ void hakios_goodix_init(void) {}
 #ifndef HAKIOS_BUTTONS
 void hakios_buttons_init(void) {}
 #endif
+#ifndef HAKIOS_EXYNOS_KEYS
+void hakios_exynos_keys_init(void) {}
+#endif
 
 #ifndef HAKIOS_UFS
 void hakios_ufs_init(void) {}
@@ -56,6 +59,9 @@ void hakios_var_save_on_return(void) {}         /* no flash, so no data volume t
 #ifndef HAKIOS_VIRTIO_BLK
 void hakios_virtio_blk_init(void) {}
 bool hakios_virtio_blk_dev(__unused dev_t dev) { return false; }
+/* (IOFindBSDRoot asks these whatever the configuration: xnu/patches/1100, 1101) */
+int hakios_virtio_blk_rootdev(__unused const char *name, __unused dev_t *dev) { return ENXIO; }
+int hakios_virtio_blk_alias(__unused const char *disk, __unused const char *name) { return ENXIO; }
 #endif
 
 #ifndef HAKIOS_BATTERY

@@ -52,9 +52,13 @@ copied into this tree) are the references for the drivers still to write.
 ## Why only four cores
 
 The loader gives the kernel the four A55s. The M3s are a second cluster in MPIDR (0x100-0x103), which the loader's
-`core_shift` cannot number. They also implement ARMv8.0, while the A55s implement 8.2 like the iPhone X's A11, which iOS 16 is
-built for. Whether iOS's arm64 code uses anything past 8.0 (the LSE atomics, for example) decides whether the M3s can ever run
-it. Carbon already starts both clusters.
+`core_shift` cannot number. They also implement ARMv8.0, while the A55s implement 8.2 like the iPhone X's A11.
+
+iOS 16.5's own code does not need 8.1 to start with. A count over three files of the iPhone X's shared cache (57.6 million
+words) found 7088 `LDAXR`s and 7208 `STLXR`s, the 8.0 way of doing atomics, while `CAS`/`LDADD`/`SWP` turn up no more
+often than random bytes would. What remains is code that asks which features the processor has (`hw.optional.arm.FEAT_*`)
+and then uses them. With the M3s in, the kernel must answer for the weakest core: no LSE, no FP16. Carbon already starts
+both clusters.
 
 ## Build
 

@@ -17,3 +17,8 @@ driver GOODIX
 driver BUTTONS
 	file    bsd/dev/hakios.buttons.c
 	help    the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1)
+
+driver EXYNOS_KEYS
+	file    bsd/dev/hakios.exynos_keys.c
+	help    the Galaxy S9's power, volume and Bixby keys, pins of the Exynos 9810's ALIVE GPIO block (exynos_keys=1).
+	help    Bixby is the home button
