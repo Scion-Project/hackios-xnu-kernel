@@ -1,0 +1,6 @@
+# HakiOS defconfig for the Samsung Galaxy S9 (starlte, Exynos 9810, devices/starlte): the common kernel, the Exynos 9810's facts and
+# this phone's own. Nothing of the phone's is loaded and no driver of another phone is built in: the first boot of a port
+# (docs/porting/index.md, step 2), to launchd on UEFI's framebuffer.
+#include common_defconfig
+#include exynos9810.config
+#include starlte.config

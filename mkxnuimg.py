@@ -1,36 +1,47 @@
 #!/usr/bin/env python3
 """
-Pack the redwood UEFI (with the hook that starts the XNU loader) and an optional payload
-into an Android boot image for `fastboot boot`.
+Pack a phone's UEFI (with the hook that starts the XNU loader) and an optional payload
+into an Android boot image: for `fastboot boot` on redwood, to flash on starlte (Samsung has no fastboot).
 
-  kernel = gzip(BootShim + UEFI FD + ["XNUP" container]) + DTB
+  redwood: kernel = gzip(BootShim + UEFI FD + ["XNUP" container]) + DTB
+  starlte: kernel = BootShim + UEFI FD + ["XNUP" container], uncompressed and without a DTB (Project Silicium's
+           starlte.toml: Samsung's boot loader takes no gzip, and its device tree from the phone's dtb partition)
 
 The boot shim copies the FD to its base and the payload to PAYLOAD_BASE.
 
 The UEFI pieces are taken from a Mu-Silicium tree built here (Mu-Silicium/, see uefi/README.md)
-or, when there is none, from devices/redwood/prebuilt/.
+or, when there is none, from devices/<device>/prebuilt/.
 
 usage: mkxnuimg.py [-p payload.bin] [-o out.img]
 
-Another device sets these in the environment:
-  UEFI_TARGET   Mu-Silicium device name (default redwood)    UEFI_FD, DTB   files to use instead
-  FD_BASE, FD_SIZE, PAYLOAD_BASE                              addresses from its UEFI port's memory map
+The device and what it takes are set in the environment:
+  UEFI_TARGET   Mu-Silicium device name: redwood (default) or starlte    UEFI_FD, DTB   files to use instead
+  FD_BASE, FD_SIZE, PAYLOAD_BASE    addresses from its UEFI port's memory map (defaults: the device's, in DEVICES below)
 """
 import argparse, gzip, os, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MU = os.path.join(HERE, 'Mu-Silicium')
-PREBUILT = os.path.join(HERE, 'devices', 'redwood', 'prebuilt')
 def env_int(name, default):
     v = os.environ.get(name, '')
     return int(v, 0) if v else default
+# what each device's boot loader takes (its Mu-Silicium Resources/Configs/<device>.toml) and where its UEFI image lives
+DEVICES = {
+    'redwood': dict(fd_base=0x9FD00000, gzip=True, append_dtb=True, dtb_arg=False),
+    # (Samsung's boot loader reads the device tree from the phone's own dtb partition: none goes in the image)
+    'starlte': dict(fd_base=0x8F000000, gzip=False, append_dtb=False, dtb_arg=False),
+}
 TARGET = os.environ.get('UEFI_TARGET') or 'redwood'
-FD_BASE, FD_SIZE = env_int('FD_BASE', 0x9FD00000), env_int('FD_SIZE', 0x200000)
+if TARGET not in DEVICES:
+    sys.exit(f'mkxnuimg.py: no packing known for {TARGET} (DEVICES in this file: {", ".join(DEVICES)})')
+DEV = DEVICES[TARGET]
+PREBUILT = os.path.join(HERE, 'devices', TARGET, 'prebuilt')
+FD_BASE, FD_SIZE = env_int('FD_BASE', DEV['fd_base']), env_int('FD_SIZE', 0x200000)
 PAYLOAD_BASE, PAYLOAD_MAX = env_int('PAYLOAD_BASE', 0xF0000000), 0x04000000
 
 ap = argparse.ArgumentParser()
 ap.add_argument('-p', '--payload')
-ap.add_argument('-o', '--output', default=os.path.join(HERE, 'xnu-redwood.img'))
+ap.add_argument('-o', '--output', default=os.path.join(HERE, f'xnu-{TARGET}.img'))
 ap.add_argument('--mode', default='RELEASE')
 args = ap.parse_args()
 
@@ -51,6 +62,8 @@ else:
              'dtb': os.path.join(PREBUILT, 'device-tree.dtb'), 'ramdisk': os.path.join(PREBUILT, 'ramdisk'),
              'mkbootimg': os.path.join(PREBUILT, 'mkbootimg.py')}
     if os.environ.get('UEFI_FD'): parts['fd'] = os.environ['UEFI_FD']
+if not (DEV['append_dtb'] or DEV['dtb_arg']):
+    del parts['dtb']
 for name, path in parts.items():
     if not os.path.isfile(path):
         hint = ''
@@ -72,12 +85,13 @@ if args.payload:
     print(f'payload: {len(data)} bytes, bytesum={sum(data) & 0xffffffff:08x}')
 
 if os.environ.get('DTB'): parts['dtb'] = os.environ['DTB']
-dtb = open(parts['dtb'], 'rb').read()
+dtb = open(parts['dtb'], 'rb').read() if 'dtb' in parts else b''
 kernel = args.output + '.kernel~'
-open(kernel, 'wb').write(gzip.compress(blob, 6) + dtb)
+open(kernel, 'wb').write((gzip.compress(blob, 6) if DEV['gzip'] else blob) + (dtb if DEV['append_dtb'] else b''))
 try:
     subprocess.check_call([sys.executable, parts['mkbootimg'], '--kernel', kernel, '--ramdisk', parts['ramdisk'],
-                           '--header_version', '1', '-o', args.output])
+                           '--header_version', '1', '-o', args.output] +
+                          (['--dtb', parts['dtb']] if DEV['dtb_arg'] else []))
 finally:
     os.unlink(kernel)
 print(f'{args.output}: {os.path.getsize(args.output)} bytes (shim {len(shim)}, uncompressed {len(blob)})')
