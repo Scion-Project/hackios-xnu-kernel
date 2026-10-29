@@ -300,16 +300,17 @@ battery_thread(void *arg, __unused wait_result_t result)
 		goto out;
 	}
 	say("max77705: step 4: the chip, the gauge, the charger\n");
+	/* (a first answer missed is not the end: step 5 goes on asking, and reports once one comes) */
 	if (read8(PMIC, 0x01, &rev) != 0) {
 		say("max77705: no answer at 0x%x (%x)\n", PMIC, bus.last_error);
-		goto out;
+	} else {
+		say("max77705: version %u, revision %u\n", rev >> 3, rev & 7);
 	}
-	say("max77705: version %u, revision %u\n", rev >> 3, rev & 7);
 	if (!battery_read(&b)) {
 		say("max77705: the gauge or the charger did not answer (%x)\n", bus.last_error);
-		goto out;
+	} else {
+		say_state("now", &b);
 	}
-	say_state("now", &b);
 	if (++step >= steps) {
 		goto out;
 	}

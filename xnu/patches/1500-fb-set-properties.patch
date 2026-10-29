@@ -1,12 +1,12 @@
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-index 66dc128..ad59288 100644
+index 66dc128..f21d64b 100644
 --- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 @@ -44,6 +44,7 @@ extern "C" void hakios_vgpu3d_display_surface(uint32_t sid);       /* bsd/dev/ha
  extern "C" bool hakios_vgpu3d_host_owns(uint32_t sid);
  
  extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
-+extern "C" void hakios_panel_brightness(int level);      /* drivers/gpu/hakios.s6e3ha8.c, or nothing (hakios.stubs.c) */
++extern "C" int hakios_panel_brightness(int level);       /* drivers/gpu/hakios.s6e3ha8.c (0: taken), or ENODEV (hakios.stubs.c) */
  
  /*
   * Scion shared framebuffer (SCFB), for the Android Virtualization Framework: crosvm has no ramfb,
@@ -84,8 +84,8 @@ index 66dc128..ad59288 100644
 +		if (number != NULL && is_brightness(key->getCStringNoCopy())) {
 +			uint64_t value = number->unsigned64BitValue();
 +
-+			hakios_panel_brightness(value <= 1 ? (int)(value * 255) : value > 255 ? 255 : (int)value);
-+			taken = true;
++			/* (refused, as before, where no panel driver takes it: every other phone) */
++			taken = hakios_panel_brightness(value <= 1 ? (int)(value * 255) : value > 255 ? 255 : (int)value) == 0;
 +		}
 +	}
 +	keys->release();
