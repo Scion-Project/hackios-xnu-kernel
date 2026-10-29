@@ -35,6 +35,12 @@ driver VIRTIO_SOUND
 	file    bsd/dev/hakios.virtio_sound.c
 	help    QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only
 
+driver MAX98512
+	file    bsd/dev/hakios.max98512.c
+	requires EXYNOS_HSI2C
+	help    the Galaxy S9's two speaker amplifiers (MAX98512s on PERIC1's HSI2C), handed to ABOX's UAIF1 (max98512=N:
+	help    1 a look, 2 set up and muted, 3 turned on and off by UAIF1's start and stop)
+
 standard bsd/dev/hakios.scsnd.c
 	help    SCSND: what iOS plays, to the Scion app's audio ring in the shared framebuffer (patch 1401)
 

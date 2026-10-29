@@ -45,6 +45,7 @@ audio    bsd/dev/hakios.mic.c
 audio    bsd/dev/hakios.virtio_sound.c
 audio    bsd/dev/hakios.guard.c
 audio    bsd/dev/hakios.exynos_abox.c
+audio    bsd/dev/hakios.max98512.c
 
 power    bsd/dev/hakios.battery.c
 power    iokit/Kernel/hakios.battery.cpp
