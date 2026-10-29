@@ -22,7 +22,7 @@
 | storage | partly | UFS read through the loader and Silicium's UEFI (ufs=2): written, not yet seen on the phone |
 | gpu | no | Mali-G72 MP18: no driver |
 | audio | no |  |
-| battery | partly | the MAX77705's gauge and charger, read only, into iOS's battery (max77705=1); 25 C until the ADC thermistor is read: written, not yet seen |
+| battery | partly | the MAX77705's gauge and charger, read only, and the thermistor (ADC), into iOS's battery (max77705=1): written, not yet seen |
 | wifi | no | BCM4361 on PCIe |
 | cellular | no |  |
 

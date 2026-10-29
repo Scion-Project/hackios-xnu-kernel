@@ -130,8 +130,8 @@ information, else 0-4095 on both axes), spread over the whole panel, which is wh
 
 `drivers/power/hakios.max77705.c` (`max77705=1`, on by default here) reads the MAX77705's fuel gauge (0x36) and charger
 (0x69) on CMGP's HSI2C every 5 seconds, and hands the charge, voltage, current, capacity, cycles and charger state to
-iOS's power source. It never writes the chip. The temperature is reported as 25 C until the battery's thermistor
-(ADC channel 4) is read. Touch and battery share `drivers/core/hakios.exynos_hsi2c.c`.
+iOS's power source. It never writes the chip. The temperature is the battery's thermistor (channel 4 of CMGP's ADC,
+through the phone's own table), as Android reads it. Touch and battery share `drivers/core/hakios.exynos_hsi2c.c`.
 
 ## What comes next
 
