@@ -243,8 +243,8 @@ lines, `ok` every one.
 
 `tools/metal/metalvk-plugin-test.sh` then builds the plug-in's own three sources for macOS, makes the device the way Metal makes
 it (`[[HakiosMetalDevice alloc] initWithAcceleratorPort:]`) and uses **the Metal API**: a library from the metallib's URL,
-compute pipelines, a queue, compute, render and blit encoders, a completion handler, and a texture over an IOSurface, rendered
-into and read from the surface's own memory. On lavapipe:
+compute pipelines, a queue, compute, render and blit encoders, a completion handler, a texture over an IOSurface, rendered
+into and read from the surface's own memory, and a `Shared` texture's `replaceRegion:` and `getBytes:`. On lavapipe:
 
 ```
 ok    the plug-in registered HakiosMetalDevice, a subclass of _MTLDevice
@@ -259,6 +259,8 @@ ok    newRenderPipelineStateWithDescriptor: RGBA8 ((null))
 ok    the triangle through the Metal API: 1062 pixels inside judged, 0 wrong
 ok    newTextureWithDescriptor:iosurface:plane: a 128x96 BGRA8 texture over the surface (512 bytes a row)
 ok    the triangle read from the IOSurface's own memory: 3407 pixels inside judged, 0 wrong
+ok    replaceRegion: into a Shared texture, the GPU's copy of it out is the CPU's bytes
+ok    getBytes: of the triangle rendered into a Shared texture: 1062 pixels inside judged, 0 wrong
 metalvk_plugin_test: the plug-in did everything asked, every number the CPU's
 ```
 
