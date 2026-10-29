@@ -13,7 +13,13 @@ if [ -z "$SDK" ]; then
 	SDK=${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk
 	[ -d "$SDK" ] || SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 fi
-CC=${CC:-clang}
+# On Linux, xnu-clang (xnu-deps/setup.sh): the same clang for an iOS target, linking with ld64 instead of the system's
+# ELF ld; and llvm-nm, which reads Mach-O
+if [ "$(uname)" = Darwin ]; then
+	CC=${CC:-clang} NM=${NM:-nm}
+else
+	CC=${CC:-xnu-clang} NM=${NM:-llvm-nm}
+fi
 CFLAGS="-target arm64-apple-ios16.0 -isysroot $SDK -O2 -Wall -Wno-unused-function"
 D=$("$ROOT/tools/gfxstream/fetch.sh")
 python3 "$ROOT/tools/gfxstream/mkgfxenc.py" "$D/codegen" "$OUT/gfx/gfx_enc.h" "$OUT/gfx/gfx_enc.c" "$OUT/gfx/gfx_api.c" \
@@ -25,7 +31,7 @@ GFX="$G/gfx_core.c $G/gfx_gl.c $G/gfx_shared.c $G/gfx_dev.c $OUT/gfx/gfx_enc.c $
 	https://raw.githubusercontent.com/KhronosGroup/OpenGL-Registry/${GL_XML_COMMIT:-main}/xml/gl.xml
 $CC $CFLAGS -fvisibility=hidden -dynamiclib -I"$G" -I"$OUT/gfx" -o "$OUT/gfx/libgfx-probe.dylib" $GFX \
 	-framework CoreFoundation -framework IOSurface -install_name /redwood/lib/libgfx-probe.dylib
-nm -gU "$OUT/gfx/libgfx-probe.dylib" | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > "$OUT/gfx/exported-gl.txt"
+$NM -gU "$OUT/gfx/libgfx-probe.dylib" | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > "$OUT/gfx/exported-gl.txt"
 "$U/mkeagl.py" "$U/src/eagl_slots.txt" "$D/gl.xml" "$OUT/gfx/exported-gl.txt" "$U/src/eagl.c" > "$OUT/eagl_gen.h"
 $CC $CFLAGS -fvisibility=hidden -dynamiclib -install_name /redwood/lib/libhakios.gl.dylib -I"$OUT" -I"$G" -I"$OUT/gfx" \
 	-framework CoreFoundation -framework IOKit -framework IOSurface -lobjc -o "$OUT/libhakios.gl.dylib" \
