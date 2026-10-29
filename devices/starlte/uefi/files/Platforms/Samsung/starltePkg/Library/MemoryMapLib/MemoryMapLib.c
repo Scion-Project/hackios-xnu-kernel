@@ -18,6 +18,9 @@ gMemoryDescriptor[] = {
   // it. It is the modem's region in Samsung's device tree (modem_if, 0xF0000000 + 0x9200000), unused here: Android's cbd loads
   // the modem's image there, the boot loader does not, and no modem is started under HakiOS.
   {"XNU Payload",        0xF0000000, 0x04000000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK},
+  // HakiOS: Samsung's pstore (exynos-snapshot's log_pstore), where the loader keeps its log across a restart for Android or
+  // TWRP to read back (xnuloader/loader.c, write_ram_log): UEFI must not put anything of its own there.
+  {"Samsung pstore",     0xFED10000, 0x00008000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK},
 
   // iRAM Regions
   {"IRAM",               0x02020000, 0x00018000, AddDev, MMAP_IO, UNCACHEABLE, MmIO,   DEVICE},
