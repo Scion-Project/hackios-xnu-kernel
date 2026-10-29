@@ -134,6 +134,13 @@ struct pipe { uint32_t ctx, res; uint8_t *buf; };
 
 static pthread_once_t host_once = PTHREAD_ONCE_INIT;
 static int host_err = -1;
+/*
+ * A virtio-gpu context of its own for every stream, as /dev/vgpu3d makes one an open: gfxstream's
+ * host has ONE pipe (one render thread) per context, which every pipe resource attached to the
+ * context shares (VirtioGpuContext::AttachResource), so streams of one context would be mixed into
+ * one render thread. The host orders Vulkan commands by sequence numbers per context; the driver
+ * numbers them per stream (VkEncoder::nextSeqno), which is what makes several streams work.
+ */
 static pthread_mutex_t ids_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t next_ctx = 1, next_res = 0x10000;
 
@@ -190,13 +197,35 @@ host_init(void)
 	host_err = 0;
 }
 
+/*
+ * Every call into the host one at a time, as the phone makes them: the Scion app has one thread
+ * (scgpu.c, serve) that runs the guest's stream ring (writes) and its mailbox (everything else,
+ * reads among them), and a read there waits for the render thread's reply before anything else
+ * goes on. The harness keeps that, so that what deadlocks there deadlocks here; and
+ * stream_renderer's frontend wants its contexts and resources made from one thread anyway.
+ * SCION_VK_PARALLEL=1: transfers of different streams at once (creation stays serialized).
+ */
+static pthread_mutex_t serve = PTHREAD_MUTEX_INITIALIZER;
+
 static int
 xfer(struct pipe *p, int to_host, uint32_t n)
 {
+	static int parallel = -1;
 	struct sr_box box = { 0, 0, 0, n, 1, 1 };
 	struct sr_iovec iov = { p->buf, PIPE_SIZE };
-	return to_host ? sr_write(p->res, p->ctx, 0, 0, 0, &box, 0, &iov, 1)
-	               : sr_read(p->res, p->ctx, 0, 0, 0, &box, 0, &iov, 1);
+	if (parallel < 0) {
+		const char *e = getenv("SCION_VK_PARALLEL");
+		parallel = e && atoi(e);
+	}
+	if (!parallel) {
+		pthread_mutex_lock(&serve);
+	}
+	int r = to_host ? sr_write(p->res, p->ctx, 0, 0, 0, &box, 0, &iov, 1)
+	                : sr_read(p->res, p->ctx, 0, 0, 0, &box, 0, &iov, 1);
+	if (!parallel) {
+		pthread_mutex_unlock(&serve);
+	}
+	return r;
 }
 
 static int
@@ -237,8 +266,10 @@ static void
 pipe_close(void *arg)
 {
 	struct pipe *p = arg;
+	pthread_mutex_lock(&serve);
 	sr_resource_unref(p->res);
 	sr_context_destroy(p->ctx);
+	pthread_mutex_unlock(&serve);
 	free(p->buf);
 	free(p);
 }
@@ -260,20 +291,24 @@ scion_vk_transport_open(struct scion_vk_transport *t)
 	p->res = next_res++;
 	pthread_mutex_unlock(&ids_lock);
 	static const char name[] = "scion-vk";
-	if (sr_context_create(p->ctx, sizeof(name) - 1, name, 3 /* gfxstream-vulkan */)) {
-		free(p->buf);
-		free(p);
-		return EIO;
-	}
 	struct sr_create c = { p->res, 0 /* PIPE_BUFFER */, 64 /* R8 */, 1u << 17 /* CUSTOM */, PIPE_SIZE, 1, 1, 1, 0, 0, 0 };
 	struct sr_iovec iov = { p->buf, PIPE_SIZE };
-	if (sr_resource_create(&c, NULL, 0) || sr_attach_iov((int)p->res, &iov, 1)) {
+	pthread_mutex_lock(&serve);
+	int err = 0;
+	if (sr_context_create(p->ctx, sizeof(name) - 1, name, 3 /* gfxstream-vulkan */)) {
+		err = EIO;
+	} else if (sr_resource_create(&c, NULL, 0) || sr_attach_iov((int)p->res, &iov, 1)) {
 		sr_context_destroy(p->ctx);
+		err = EIO;
+	} else {
+		sr_ctx_attach((int)p->ctx, (int)p->res);
+	}
+	pthread_mutex_unlock(&serve);
+	if (err) {
 		free(p->buf);
 		free(p);
-		return EIO;
+		return err;
 	}
-	sr_ctx_attach((int)p->ctx, (int)p->res);
 	static const char service[] = "pipe:opengles";
 	memcpy(p->buf, service, sizeof(service));
 	if (xfer(p, 1, sizeof(service))) {
@@ -296,7 +331,9 @@ scion_vk_transport_capset(uint32_t id, void *buf, size_t size)
 		return ENOTSUP;
 	}
 	uint32_t version = 0, max = 0;
+	pthread_mutex_lock(&serve);
 	sr_get_cap_set(id, &version, &max);
+	pthread_mutex_unlock(&serve);
 	if (max == 0) {
 		return ENOTSUP;
 	}
@@ -304,7 +341,9 @@ scion_vk_transport_capset(uint32_t id, void *buf, size_t size)
 	if (caps == NULL) {
 		return ENOMEM;
 	}
+	pthread_mutex_lock(&serve);
 	sr_fill_caps(id, version, caps);
+	pthread_mutex_unlock(&serve);
 	memset(buf, 0, size);
 	memcpy(buf, caps, max < size ? max : size);
 	free(caps);

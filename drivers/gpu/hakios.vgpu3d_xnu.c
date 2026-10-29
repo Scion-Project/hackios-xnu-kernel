@@ -77,9 +77,19 @@ struct vgpu3d_ioc_xfer {
 #define VGPU3D_IOC_HOST_SHOWS   _IOWR('G', 5, uint32_t)
 #define VGPU3D_IOC_RING_MARK    _IOWR('G', 6, uint64_t)
 
-#define MAX_OPENS               32
+/*
+ * Opens: a GL context is one, and so is every thread of a process that calls Vulkan (gfxstream's
+ * guest Vulkan driver has a stream a thread, plus one a queue and one for the process: each its own
+ * context, since gfxstream's host has one pipe a context; tools/gfxstream/VULKAN.md).
+ */
+#define MAX_OPENS               64
 #define MAX_RES                 1024            /* CoreAnimation shares hundreds of IOSurfaces */
 #define PIPE_SIZE               (1u << 20)
+/*
+ * With SCGPU's stream ring the pipe's buffer carries only replies (writes go through the ring, in
+ * records of at most this): a quarter of it, so that 64 opens take 16 MiB of the app's pool, not 64.
+ */
+#define RING_PIPE_SIZE          (256u << 10)
 #define MAX_ENTRIES             3000            /* ATTACH_BACKING entries: 48 KiB of command */
 
 struct res {
@@ -1006,7 +1016,7 @@ vgpu3d_dev_open(dev_t dev, __unused int flags, __unused int devtype, __unused pr
 	o->g.ctx_id = (uint32_t)m + 2;                            /* 1: the boot self-test's */
 	o->g.next_resource = 0x20000 + ((uint32_t)m << 12);       /* the pipe */
 	o->next_id = o->g.next_resource + 1;                      /* resources: 4095 a minor */
-	if (vgpu3d_open(&o->g, vgpu3d_gles, PIPE_SIZE) != 0) {
+	if (vgpu3d_open(&o->g, vgpu3d_gles, scgpu != NULL && scgpu_ring != NULL ? RING_PIPE_SIZE : PIPE_SIZE) != 0) {
 		printf("vgpu3d: /dev/vgpu3d minor %d: no pipe (%d)\n", m, o->g.err);
 		vgpu3d_close(&o->g);
 		lck_mtx_lock(&vgpu3d_opens_lock);
