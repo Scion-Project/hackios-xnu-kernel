@@ -25,6 +25,6 @@ driver EXYNOS_KEYS
 
 driver S6SY761
 	file    bsd/dev/hakios.s6sy761.c
-	requires EXYNOS_HSI2C
+	requires EXYNOS_HSI2C EXYNOS_ACPM
 	help    the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this
 	help    file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz)

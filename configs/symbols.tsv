@@ -231,6 +231,7 @@ RETURN_PANIC	arg	return_panic	CPU, memory and boot	k	loader_return.c
 ROOT_APFS	arg	root_apfs	User space	u	init.c	the root is to be the iOS root volume on /dev/DEV -- the phone's flash, read only
 S6SY761	arg	s6sy761	Touch and buttons	k	hakios.s6sy761.c	every address below belongs to this phone
 S6SY761_IPCLK	arg	s6sy761_ipclk	Touch and buttons	k	hakios.s6sy761.c	the HSI2C's input clock, if step 1 says it is not the 200 MHz both other drivers assume
+S6SY761_LDO	arg	s6sy761_ldo	Touch and buttons	k	hakios.s6sy761.c	
 S6SY761_STEPS	arg	s6sy761_steps	Touch and buttons	k	hakios.s6sy761.c	
 SCCAM_ADDR	arg	sccam.addr	User space	k	1400-avf-scion-camera.patch,hakios.sccam_torch.c	
 SCCAM_H	arg	sccam.h	User space	k	1400-avf-scion-camera.patch	
@@ -269,6 +270,7 @@ SURFTRACE	arg	surftrace	GPU and display	k	MiniIOSurface.cpp	log the first N surf
 SURFTRACE_OF	arg	surftrace_of	GPU and display	k	MiniIOSurface.cpp	
 SWITCHER_WALLPAPER	arg	switcher_wallpaper	User space	u	inject_sb.c	
 SYSSLEEP	arg	syssleep	CPU, memory and boot	k	(patch)	
+SYSTEM_APFS	arg	system_apfs	User space	u	init.c	the root is to be the big system image (userland/system.apfs, a RAM boot's md0) on /dev/DEV, read
 SYSTRACE	arg	systrace	CPU, memory and boot	k	(patch),user_exception_trace.c	
 SYSTRACE_NAME	arg	systrace_name	CPU, memory and boot	k	(patch)	
 THERMAL_LOG	arg	thermal_log	Chip, thermal and PMIC	k	hakios.thermal.c	a summary line this often (0: only on a rise; 60)
