@@ -60,6 +60,9 @@
 #                                   mounted). Not beside GL=1: the two do not fit the 64 MB the loader takes with
 #                                   the kernel. adsp=1 needs none of it: the system image has the firmware in /fw.
 #                      MODEM=1      stage checked local MPSS firmware from ../fw-modem in system.apfs /fw.
+#                      DEVICE=NAME  with the firmware a device's own repository carries, devices/NAME/firmware/
+#                                   (every file but its READMEs), in fw/: DEVICE=starlte for the Galaxy S9's audio
+#                                   (ABOX's calliope images, DSM; devices/starlte/firmware/audio/README.md).
 #                                   This does not start the modem; the XNU MPSS driver is still required.
 #   system.apfs      the system image, the root filesystem (the resident RAM disk, /dev/md0), an
 #                    APFS container: the part of iOS 16.5 chosen by ../sysimage/select-system.py at
@@ -604,6 +607,14 @@ done
 if [ -n "$ADSP" ] && [ -f ../fw-audio/adsp.mdt ]; then
 	mkdir -p root/fw
 	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] root/fw/
+fi
+# ... and with DEVICE=NAME what a device's repository carries itself, devices/NAME/firmware/: there the project keeps
+# the vendor's files in the repository (the S9's ABOX firmware), so nothing has to be pulled from the phone first
+if [ -n "$DEVICE" ]; then
+	[ -d ../devices/$DEVICE/firmware ] || { echo "build.sh: DEVICE=$DEVICE: no devices/$DEVICE/firmware (python3 tools/hakios-device.py sync $DEVICE)" >&2; exit 1; }
+	mkdir -p root/fw
+	find ../devices/$DEVICE/firmware -type f ! -name 'README*' -exec install -m 0644 {} root/fw/ \;
+	echo "build.sh: fw/: $(find ../devices/$DEVICE/firmware -type f ! -name 'README*' | wc -l | tr -d ' ') files from devices/$DEVICE/firmware"
 fi
 # Firmware that is not there is otherwise silent at build time and speaks only much later, deep in a
 # device log -- "adreno: THE GPU IS NOT STARTED: the small image has no fw/a660_gmu.bin" cost a phone
