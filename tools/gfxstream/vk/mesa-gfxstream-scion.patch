@@ -16,11 +16,32 @@ licence.
 - the encoder reads exactly the bytes an invalidate returns (the host rounds its allocations up to a
   page, so for VK_WHOLE_SIZE it sends more than the guest mapped, and the stream went out of step),
   and clamps VK_WHOLE_SIZE with an offset to the rest of the memory
+- threads: every stream is a virtio-gpu context of its own (gfxstream's host has one pipe a context),
+  so sequence numbers are counted per encoder (= per stream) instead of per process, a queue's
+  commands go down a stream of the queue's own (their order across threads), and the instance is
+  made on a stream that lives as long as the process (the host destroys an instance with the context
+  it was made on)
+- waits are polled (timeout 0 on the host, the waiting in the guest): a wait on the host blocks its
+  render thread and, on the phone, the app's one serve thread, and with it every other thread's
+  replies and writes (HAKIOS_VK_HOST_WAITS=1 waits on the host)
+- opt-in host coherence (HAKIOS_VK_COHERENCE=emulate): host-visible types shown coherent, kept so by
+  flushing the chunks the CPU changed before every submit and pulling what the device may have
+  written after every completed wait
 - darwin build fixes in ResourceTracker (drm_fourcc.h from Mesa's include/drm-uapi)
 
 --- a/src/gfxstream/codegen/scripts/cereal/encoder.py
 +++ b/src/gfxstream/codegen/scripts/cereal/encoder.py
-@@ -560,7 +560,10 @@
+@@ -371,7 +371,8 @@
+     cgen.stmt("uint32_t opcode_%s = OP_%s" % (api.name, api.name))
+ 
+     if doSeqno:
+-        cgen.stmt("uint32_t seqno; if (queueSubmitWithCommandsEnabled) seqno = ResourceTracker::nextSeqno()")
++        # Scion: per encoder, as the host counts them per context and every stream is a context
++        cgen.stmt("uint32_t seqno; if (queueSubmitWithCommandsEnabled) seqno = this->nextSeqno()")
+ 
+     cgen.stmt("memcpy(streamPtr, &opcode_%s, sizeof(uint32_t)); streamPtr += sizeof(uint32_t)" % api.name)
+     cgen.stmt("memcpy(streamPtr, &packetSize_%s, sizeof(uint32_t)); streamPtr += sizeof(uint32_t)" % api.name)
+@@ -560,12 +561,17 @@
          cgen.stmt("uint64_t streamSize = 0")
          cgen.stmt("if (!memory) { %s->write(&streamSize, sizeof(uint64_t)); continue; }" % streamVar)
          cgen.stmt("auto hostPtr = sResourceTracker->getMappedPointer(memory)")
@@ -32,32 +53,56 @@ licence.
          cgen.stmt("if (!hostPtr) { %s->write(&streamSize, sizeof(uint64_t)); continue; }" % streamVar)
          cgen.stmt("streamSize = actualSize")
          cgen.stmt("%s->write(&streamSize, sizeof(uint64_t))" % streamVar)
-@@ -596,15 +599,17 @@
+         cgen.stmt("uint8_t* targetRange = hostPtr + offset")
+         cgen.stmt("%s->write(targetRange, actualSize)" % streamVar)
++        # Scion: what the host has now (emulated coherence)
++        cgen.stmt("sResourceTracker->scionMemoryFlushed(memory, offset, actualSize)")
+         cgen.endFor()
+         cgen.endIf()
+ 
+@@ -596,15 +602,14 @@
          cgen.stmt("auto memory = range.memory")
          cgen.stmt("auto size = range.size")
          cgen.stmt("auto offset = range.offset")
--        cgen.stmt("uint64_t streamSize = 0")
++        # Scion: the host says how many bytes follow (for VK_WHOLE_SIZE, the rest of ITS
++        # allocation, which it rounds up to a page): exactly those are read, so that the stream
++        # stays in step; the tracker keeps as many as fit the guest's copy (merged with what the
++        # CPU wrote since, for emulated-coherent memory).
+         cgen.stmt("uint64_t streamSize = 0")
 -        cgen.stmt("if (!memory) { %s->read(&streamSize, sizeof(uint64_t)); continue; }" % streamVar)
 -        cgen.stmt("auto hostPtr = sResourceTracker->getMappedPointer(memory)")
 -        cgen.stmt("auto actualSize = size == VK_WHOLE_SIZE ? sResourceTracker->getMappedSize(memory) : size")
 -        cgen.stmt("if (!hostPtr) { %s->read(&streamSize, sizeof(uint64_t)); continue; }" % streamVar)
 -        cgen.stmt("streamSize = actualSize")
-+        # Scion: the host says how many bytes follow (for VK_WHOLE_SIZE, the rest of ITS
-+        # allocation, which it rounds up to a page): exactly those are read, as many as fit the
-+        # guest's copy are kept, the rest skipped, so that the stream stays in step.
-+        cgen.stmt("uint64_t streamSize = 0")
          cgen.stmt("%s->read(&streamSize, sizeof(uint64_t))" % streamVar)
 -        cgen.stmt("uint8_t* targetRange = hostPtr + offset")
 -        cgen.stmt("%s->read(targetRange, actualSize)" % streamVar)
-+        cgen.stmt("auto hostPtr = memory ? sResourceTracker->getMappedPointer(memory) : nullptr")
-+        cgen.stmt("auto mappedSize = memory ? sResourceTracker->getMappedSize(memory) : 0")
-+        cgen.stmt("uint64_t keep = (!hostPtr || offset >= mappedSize) ? 0 : std::min<uint64_t>(streamSize, mappedSize - offset)")
-+        cgen.stmt("if (keep) %s->read(hostPtr + offset, keep)" % streamVar)
-+        cgen.stmt("for (uint64_t left = streamSize - keep; left; ) { uint8_t skip[4096]; uint64_t k = left < sizeof(skip) ? left : sizeof(skip); %s->read(skip, k); left -= k; }" % streamVar)
++        cgen.stmt("sResourceTracker->scionMemoryInvalidated(%s, memory, offset, streamSize)" % streamVar)
 +        cgen.stmt("(void)size")
          cgen.endFor()
          cgen.endIf()
  
+--- a/src/gfxstream/codegen/scripts/cereal/functable.py
++++ b/src/gfxstream/codegen/scripts/cereal/functable.py
+@@ -35,6 +35,18 @@
+     "vkQueueSubmit",
+     "vkQueueSubmit2",
+     "vkQueueWaitIdle",
++    # Scion: emulated coherence (ResourceTracker::scion*)
++    "vkGetPhysicalDeviceMemoryProperties",
++    "vkGetPhysicalDeviceMemoryProperties2",
++    "vkGetPhysicalDeviceMemoryProperties2KHR",
++    "vkDeviceWaitIdle",
++    "vkGetQueryPoolResults",
++    "vkFlushMappedMemoryRanges",
++    "vkInvalidateMappedMemoryRanges",
++    "vkWaitSemaphores",
++    "vkWaitSemaphoresKHR",
++    "vkGetSemaphoreCounterValue",
++    "vkGetSemaphoreCounterValueKHR",
+     "vkImportSemaphoreFdKHR",
+     "vkGetSemaphoreFdKHR",
+     # Warning: These need to be defined in vk.xml (currently no-op) {
 --- a/src/gfxstream/guest/connection-manager/GfxStreamConnectionManager.cpp
 +++ b/src/gfxstream/guest/connection-manager/GfxStreamConnectionManager.cpp
 @@ -12,7 +12,11 @@
@@ -132,7 +177,29 @@ licence.
    libplatform_virtgpu += libplatform_virtgpu_windows
 --- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
 +++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
-@@ -37,6 +37,8 @@
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "ResourceTracker.h"
++#include "VulkanStreamGuest.h"
+ 
+ #include "CommandBufferStagingStream.h"
+ #include "DescriptorSetVirtualization.h"
+@@ -28,6 +29,13 @@
+ 
+ #include <algorithm>
+ #include <chrono>
++#include <mutex>
++#include <thread>
++
++#if DETECT_OS_APPLE
++// Scion's stream (platform/scion/ScionStream.cpp)
++gfxstream::guest::IOStream* createScionStream(size_t bufSize, bool* flagsSent);
++#endif
+ #include <set>
+ #include <string>
+ #include <unordered_map>
+@@ -37,6 +45,8 @@
  
  #if DETECT_OS_LINUX
  #include <drm_fourcc.h>
@@ -141,11 +208,403 @@ licence.
  #endif
  
  #ifndef VK_USE_PLATFORM_FUCHSIA
-@@ -1521,7 +1523,17 @@
+@@ -1442,6 +1452,13 @@
+     }
+ 
+     noRenderControlEnc = mCaps.vulkanCapset.noRenderControlEnc;
++
++#if DETECT_OS_APPLE
++    // Opt-in: a runtime that flushes and invalidates what it touches (metal2vulkan) does far less
++    // with the host's types shown as they are, not coherent, than this emulation can.
++    const char* coherence = getenv("HAKIOS_VK_COHERENCE");
++    mScionCoherent = !usingDirectMapping() && coherence && !strcmp(coherence, "emulate");
++#endif
+ }
+ 
+ void ResourceTracker::setupFeatures(const struct GfxStreamVkFeatureInfo* features) {
+@@ -1521,8 +1538,396 @@
      ResourceTracker::threadingCallbacks = callbacks;
  }
  
 -bool ResourceTracker::usingDirectMapping() const { return true; }
++// ---- Scion: host-coherent memory over a stream (no direct mapping) ----------------------------
++//
++// A host that does not map its memory into the guest (VirtioGpuNext off) shows no coherent memory
++// type, and by default the guest shows its types as they are: the application flushes and invalidates
++// what it touches (the spec's minimum of one coherent host-visible type is not met). For a client that
++// cannot, HAKIOS_VK_COHERENCE=emulate calls every host-visible type coherent and keeps it so here:
++//   - an emulated-coherent allocation has a second copy, scionSynced: its bytes as the host last had
++//     them;
++//   - before every submit, the 4 KiB chunks of mapped allocations where the guest's copy differs
++//     from scionSynced (what the CPU wrote) are flushed, in runs: nothing is sent when nothing changed,
++//     and the cost is a memcmp of what is mapped;
++//   - after a wait that saw work complete (a fence, a timeline value that moved, queue or device idle),
++//     and only if something was submitted since the last such pull, the ranges the device may have
++//     written -- buffers and images bound with a usage that lets it write -- are invalidated, into a
++//     merge: bytes the CPU has not touched since the last sync take the host's, the CPU's stay (and
++//     reach the host with the next submit);
++//   - vkMapMemory pulls what an unmapped allocation missed, vkUnmapMemory flushes it.
++// Explicit flushes and invalidates still work (and keep scionSynced right).
++
++static constexpr uint64_t kScionChunk = 4096;
++
++// Scion: a wait made on the host blocks its render thread, and on the phone also the one mailbox
++// through which every reply of every guest process comes (/dev/vgpu3d over SCGPU: a read is a
++// TRANSFER_FROM_HOST the app answers once the render thread has written the bytes). A thread
++// waiting for work another thread has yet to submit -- metal2vulkan's waiter per queue does --
++// would hold up that thread's replies for ever. So waits are polled: each try is a host call with
++// timeout 0, the waiting is done here, in naps from 20 us growing to 2 ms.
++// HAKIOS_VK_HOST_WAITS=1 waits on the host instead.
++static bool scionPolledWaits() {
++    static int on = -1;
++    if (on < 0) {
++        const char* e = getenv("HAKIOS_VK_HOST_WAITS");
++        on = !(e && !strcmp(e, "1"));
++    }
++    return on;
++}
++
++template <typename Try>
++static VkResult scionPoll(uint64_t timeoutNs, Try tryOnce) {
++    auto start = std::chrono::steady_clock::now();
++    uint64_t napUs = 20;
++    for (;;) {
++        VkResult r = tryOnce();
++        if (r != VK_TIMEOUT && r != VK_NOT_READY) return r;
++        uint64_t spent = std::chrono::duration_cast<std::chrono::nanoseconds>(
++                             std::chrono::steady_clock::now() - start)
++                             .count();
++        if (spent >= timeoutNs) return VK_TIMEOUT;
++        uint64_t napNs = std::min<uint64_t>(napUs * 1000, timeoutNs - spent);
++        std::this_thread::sleep_for(std::chrono::nanoseconds(napNs));
++        napUs = std::min<uint64_t>(napUs * 2, 2000);
++    }
++}
++
++// vkQueueWaitIdle as a fence after everything sent to the queue, polled
++VkResult ResourceTracker::scionQueueIdle(VkEncoder* enc, VkQueue queue) {
++    VkDevice device = VK_NULL_HANDLE;
++    VkFence fence = VK_NULL_HANDLE;
++    {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        auto it = info_VkQueue.find(queue);
++        if (it == info_VkQueue.end()) return VK_ERROR_DEVICE_LOST;
++        device = it->second.device;
++        auto f = mScionIdleFence.find(queue);
++        if (f != mScionIdleFence.end()) fence = f->second;
++    }
++    if (!fence) {
++        VkFenceCreateInfo info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, 0};
++        VkResult r = enc->vkCreateFence(device, &info, nullptr, &fence, true /* do lock */);
++        if (r != VK_SUCCESS) return r;
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        mScionIdleFence[queue] = fence;
++    }
++    VkResult r = enc->vkResetFences(device, 1, &fence, true /* do lock */);
++    if (r != VK_SUCCESS) return r;
++    if (supportsAsyncQueueSubmit()) {
++        enc->vkQueueSubmitAsyncGOOGLE(queue, 0, nullptr, fence, true /* do lock */);
++    } else if ((r = enc->vkQueueSubmit(queue, 0, nullptr, fence, true /* do lock */)) != VK_SUCCESS) {
++        return r;
++    }
++    return scionPoll(UINT64_MAX, [&] {
++        return enc->vkWaitForFences(device, 1, &fence, VK_TRUE, 0, true /* do lock */);
++    });
++}
++
++void ResourceTracker::scionAdvertiseCoherent(VkPhysicalDeviceMemoryProperties* props) {
++    if (!mScionCoherent) return;
++    uint32_t types = 0;
++    for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
++        VkMemoryPropertyFlags& f = props->memoryTypes[i].propertyFlags;
++        if (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
++            f |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++            types |= 1u << i;
++        }
++    }
++    mScionCoherentTypes = types;
++}
++
++void ResourceTracker::scionMemoryFlushed(VkDeviceMemory memory, uint64_t offset, uint64_t size) {
++    std::lock_guard<std::recursive_mutex> lock(mLock);
++    auto it = info_VkDeviceMemory.find(memory);
++    if (it == info_VkDeviceMemory.end() || !it->second.scionSynced || !it->second.ptr) return;
++    auto& info = it->second;
++    if (offset >= info.allocationSize) return;
++    size = std::min<uint64_t>(size, info.allocationSize - offset);
++    memcpy(info.scionSynced + offset, info.ptr + offset, size);
++}
++
++void ResourceTracker::scionMemoryInvalidated(VulkanStreamGuest* stream, VkDeviceMemory memory,
++                                             uint64_t offset, uint64_t streamSize) {
++    uint8_t* ptr = nullptr;
++    uint8_t* synced = nullptr;
++    uint64_t mappedSize = 0;
++    if (memory) {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        auto it = info_VkDeviceMemory.find(memory);
++        if (it != info_VkDeviceMemory.end()) {
++            ptr = it->second.ptr;
++            synced = it->second.scionSynced;
++            mappedSize = it->second.allocationSize;
++        }
++    }
++    uint64_t keep = (!ptr || offset >= mappedSize) ? 0 : std::min<uint64_t>(streamSize, mappedSize - offset);
++    if (keep && !synced) {
++        stream->read(ptr + offset, keep);
++    } else if (keep) {
++        // a merge, in slices that end on the allocation's 4 KiB chunks
++        static thread_local std::vector<uint8_t> scratch;
++        scratch.resize(256 * 1024);
++        for (uint64_t done = 0; done < keep;) {
++            uint64_t n = std::min<uint64_t>(keep - done, scratch.size());
++            stream->read(scratch.data(), n);
++            for (uint64_t pos = 0; pos < n;) {
++                uint64_t at = offset + done + pos;
++                uint64_t len = std::min<uint64_t>(n - pos, kScionChunk - at % kScionChunk);
++                uint8_t* cpu = ptr + at;
++                uint8_t* was = synced + at;
++                const uint8_t* host = scratch.data() + pos;
++                if (!memcmp(cpu, was, len)) {
++                    memcpy(cpu, host, len);  // the CPU has not written here: the host's
++                } else {
++                    for (uint64_t i = 0; i < len; i++) {
++                        if (cpu[i] == was[i]) cpu[i] = host[i];  // the CPU's bytes stay
++                    }
++                }
++                memcpy(was, host, len);
++                pos += len;
++            }
++            done += n;
++        }
++    }
++    for (uint64_t left = streamSize - keep; left;) {
++        uint8_t skip[4096];
++        uint64_t k = std::min<uint64_t>(left, sizeof(skip));
++        stream->read(skip, k);
++        left -= k;
++    }
++}
++
++void ResourceTracker::scionToHost(VkEncoder* enc, VkDevice device, VkDeviceMemory only) {
++    std::lock_guard<std::recursive_mutex> syncLock(mScionSyncLock);
++    struct Target {
++        VkDeviceMemory memory;
++        uint8_t* ptr;
++        uint8_t* synced;
++        uint64_t size;
++    };
++    std::vector<Target> targets;
++    {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        for (auto& [memory, info] : info_VkDeviceMemory) {
++            if (!info.scionSynced || !info.ptr) continue;
++            if (only ? memory != only : (!info.scionMapped || info.device != device)) continue;
++            targets.push_back({memory, info.ptr, info.scionSynced, info.allocationSize});
++        }
++    }
++    std::vector<VkMappedMemoryRange> ranges;
++    for (const auto& t : targets) {
++        uint64_t run = UINT64_MAX;
++        for (uint64_t c = 0; c < t.size; c += kScionChunk) {
++            uint64_t n = std::min(kScionChunk, t.size - c);
++            bool dirty = memcmp(t.ptr + c, t.synced + c, n) != 0;
++            if (dirty && run == UINT64_MAX) run = c;
++            if (!dirty && run != UINT64_MAX) {
++                ranges.push_back({VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, t.memory, run, c - run});
++                run = UINT64_MAX;
++            }
++        }
++        if (run != UINT64_MAX) {
++            ranges.push_back({VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, t.memory, run, VK_WHOLE_SIZE});
++        }
++    }
++    if (!ranges.empty()) {
++        enc->vkFlushMappedMemoryRanges(device, (uint32_t)ranges.size(), ranges.data(), true /* do lock */);
++    }
++}
++
++void ResourceTracker::scionFromHost(VkEncoder* enc, VkDevice device, VkDeviceMemory only) {
++    std::lock_guard<std::recursive_mutex> syncLock(mScionSyncLock);
++    std::vector<VkMappedMemoryRange> ranges;
++    {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        uint64_t gen = mScionSync[device].pullGen;
++        for (auto& [memory, info] : info_VkDeviceMemory) {
++            if (!info.scionSynced || !info.ptr) continue;
++            if (only ? memory != only : (!info.scionMapped || info.device != device)) continue;
++            info.scionPullGen = gen;
++            std::vector<std::pair<uint64_t, uint64_t>> spans;
++            for (const auto& [key, span] : info.scionWritable) {
++                uint64_t from = span.first / kScionChunk * kScionChunk;
++                uint64_t to = std::min<uint64_t>(info.allocationSize, span.first + span.second);
++                if (from < to) spans.push_back({from, to});
++            }
++            std::sort(spans.begin(), spans.end());
++            for (size_t i = 0; i < spans.size();) {
++                uint64_t from = spans[i].first, to = spans[i].second;
++                for (i++; i < spans.size() && spans[i].first <= to; i++) {
++                    to = std::max(to, spans[i].second);
++                }
++                ranges.push_back({VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, memory, from, to - from});
++            }
++        }
++    }
++    if (!ranges.empty()) {
++        enc->vkInvalidateMappedMemoryRanges(device, (uint32_t)ranges.size(), ranges.data(),
++                                            true /* do lock */);
++    }
++}
++
++// Work submitted to the device has completed (idle: all of it): pull what it may have written.
++void ResourceTracker::scionCompleted(VkEncoder* enc, VkDevice device, bool idle) {
++    uint64_t submits;
++    {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        auto& s = mScionSync[device];
++        if (s.submits == s.pulledAt && s.idleAtPull) return;  // the device has written nothing since
++        submits = s.submits;
++        s.pullGen++;
++    }
++    scionFromHost(enc, device, VK_NULL_HANDLE);
++    std::lock_guard<std::recursive_mutex> lock(mLock);
++    auto& s = mScionSync[device];
++    s.pulledAt = submits;
++    s.idleAtPull = idle;
++}
++
++void ResourceTracker::scionBind(VkDeviceMemory memory, uint64_t key, uint64_t offset,
++                                uint64_t size, bool writable) {
++    std::lock_guard<std::recursive_mutex> lock(mLock);
++    auto it = info_VkDeviceMemory.find(memory);
++    if (it == info_VkDeviceMemory.end() || !it->second.scionSynced || !writable) return;
++    it->second.scionWritable[key] = {offset, size};
++    mScionBinding[key] = memory;
++}
++
++void ResourceTracker::scionUnbind(uint64_t key) {
++    std::lock_guard<std::recursive_mutex> lock(mLock);
++    auto b = mScionBinding.find(key);
++    if (b == mScionBinding.end()) return;
++    auto it = info_VkDeviceMemory.find(b->second);
++    if (it != info_VkDeviceMemory.end()) it->second.scionWritable.erase(key);
++    mScionBinding.erase(b);
++}
++
++VkResult ResourceTracker::on_vkDeviceWaitIdle(void* context, VkResult, VkDevice device) {
++    VkEncoder* enc = (VkEncoder*)context;
++    VkResult res = VK_SUCCESS;
++    if (scionPolledWaits()) {
++        // every queue of the device idle, each through its own stream
++        std::vector<VkQueue> queues;
++        {
++            std::lock_guard<std::recursive_mutex> lock(mLock);
++            for (const auto& [queue, info] : info_VkQueue) {
++                if (info.device == device) queues.push_back(queue);
++            }
++        }
++        for (VkQueue queue : queues) {
++            if (res == VK_SUCCESS) res = scionQueueIdle(getQueueEncoder(queue), queue);
++        }
++    } else {
++        res = enc->vkDeviceWaitIdle(device, true /* do lock */);
++    }
++    if (res == VK_SUCCESS && mScionCoherent) scionCompleted(enc, device, true);
++    return res;
++}
++
++VkResult ResourceTracker::on_vkWaitSemaphores(void* context, VkResult, VkDevice device,
++                                              const VkSemaphoreWaitInfo* pWaitInfo,
++                                              uint64_t timeout) {
++    VkEncoder* enc = (VkEncoder*)context;
++    VkResult res =
++        scionPolledWaits()
++            ? scionPoll(timeout, [&] { return enc->vkWaitSemaphores(device, pWaitInfo, 0, true); })
++            : enc->vkWaitSemaphores(device, pWaitInfo, timeout, true /* do lock */);
++    if (res != VK_SUCCESS || !mScionCoherent) return res;
++    bool moved = !(pWaitInfo->flags & VK_SEMAPHORE_WAIT_ANY_BIT) ? false : true;
++    {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        for (uint32_t i = 0; i < pWaitInfo->semaphoreCount; i++) {
++            uint64_t& seen = mScionSemaphoreSeen[pWaitInfo->pSemaphores[i]];
++            if (pWaitInfo->pValues[i] > seen) {
++                moved = true;
++                if (!(pWaitInfo->flags & VK_SEMAPHORE_WAIT_ANY_BIT)) seen = pWaitInfo->pValues[i];
++            }
++        }
++    }
++    if (moved) scionCompleted(enc, device, false);
++    return res;
++}
++
++VkResult ResourceTracker::on_vkWaitSemaphoresKHR(void* context, VkResult input_result,
++                                                 VkDevice device,
++                                                 const VkSemaphoreWaitInfo* pWaitInfo,
++                                                 uint64_t timeout) {
++    return on_vkWaitSemaphores(context, input_result, device, pWaitInfo, timeout);
++}
++
++VkResult ResourceTracker::on_vkGetSemaphoreCounterValue(void* context, VkResult, VkDevice device,
++                                                        VkSemaphore semaphore, uint64_t* pValue) {
++    VkEncoder* enc = (VkEncoder*)context;
++    VkResult res = enc->vkGetSemaphoreCounterValue(device, semaphore, pValue, true /* do lock */);
++    if (res != VK_SUCCESS || !mScionCoherent) return res;
++    bool moved = false;
++    {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        uint64_t& seen = mScionSemaphoreSeen[semaphore];
++        moved = *pValue > seen;
++        seen = std::max(seen, *pValue);
++    }
++    if (moved) scionCompleted(enc, device, false);
++    return res;
++}
+ 
++VkResult ResourceTracker::on_vkGetSemaphoreCounterValueKHR(void* context, VkResult input_result,
++                                                           VkDevice device, VkSemaphore semaphore,
++                                                           uint64_t* pValue) {
++    return on_vkGetSemaphoreCounterValue(context, input_result, device, semaphore, pValue);
++}
++
++// (an application's own flushes and invalidates: in turn with the emulation's)
++VkResult ResourceTracker::on_vkFlushMappedMemoryRanges(void* context, VkResult, VkDevice device,
++                                                       uint32_t memoryRangeCount,
++                                                       const VkMappedMemoryRange* pMemoryRanges) {
++    VkEncoder* enc = (VkEncoder*)context;
++    std::unique_lock<std::recursive_mutex> syncLock(mScionSyncLock, std::defer_lock);
++    if (mScionCoherent) syncLock.lock();
++    return enc->vkFlushMappedMemoryRanges(device, memoryRangeCount, pMemoryRanges,
++                                          true /* do lock */);
++}
++
++VkResult ResourceTracker::on_vkInvalidateMappedMemoryRanges(void* context, VkResult,
++                                                            VkDevice device,
++                                                            uint32_t memoryRangeCount,
++                                                            const VkMappedMemoryRange* pMemoryRanges) {
++    VkEncoder* enc = (VkEncoder*)context;
++    std::unique_lock<std::recursive_mutex> syncLock(mScionSyncLock, std::defer_lock);
++    if (mScionCoherent) syncLock.lock();
++    return enc->vkInvalidateMappedMemoryRanges(device, memoryRangeCount, pMemoryRanges,
++                                               true /* do lock */);
++}
++
++VkResult ResourceTracker::on_vkGetQueryPoolResults(void* context, VkResult, VkDevice device,
++                                                   VkQueryPool queryPool, uint32_t firstQuery,
++                                                   uint32_t queryCount, size_t dataSize,
++                                                   void* pData, VkDeviceSize stride,
++                                                   VkQueryResultFlags flags) {
++    VkEncoder* enc = (VkEncoder*)context;
++    if (!(flags & VK_QUERY_RESULT_WAIT_BIT) || !scionPolledWaits()) {
++        return enc->vkGetQueryPoolResults(device, queryPool, firstQuery, queryCount, dataSize, pData,
++                                          stride, flags, true /* do lock */);
++    }
++    return scionPoll(UINT64_MAX, [&] {
++        return enc->vkGetQueryPoolResults(device, queryPool, firstQuery, queryCount, dataSize, pData,
++                                          stride, flags & ~VK_QUERY_RESULT_WAIT_BIT,
++                                          true /* do lock */);
++    });
++}
++
 +bool ResourceTracker::usingDirectMapping() const {
 +#if DETECT_OS_APPLE
 +    // Scion: a device that cannot map host memory into the guest (kParamHostVisible 0, a byte
@@ -157,10 +616,30 @@ licence.
 +    return true;
 +#endif
 +}
- 
++
  uint32_t ResourceTracker::getStreamFeatures() const { return ResourceTracker::streamFeatureBits; }
  
-@@ -2223,7 +2235,7 @@
+ bool ResourceTracker::supportsDeferredCommands() const {
+@@ -2154,8 +2559,16 @@
+ }
+ 
+ void ResourceTracker::on_vkGetPhysicalDeviceMemoryProperties2(
+-    void*, VkPhysicalDevice physdev, VkPhysicalDeviceMemoryProperties2* out) {
+-    on_vkGetPhysicalDeviceMemoryProperties(nullptr, physdev, &out->memoryProperties);
++    void* context, VkPhysicalDevice physdev, VkPhysicalDeviceMemoryProperties2* out) {
++    // (the whole chain from the host -- a budget, say -- then the types as the guest has them)
++    VkEncoder* enc = (VkEncoder*)context;
++    enc->vkGetPhysicalDeviceMemoryProperties2(physdev, out, true /* do lock */);
++    scionAdvertiseCoherent(&out->memoryProperties);
++}
++
++void ResourceTracker::on_vkGetPhysicalDeviceMemoryProperties2KHR(
++    void* context, VkPhysicalDevice physdev, VkPhysicalDeviceMemoryProperties2* out) {
++    on_vkGetPhysicalDeviceMemoryProperties2(context, physdev, out);
+ }
+ 
+ void ResourceTracker::on_vkGetDeviceQueue(void*, VkDevice device, uint32_t, uint32_t,
+@@ -2223,7 +2636,7 @@
      }
  }
  
@@ -169,11 +648,10 @@ licence.
  void updateMemoryTypeBits(uint32_t* memoryTypeBits, uint32_t memoryIndex) {
      *memoryTypeBits = 1u << memoryIndex;
  }
-@@ -4042,6 +4054,32 @@
-         return VK_SUCCESS;
+@@ -4043,6 +4456,41 @@
      }
  #endif
-+
+ 
 +    if (!usingDirectMapping()) {
 +        // Scion: the host's allocation, and a page-aligned guest copy that vkMapMemory hands out
 +        input_result =
@@ -191,7 +669,16 @@ licence.
 +                            finalAllocInfo.memoryTypeIndex, ahw, isImport, vmo_handle, nullptr);
 +        {
 +            std::lock_guard<std::recursive_mutex> lock(mLock);
-+            info_VkDeviceMemory[*pMemory].shadow = true;
++            auto& info = info_VkDeviceMemory[*pMemory];
++            info.shadow = true;
++            if (mScionCoherent && (mScionCoherentTypes >> finalAllocInfo.memoryTypeIndex & 1)) {
++                void* synced = nullptr;
++                if (posix_memalign(&synced, 4096, shadowSize ? shadowSize : 4096) == 0) {
++                    memset(synced, 0, shadowSize);
++                    info.scionSynced = (uint8_t*)synced;
++                    info.scionPullGen = mScionSync[device].pullGen;
++                }
++            }
 +        }
 +        emitDeviceMemoryReport(info_VkDevice[device], VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_ALLOCATE_EXT,
 +                               (uint64_t)(void*)*pMemory, pAllocateInfo->allocationSize,
@@ -199,31 +686,517 @@ licence.
 +                               pAllocateInfo->memoryTypeIndex);
 +        return VK_SUCCESS;
 +    }
- 
++
      // Host visible memory with direct mapping
      VkResult result = getCoherentMemory(&finalAllocInfo, enc, device, pMemory);
-@@ -4096,6 +4134,10 @@
+     if (result != VK_SUCCESS) return result;
+@@ -4096,6 +4544,13 @@
  #endif
  
      if (!info.coherentMemory) {
 +        if (info.shadow) {
 +            free(info.ptr);  // Scion's guest copy
++            free(info.scionSynced);
 +            info.ptr = nullptr;
++            info.scionSynced = nullptr;
++            for (const auto& [key, span] : info.scionWritable) mScionBinding.erase(key);
 +        }
          lock.unlock();
          VkEncoder* enc = (VkEncoder*)context;
          enc->vkFreeMemory(device, memory, pAllocateInfo, true /* do lock */);
+@@ -4183,11 +4638,29 @@
+ 
+     *ppData = deviceMemoryInfo.ptr + offset;
+ 
++    if (deviceMemoryInfo.scionSynced) {
++        // what the device wrote while this was not mapped (pulls skip unmapped memory)
++        deviceMemoryInfo.scionMapped = true;
++        bool missed = deviceMemoryInfo.scionPullGen != mScionSync[device].pullGen;
++        lock.unlock();
++        if (missed) scionFromHost((VkEncoder*)context, device, memory);
++    }
++
+     return host_result;
+ }
+ 
+-void ResourceTracker::on_vkUnmapMemory(void*, VkDevice, VkDeviceMemory) {
+-    // no-op
++void ResourceTracker::on_vkUnmapMemory(void* context, VkDevice device, VkDeviceMemory memory) {
++    bool synced = false;
++    {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        auto it = info_VkDeviceMemory.find(memory);
++        synced = it != info_VkDeviceMemory.end() && it->second.scionSynced && it->second.scionMapped;
++    }
++    if (!synced) return;
++    scionToHost((VkEncoder*)context, device, memory);  // what the CPU wrote, before it can no more
++    std::lock_guard<std::recursive_mutex> lock(mLock);
++    auto it = info_VkDeviceMemory.find(memory);
++    if (it != info_VkDeviceMemory.end()) it->second.scionMapped = false;
+ }
+ 
+ void ResourceTracker::transformImageMemoryRequirements2ForGuest(VkImage image,
+@@ -4757,6 +5230,11 @@
+ 
+     if (res != VK_SUCCESS) return res;
+ 
++    if (mScionCoherent) {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        for (uint32_t i = 0; i < fenceCount; ++i) mScionFencesPulled.erase(pFences[i]);
++    }
++
+     if (!fenceCount) return res;
+ 
+     // Permanence: temporary
+@@ -4959,9 +5437,29 @@
+     }
+ #endif
+ 
+-    return enc->vkGetFenceStatus(device, fence, /*doLock=*/true);
++    VkResult res = enc->vkGetFenceStatus(device, fence, /*doLock=*/true);
++    if (res == VK_SUCCESS && mScionCoherent) scionFenceDone(enc, device, 1, &fence, VK_TRUE);
++    return res;
+ }
+ 
++// Scion: fences seen signalled. What their work wrote is pulled once, not at every look.
++void ResourceTracker::scionFenceDone(VkEncoder* enc, VkDevice device, uint32_t n,
++                                     const VkFence* fences, VkBool32 all) {
++    {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        bool known = all || n == 1;
++        for (uint32_t i = 0; i < n && known; i++) {
++            known = mScionFencesPulled.count(fences[i]) != 0;
++        }
++        if (known) return;
++    }
++    scionCompleted(enc, device, false);
++    if (all || n == 1) {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        for (uint32_t i = 0; i < n; i++) mScionFencesPulled.insert(fences[i]);
++    }
++}
++
+ VkResult ResourceTracker::on_vkWaitForFences(void* context, VkResult, VkDevice device,
+                                              uint32_t fenceCount, const VkFence* pFences,
+                                              VkBool32 waitAll, uint64_t timeout) {
+@@ -5022,7 +5520,17 @@
+ 
+ #else
+     VkEncoder* enc = (VkEncoder*)context;
+-    return enc->vkWaitForFences(device, fenceCount, pFences, waitAll, timeout, true /* do lock */);
++    VkResult res =
++        scionPolledWaits()
++            ? scionPoll(timeout,
++                        [&] {
++                            return enc->vkWaitForFences(device, fenceCount, pFences, waitAll, 0,
++                                                        true /* do lock */);
++                        })
++            : enc->vkWaitForFences(device, fenceCount, pFences, waitAll, timeout,
++                                   true /* do lock */);
++    if (res == VK_SUCCESS && mScionCoherent) scionFenceDone(enc, device, fenceCount, pFences, waitAll);
++    return res;
+ #endif
+ }
+ 
+@@ -5304,6 +5812,7 @@
+ 
+ void ResourceTracker::on_vkDestroyImage(void* context, VkDevice device, VkImage image,
+                                         const VkAllocationCallbacks* pAllocator) {
++    scionUnbind((uint64_t)(uintptr_t)image);
+ #ifdef VK_USE_PLATFORM_ANDROID_KHR
+     {
+         std::lock_guard<std::recursive_mutex> lock(mLock);  // do not guard encoder may cause
+@@ -5416,7 +5925,23 @@
+         info_VkImage.find(image) == info_VkImage.end()) {
+         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+     }
+-    return enc->vkBindImageMemory(device, image, memory, memoryOffset, true /* do lock */);
++    VkResult res = enc->vkBindImageMemory(device, image, memory, memoryOffset, true /* do lock */);
++    if (res == VK_SUCCESS && mScionCoherent) scionBoundImage(image, memory, memoryOffset);
++    return res;
++}
++
++// Scion: an image in emulated-coherent memory (a linear one): from its offset to the end of the
++// memory, unless its usage leaves the device nothing to write
++void ResourceTracker::scionBoundImage(VkImage image, VkDeviceMemory memory, VkDeviceSize offset) {
++    VkImageUsageFlags usage = ~0u;
++    {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        auto it = info_VkImage.find(image);
++        if (it != info_VkImage.end()) usage = it->second.createInfo.usage;
++    }
++    const VkImageUsageFlags readOnly = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
++                                       VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
++    scionBind(memory, (uint64_t)(uintptr_t)image, offset, VK_WHOLE_SIZE, (usage & ~readOnly) != 0);
+ }
+ 
+ VkResult ResourceTracker::on_vkBindImageMemory2(void* context, VkResult, VkDevice device,
+@@ -5588,6 +6113,7 @@
+ 
+ void ResourceTracker::on_vkDestroyBuffer(void* context, VkDevice device, VkBuffer buffer,
+                                          const VkAllocationCallbacks* pAllocator) {
++    scionUnbind((uint64_t)(uintptr_t)buffer);
+     VkEncoder* enc = (VkEncoder*)context;
+     enc->vkDestroyBuffer(device, buffer, pAllocator, true /* do lock */);
+ }
+@@ -5634,25 +6160,61 @@
+     transformBufferMemoryRequirements2ForGuest(pInfo->buffer, pMemoryRequirements);
+ }
+ 
++// Scion: a buffer bound to emulated-coherent memory: the range the device may write, if its usage lets it
++static bool scionBufferWritable(VkBufferUsageFlags usage) {
++    const VkBufferUsageFlags readOnly =
++        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
++        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
++        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
++    return (usage & ~readOnly) != 0;
++}
++
+ VkResult ResourceTracker::on_vkBindBufferMemory(void* context, VkResult, VkDevice device,
+                                                 VkBuffer buffer, VkDeviceMemory memory,
+                                                 VkDeviceSize memoryOffset) {
+     VkEncoder* enc = (VkEncoder*)context;
+-    return enc->vkBindBufferMemory(device, buffer, memory, memoryOffset, true /* do lock */);
++    VkResult res = enc->vkBindBufferMemory(device, buffer, memory, memoryOffset, true /* do lock */);
++    if (res == VK_SUCCESS && mScionCoherent) {
++        VkBindBufferMemoryInfo info = {VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO, nullptr, buffer,
++                                       memory, memoryOffset};
++        scionBoundBuffers(1, &info);
++    }
++    return res;
+ }
+ 
+ VkResult ResourceTracker::on_vkBindBufferMemory2(void* context, VkResult, VkDevice device,
+                                                  uint32_t bindInfoCount,
+                                                  const VkBindBufferMemoryInfo* pBindInfos) {
+     VkEncoder* enc = (VkEncoder*)context;
+-    return enc->vkBindBufferMemory2(device, bindInfoCount, pBindInfos, true /* do lock */);
++    VkResult res = enc->vkBindBufferMemory2(device, bindInfoCount, pBindInfos, true /* do lock */);
++    if (res == VK_SUCCESS && mScionCoherent) scionBoundBuffers(bindInfoCount, pBindInfos);
++    return res;
+ }
+ 
+ VkResult ResourceTracker::on_vkBindBufferMemory2KHR(void* context, VkResult, VkDevice device,
+                                                     uint32_t bindInfoCount,
+                                                     const VkBindBufferMemoryInfo* pBindInfos) {
+     VkEncoder* enc = (VkEncoder*)context;
+-    return enc->vkBindBufferMemory2KHR(device, bindInfoCount, pBindInfos, true /* do lock */);
++    VkResult res = enc->vkBindBufferMemory2KHR(device, bindInfoCount, pBindInfos, true /* do lock */);
++    if (res == VK_SUCCESS && mScionCoherent) scionBoundBuffers(bindInfoCount, pBindInfos);
++    return res;
++}
++
++void ResourceTracker::scionBoundBuffers(uint32_t n, const VkBindBufferMemoryInfo* infos) {
++    for (uint32_t i = 0; i < n; i++) {
++        VkBufferUsageFlags usage = ~0u;
++        VkDeviceSize size = VK_WHOLE_SIZE;
++        {
++            std::lock_guard<std::recursive_mutex> lock(mLock);
++            auto it = info_VkBuffer.find(infos[i].buffer);
++            if (it != info_VkBuffer.end()) {
++                usage = it->second.createInfo.usage;
++                size = it->second.createInfo.size;
++            }
++        }
++        scionBind(infos[i].memory, (uint64_t)(uintptr_t)infos[i].buffer, infos[i].memoryOffset, size,
++                  scionBufferWritable(usage));
++    }
+ }
+ 
+ VkResult ResourceTracker::on_vkCreateSemaphore(void* context, VkResult input_result,
+@@ -5696,6 +6258,10 @@
+ #endif
+     input_result = enc->vkCreateSemaphore(device, &finalCreateInfo, pAllocator, pSemaphore,
+                                           true /* do lock */);
++    if (input_result == VK_SUCCESS && mScionCoherent) {
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        mScionSemaphoreSeen.erase(*pSemaphore);  // (a handle used before: the count starts over)
++    }
+ 
+     zx_handle_t event_handle = ZX_HANDLE_INVALID;
+ 
+@@ -6135,6 +6701,18 @@
+                                                    VkQueue queue, uint32_t submitCount,
+                                                    const VkSubmitInfoType* pSubmits,
+                                                    VkFence fence) {
++    if (mScionCoherent) {
++        VkDevice device = VK_NULL_HANDLE;
++        {
++            std::lock_guard<std::recursive_mutex> lock(mLock);
++            auto it = info_VkQueue.find(queue);
++            if (it != info_VkQueue.end()) device = it->second.device;
++        }
++        scionToHost((VkEncoder*)context, device, VK_NULL_HANDLE);
++        std::lock_guard<std::recursive_mutex> lock(mLock);
++        mScionSync[device].submits++;
++        if (fence) mScionFencesPulled.erase(fence);
++    }
+     flushStagingStreams(context, queue, submitCount, pSubmits);
+ 
+     std::vector<VkSemaphore> pre_signal_semaphores;
+@@ -6286,7 +6864,18 @@
+     VkEncoder* enc = (VkEncoder*)context;
+ 
+     // now done waiting, get the host's opinion
+-    return enc->vkQueueWaitIdle(queue, true /* do lock */);
++    VkResult res = scionPolledWaits() ? scionQueueIdle(enc, queue)
++                                      : enc->vkQueueWaitIdle(queue, true /* do lock */);
++    if (res == VK_SUCCESS && mScionCoherent) {
++        VkDevice device = VK_NULL_HANDLE;
++        {
++            std::lock_guard<std::recursive_mutex> lock(mLock);
++            auto it = info_VkQueue.find(queue);
++            if (it != info_VkQueue.end()) device = it->second.device;
++        }
++        scionCompleted(enc, device, true);  // (one queue a device here; a second would not be idle)
++    }
++    return res;
+ }
+ 
+ #ifdef VK_USE_PLATFORM_ANDROID_KHR
+@@ -7630,6 +8219,7 @@
+ 
+         VkPhysicalDeviceMemoryProperties properties;
+         enc->vkGetPhysicalDeviceMemoryProperties(physicalDevice, &properties, true /* no lock */);
++        scionAdvertiseCoherent(&properties);
+ 
+         mCachedPhysicalDeviceMemoryProps.emplace(std::move(properties));
+     }
+@@ -7685,7 +8275,59 @@
+ }
+ 
+ // static
++#if DETECT_OS_APPLE
++// Scion: an encoder on a stream (a host render thread) of its own: ScionStream, with the flags word
++// the render thread reads first when the transport has not sent it.
++VkEncoder* ResourceTracker::createScionEncoder() {
++    bool flagsSent = false;
++    gfxstream::guest::IOStream* stream = createScionStream(4 * 1024 * 1024, &flagsSent);
++    if (!stream) {
++        return nullptr;
++    }
++    if (!flagsSent) {
++        unsigned int* clientFlags = (unsigned int*)stream->allocBuffer(sizeof(unsigned int));
++        *clientFlags = 0;
++        stream->commitBuffer(sizeof(unsigned int));
++    }
++    VkEncoder* enc = new VkEncoder(stream);
++    stream->decRef();  // (the encoder's now)
++    return enc;
++}
++
++// The process's encoder: the instance is made and destroyed through it. The host ties an instance
++// to the context it was made on and destroys it with that context, and a thread's stream (and its
++// context) goes when the thread ends; this one stays as long as the process.
++VkEncoder* ResourceTracker::getProcessEncoder() {
++    static VkEncoder* sEncoder = nullptr;
++    static std::once_flag sOnce;
++    std::call_once(sOnce, [] { sEncoder = createScionEncoder(); });
++    return sEncoder ? sEncoder : getThreadLocalEncoder();
++}
++#endif
++
+ ALWAYS_INLINE_GFXSTREAM VkEncoder* ResourceTracker::getQueueEncoder(VkQueue queue) {
++#if DETECT_OS_APPLE
++    // Scion: a queue's commands go down a stream of the queue's own, whatever thread calls. Every
++    // stream is a host context with its own render thread, which orders only its own commands; one
++    // stream per queue keeps a queue's submissions in the order the threads made them (vkQueue*
++    // wants the queue externally synchronized, so its stream is never used by two at once).
++    struct goldfish_VkQueue* q = as_goldfish_VkQueue(queue);
++    if (q) {
++        VkEncoder* enc = __atomic_load_n(&q->lastUsedEncoder, __ATOMIC_ACQUIRE);
++        if (!enc) {
++            enc = createScionEncoder();
++            VkEncoder* none = nullptr;
++            if (enc && !__atomic_compare_exchange_n(&q->lastUsedEncoder, &none, enc, false,
++                                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
++                enc->decRef();
++                enc = none;
++            }
++        }
++        if (enc) {
++            return enc;
++        }
++    }
++#endif
+     auto enc = ResourceTracker::getThreadLocalEncoder();
+     if (!(ResourceTracker::streamFeatureBits &
+           VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT)) {
 --- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
 +++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
-@@ -764,6 +764,8 @@
+@@ -13,6 +13,7 @@
+ #include <optional>
+ #include <set>
+ #include <unordered_map>
++#include <unordered_set>
+ 
+ #include "CommandBufferStagingStream.h"
+ #include "GfxStreamConnectionManager.h"
+@@ -107,6 +108,8 @@
+ 
+ class VkEncoder;
+ 
++class VulkanStreamGuest;
++
+ class ResourceTracker {
+    public:
+     ResourceTracker();
+@@ -171,6 +174,30 @@
+         VkPhysicalDeviceMemoryProperties2* pMemoryProperties);
+     void on_vkGetDeviceQueue(void* context, VkDevice device, uint32_t queueFamilyIndex,
+                              uint32_t queueIndex, VkQueue* pQueue);
++
++    // Scion: host-coherent memory emulated over a stream that cannot map host memory
++    void scionMemoryFlushed(VkDeviceMemory memory, uint64_t offset, uint64_t size);
++    void scionMemoryInvalidated(VulkanStreamGuest* stream, VkDeviceMemory memory, uint64_t offset,
++                                uint64_t streamSize);
++    VkResult on_vkDeviceWaitIdle(void* context, VkResult input_result, VkDevice device);
++    VkResult on_vkFlushMappedMemoryRanges(void* context, VkResult input_result, VkDevice device,
++                                          uint32_t memoryRangeCount,
++                                          const VkMappedMemoryRange* pMemoryRanges);
++    VkResult on_vkInvalidateMappedMemoryRanges(void* context, VkResult input_result,
++                                               VkDevice device, uint32_t memoryRangeCount,
++                                               const VkMappedMemoryRange* pMemoryRanges);
++    VkResult on_vkGetQueryPoolResults(void* context, VkResult input_result, VkDevice device,
++                                      VkQueryPool queryPool, uint32_t firstQuery,
++                                      uint32_t queryCount, size_t dataSize, void* pData,
++                                      VkDeviceSize stride, VkQueryResultFlags flags);
++    VkResult on_vkWaitSemaphores(void* context, VkResult input_result, VkDevice device,
++                                 const VkSemaphoreWaitInfo* pWaitInfo, uint64_t timeout);
++    VkResult on_vkWaitSemaphoresKHR(void* context, VkResult input_result, VkDevice device,
++                                    const VkSemaphoreWaitInfo* pWaitInfo, uint64_t timeout);
++    VkResult on_vkGetSemaphoreCounterValue(void* context, VkResult input_result, VkDevice device,
++                                           VkSemaphore semaphore, uint64_t* pValue);
++    VkResult on_vkGetSemaphoreCounterValueKHR(void* context, VkResult input_result, VkDevice device,
++                                              VkSemaphore semaphore, uint64_t* pValue);
+     void on_vkGetDeviceQueue2(void* context, VkDevice device, const VkDeviceQueueInfo2* pQueueInfo,
+                               VkQueue* pQueue);
+ 
+@@ -564,6 +591,10 @@
+ 
+     static VkEncoder* getCommandBufferEncoder(VkCommandBuffer commandBuffer);
+     static VkEncoder* getQueueEncoder(VkQueue queue);
++#if DETECT_OS_APPLE
++    static VkEncoder* createScionEncoder();
++    static VkEncoder* getProcessEncoder();
++#endif
+     static VkEncoder* getThreadLocalEncoder();
+ 
+     static void setSeqnoPtr(uint32_t* seqnoptr);
+@@ -741,6 +772,36 @@
+             deviceMemoryReportCallbacks;
+     };
+ 
++    // Scion: emulated coherence
++    struct ScionDeviceSync {
++        uint64_t submits = 0;    // submitted so far
++        uint64_t pulledAt = 0;   // submits at the last pull
++        bool idleAtPull = true;  // ... which came after the device was idle
++        uint64_t pullGen = 0;    // pulls so far
++    };
++    bool mScionCoherent = false;
++    uint32_t mScionCoherentTypes = 0;
++    std::unordered_map<VkDevice, ScionDeviceSync> mScionSync;
++    std::unordered_set<VkFence> mScionFencesPulled;
++    std::unordered_map<VkSemaphore, uint64_t> mScionSemaphoreSeen;
++    std::unordered_map<uint64_t, VkDeviceMemory> mScionBinding;
++    void scionAdvertiseCoherent(VkPhysicalDeviceMemoryProperties* props);
++    void scionToHost(VkEncoder* enc, VkDevice device, VkDeviceMemory only);
++    void scionFromHost(VkEncoder* enc, VkDevice device, VkDeviceMemory only);
++    void scionCompleted(VkEncoder* enc, VkDevice device, bool idle);
++    void scionBind(VkDeviceMemory memory, uint64_t key, uint64_t offset, uint64_t size,
++                   bool writable);
++    void scionUnbind(uint64_t key);
++    VkResult scionQueueIdle(VkEncoder* enc, VkQueue queue);
++    // one flush or pull at a time: a pull is the host's bytes at the time it ran, and one applied
++    // after a later one would put older bytes back
++    std::recursive_mutex mScionSyncLock;
++    std::unordered_map<VkQueue, VkFence> mScionIdleFence;
++    void scionBoundBuffers(uint32_t n, const VkBindBufferMemoryInfo* infos);
++    void scionBoundImage(VkImage image, VkDeviceMemory memory, VkDeviceSize offset);
++    void scionFenceDone(VkEncoder* enc, VkDevice device, uint32_t n, const VkFence* fences,
++                        VkBool32 all);
++
+     struct VkDeviceMemory_Info {
+         bool dedicated = false;
+         bool imported = false;
+@@ -764,6 +825,14 @@
  #endif  // DETECT_OS_ANDROID
          CoherentMemoryPtr coherentMemory = nullptr;
          VirtGpuResourcePtr blobPtr = nullptr;
 +        // Scion: ptr is a guest copy of host-visible memory (no direct mapping)
 +        bool shadow = false;
++        // ... and, emulating coherence, scionSynced is its bytes as the host last had them, and
++        // scionWritable the ranges of what is bound to it that the device may write (by handle)
++        uint8_t* scionSynced = nullptr;
++        bool scionMapped = false;
++        uint64_t scionPullGen = 0;
++        std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> scionWritable;
      };
  
      struct VkCommandBuffer_Info {
+--- a/src/gfxstream/guest/vulkan_enc/VkEncoder.h.inl
++++ b/src/gfxstream/guest/vulkan_enc/VkEncoder.h.inl
+@@ -12,3 +12,8 @@
+     #define POOL_CLEAR_INTERVAL 10
+     uint32_t encodeCount = 0;
+     uint32_t featureBits = 0;
++    // Scion: the sequence numbers of this encoder's stream. The host orders Vulkan commands by
++    // them per virtio-gpu context, and every stream is a context of its own (gfxstream's host
++    // has one pipe per context), so they are counted per stream, not per process.
++    uint32_t nextSeqno() { return __atomic_add_fetch(&mScionSeqno, 1, __ATOMIC_SEQ_CST); }
++    uint32_t mScionSeqno = 0;
+--- a/src/gfxstream/guest/vulkan_enc/vkQueueFlushCommandsGOOGLE_encode_impl.cpp.inl
++++ b/src/gfxstream/guest/vulkan_enc/vkQueueFlushCommandsGOOGLE_encode_impl.cpp.inl
+@@ -28,7 +28,7 @@
+ uint8_t* streamPtr = stream->reserve(packetSize_vkQueueFlushCommandsGOOGLE - local_dataSize);
+ uint8_t** streamPtrPtr = &streamPtr;
+ uint32_t opcode_vkQueueFlushCommandsGOOGLE = OP_vkQueueFlushCommandsGOOGLE;
+-uint32_t seqno = ResourceTracker::nextSeqno();
++uint32_t seqno = this->nextSeqno();
+ memcpy(streamPtr, &opcode_vkQueueFlushCommandsGOOGLE, sizeof(uint32_t)); streamPtr += sizeof(uint32_t);
+ memcpy(streamPtr, &packetSize_vkQueueFlushCommandsGOOGLE, sizeof(uint32_t)); streamPtr += sizeof(uint32_t);
+ memcpy(streamPtr, &seqno, sizeof(uint32_t)); streamPtr += sizeof(uint32_t);
+--- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
++++ b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+@@ -20,6 +20,11 @@
+ 
+ uint32_t gSeqno = 0;
+ uint32_t gNoRenderControlEnc = 0;
++#if DETECT_OS_APPLE
++// Scion: the process's encoder is shared by every thread (ResourceTracker::getProcessEncoder)
++#include <mutex>
++static std::mutex sScionProcessEncoderLock;
++#endif
+ 
+ static gfxstream::vk::VkEncoder* getVulkanEncoder(GfxStreamConnectionManager* mgr) {
+     if (!gNoRenderControlEnc) {
+@@ -368,7 +373,12 @@
+         mutableCreateInfo->enabledExtensionCount = static_cast<uint32_t>(filteredExts.size());
+         mutableCreateInfo->ppEnabledExtensionNames = filteredExts.data();
+ 
++#if DETECT_OS_APPLE
++        std::lock_guard<std::mutex> processEncoderLock(sScionProcessEncoderLock);
++        auto vkEnc = gfxstream::vk::ResourceTracker::getProcessEncoder();
++#else
+         auto vkEnc = gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
++#endif
+         result = vkEnc->vkCreateInstance(pCreateInfo, nullptr, &instance->internal_object,
+                                          true /* do lock */);
+         if (VK_SUCCESS != result) {
+@@ -392,7 +402,12 @@
+     VK_FROM_HANDLE(gfxstream_vk_instance, instance, _instance);
+ 
+     if (!instance->init_failed) {
++#if DETECT_OS_APPLE
++        std::lock_guard<std::mutex> processEncoderLock(sScionProcessEncoderLock);
++        auto vkEnc = gfxstream::vk::ResourceTracker::getProcessEncoder();
++#else
+         auto vkEnc = gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
++#endif
+         vkEnc->vkDestroyInstance(instance->internal_object, pAllocator, true /* do lock */);
+     }
+ 
 --- a/src/gfxstream/guest/vulkan/meson.build
 +++ b/src/gfxstream/guest/vulkan/meson.build
 @@ -18,6 +18,16 @@

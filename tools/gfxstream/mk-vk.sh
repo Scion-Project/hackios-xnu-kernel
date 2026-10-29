@@ -4,11 +4,11 @@
 # (src/gfxstream/guest), with a platform of ours under it (vk/scion): the Vulkan stream goes down a
 # "pipe:opengles" render thread exactly as src/gfx's GL stream does.
 #
-#   tools/gfxstream/mk-vk.sh [mac|ios|all] [run [words]]
+#   tools/gfxstream/mk-vk.sh [mac|ios|all] [run [words [threads]]]
 #
 #   mac   $B/out-mac: libhakios.vk.dylib and vk_test for the Mac, the stream going to the Android
 #         emulator's gfxstream (libgfxstream_backend.dylib, $GFXSTREAM_LIB) in the same process
-#         through stream_renderer_* -- a real gfxstream host with MoltenVK under it. `mac run [words]`
+#         through stream_renderer_* -- a real gfxstream host with MoltenVK under it. `mac run [words [threads]]`
 #         runs vk_test (userland/src/vk_test.c) there.
 #   ios   $B/out-ios: libhakios.vk.dylib (install name /redwood/lib/libhakios.vk.dylib) and vk_test
 #         for arm64-apple-ios16, the stream over /dev/vgpu3d.
