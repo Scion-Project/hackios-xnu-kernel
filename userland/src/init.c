@@ -269,6 +269,41 @@ flash_root(const char *dev)
 	flash_root_mode = 1;
 }
 
+/*
+ * system_apfs=DEV: the root is to be the big system image (userland/system.apfs, a RAM boot's md0) on /dev/DEV, read
+ * only -- the Galaxy S9's: its 4 GB have no room for 2.5 GB of RAM disk beside iOS, so the installer writes the image to
+ * a partition of the flash, which the kernel reads through the loader (ufs=2). The kernel has started off this image
+ * alone (build.sh ALONE=1, md0): the system image is mounted on /flash and becomes the root, and this image goes to
+ * its /redwood, where stage0 mounts it in a RAM boot. From there on the boot is a RAM boot's.
+ */
+static void
+system_root(const char *dev)
+{
+	char devpath[96];
+	int ok;
+
+	printf("\n-- the system image on /dev/%s as the root --\n", dev);
+	strcpy(devpath, join("/dev/", dev, ""));
+	ok = mount("apfs", "/flash", MNT_RDONLY, devpath) == 0;
+	if (!ok) {
+		printf("  mount %s: %s\n", devpath, strerror(errno));
+	}
+	check(ok, "mount the system image read only");
+	if (!ok) {
+		return;
+	}
+	ok = sysctlbyname("kern.hakios_switch_root", NULL, NULL, "/flash redwood", 14) == 0;
+	if (!ok) {
+		printf("  switching the root: %s\n", strerror(errno));
+	}
+	check(ok, "the system image is the root, this image on /redwood");
+	if (!ok) {
+		return;
+	}
+	chdir("/");
+	base = "/redwood";
+}
+
 static void
 check(int ok, const char *what)
 {
@@ -1460,6 +1495,8 @@ main(int argc, char **argv, char **envp)
 
 		if (dev != NULL) {
 			flash_root(dev);
+		} else if ((dev = boot_arg("system_apfs")) != NULL) {
+			system_root(dev);
 		}
 	}
 
