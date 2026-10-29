@@ -9,7 +9,13 @@
 //! host-visible types that are not coherent. Without a coherent type the runtime's first such allocation, at device creation, fails
 //! (`OutOfMemory(Device)`).
 //!
-//! So, when the driver lists no host-visible coherent type (and `HAKIOS_VK_COHERENCE` is not `off`), this file:
+//! The runtime as built here no longer needs it: Scion's patch to it (tools/metal/m2v/0001-host-memory-not-coherent.patch) takes the
+//! driver's host-visible types that are not coherent and flushes and invalidates exactly the ranges each command buffer uses, about
+//! a megabyte for all of m2v_test where this file moved two gigabytes (it invalidates every mapping after every wait). So this file
+//! is off unless `HAKIOS_VK_COHERENCE=emulate`, kept for what the patch does not cover (an indirect command buffer's records, a
+//! visible function table's words): marking the types coherent turns the runtime's own flushing off.
+//!
+//! When it is on and the driver lists no host-visible coherent type, this file:
 //! - marks every host-visible type coherent in `vkGetPhysicalDeviceMemoryProperties[2]`;
 //! - keeps, for every mapping, a copy of its bytes as of the last exchange with the driver;
 //! - before every `vkQueueSubmit[2]` (and an unmap) flushes the 4 KiB chunks the CPU changed since then;
@@ -127,7 +133,7 @@ pub fn emulating() -> bool {
 
 fn adjust(properties: &mut vk::PhysicalDeviceMemoryProperties) {
     use vk::MemoryPropertyFlags as P;
-    if std::env::var("HAKIOS_VK_COHERENCE").is_ok_and(|v| v == "off") {
+    if !std::env::var("HAKIOS_VK_COHERENCE").is_ok_and(|v| v == "emulate") {
         return;
     }
     let count = (properties.memory_type_count as usize).min(properties.memory_types.len());

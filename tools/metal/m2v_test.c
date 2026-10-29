@@ -382,6 +382,8 @@ main(int argc, char **argv)
 	nmb_queue_release(queue);
 	nmb_library_release(library);
 	nmb_device_release(device);
+	nmb_icd_describe(icd, sizeof(icd));
+	printf("      driver at the end: %s\n", icd);
 	free(bytes);
 	printf("%s\n", failures ? "m2v_test: FAILED" : "m2v_test: everything ran and every number is the CPU's");
 	return failures != 0;

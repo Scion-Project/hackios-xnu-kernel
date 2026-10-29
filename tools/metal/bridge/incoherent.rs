@@ -5,7 +5,8 @@
 //!
 //! The memory types lose `HOST_COHERENT`; a mapping hands out a copy of the driver's (taken when it is mapped), and only
 //! `vkFlushMappedMemoryRanges` copies the copy's bytes to the driver's mapping, only `vkInvalidateMappedMemoryRanges` the other
-//! way. So on a driver that works (lavapipe on a Mac) every missing flush or invalidate is a wrong number, which is how
+//! way. `VK_EXT_host_image_copy` is hidden too (gfxstream's driver has none), so a texture's CPU copies go through mapped
+//! staging buffers, as they will there. So on a driver that works (lavapipe on a Mac) every missing flush or invalidate is a wrong number, which is how
 //! coherence.rs and the runtime's own flushing (tools/metal/m2v/) are checked without the guest's driver.
 
 use ash::vk::{self, Handle};
@@ -16,7 +17,7 @@ use std::sync::{Mutex, OnceLock};
 
 type Void = Option<unsafe extern "system" fn()>;
 
-const NAMES: [&str; 10] = [
+const NAMES: [&str; 11] = [
     "vkGetPhysicalDeviceMemoryProperties",  // 0
     "vkGetPhysicalDeviceMemoryProperties2", // 1
     "vkGetPhysicalDeviceMemoryProperties2KHR",
@@ -27,8 +28,16 @@ const NAMES: [&str; 10] = [
     "vkUnmapMemory",                  // 7
     "vkFlushMappedMemoryRanges",      // 8
     "vkInvalidateMappedMemoryRanges", // 9
+    "vkEnumerateDeviceExtensionProperties", // 10
 ];
-static REAL: [AtomicUsize; 10] = [const { AtomicUsize::new(0) }; 10];
+static REAL: [AtomicUsize; 11] = [const { AtomicUsize::new(0) }; 11];
+/// Bytes moved: by flushes, by invalidates; and the calls of each (`moved`).
+static MOVED: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
+/// What the test moved so far: bytes flushed, flush calls, bytes invalidated, invalidate calls.
+pub fn moved() -> [u64; 4] {
+    std::array::from_fn(|i| MOVED[i].load(Ordering::Relaxed))
+}
 
 struct Shadow {
     /// the driver's own mapping, and the copy handed out in its place
@@ -80,7 +89,8 @@ pub fn wrap(name: &CStr, driver: Void) -> Void {
             6 => std::mem::transmute(map_memory as unsafe extern "system" fn(_, _, _, _, _, _) -> _),
             7 => std::mem::transmute(unmap_memory as unsafe extern "system" fn(_, _)),
             8 => std::mem::transmute(flush_ranges as unsafe extern "system" fn(_, _, _) -> _),
-            _ => std::mem::transmute(invalidate_ranges as unsafe extern "system" fn(_, _, _) -> _),
+            9 => std::mem::transmute(invalidate_ranges as unsafe extern "system" fn(_, _, _) -> _),
+            _ => std::mem::transmute(device_extensions as unsafe extern "system" fn(_, _, _, _) -> _),
         }
     };
     Some(ours)
@@ -174,6 +184,8 @@ fn exchange(count: u32, ranges: *const vk::MappedMemoryRange<'static>, to_driver
     }
     // SAFETY: Vulkan's contract: `count` ranges.
     let ranges = unsafe { std::slice::from_raw_parts(ranges, count as usize) };
+    let at = if to_driver { 0 } else { 2 };
+    MOVED[at + 1].fetch_add(1, Ordering::Relaxed);
     with(|s| {
         for r in ranges {
             let Some(shadow) = s.shadows.get_mut(&r.memory.as_raw()) else { continue };
@@ -182,6 +194,7 @@ fn exchange(count: u32, ranges: *const vk::MappedMemoryRange<'static>, to_driver
             let end = if r.size == vk::WHOLE_SIZE { size } else { (start + r.size as usize).min(size) };
             // SAFETY: the driver's mapping is as long as the copy.
             let driver = unsafe { std::slice::from_raw_parts_mut(shadow.driver as *mut u8, size) };
+            MOVED[at].fetch_add((end - start) as u64, Ordering::Relaxed);
             if to_driver {
                 driver[start..end].copy_from_slice(&shadow.copy[start..end]);
             } else {
@@ -203,4 +216,32 @@ unsafe extern "system" fn invalidate_ranges(device: vk::Device, count: u32, rang
     let result = unsafe { f(device, count, ranges) };
     exchange(count, ranges, false);
     result
+}
+
+/// The driver's device extensions but `VK_EXT_host_image_copy`.
+unsafe extern "system" fn device_extensions(physical: vk::PhysicalDevice, layer: *const c_char, count: *mut u32,
+                                            out: *mut vk::ExtensionProperties) -> vk::Result {
+    let f: vk::PFN_vkEnumerateDeviceExtensionProperties = real(10);
+    let mut n = 0u32;
+    let result = unsafe { f(physical, layer, &mut n, std::ptr::null_mut()) };
+    if result != vk::Result::SUCCESS || count.is_null() {
+        return result;
+    }
+    let mut all = vec![vk::ExtensionProperties::default(); n as usize];
+    let result = unsafe { f(physical, layer, &mut n, all.as_mut_ptr()) };
+    if result != vk::Result::SUCCESS && result != vk::Result::INCOMPLETE {
+        return result;
+    }
+    all.truncate(n as usize);
+    all.retain(|e| e.extension_name_as_c_str().map_or(true, |name| name != c"VK_EXT_host_image_copy"));
+    unsafe {
+        if out.is_null() {
+            *count = all.len() as u32;
+            return vk::Result::SUCCESS;
+        }
+        let room = (*count as usize).min(all.len());
+        std::ptr::copy_nonoverlapping(all.as_ptr(), out, room);
+        *count = room as u32;
+        if room < all.len() { vk::Result::INCOMPLETE } else { vk::Result::SUCCESS }
+    }
 }

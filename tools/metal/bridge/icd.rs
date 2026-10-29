@@ -8,8 +8,8 @@
 //! with. So this library exports `vkGetInstanceProcAddr` itself, forwarding to the driver `select` opened, and the runtime is given
 //! this library's own path as its "loader": opening it again gives the same image, whose `vkGetInstanceProcAddr` is the one below.
 //!
-//! The one thing it adds: where the driver has no coherent host-visible memory, which the runtime needs, coherence.rs stands in for
-//! it between the two.
+//! Where the driver has no coherent host-visible memory, the runtime flushes and invalidates itself (Scion's patch to it,
+//! tools/metal/m2v/); coherence.rs can stand in for coherent memory between the two instead (`HAKIOS_VK_COHERENCE=emulate`).
 //!
 //! What a loader would do and this does not: no layers, no dispatch table patched into the driver's dispatchable objects (every call
 //! goes straight to the driver's entry points, which is how a driver is used without a loader), one driver per process.
@@ -140,8 +140,16 @@ pub fn select(path: &CStr) -> Result<PathBuf, String> {
 #[unsafe(no_mangle)]
 pub extern "C" fn nmb_icd_describe(out: *mut c_char, size: usize) -> usize {
     let text = match SELECTED.lock().ok().and_then(|s| s.as_ref().map(|s| (s.path.clone(), s.entry_name, s.interface))) {
-        Some((path, entry, interface)) => format!("{} ({entry}, ICD interface {interface}{})", path.to_string_lossy(),
-            if crate::coherence::emulating() { "; coherent host memory emulated" } else { "" }),
+        Some((path, entry, interface)) => {
+            let mut text = format!("{} ({entry}, ICD interface {interface}{})", path.to_string_lossy(),
+                if crate::coherence::emulating() { "; coherent host memory emulated" } else { "" });
+            if crate::incoherent::on() {
+                let [flushed, flushes, invalidated, invalidates] = crate::incoherent::moved();
+                text += &format!("; test HAKIOS_VK_INCOHERENT: {flushed} bytes flushed in {flushes} calls, {invalidated} invalidated in \
+                                  {invalidates}");
+            }
+            text
+        }
         None => "no Vulkan driver selected".into(),
     };
     if !out.is_null() && size > 0 {

@@ -1,0 +1,762 @@
+metal2vulkan runtime: host-visible memory that is not coherent, flushed and invalidated by the runtime (Scion)
+
+Upstream:  metal2vulkan, https://github.com/steelbrain/metal2vulkan, at 720ef1ce9ae2a2068999a8675717418b9416283e, after
+           AdrenoMetal's 16 patches to it (UniXNU/AdrenoMetal bridge/patches/, at ce5e19e33e05); tools/metal/mk-metal2vulkan.sh
+           applies them in that order, then this.
+Licence:   GPL-2.0-or-later OR LGPL-3.0-or-later, metal2vulkan's (its LICENSE); this patch is a change to it and under the same
+           terms. Nothing of it is in Scion's MIT or APSL files.
+Author:    the HakiOS authors (Scion), 29 October 2026.
+
+Why. The runtime places Metal's Shared, Managed and WriteCombined memory, and its own host-visible buffers, only in
+HOST_VISIBLE | HOST_COHERENT types, and never flushes or invalidates. gfxstream's guest driver for Scion lists no such type
+(it keeps a copy of each mapping in the guest), so the device was refused at its first allocation (OutOfMemory(Device)).
+
+What. src/host_sync.rs says it in full:
+- memory.rs: with no coherent host-visible type among those allowed, the host-visible ones; such placements take whole
+  nonCoherentAtomSize atoms, so a flush of one carries none of a neighbour's bytes. Entry-point priming takes any
+  host-visible type (it writes nothing through its mapping).
+- command_buffer/submit.rs: before each batch, the command buffer's upload arena as written so far; at its first batch every
+  program buffer its commands use, whole. The keys its tracked uses write are kept.
+- command_buffer/mod.rs (complete): before its status and status words are read, the upload arena, and the program buffers
+  its tracked uses write and those it uses untracked, whole; a buffer the GPU only reads is not invalidated.
+- the runtime's own buffers written once by the host (zeros of a new buffer, a buffer made with bytes, texture staging and
+  staged texels, fill and pattern bytes, a resident set's table, a tile map, block-decode shapes, a rate map's
+  parameters): flushed after the write; what a host step reads of the GPU's writes, and getBytes staging: invalidated
+  before the read.
+- METAL2VULKAN_HOST_SYNC=always takes the same steps on coherent host-visible memory too.
+Not covered: an indirect command buffer's records and a visible function table's words (written through pointers the
+host keeps).
+
+Checked: on lavapipe made non-coherent the way gfxstream's driver is (tools/metal/bridge/incoherent.rs,
+HAKIOS_VK_INCOHERENT=1: every mapping a copy, bytes moved only by an explicit flush or invalidate, host image copy hidden),
+tools/metal/m2v_test.c (the bridge's self-test, three kernels, a triangle) and tools/metal/metalvk-plugin-test.sh (the
+Metal API: compute, render, blit, an IOSurface texture, replaceRegion and getBytes of a Shared texture) give every number
+right with nothing between the runtime and the driver, where without this patch the device is refused. 1.0 MB flushed and
+55 KB invalidated for all of m2v_test. On lavapipe and MoltenVK as they are (coherent), every check passes as before.
+
+diff --git a/crates/metal2vulkan-runtime/src/blit.rs b/crates/metal2vulkan-runtime/src/blit.rs
+index 9db0e67..515db3b 100644
+--- a/crates/metal2vulkan-runtime/src/blit.rs
++++ b/crates/metal2vulkan-runtime/src/blit.rs
+@@ -503,6 +503,7 @@ impl BlitCommandEncoder {
+         // SAFETY: the mapping covers the buffer's `PATTERN_LENGTH` bytes, which nothing else uses
+         // yet.
+         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), contents.as_ptr(), bytes.len()) };
++        crate::host_sync::wrote(&pattern);
+         self.pattern = Some(pattern.clone());
+         Ok(pattern)
+     }
+diff --git a/crates/metal2vulkan-runtime/src/blit_fill.rs b/crates/metal2vulkan-runtime/src/blit_fill.rs
+index 25ed3a3..fce638f 100644
+--- a/crates/metal2vulkan-runtime/src/blit_fill.rs
++++ b/crates/metal2vulkan-runtime/src/blit_fill.rs
+@@ -558,6 +558,7 @@ impl BlitCommandEncoder {
+         // SAFETY: the mapping covers the buffer's `bytes.len()` bytes, which nothing else uses
+         // yet.
+         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), contents.as_ptr(), bytes.len()) };
++        crate::host_sync::wrote(&buffer);
+         Ok(buffer)
+     }
+ }
+diff --git a/crates/metal2vulkan-runtime/src/buffer.rs b/crates/metal2vulkan-runtime/src/buffer.rs
+index 1dec6a0..3dd4294 100644
+--- a/crates/metal2vulkan-runtime/src/buffer.rs
++++ b/crates/metal2vulkan-runtime/src/buffer.rs
+@@ -1614,6 +1614,7 @@ impl Buffer {
+             // memory (`MemoryClass::Shared` and `Managed`, or imported host memory), so the
+             // device sees the writes at the next submission.
+             unsafe { std::ptr::write_bytes(contents.as_ptr(), 0, size as usize) };
++            crate::host_sync::wrote(self);
+             if self.mirror().is_none() {
+                 return Ok(());
+             }
+@@ -1659,6 +1660,7 @@ impl Buffer {
+             // SAFETY: as in `clear`: the buffer's host-coherent bytes, which nothing else uses
+             // yet.
+             unsafe { std::ptr::write_bytes(contents.as_ptr(), 0, size as usize) };
++            crate::host_sync::wrote(self);
+             if self.mirror().is_none() {
+                 return Ok(());
+             }
+@@ -1948,6 +1950,39 @@ impl Buffer {
+     /// Whose memory the buffer's bytes are, where they are the caller's: a no-copy buffer's
+     /// host pages, or the memory of the caller's `VkBuffer`; a heap buffer's, its heap's (a heap
+     /// over host pages, `Device::new_heap_with_bytes_no_copy`).
++    /// Where the bytes `contents` points at lie in the runtime's host-visible memory, for a flush
++    /// or an invalidate (`host_sync.rs`): `None` for `Private` storage and for memory the caller
++    /// made (host pages, a `VkBuffer`), which the runtime does not map.
++    pub(super) fn host_span(&self) -> Option<crate::host_sync::HostSpan> {
++        if self.storage_mode() == StorageMode::Private || self.caller_memory().is_some() {
++            return None;
++        }
++        let span = |placement: &Placement, offset: u64, size: u64| {
++            placement.mapped?;
++            Some(crate::host_sync::HostSpan {
++                type_index: placement.type_index(),
++                memory: placement.memory,
++                offset: placement.offset.checked_add(offset)?,
++                size,
++            })
++        };
++        match &self.0.bytes {
++            Bytes::Own(OwnBytes {
++                mirror: Some(mirror),
++                ..
++            }) => span(&mirror.placement, 0, self.length()),
++            Bytes::Own(own) => own.with(|pages| span(&pages.memory.placement, pages.offset, self.length())),
++            Bytes::Heap(bytes) => {
++                let heap = bytes.bytes.host_span()?;
++                Some(crate::host_sync::HostSpan {
++                    offset: heap.offset.checked_add(bytes.offset)?,
++                    size: self.length(),
++                    ..heap
++                })
++            }
++        }
++    }
++
+     pub(super) fn caller_memory(&self) -> Option<CallerMemory> {
+         match &self.0.bytes {
+             Bytes::Own(OwnBytes {
+diff --git a/crates/metal2vulkan-runtime/src/buffer_descriptor.rs b/crates/metal2vulkan-runtime/src/buffer_descriptor.rs
+index 5d07264..a40e181 100644
+--- a/crates/metal2vulkan-runtime/src/buffer_descriptor.rs
++++ b/crates/metal2vulkan-runtime/src/buffer_descriptor.rs
+@@ -380,6 +380,7 @@ impl Device {
+             unsafe {
+                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), contents.as_ptr(), bytes.len())
+             };
++            crate::host_sync::wrote(target);
+             Ok::<(), Error>(())
+         };
+         if buffer.storage_mode() != StorageMode::Private {
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/mod.rs b/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
+index 8b3a0c2..c4a4382 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
+@@ -475,6 +475,10 @@ pub(super) struct State {
+     /// (`used_resources.rs`): the keys its commands' uses and bindings named, its placed
+     /// segments' among them, and what it made resident. Their uses are let go as it completes.
+     ended: Vec<EncoderRecord>,
++    /// Scion (`host_sync.rs`): the resources its submitted batches' tracked uses write, and every
++    /// one they name; invalidated as it completes, with what it uses untracked.
++    host_written: BTreeSet<crate::resource::ResourceKey>,
++    host_summarized: BTreeSet<crate::resource::ResourceKey>,
+     /// Its root tables, until its first submission points them at its resident set as the
+     /// live buffers stand then (`first_submission.rs`); the commit points them first.
+     root_tables: Vec<NotedTable>,
+@@ -1201,6 +1205,8 @@ impl CommandBuffer {
+                 holds: Vec::new(),
+                 residency: None,
+                 ended: Vec::new(),
++                host_written: BTreeSet::new(),
++                host_summarized: BTreeSet::new(),
+                 root_tables: Vec::new(),
+                 root_ranges: HashSet::new(),
+                 resident: None,
+@@ -2638,6 +2644,24 @@ impl CommandBufferShared {
+             };
+             match result {
+                 Ok(()) => {
++                    // Scion: host-visible memory that is not coherent (`host_sync.rs`): what the
++                    // device wrote comes to the host before anyone sees the completion, its status
++                    // words first. The upload arena, and of the program buffers it uses those its
++                    // tracked uses write and those it uses untracked, whole.
++                    {
++                        let state = &mut *state;
++                        let invalidated: Vec<crate::resource::ResourceKey> = (state.ended.iter())
++                            .flat_map(|record| record.keys.iter().copied())
++                            .filter(|key| {
++                                state.host_written.contains(key)
++                                    || !state.host_summarized.contains(key)
++                            })
++                            .collect();
++                        let buffers = self.device.shared().owners.buffers(&invalidated);
++                        let mut spans = state.uploads.host_spans();
++                        spans.extend(crate::host_sync::buffer_spans(&buffers));
++                        crate::host_sync::sync(&self.device, &spans, false);
++                    }
+                     state.status = CommandBufferStatus::Completed;
+                     // The queue's timeline reached the last batch's value, and every batch ends
+                     // with a barrier to the host.
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/submit.rs b/crates/metal2vulkan-runtime/src/command_buffer/submit.rs
+index d90691f..8d3c85e 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/submit.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/submit.rs
+@@ -539,6 +539,26 @@ impl CommandBufferShared {
+         if let Some(ticket) = state.heaps.submit(device) {
+             state.retained.push(Box::new(ticket));
+         }
++        // Scion: host-visible memory that is not coherent (`host_sync.rs`). What the host wrote
++        // goes to the device before the batch: its upload arena as written so far, and at its
++        // first batch every program buffer its commands use. What its tracked uses write, and
++        // which resources they name, is kept for the invalidate as it completes.
++        {
++            let state = &mut *state;
++            for recorded in &state.recorded[range.clone()] {
++                state.host_written.extend(recorded.summary.written());
++                state.host_summarized.extend(recorded.summary.keys());
++            }
++            let mut spans = state.uploads.host_spans();
++            if first_batch {
++                let keys: std::collections::BTreeSet<crate::resource::ResourceKey> = (state.ended.iter())
++                    .flat_map(|record| record.keys.iter().copied())
++                    .collect();
++                let used = shared.owners.buffers(&keys);
++                spans.extend(crate::host_sync::buffer_spans(&used));
++            }
++            crate::host_sync::sync(device, &spans, true);
++        }
+         // SAFETY: every command buffer is executable and submitted once; every wait is for a
+         // signal already submitted (the scheduler's order, and for a binary semaphore the
+         // caller's contract of `encode_wait_for_vk_semaphore`); every signal of a timeline is
+diff --git a/crates/metal2vulkan-runtime/src/device/mod.rs b/crates/metal2vulkan-runtime/src/device/mod.rs
+index 81304a0..494302c 100644
+--- a/crates/metal2vulkan-runtime/src/device/mod.rs
++++ b/crates/metal2vulkan-runtime/src/device/mod.rs
+@@ -1022,7 +1022,7 @@ impl Device {
+         // SAFETY: as above.
+         let memory_properties =
+             unsafe { instance.raw.get_physical_device_memory_properties(physical) };
+-        let memory = Memory::new(
++        let mut memory = Memory::new(
+             &memory_properties,
+             max_allocation,
+             device_address,
+@@ -1032,6 +1032,8 @@ impl Device {
+         // SAFETY: as above.
+         let physical_properties = unsafe { instance.raw.get_physical_device_properties(physical) };
+         let limits = physical_properties.limits;
++        // What a flush or invalidate of memory that is not coherent covers (`host_sync.rs`).
++        memory.set_atom(limits.non_coherent_atom_size);
+         let upload_alignment = [
+             16,
+             limits.min_storage_buffer_offset_alignment,
+diff --git a/crates/metal2vulkan-runtime/src/device/prime.rs b/crates/metal2vulkan-runtime/src/device/prime.rs
+index 50856aa..2e3f8da 100644
+--- a/crates/metal2vulkan-runtime/src/device/prime.rs
++++ b/crates/metal2vulkan-runtime/src/device/prime.rs
+@@ -668,8 +668,9 @@ impl Primer<'_> {
+             self.made(Call::CreateBuffer);
+             let requirements = device.get_buffer_memory_requirements(buffer);
+             self.made(Call::GetBufferMemoryRequirements);
+-            let host =
+-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
++            // Scion: host-visible, coherent or not (`host_sync.rs`): the priming maps it and
++            // reads and writes nothing through the mapping.
++            let host = vk::MemoryPropertyFlags::HOST_VISIBLE;
+             let memory = match self.allocate(requirements, host, device_addresses) {
+                 Ok(memory) => memory,
+                 Err(error) => {
+diff --git a/crates/metal2vulkan-runtime/src/heap.rs b/crates/metal2vulkan-runtime/src/heap.rs
+index 751024d..7b1e500 100644
+--- a/crates/metal2vulkan-runtime/src/heap.rs
++++ b/crates/metal2vulkan-runtime/src/heap.rs
+@@ -398,6 +398,17 @@ enum HeapStorage {
+     Sparse(SparseHeap),
+ }
+ 
++impl Heap {
++    /// An automatic or placement heap's own buffer, its whole bytes (`host_sync.rs`); `None` for
++    /// a sparse heap.
++    pub(super) fn own_buffer(&self) -> Option<Buffer> {
++        match &self.0.storage {
++            HeapStorage::Bytes(bytes) => Some(bytes.clone()),
++            HeapStorage::Sparse(_) => None,
++        }
++    }
++}
++
+ impl std::fmt::Debug for Heap {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         f.debug_struct("Heap")
+diff --git a/crates/metal2vulkan-runtime/src/host_sync.rs b/crates/metal2vulkan-runtime/src/host_sync.rs
+new file mode 100644
+index 0000000..68b36b4
+--- /dev/null
++++ b/crates/metal2vulkan-runtime/src/host_sync.rs
+@@ -0,0 +1,120 @@
++//! Host-visible memory that is not coherent: the ranges the host writes, flushed before the GPU
++//! reads them, and the ranges the GPU writes, invalidated before the host reads them.
++//!
++//! Metal's `Shared` and `Managed` storage needs no flush: the runtime places them, and its own
++//! host-visible buffers, in `HOST_VISIBLE | HOST_COHERENT` memory. A device that lists no such
++//! type (a paravirtual driver that keeps a copy of each mapping in the guest, gfxstream's without
++//! blob memory) gets its host-visible types instead (`memory::candidates`), each placement in
++//! whole `nonCoherentAtomSize` atoms (`memory::place`), and these steps:
++//!
++//! - **Before each batch goes to its `VkQueue`** (`command_buffer/submit.rs`): its command
++//!   buffer's upload arena as written so far (`upload.rs`: tables, constants, status words the
++//!   host wrote); and, at its first batch, every program buffer its commands use
++//!   (`used_resources.rs`'s listing), whole: Metal's host writes to them may be anywhere and at
++//!   any time before the commit. The buffers its commands write are kept for the completion.
++//! - **As it completes** (`CommandBufferShared::complete`, before its status and status words
++//!   are read): its upload arena, and every program buffer its commands write (a tracked write
++//!   use, `tracker::Summary::written`), whole. A buffer the GPU only reads is not invalidated, so
++//!   the host's writes to it while the work runs (a ring of per-frame data) are kept.
++//! - **Where the runtime writes a buffer of its own once, for a command to read** (a new buffer's
++//!   zeros, a buffer made with bytes, a texture's staged texels and staging buffers, a fill's or
++//!   a pattern's bytes, a resident set's table, a tile map, block-decode shapes, a rate map's
++//!   parameters): flushed after the write ([`wrote`], `Staging::written`).
++//! - **Where it reads what the GPU wrote** (a texture's `getBytes` staging, a host step's copy of
++//!   indirect arguments or an execution range): invalidated before the read ([`will_read`],
++//!   `Staging::bytes`).
++//!
++//! `didModifyRange:` needs nothing more: a `Managed` buffer a command uses is flushed whole at its
++//! command buffer's first batch.
++//!
++//! Not covered (wrong on such a driver): an indirect command buffer's records and a visible
++//! function table's words, which the host writes through pointers it keeps; a texture with an
++//! image of its own whose CPU copies go through the host's mapping of it (`host_copy.rs`, which
++//! takes host-cached coherent memory only, so not on such a driver).
++//!
++//! `METAL2VULKAN_HOST_SYNC=always` takes these steps on coherent host-visible memory too, for a
++//! driver that emulates coherence and follows the flushes it is given.
++//!
++//! Patch for Scion (tools/metal/m2v/), under metal2vulkan's licence.
++
++use super::buffer::Buffer;
++use super::device::lock;
++use super::Device;
++use ash::vk;
++use std::sync::OnceLock;
++
++/// A range of a `VkDeviceMemory` the host maps: memory type, memory, offset and size in it.
++#[derive(Clone, Copy, Debug)]
++pub(super) struct HostSpan {
++    pub(super) type_index: u32,
++    pub(super) memory: vk::DeviceMemory,
++    pub(super) offset: u64,
++    pub(super) size: u64,
++}
++
++/// Whether `METAL2VULKAN_HOST_SYNC=always` asks for the steps on coherent memory too.
++pub(super) fn always() -> bool {
++    static ALWAYS: OnceLock<bool> = OnceLock::new();
++    *ALWAYS.get_or_init(|| std::env::var("METAL2VULKAN_HOST_SYNC").is_ok_and(|v| v == "always"))
++}
++
++/// Flush (`true`) or invalidate the spans that lie in memory the host does not see coherently,
++/// each rounded out to whole atoms (placements there take whole atoms, so no neighbour's byte is
++/// in one). A failure leaves the bytes as they were, which is what a driver that cannot flush
++/// does; it is not the command buffer's.
++pub(super) fn sync(device: &Device, spans: &[HostSpan], flush: bool) {
++    if spans.is_empty() {
++        return;
++    }
++    let shared = device.shared();
++    let ranges: Vec<vk::MappedMemoryRange<'static>> = {
++        let memory = lock(&shared.memory);
++        let atom = memory.atom();
++        spans
++            .iter()
++            .filter(|span| span.size != 0 && memory.incoherent(span.type_index))
++            .map(|span| {
++                let start = span.offset - span.offset % atom;
++                let end = span.offset.saturating_add(span.size);
++                let end = end.checked_next_multiple_of(atom).unwrap_or(end);
++                vk::MappedMemoryRange::default()
++                    .memory(span.memory)
++                    .offset(start)
++                    .size(end - start)
++            })
++            .collect()
++    };
++    if ranges.is_empty() {
++        return;
++    }
++    let raw = shared.vk();
++    // SAFETY: each range lies in mapped memory of the device's (a placement's, rounded to atoms
++    // it owns whole), which the caller holds.
++    let _ = unsafe {
++        match flush {
++            true => raw.flush_mapped_memory_ranges(&ranges),
++            false => raw.invalidate_mapped_memory_ranges(&ranges),
++        }
++    };
++}
++
++/// The host wrote `buffer` (the runtime's own, written once before a command reads it): to the
++/// device, where its memory is not coherent.
++pub(super) fn wrote(buffer: &Buffer) {
++    if let Some(span) = buffer.host_span() {
++        sync(buffer.device(), &[span], true);
++    }
++}
++
++/// The host is about to read what the device wrote to `buffer` (a host step's copy of the GPU's
++/// arguments): from the device, where its memory is not coherent.
++pub(super) fn will_read(buffer: &Buffer) {
++    if let Some(span) = buffer.host_span() {
++        sync(buffer.device(), &[span], false);
++    }
++}
++
++/// The spans of `buffers`' bytes, where they lie in host-visible memory.
++pub(super) fn buffer_spans<'a>(buffers: impl IntoIterator<Item = &'a Buffer>) -> Vec<HostSpan> {
++    buffers.into_iter().filter_map(Buffer::host_span).collect()
++}
+diff --git a/crates/metal2vulkan-runtime/src/indirect_dispatch.rs b/crates/metal2vulkan-runtime/src/indirect_dispatch.rs
+index b129055..1f76c53 100644
+--- a/crates/metal2vulkan-runtime/src/indirect_dispatch.rs
++++ b/crates/metal2vulkan-runtime/src/indirect_dispatch.rs
+@@ -322,6 +322,7 @@ impl ArgumentDispatch {
+ 
+ /// The first `bytes` of `copy`, a copy of a dispatch's arguments, as words; zero past them.
+ fn words(copy: &Buffer, bytes: u64) -> Result<[u32; 6], Error> {
++    crate::host_sync::will_read(copy);
+     let contents = copy
+         .contents()
+         .ok_or_else(|| internal("an indirect dispatch's copy without host bytes"))?;
+diff --git a/crates/metal2vulkan-runtime/src/indirect_execute.rs b/crates/metal2vulkan-runtime/src/indirect_execute.rs
+index 28035cd..c208c7b 100644
+--- a/crates/metal2vulkan-runtime/src/indirect_execute.rs
++++ b/crates/metal2vulkan-runtime/src/indirect_execute.rs
+@@ -170,6 +170,7 @@ impl ExecutionRange {
+             ExecutionRange::Fixed(range) => return Ok((range.clone(), ReplayFaults::default())),
+             ExecutionRange::Indirect(copy) => copy,
+         };
++        crate::host_sync::will_read(copy);
+         let contents = copy
+             .contents()
+             .ok_or_else(|| internal("an execution range's copy without host bytes"))?;
+diff --git a/crates/metal2vulkan-runtime/src/lib.rs b/crates/metal2vulkan-runtime/src/lib.rs
+index 4781491..cad61e4 100644
+--- a/crates/metal2vulkan-runtime/src/lib.rs
++++ b/crates/metal2vulkan-runtime/src/lib.rs
+@@ -106,6 +106,8 @@ mod heap;
+ mod heap_sets;
+ mod host_aliases;
+ mod host_memory;
++// Scion: host-visible memory that is not coherent (tools/metal/m2v/).
++mod host_sync;
+ mod image_plan;
+ mod index_bounds;
+ mod index_rewrite;
+diff --git a/crates/metal2vulkan-runtime/src/live_buffers.rs b/crates/metal2vulkan-runtime/src/live_buffers.rs
+index 29965e0..e6c16ce 100644
+--- a/crates/metal2vulkan-runtime/src/live_buffers.rs
++++ b/crates/metal2vulkan-runtime/src/live_buffers.rs
+@@ -412,5 +412,6 @@ fn upload(
+             bytes.len(),
+         );
+     }
++    crate::host_sync::wrote(&buffer);
+     Ok((buffer, start + skip))
+ }
+diff --git a/crates/metal2vulkan-runtime/src/memory.rs b/crates/metal2vulkan-runtime/src/memory.rs
+index de3df1e..ab26cdb 100644
+--- a/crates/metal2vulkan-runtime/src/memory.rs
++++ b/crates/metal2vulkan-runtime/src/memory.rs
+@@ -258,6 +258,20 @@ pub(super) fn candidates(
+         .collect();
+     // Vulkan lists memory types best first within equal properties; the sort is stable.
+     ranked.sort_by_key(|&(rank, _)| rank);
++    // A device with no host-visible type that is coherent among `allowed` (a paravirtual driver
++    // that keeps a copy of each mapping, gfxstream's): its host-visible types, whose mapped
++    // ranges the runtime flushes and invalidates itself (`host_sync.rs`).
++    if ranked.is_empty() && required.contains(P::HOST_VISIBLE | P::HOST_COHERENT) {
++        let incoherent = (types.iter().enumerate())
++            .filter(|&(index, ty)| {
++                usable(index)
++                    && allocatable(ty.property_flags)
++                    && ty.property_flags.contains(P::HOST_VISIBLE)
++                    && !ty.property_flags.contains(P::LAZILY_ALLOCATED)
++            })
++            .map(|(index, _)| index as u32);
++        return incoherent.collect();
++    }
+     ranked.into_iter().map(|(_, index)| index).collect()
+ }
+ 
+@@ -669,6 +683,10 @@ pub(super) struct Memory {
+     families: Vec<u32>,
+     /// The bytes of the blocks allocated so far ([`Memory::allocated`]).
+     allocated: u64,
++    /// `nonCoherentAtomSize`: what a placement in a host-visible type that is not coherent is
++    /// aligned and rounded to, so that no two share an atom a flush or invalidate covers
++    /// (`host_sync.rs`).
++    atom: u64,
+ }
+ 
+ impl Memory {
+@@ -696,9 +714,30 @@ impl Memory {
+             unified,
+             families,
+             allocated: 0,
++            atom: 1,
+         }
+     }
+ 
++    /// Set the device's `nonCoherentAtomSize` (`host_sync.rs`).
++    pub(super) fn set_atom(&mut self, atom: u64) {
++        self.atom = atom.max(1);
++    }
++
++    /// The device's `nonCoherentAtomSize`.
++    pub(super) fn atom(&self) -> u64 {
++        self.atom
++    }
++
++    /// Whether memory type `type_index` is host-visible and not coherent: its mapped ranges are
++    /// flushed and invalidated (`host_sync.rs`).
++    pub(super) fn incoherent(&self, type_index: u32) -> bool {
++        self.types.get(type_index as usize).is_some_and(|ty| {
++            ty.property_flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
++                && (!ty.property_flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT)
++                    || super::host_sync::always())
++        })
++    }
++
+     /// The bytes of `VkDeviceMemory` allocated so far for blocks of the runtime's own memory,
+     /// pooled or dedicated, whether freed since or not: host memory imported counts in none.
+     pub(super) fn allocated(&self) -> u64 {
+@@ -1362,21 +1401,30 @@ fn place(
+ ) -> Result<Placement, Error> {
+     let size = requirements.size.max(1);
+     let align = requirements.alignment.max(1);
+-    let (candidates, maker) = {
++    let (candidates, maker, atom, incoherent) = {
+         let memory = lock(memory);
+         let bits = requirements.memory_type_bits;
+-        (
+-            candidates(&memory.types, bits, class, memory.unified),
+-            memory.maker(),
+-        )
++        let candidates = candidates(&memory.types, bits, class, memory.unified);
++        let incoherent: Vec<bool> = candidates.iter().map(|&t| memory.incoherent(t)).collect();
++        (candidates, memory.maker(), memory.atom(), incoherent)
+     };
+     if candidates.is_empty() {
+         return Err(Error::OutOfMemory(MemoryKind::Device));
+     }
+-    let dedicated = fit == Fit::Apart || size > maker.block_bytes / 2;
+-    let block_size = if dedicated { size } else { maker.block_bytes };
++    let (whole, align_whole) = (size, align);
+     let mut failure = Error::OutOfMemory(MemoryKind::Device);
+-    for type_index in candidates {
++    for (type_index, incoherent) in candidates.into_iter().zip(incoherent) {
++        // Whole atoms of a type that is not coherent (`host_sync.rs`): a flush of one placement
++        // carries no byte of its neighbour's.
++        let (size, align) = match incoherent {
++            true => (
++                whole.checked_next_multiple_of(atom).unwrap_or(whole),
++                align_whole.max(atom),
++            ),
++            false => (whole, align_whole),
++        };
++        let dedicated = fit == Fit::Apart || size > maker.block_bytes / 2;
++        let block_size = if dedicated { size } else { maker.block_bytes };
+         let pool = (holds, type_index);
+         if fit == Fit::Pooled {
+             if let Some(placement) =
+diff --git a/crates/metal2vulkan-runtime/src/rate_map.rs b/crates/metal2vulkan-runtime/src/rate_map.rs
+index c76e652..4efa979 100644
+--- a/crates/metal2vulkan-runtime/src/rate_map.rs
++++ b/crates/metal2vulkan-runtime/src/rate_map.rs
+@@ -332,6 +332,7 @@ impl RasterizationRateMap {
+                 bytes.len(),
+             )
+         };
++        crate::host_sync::wrote(buffer);
+         Ok(())
+     }
+ }
+diff --git a/crates/metal2vulkan-runtime/src/sparse/indirect.rs b/crates/metal2vulkan-runtime/src/sparse/indirect.rs
+index 0540670..521268f 100644
+--- a/crates/metal2vulkan-runtime/src/sparse/indirect.rs
++++ b/crates/metal2vulkan-runtime/src/sparse/indirect.rs
+@@ -172,6 +172,7 @@ fn read_words(
+                 );
+             }
+         })?;
++        crate::host_sync::will_read(&copy);
+         let contents = copy
+             .contents()
+             .ok_or_else(|| internal("a Shared copy without host bytes"))?;
+diff --git a/crates/metal2vulkan-runtime/src/texture.rs b/crates/metal2vulkan-runtime/src/texture.rs
+index 071beb8..fca059a 100644
+--- a/crates/metal2vulkan-runtime/src/texture.rs
++++ b/crates/metal2vulkan-runtime/src/texture.rs
+@@ -1799,6 +1799,7 @@ impl Device {
+         // SAFETY: the staging buffer holds `length` host-coherent bytes at `contents`, which no
+         // command uses yet.
+         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), contents.as_ptr(), bytes.len()) };
++        crate::host_sync::wrote(&staging);
+         tile_map.buffer.fill_first_from(staging, length)
+     }
+ 
+@@ -3444,7 +3445,8 @@ impl Device {
+         // exclusive to its families. Dropping `image` on failure releases everything above.
+         if let (true, Some((length, copies))) = (staging_copies, &zero) {
+             let mut zeros = Staging::new(self, *length)?;
+-            zeros.bytes().fill(0);
++            zeros.fresh().fill(0);
++            zeros.written();
+             let first = first.zeroed(zeros.raw, copies);
+             // SAFETY: the staging command buffer is recording; the image is live, bound to
+             // memory of its own, which nothing used yet, and made with transfer usage; every
+@@ -4120,8 +4122,31 @@ impl Staging<'_> {
+         Ok(staging)
+     }
+ 
+-    /// The staging bytes, through the mapping.
++    /// The staging bytes, through the mapping, as the device left them: invalidated first where
++    /// the memory is not coherent (Scion, `host_sync.rs`).
+     fn bytes(&mut self) -> &mut [u8] {
++        self.sync(false);
++        self.fresh()
++    }
++
++    /// What the host wrote of the staging bytes, flushed to the device where the memory is not
++    /// coherent, before a submission reads them (Scion, `host_sync.rs`).
++    fn written(&self) {
++        self.sync(true);
++    }
++
++    fn sync(&self, flush: bool) {
++        let span = crate::host_sync::HostSpan {
++            type_index: self.placement.type_index(),
++            memory: self.placement.memory,
++            offset: self.placement.offset,
++            size: self.len as u64,
++        };
++        crate::host_sync::sync(self.device, &[span], flush);
++    }
++
++    /// The staging bytes to write whole, through the mapping, nothing of the device's read.
++    fn fresh(&mut self) -> &mut [u8] {
+         let Some(mapped) = self.placement.mapped else {
+             unreachable!("checked when the staging buffer was made");
+         };
+@@ -5419,6 +5444,7 @@ impl Texture {
+                 std::slice::from_raw_parts_mut(contents.as_ptr(), host.packed_len() as usize)
+             };
+             host.pack(bytes, packed);
++            crate::host_sync::wrote(&staging);
+             let (source, start) = staging.at(0);
+             let copy = vk::BufferImageCopy {
+                 buffer_offset: copy.buffer_offset + start,
+@@ -5445,7 +5471,8 @@ impl Texture {
+             return Ok(());
+         }
+         let mut staging = Staging::new(device, host.packed_len())?;
+-        host.pack(bytes, staging.bytes());
++        host.pack(bytes, staging.fresh());
++        staging.written();
+         let (buffer, twin, image) = (staging.raw, self.twin_image(), truth.raw.get());
+         // The decoded twin's texels of the region, after the copy; the submission is waited for.
+         let decode = truth.decode_pass(std::slice::from_ref(&image_region), PassScratch::Own)?;
+@@ -5584,6 +5611,7 @@ impl Texture {
+     ) -> Result<(), Error> {
+         let mut staging = self.color_texels(image, region, words.len() as u64)?;
+         two_planes::widen(words, staging.bytes());
++        staging.written();
+         let truth = view_shadow::truth(image);
+         let (buffer, raw) = (staging.raw, truth.raw.get());
+         let copy = buffer_image_copy(region);
+diff --git a/crates/metal2vulkan-runtime/src/texture/decoded_twin.rs b/crates/metal2vulkan-runtime/src/texture/decoded_twin.rs
+index e64c7fb..610332b 100644
+--- a/crates/metal2vulkan-runtime/src/texture/decoded_twin.rs
++++ b/crates/metal2vulkan-runtime/src/texture/decoded_twin.rs
+@@ -759,6 +759,7 @@ impl Image {
+             let local = BlockDecodeModule::LOCAL_SIZE;
+             groups.push([w.div_ceil(local), h.div_ceil(local), d]);
+         }
++        crate::host_sync::wrote(&shapes);
+         let kernel = device.owned_kernel(OwnedModule::BlockDecode(decode))?;
+         let ranges: Vec<Vec<(vk::Buffer, u64, u64)>> = (layouts.iter())
+             .zip(0u64..)
+diff --git a/crates/metal2vulkan-runtime/src/texture/staging_copy.rs b/crates/metal2vulkan-runtime/src/texture/staging_copy.rs
+index 34698c6..f45e4db 100644
+--- a/crates/metal2vulkan-runtime/src/texture/staging_copy.rs
++++ b/crates/metal2vulkan-runtime/src/texture/staging_copy.rs
+@@ -80,7 +80,8 @@ impl Image {
+             return Ok(false);
+         }
+         let mut staging = Staging::new(&self.device, packed.len() as u64)?;
+-        staging.bytes().copy_from_slice(packed);
++        staging.fresh().copy_from_slice(packed);
++        staging.written();
+         let (buffer, image) = (staging.raw, self.raw.get());
+         self.device.submit_staging(|raw, command_buffer| {
+             transfer_barrier(raw, command_buffer, true);
+diff --git a/crates/metal2vulkan-runtime/src/tracker.rs b/crates/metal2vulkan-runtime/src/tracker.rs
+index 8350242..1329cff 100644
+--- a/crates/metal2vulkan-runtime/src/tracker.rs
++++ b/crates/metal2vulkan-runtime/src/tracker.rs
+@@ -1373,6 +1373,18 @@ impl<K> fmt::Debug for Summary<K> {
+ }
+ 
+ impl<K: Copy + Ord> Summary<K> {
++    /// The resources its tracked uses write, each once (`host_sync.rs`: what is invalidated as
++    /// the command buffer completes).
++    pub(super) fn written(&self) -> impl Iterator<Item = K> + '_ {
++        let mut last = None;
++        self.uses.iter().filter(|used| !used.write.is_empty()).filter_map(move |used| {
++            (last != Some(used.key)).then(|| {
++                last = Some(used.key);
++                used.key
++            })
++        })
++    }
++
+     /// The summary of work outside any encoder that makes `uses` in every stage, with no fence:
+     /// a batch's layout transitions of the caller's images, planned among its encoders.
+     pub(super) fn outside_encoders(mut uses: Vec<Use<K>>) -> Summary<K> {
+diff --git a/crates/metal2vulkan-runtime/src/upload.rs b/crates/metal2vulkan-runtime/src/upload.rs
+index 01efe17..1b4443b 100644
+--- a/crates/metal2vulkan-runtime/src/upload.rs
++++ b/crates/metal2vulkan-runtime/src/upload.rs
+@@ -73,6 +73,22 @@ impl Uploads {
+         }
+     }
+ 
++    /// The bytes the arena's regions took so far, chunk by chunk, where they lie in host-visible
++    /// memory: what a flush before a batch and an invalidate at the completion cover
++    /// (`host_sync.rs`).
++    pub(super) fn host_spans(&self) -> Vec<crate::host_sync::HostSpan> {
++        (self.chunks.iter())
++            .filter(|chunk| chunk.used != 0)
++            .filter_map(|chunk| {
++                let span = chunk.buffer.host_span()?;
++                Some(crate::host_sync::HostSpan {
++                    size: chunk.used.min(span.size),
++                    ..span
++                })
++            })
++            .collect()
++    }
++
+     /// Release every chunk: no command reads the arena any more.
+     pub(super) fn clear(&mut self) {
+         self.chunks.clear();
+diff --git a/crates/metal2vulkan-runtime/src/used_resources.rs b/crates/metal2vulkan-runtime/src/used_resources.rs
+index 03001a8..792e453 100644
+--- a/crates/metal2vulkan-runtime/src/used_resources.rs
++++ b/crates/metal2vulkan-runtime/src/used_resources.rs
+@@ -299,6 +299,24 @@ impl Owners {
+             .extend(owners.filter(|owner| owner.reached()).cloned());
+     }
+ 
++    /// The buffers the program made under `keys`, each once: a heap's own buffer for what is
++    /// placed in a heap (`host_sync.rs`).
++    pub(super) fn buffers<'a>(&self, keys: impl IntoIterator<Item = &'a ResourceKey>) -> Vec<Buffer> {
++        let owners: Vec<Owner> = {
++            let registry = lock(&self.inner);
++            keys.into_iter()
++                .filter_map(|key| registry.owners.get(key).cloned())
++                .collect()
++        };
++        let mut used = Listing::default();
++        for owner in &owners {
++            owner.list(&mut used);
++        }
++        let mut buffers: Vec<Buffer> = used.buffers.into_iter().collect();
++        buffers.extend(used.heaps.iter().filter_map(Heap::own_buffer));
++        buffers
++    }
++
+     /// Add the owners of `keys` to `used`.
+     fn list(&self, keys: &BTreeSet<ResourceKey>, used: &mut Listing) {
+         let owners: Vec<Owner> = {

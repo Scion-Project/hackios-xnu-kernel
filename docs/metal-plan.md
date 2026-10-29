@@ -190,8 +190,8 @@ them; moving the pin forward is a port of the bridge (below, "what is needed").
 
 **One dylib, replaceable.** The runtime is LGPL (or GPL): it is only ever in `/redwood/lib/libmetal2vulkan.dylib`, a library of
 its own that the bundle links by install name, so a user can rebuild and replace it (`tools/metal/mk-metal2vulkan.sh ios`, from
-the pinned source). No line of metal2vulkan is in any MIT or APSL file here; a change of ours to it would be a patch file in
-`tools/metal/m2v/` under its licence (there is none yet).
+the pinned source). No line of metal2vulkan is in any MIT or APSL file here; our changes to it are patch files in
+`tools/metal/m2v/`, under its licence and saying so in their headers (one: host memory that is not coherent, below).
 
 ### How the plug-in reaches the Vulkan driver
 
@@ -280,22 +280,43 @@ looks for MoltenVK):
    mapping in the guest (it cannot map the host's memory), lists none: `vkCreateDevice` succeeds, the runtime's first allocation finds
    no type, and the device is refused, `device: OutOfMemory(Device)`. No Vulkan 1.3 feature is wanted: the runtime's instance is 1.2,
    and it took the 1.2 device.
-2. **`tools/metal/bridge/coherence.rs` stands in for it**, between the runtime and a driver that has no coherent host-visible type
-   (and only then; `HAKIOS_VK_COHERENCE=off` turns it off): those types are marked coherent, the 4 KiB chunks the CPU changed are
-   flushed before every `vkQueueSubmit[2]`, and every mapping is invalidated after every wait that succeeded, the chunks the CPU
-   changed meanwhile kept. With it the device is made ("Apple M1 Pro", seen through gfxstream) and the kernels translated into
-   compute pipelines. It is slow by construction (a comparison of all mapped memory per submit, a transfer of all of it per wait); the
-   cheap place for it is the driver, or the runtime, which knows each command buffer's ranges. If the driver comes to list coherent
-   memory, this file stays out of the way by itself.
-3. **Then it deadlocks, every run.** The runtime calls Vulkan from several threads (the caller's, its pipeline workers, its
+2. **The runtime now flushes and invalidates itself** (`tools/metal/m2v/0001-host-memory-not-coherent.patch`, under metal2vulkan's
+   licence, applied after AdrenoMetal's 16): with no coherent host-visible type it takes the host-visible ones, each placement in
+   whole `nonCoherentAtomSize` atoms; before each batch it flushes the command buffer's upload arena, and at its first batch every
+   program buffer its commands use; as it completes, before its status is read, it invalidates the arena and the buffers its tracked
+   uses write (and those it uses untracked), not those the GPU only reads, so the host's writes to a ring of per-frame data meanwhile
+   are kept; its own buffers written once by the host (zeros, bytes, texture staging, fill patterns, resident tables, tile maps) are
+   flushed after the write, and what a host step or `getBytes` reads of the GPU's writes is invalidated first. Not covered: an
+   indirect command buffer's records and a visible function table's words (written through pointers the host keeps).
+   `METAL2VULKAN_HOST_SYNC=always` takes the same steps on coherent memory too.
+3. **Checked without the driver, on a driver made to behave like it.** `HAKIOS_VK_INCOHERENT=1` (`tools/metal/bridge/incoherent.rs`)
+   makes lavapipe what gfxstream's driver is: no `HOST_COHERENT`, every mapping a copy the bytes leave and reach only by an explicit
+   flush or invalidate, no host image copy. There every missing flush is a wrong number. `m2v_test` and the plug-in's Metal-API test
+   (now also `replaceRegion:` and `getBytes:` of a `Shared` texture, through staging buffers) give every number right with nothing
+   between the runtime and the driver; without the patch the device is refused, as on gfxstream. What crossed, for all of `m2v_test`:
+
+   | | flushed | invalidated |
+   |---|---|---|
+   | the patched runtime alone | 1.0 MB in 34 calls | 55 KB in 6 calls |
+   | coherence emulated between them (`coherence.rs`, the runtime seeing coherent memory) | 0.35 MB in 7 calls | 2.15 GB in 34 calls |
+
+   The emulation invalidates every mapping (64 MiB blocks) after every wait; the runtime, knowing each command buffer's resources,
+   moves what they hold. On lavapipe and MoltenVK as they are (coherent) every check passes as before.
+4. **`tools/metal/bridge/coherence.rs`**, that emulation, is now off unless `HAKIOS_VK_COHERENCE=emulate` (for the two paths the patch
+   does not cover). It works (checked the same way, after a fix: the runtime takes its device's functions before it asks for the
+   memory types, so the wrappers are always installed and idle until it decides), but marking the types coherent turns the
+   runtime's own flushing off. The same holds for coherence emulated in the driver: for this runtime the driver had better list its
+   types as they are, not coherent; an emulating driver that follows explicit ranges could use `METAL2VULKAN_HOST_SYNC=always`.
+5. **Then it deadlocks, every run.** The runtime calls Vulkan from several threads (the caller's, its pipeline workers, its
    completion threads); gfxstream's driver opens one stream per thread, and in this harness each stream is a virtio-gpu context of its
    own, while the host orders one process's commands per context. A sample of the hang: the main thread in `vkCreateQueryPool` (the
    GPU-timing pool made at a commit), two `metal2vulkan-pipelines` workers in `vkCreatePipelineCache`, all three in
    `ScionStream::readFully`, the host's render threads in `VkDecoder::decode`. `VULKAN.md` names the cure (stage 3, kernel 2): one
-   context per process, a pipe per open, in the Mac transport and in the kernel's `/dev/vgpu3d`.
+   context per process, a pipe per open, in the Mac transport and in the kernel's `/dev/vgpu3d`. A single-threaded run of the runtime
+   is not a knob away: besides the pipeline pool (which already runs a piece on the caller's thread where it cannot start one), each
+   `VkQueue` has a waiter thread in `vkWaitSemaphores`/`vkWaitForFences`, and a completion thread reads timestamps.
 
-So nothing has yet been computed through gfxstream; what stands between is the driver's threading (one context per process) and,
-until the driver has coherent memory, the speed of `coherence.rs`.
+So nothing has yet been computed through gfxstream; what stands between is the driver's threading (one context per process).
 
 ### What is built for the guest
 
@@ -314,14 +335,16 @@ None of it has run on iOS: there is no Vulkan driver in the guest yet.
 
 - **The driver.** gfxstream's guest Vulkan driver (`libhakios.vk.dylib`, branch `gpu/gfxstream-vulkan`) is built for iOS and runs
   on a Mac against the emulator's host, but has not run in the guest, and the runtime does not get through it yet (the section
-  above: threads, and coherent memory). Until both are settled this route has computed and drawn on the Mac's own drivers only.
+  above: its threads; coherent memory the patched runtime now does without). Until then this route has computed and drawn on the
+  Mac's own drivers only, and on lavapipe made to behave like gfxstream's.
 - **IOSurfaces, and with them drawables, need the driver to import host memory.** A texture over an IOSurface is a no-copy buffer
   over the surface's pages (the frontend's `newTextureWithDescriptor:iosurface:plane:`), and at this pin the runtime makes one only
   through `VK_EXT_external_memory_host` (or dma-bufs on Linux); without it the texture is refused, logged
   (`native-metal: surface import refused`), and the caller gets nil. CAMetalLayer's drawables and every surface CoreAnimation hands
-  Metal are such textures. Whether gfxstream's guest driver can import guest pages is not known here; it is not the usual shape of
-  gfxstream. metal2vulkan's master (after 26 October) has *copied host buffers*: where a driver cannot import the pages, the no-copy
-  object is a copy of them, compared and synced at each commit. That needs the pin moved.
+  Metal are such textures. gfxstream's guest driver has no external memory (its `VULKAN.md`), so on it every IOSurface texture is
+  refused today. metal2vulkan's master (after 26 October) has *copied host buffers*: where a driver cannot import the pages, the
+  no-copy object is a copy of them, compared and synced at each commit. That needs the pin moved, or a copy of the same kind in the
+  bridge (a texture of its own, filled from the surface before a command buffer reads it and written back after one writes it).
 - **Present.** The frontend has no drawable or present code of its own (AdrenoMetal's scanout client, `GpuScanout*`, is the
   tablet's display hand-off and is not taken). A CAMetalLayer presents through CoreAnimation, which composites the drawable's
   IOSurface: so it is the point above, and then the window server's own path to `MiniIOMobileFramebuffer`.
@@ -349,8 +372,8 @@ None of it has run on iOS: there is no Vulkan driver in the guest yet.
 1. The driver at `/redwood/lib/libhakios.vk.dylib` (or anywhere, with `METAL_ICD=PATH`), exporting `vk_icdGetInstanceProcAddr` or
    `vkGetInstanceProcAddr`, giving a Vulkan 1.2 device with `timelineSemaphore` and a queue family with graphics and compute.
    gfxstream's has all of that. What it still needs for this runtime: **one virtio-gpu context per process** (its Mac transport
-   and the kernel's `/dev/vgpu3d`), since the runtime calls Vulkan from several threads; and coherent host-visible memory, in the
-   driver or by `coherence.rs` (slowly). Then `m2v_test` on its Mac twin is the check to run first (the section above says how).
+   and the kernel's `/dev/vgpu3d`), since the runtime calls Vulkan from several threads. Coherent memory it does not need (the
+   patch above). Then `m2v_test` on its Mac twin is the check to run first (the section above says how).
 2. An image with `METAL=vk` and whatever the driver needs of the kernel (gfxstream's `/dev/vgpu3d` path), booted with `metal=1`
    and `RC_JOBS=rc.jobs.metalvk`: `m2v_test`'s lines are the first result, the same lines as the Mac's above; `metal_test` the
    second (does iOS 16.5's Metal take the device?).

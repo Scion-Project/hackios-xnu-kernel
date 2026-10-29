@@ -265,6 +265,39 @@ main(int argc, char **argv)
 		if (surface != NULL) {
 			CFRelease(surface);
 		}
+
+		/* a Shared texture's CPU copies, replaceRegion: and getBytes:, which go through staging buffers where the driver copies
+		   nothing to or from an image on the host (gfxstream's) */
+		MTLTextureDescriptor *c = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:64 height:64 mipmapped:NO];
+		c.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+		c.storageMode = MTLStorageModeShared;
+		id<MTLTexture> sharedTexture = [device newTextureWithDescriptor:c];
+		uint8_t *pattern = malloc(64 * 64 * 4), *got = calloc(1, 64 * 64 * 4);
+		for (int i = 0; i < 64 * 64 * 4; i++) {
+			pattern[i] = (uint8_t)(i * 7 + 3);
+		}
+		if (sharedTexture != nil && rgba != nil) {
+			[sharedTexture replaceRegion:MTLRegionMake2D(0, 0, 64, 64) mipmapLevel:0 withBytes:pattern bytesPerRow:64 * 4];
+			id<MTLBuffer> copied = [device newBufferWithLength:64 * 64 * 4 options:MTLResourceStorageModeShared];
+			commands = [queue commandBuffer];
+			id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+			[blit copyFromTexture:sharedTexture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+			    sourceSize:MTLSizeMake(64, 64, 1) toBuffer:copied destinationOffset:0 destinationBytesPerRow:64 * 4
+			    destinationBytesPerImage:64 * 64 * 4];
+			[blit endEncoding];
+			if (completed(commands, @"a blit of the replaced texture")) {
+				check(memcmp(copied.contents, pattern, 64 * 64 * 4) == 0,
+				    @"replaceRegion: into a Shared texture, the GPU's copy of it out is the CPU's bytes");
+			}
+			unsigned inside, wrong;
+			drawTriangle(device, queue, rgba, sharedTexture, nil, corners);
+			[sharedTexture getBytes:got bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(0, 0, 64, 64) mipmapLevel:0];
+			wrong = judge(got, 64, 64, 64 * 4, 0, 2, corners, &inside);
+			check(wrong == 0 && inside > 0, [NSString stringWithFormat:@"getBytes: of the triangle rendered into a Shared texture: "
+			    "%u pixels inside judged, %u wrong", inside, wrong]);
+		}
+		free(pattern);
+		free(got);
 		printf("%s\n", failures ? "metalvk_plugin_test: FAILED" : "metalvk_plugin_test: the plug-in did everything asked, every number the CPU's");
 	}
 	return failures != 0;
