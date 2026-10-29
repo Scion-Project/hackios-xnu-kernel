@@ -6,10 +6,14 @@ driver WIFI
 	file    bsd/dev/hakios.wifi.c
 	file    bsd/dev/hakios.wlfw.c
 	file    bsd/dev/hakios.lx.c
-	file    bsd/dev/hakios.sta.c
-	file    bsd/dev/hakios.apple80211.c
-	file    iokit/Kernel/hakios.wlan.cpp iokitcpp
-	requires QMI
+	requires QMI WIFI_STA
 	help    Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k
 	help    (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211
 	help    surface iOS's wifid talks to. Needs fw-wifi/ from the phone
+
+driver WIFI_STA
+	file    bsd/dev/hakios.sta.c
+	file    bsd/dev/hakios.apple80211.c
+	file    iokit/Kernel/hakios.wlan.cpp iokitcpp
+	help    the station and the Apple80211 surface iOS's wifid talks to, over whichever link is below: the WCN6750's
+	help    (WIFI) or QEMU's virtio network device seen as Wi-Fi (VIRTIO_NET, virtio_net_wifi=1)
