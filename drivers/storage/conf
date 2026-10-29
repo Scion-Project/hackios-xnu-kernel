@@ -15,8 +15,10 @@ driver UFS
 	file    bsd/dev/hakios.ufs.c
 	file    bsd/dev/hakios.ufshc.c
 	help    the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller
-	help    driven from the kernel (ufs_native=). THE ONLY CODE OF THE KERNEL THAT MAY WRITE TO THE PHONE
-	help    (ufs_write=1, the partition `darwin` only): see tools/provenance.allow
+	help    driven from the kernel (ufs_native=): beside UEFI's (1, the POCO), or its own for the run (4; QEMU's -device
+	help    ufs, the S9's with ufs_native_soc=exynos9810, untried). THE ONLY CODE OF THE KERNEL THAT MAY WRITE TO THE
+	help    PHONE (ufs_write=1, the partition `darwin` only; ufs_native_write=, one partition, never EFS, BOOT, PARAM ...):
+	help    see tools/provenance.allow
 
 driver VIRTIO_BLK
 	file    bsd/dev/hakios.virtio_blk.c

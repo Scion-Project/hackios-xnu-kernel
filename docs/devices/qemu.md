@@ -18,7 +18,7 @@
 | display | works | ramfb, through the loader |
 | touch | works | virtio tablet as the touch screen (CONFIG_HAKIOS_VIRTIO_INPUT) |
 | buttons | works | virtio keyboard: H is Home, L the power button, arrows the volume |
-| storage | works | virtio-blk images (CONFIG_HAKIOS_VIRTIO_BLK) |
+| storage | works | virtio-blk images (CONFIG_HAKIOS_VIRTIO_BLK); UFS on -device ufs/ufs-lu with the kernel's own UFS driver (ufs_native=4, CONFIG_HAKIOS_UFS) |
 | audio | works | virtio sound (CONFIG_HAKIOS_VIRTIO_SOUND) |
 | network | works | virtio-net as en0 (CONFIG_HAKIOS_VIRTIO_NET) |
 | gpu | no | no GPU: the screen is drawn in software |

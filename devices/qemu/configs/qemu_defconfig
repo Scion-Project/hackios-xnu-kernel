@@ -9,7 +9,9 @@ CONFIG_DEVICE="qemu"
 # CONFIG_TOUCHSCREEN is not set
 # CONFIG_HAKIOS_GOODIX is not set
 # CONFIG_HAKIOS_BUTTONS is not set
-# CONFIG_HAKIOS_UFS is not set
+# QEMU's UFS (-device ufs, -device ufs-lu: a standard UFSHCI on PCI), driven by the kernel's own UFS driver with
+# ufs_native=4 (drivers/storage/hakios.ufshc.c): the test bench of the driver the phones use
+CONFIG_HAKIOS_UFS=y
 # CONFIG_HAKIOS_ADRENO is not set
 # CONFIG_HAKIOS_CAMERA is not set
 # CONFIG_HAKIOS_TORCH is not set
