@@ -315,6 +315,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -framework CoreFoundation -framework Security -o obj/keychain_test src/keychain_test.c &&
 			{ ${LDID:-ldid} -Ssrc/keychain_test.entitlements obj/keychain_test 2>/dev/null ||
 			  echo "build.sh: no ldid: keychain_test is unsigned, and the keychain will refuse it (-34018)"; }
+		# IOAESAccelerator round trips, the way iOS's own clients call it (src/aes_test.c; the kernel's
+		# MiniIOAESAccelerator.cpp, UniXNU's SoftwareAES)
+		$DYN -framework CoreFoundation -framework IOKit -o obj/aes_test src/aes_test.c
 		# (and wifid's way of keeping a network's password, by wifid's name: src/wifipw_test.c)
 		$DYN -framework CoreFoundation -framework Security -o obj/wifipw_test src/wifipw_test.c &&
 			{ ${LDID:-ldid} -Ssrc/wifipw_test.entitlements obj/wifipw_test 2>/dev/null ||
@@ -416,6 +419,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/battery_test ] && cp obj/battery_test root/bin/
 	[ -f obj/keychain_test ] && cp obj/keychain_test root/bin/
 	[ -f obj/wifipw_test ] && cp obj/wifipw_test root/bin/
+	[ -f obj/aes_test ] && cp obj/aes_test root/bin/
 	[ -f obj/sound_test ] && cp obj/sound_test root/bin/
 	[ -f obj/torch_test ] && cp obj/torch_test root/bin/
 	[ -f obj/camera_test ] && cp obj/camera_test root/bin/

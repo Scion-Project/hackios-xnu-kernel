@@ -7,6 +7,7 @@
  *   MiniIOMobileFramebuffer.cpp    IOMobileFramebuffer: the display (the boot framebuffer)
  *   MiniAppleKeyStore.cpp          AppleKeyStore: the keybag of a device without a passcode
  *   MiniIONetworkStack.cpp         IONetworkStack: what configd's interface namer waits for
+ *   MiniIOAESAccelerator.cpp       IOAESAccelerator: AES-CBC in software, keys of the caller's only (UniXNU's SoftwareAES)
  */
 #ifndef _IOKIT_MINIDRIVERS_H
 #define _IOKIT_MINIDRIVERS_H
@@ -17,5 +18,6 @@ void MiniIOSurfaceStart(IOService * provider);
 void MiniIOMobileFramebufferStart(IOService * provider);
 void MiniAppleKeyStoreStart(void);
 void MiniIONetworkStackStart(void);
+void MiniIOAESAcceleratorStart(void);
 
 #endif /* _IOKIT_MINIDRIVERS_H */
