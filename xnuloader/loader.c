@@ -645,6 +645,11 @@ static const struct platform platform_starlte = {
 	 * memory map (devices/starlte/uefi).
 	 */
 	.ram_log = 0xFED14000, .ram_log_size = 0x4000,
+	/*
+	 * With the kernel on a core of its own (bootcpu=, the S9's default), this core watches it and writes the log on the
+	 * way, and when the kernel hangs: into the RAM log, which survives the restart that follows.
+	 */
+	.log_other_cpu = 1,
 };
 
 /*
