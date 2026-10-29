@@ -591,6 +591,7 @@ struct platform {
 	uint32_t small_cores;            /* a bit for each of the slower cores, by number: "small-core" in the device tree */
 	uint64_t fb_base;                /* the framebuffer the firmware reports (GOP): it tells this device apart */
 	uint64_t ram_log, ram_log_size;  /* where the log is kept across a restart when there is no log partition (write_ram_log) */
+	uint64_t ufs_hc;                 /* the UFS host controller the kernel's own driver may take over (ufs_native=); 0: none */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -617,6 +618,7 @@ static const struct platform platform_redwood = {
 	 */
 	.small_cores = 0x0f,
 	.fb_base = 0xE1000000,
+	.ufs_hc = 0x1d84000,             /* ufshc@1d84000, "ufs_mem", in this phone's Android device tree */
 };
 
 static const struct platform platform_starlte = {
@@ -2112,7 +2114,7 @@ device_path_print(uint64_t unit, const efi_device_path *dp)
  * touches the storage; it reads for the kernel (block_poll) and writes the log (write_logs) only
  * while UEFI's list is the one in the controller.
  */
-#define HC_PA              0x1d84000ULL        /* ufshc@1d84000, "ufs_mem", in this phone's Android device tree */
+#define HC_PA              (PLAT->ufs_hc)      /* the platform's; 0: ufs_native= is refused */
 #define HC_CAP             0x00
 #define HC_VER             0x08
 #define HC_IS              0x20
@@ -3435,6 +3437,10 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		    (c[11] == 0 || c[11] == ' ');
 		hc_requested |= starts_with(c, "ufs_native=") && (c == pi.cmdline || c[-1] == ' ') && c[11] >= '1' &&
 		    c[11] <= '9';
+	}
+	if (hc_requested && HC_PA == 0) {
+		print("ufs: ufs_native= refused: platform %s has no UFS host controller for the kernel's own driver\n", PLAT->name);
+		hc_requested = 0;
 	}
 	if (battery_requested) {
 		charger_start();

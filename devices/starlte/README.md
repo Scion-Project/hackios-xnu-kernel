@@ -92,12 +92,29 @@ which a restart leaves alone. Restart into TWRP or Android (Vol Down + Power) an
 lays the zones out differently: `cat /sys/module/ramoops/parameters/*` and the `log_pstore` node say how, and
 `platform_starlte.ram_log` in `xnuloader/loader.c` is the one number to change.
 
+## Storage: iOS from the phone's flash
+
+There is no Exynos UFS driver in the kernel, and none is needed for reading. Silicium's UEFI drives the UFS and stays
+resident. With `ufs=2 bootcpu=3`, the loader keeps core 0 and reads for the kernel, which runs on cores 1-3: the same
+service the POCO uses (`drivers/storage/hakios.ufs.c`). Every GPT partition becomes `/dev/ufs_NAME`, read-only, and
+`root_apfs=ufs_NAME` mounts iOS's root volume from one.
+
+The iOS system image (`userland/system.apfs`) needs a partition of its own, written once from TWRP:
+`adb push system.apfs /tmp/ && adb shell dd if=/tmp/system.apfs of=/dev/block/by-name/NAME bs=4M`. Which partition
+decides what is lost:
+- `SYSTEM`: Android stops booting, TWRP still works.
+- `USERDATA`: Android's data is wiped.
+
+List the partitions and their sizes first: `adb shell ls -l /dev/block/by-name`.
+Then: `--cmdline "cpus=4 ufs=2 bootcpu=3 root_apfs=ufs_NAME"`. Nothing writes to the flash: `ufs_write=1` is for the
+POCO's `darwin` partition only, and the loader refuses any other.
+
 ## What comes next
 
 | Step | How |
 |---|---|
 | A longer log | 16 KB of pstore holds a panic but not a whole boot: a partition of the phone's, or USB |
-| Storage | Silicium's UEFI drives the UFS (`PlatformUfsLib`): the loader's block service (as redwood reads its UFS) can serve the system image without an Exynos UFS driver in XNU |
+| Storage, writing | /private/var kept between runs needs a writable partition of the port's own (the POCO's `darwin`) |
 | Buttons | GPIO keys: a driver, the pins from `gpio_keys` |
 | Touch | S6SY761 on HSI2C: an I2C controller driver and the touch protocol (the WoA port's are BSD and GPL; facts only) |
 | The M3s | the ISA question above, then a loader that numbers two clusters |
