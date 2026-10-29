@@ -27,3 +27,9 @@ driver BATTGUARD
 
 standard bsd/dev/hakios.scfb_battery.c
 	help    the phone's battery under AVF, as the Scion app writes it into the shared framebuffer (patch 1403)
+
+driver MAX77705
+	file    bsd/dev/hakios.max77705.c
+	requires EXYNOS_HSI2C BATTERY
+	help    the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's
+	help    HSI2C and handed to HakiosBattery, the power source iOS reads (max77705=1; max77705_steps=N)
