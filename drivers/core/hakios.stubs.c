@@ -18,6 +18,7 @@
 #include <sys/errno.h>
 #include <sys/types.h>
 #include <sys/hakios.audio.h>
+#include <sys/hakios.exynos_abox.h>
 #include <sys/hakios.input.h>
 #include <sys/hakios.net.h>
 #include <sys/hakios.virtio_blk.h>
@@ -55,6 +56,10 @@ void hakios_max77705_init(void) {}
 #endif
 #ifndef HAKIOS_S2MPB02_TORCH
 void hakios_s2mpb02_torch_init(void) {}
+#endif
+#ifndef HAKIOS_EXYNOS_ABOX
+void hakios_exynos_abox_init(void) {}
+void hakios_abox_set_amp(__unused const struct hakios_abox_amp *amp) {}   /* an amplifiers' driver built without ABOX's */
 #endif
 #ifndef HAKIOS_S6E3HA8
 void hakios_s6e3ha8_init(void) {}

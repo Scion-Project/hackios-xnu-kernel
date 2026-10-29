@@ -1,3 +1,12 @@
+abox	k
+abox_bclk_on	k
+abox_dvfs	k
+abox_gain	k
+abox_rdma_ctrl0	k
+abox_rdma_ctrl1	k
+abox_route	k
+abox_secs	k
+abox_vol	k
 adreno	k
 adreno_blind	k
 adreno_dirty	k
@@ -163,6 +172,8 @@ mali_trace	k
 max77705	k
 max77705_haptic	k
 max77705_steps	k
+max98512	k
+max98512_gain	k
 md0	k
 membench	k
 metal	ku
@@ -234,6 +245,7 @@ rec_sound_fed	k
 rec_sound_mic	k
 rec_start	k
 rec_step	k
+recovery	l
 regtrace	k
 return_cpu	k
 return_panic	k

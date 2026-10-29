@@ -29,8 +29,7 @@ driver GOODIX
 
 driver SOUND
 	file    bsd/dev/hakios.sound.c
-	file    bsd/dev/hakios.guard.c
-	requires ADSP SPEAKER
+	requires ADSP SPEAKER GUARD
 	help    the speakers playing (sound=N) ...
 ```
 
@@ -56,7 +55,7 @@ The 25 drivers there are now, by subsystem:
 | gpu | `ADRENO` | |
 | camera | `CAMERA`, `TORCH` | |
 | haptic | `HAPTIC` | |
-| audio | `ADSP`, `SPEAKER`, `SOUND` (requires ADSP, SPEAKER), `MIC` (requires ADSP, SOUND), `VIRTIO_SOUND` | `hakios.audio.c` |
+| audio | `ADSP`, `SPEAKER`, `GUARD`, `SOUND` (requires ADSP, SPEAKER, GUARD), `MIC` (requires ADSP, SOUND), `VIRTIO_SOUND`, `EXYNOS_ABOX` (requires GUARD, EXYNOS_ACPM) | `hakios.audio.c` |
 | power | `BATTERY`, `CPUFREQ`, `THERMAL`, `PMIC`, `BATTGUARD` | |
 | wifi | `WIFI` (requires QMI) | |
 | bluetooth | `BT` | |
@@ -96,7 +95,7 @@ on when it has been made to work there. A phone with another touch controller ad
 
 - `# CONFIG_HAKIOS_X is not set` means **left out**, not "the default": a fragment can take a driver out of a configuration
   that an earlier file put it in, as in Linux.
-- A driver built without one it `requires` is refused: `CONFIG_HAKIOS_SOUND requires CONFIG_HAKIOS_ADSP (drivers/audio/conf:13)`.
+- A driver built without one it `requires` is refused: `CONFIG_HAKIOS_SOUND requires CONFIG_HAKIOS_ADSP (drivers/audio/conf:25)`.
 - A boot-argument that only left-out drivers read is refused, with the driver named:
   `CONFIG_TOUCHSCREEN gives touchscreen=, which only hakios.buttons.c, hakios.goodix.c read, and they are not built
   (CONFIG_HAKIOS_BUTTONS, CONFIG_HAKIOS_GOODIX)`. The kernel would not complain: the argument would just never be looked at.
