@@ -180,7 +180,7 @@ IOAESAccelerator::getSupportedOptions()
 
 /* ---- NativeAES: SoftwareAES's provider ------------------------------------------------------------ */
 
-/* SoftwareAES's diagnostics, kept as counters (and as the service's properties at start) */
+/* SoftwareAES's diagnostics (its native_aes_* globals), kept as counters for a debugger */
 static uint32_t native_aes_kat_status;          /* 1 passed, 2 failed */
 static uint32_t native_aes_interface_status;    /* 1 passed, 2 failed */
 static uint32_t native_aes_completed;

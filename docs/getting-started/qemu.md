@@ -73,7 +73,7 @@ carried in the small image and unpacked over the template before launchd starts.
 
 The seed is made from your own system and stays on your machine, like the system image. In `root.apfs` it costs its compressed
 size in RAM at every boot (a 120 MB seed made `root.apfs` 36 MB instead of 4, and the payload 54 MB, past the 31 MB that avfboot
-leaves in place); as a disk it costs nothing until it is unpacked. Unpacking takes about a second; a store (`var_store=1`) still
+leaves in place); as a disk it costs nothing until it is unpacked. Unpacking took 1 s from the image and 3 s from a disk; a store (`var_store=1`) still
 goes in over it.
 
 ## Metal in QEMU
