@@ -38,6 +38,7 @@ Every `make` target is a script below it; run the script itself for its options 
 | `provenance-check.py` | nothing in the tree that must not be, and every piece of code that can write to a phone declared | |
 | `metallib.py` | a `.metallib` taken apart | [AIR](../air.md) |
 | `metallib-test.sh`, `metal-plugin-test.sh` | the Metal plug-in's reading of libraries and its objects, under sanitizers | [Metal plan](../metal-plan.md) |
+| `s6e3ha8-gamma-test.sh` | the Galaxy S9 panel's gamma (`drivers/gpu/hakios.s6e3ha8_gamma.h`) worked out from made-up MTPs and checked, under sanitizers; `--rows` the 74 rows for a panel's own MTP | |
 | `modem-cycle.sh` | a whole phone session in one command | [On the phone](../getting-started/phone.md) |
 | `soc-args.py` | the `soc_*` addresses out of a device tree | |
 | `backup-partitions.py` | a read-only backup of the phone's partitions, each copy proven | [Install, safely](../install-safe.md) |

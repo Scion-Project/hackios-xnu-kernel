@@ -198,8 +198,10 @@ MODEM_SIM_SWITCH_OFF	arg	modem_sim_switch_off	Cellular	k	hakios.mpss.c
 MODEM_STEP	arg	modem_step	Cellular	k	hakios.mpss.c	the steps once the root is there, then back to the loader if modem_return=1 says so
 MODEM_WAIT	arg	modem_wait	Cellular	k	hakios.mpss.c	
 MODEM_WDA_OFF	arg	modem_wda_off	Cellular	k	hakios.mpss.c	
-PANEL	arg	panel	GPU and display	k	hakios.s6e3ha8.c	
-PANEL_BRIGHTNESS	arg	panel_brightness	GPU and display	k	hakios.s6e3ha8.c	
+PANEL	arg	panel	GPU and display	k	hakios.s6e3ha8.c	the driver: without it nothing here runs
+PANEL_BRIGHTNESS	arg	panel_brightness	GPU and display	k	hakios.s6e3ha8.c	a brightness of 0-255 set once at start
+PANEL_GAMMA	arg	panel_gamma	GPU and display	k	hakios.s6e3ha8.c	gamma and AOR sent (the default)
+PANEL_GAMMA_LOG	arg	panel_gamma_log	GPU and display	k	hakios.s6e3ha8.c	all 74 rows in the log, as Android's kernel prints them at start ("gamma[nits] : ...") to set beside Android's log of the same phone
 PMIC_LIST	arg	pmic_list	Chip, thermal and PMIC	k	hakios.pmic.c	only the clock, not the inventory of every block
 PRIVS	arg	privs	Security stand-ins	k	kern_minimac.c	
 RD	arg	rd	CPU, memory and boot	kl	(patch),1100-virtio-pci-transport.patch,loader.c	

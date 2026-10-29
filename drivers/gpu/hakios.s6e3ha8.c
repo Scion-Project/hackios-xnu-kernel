@@ -1,30 +1,95 @@
 /*
- * The Galaxy S9's panel brightness (starlte, Exynos 9810): a Samsung S6E3HA8 AMOLED in MIPI command mode on DSIM0
- * (0x16080000), sent its brightness through the DSIM's command FIFO while the DECON keeps showing what the boot loader
- * set up. Only with boot-arg panel=1: every address below belongs to this phone.
+ * The Galaxy S9's panel brightness (starlte, Exynos 9810): a Samsung S6E3HA8 AMOLED in MIPI command mode (4 lanes, DSC)
+ * on DSIM0 (0x16080000), sent its brightness through the DSIM's command FIFO while the DECON keeps showing what the
+ * boot loader set up. Only with boot-arg panel=1: every address below belongs to this phone.
  *
- * The panel has no DCS "set brightness" (0x51) in Samsung's tables. Its brightness is Samsung's own: a gamma table, the
- * AOR (the part of each frame the pixels are off) and ELVSS, behind a level-2 key and latched by F7 03. This driver
- * changes the AOR alone and leaves gamma as the boot loader left it:
+ * The panel has no DCS "set brightness" (0x51) in Samsung's tables. Its brightness is Samsung's own: a gamma (CA), the
+ * AOR (B1, the part of each frame the pixels are dark) and ELVSS, behind a level-2 key and taken by F7 03. The gamma of
+ * each of its 74 luminances, 2 to 400 nits, is worked out from the panel's own factory calibration, its MTP (C8), which
+ * this driver reads at start; hakios.s6e3ha8_gamma.h works it out as Samsung's kernel does, and has Samsung's tables of
+ * which luminance and which AOR go with each level of 0-255. A brightness is then
  *   F0 5A 5A        the level-2 key on
- *   B1 hi lo        AOR, from 0x000C (brightest) to 0x0B76 (about 2 % of that)
- *   F7 03           take it
+ *   CA + 34 bytes   the gamma of the level's row
+ *   B1 hi lo        the level's AOR (0x0B76 at 0 ... 0x000C at 255)
+ *   F7 03           take them
  *   F0 A5 A5        the key off
- * so the panel goes from the boot loader's level down. (The full range, 2 to 420 nits, needs the gamma that Android
- * works out from this panel's own measurements: Android's kernel prints it at boot, "gamma[lum]".) These registers are
- * the panel's working state: a restart clears them.
+ * the first three and the last two packets of Samsung's set-bl sequence (s6e3ha8_star_a3_s0_panel.h, _s1_:
+ * star_a3_s0_set_bl_cmdtbl), with the bytes Android would send for that level. These are the panel's working state:
+ * a restart clears them.
  *
- * A packet: its payload, four bytes a word, into PAYLOAD (0x5C), then its header into PKTHDR (0x58): the data type, and
- * the length (or the two bytes of a short one). 0x05 a DCS command without a parameter, 0x39 one with (Samsung's tables
- * send every longer one so). Before a header, the header FIFO must have room (FIFOCTRL 0x68, bit 11 full; bit 9 the
- * payload's); after it, its being sent shows as INTSRC (0x50) bit 28, written back to clear. The DSIM keeps command
+ * Why each register sent is safe.
+ *   F0           the level-2 key: opens Samsung's registers and closes them again. Samsung sends it around every change
+ *                of brightness, and this driver did already.
+ *   9F, FC       the level-1 and level-3 keys, only around the reads at start: Samsung's resource-init sequence opens
+ *                all three for the same reads at every start of the panel (star_a3_s0_res_init_cmdtbl). A key changes
+ *                nothing that is shown, and each is closed again whatever the reads gave.
+ *   CA           the gamma: each value is a step of one of the panel's voltage dividers, between voltages the panel
+ *                makes itself (VREGOUT, VT, the next point), and is added to the panel's own calibration: it sets how
+ *                bright a gray is, not a supply. Only rows worked out from this panel's MTP are sent, each value kept
+ *                within the register's range as Samsung keeps it (0-255; 0-511 at gray 255). Whatever the MTP, the
+ *                400-nit row comes out as the panel's calibrated gamma itself. Android sends one of these rows at
+ *                every change of brightness.
+ *   B1           the AOR, two bytes from Samsung's table, within the range this driver sent before (0x000C-0x0B76).
+ *   F7 03        takes what was sent ("gamma update"), as before.
+ * Left out of Samsung's set-bl sequence, so as the boot loader set them:
+ *   B5           TSET, MPS and ELVSS (and, at offset 22, ELVSS's temperature part). ELVSS is a supply voltage of the
+ *                panel (its OLEDs' cathode), set by Samsung per luminance and per temperature, the temperature from a
+ *                thermistor this driver does not read: a voltage register, so not touched. The light is the gamma's
+ *                and the AOR's; what the boot loader's ELVSS does at the ends of the range (Samsung's: 0x12 at 2 nits,
+ *                0x22 from 14 to about 120, 0x16 at 400; MPS 0xCC up to 39 nits, 0xDC above) is for the phone to show.
+ *   F4           VGH and VINT, supply voltages: not touched. (Samsung's VINT is 0x23 at every luminance to 400 nits.)
+ *   B4, 55       ACL, the current limit Samsung turns on to save power: left as it is.
+ *   B8, B1+6,    IRC (17 values per brightness step, and on) and the "POC compensation" (B1 at offset 6, B8 at 0x53,
+ *   B8+0x53      per luminance): Samsung's compensations of the picture, sent with the gamma on Android; the sources do
+ *                not say what they compensate. Left as the boot loader set them: if colours at the ends of the range
+ *                look wrong on the phone, they are the next to look at.
+ *
+ * The fallback, with panel_gamma=0 or when the MTP cannot be read: the AOR alone, as before. B1 from 0x0B76 to 0x000C
+ * by the square of the level, gamma as the boot loader left it, so the panel goes from the boot loader's level down
+ * (to about 2 % of it).
+ *
+ * Writing a packet: its payload, four bytes a word, into PAYLOAD (0x5C), then its header into PKTHDR (0x58): the data
+ * type, and the length (or the two bytes of a short one). 0x05 a DCS command without a parameter, 0x39 one with (Samsung's
+ * tables send every longer one so). Before a header, the header FIFO must have room (FIFOCTRL 0x68, bit 11 full; bit 9
+ * the payload's); after it, its being sent shows as INTSRC (0x50) bit 28, written back to clear. The DSIM keeps command
  * packets out of the window the panel is reading the frame in (its TE protection), so the picture is not disturbed;
  * Android sends brightness at any moment, behind a lock.
- * Sources: the phone's device tree (dsim@0x16080000, the s6e3ha8 nodes), Linux's drivers/video/fbdev/exynos/dpu_9810
- * (dsim_drv.c, dsim_reg.c, regs-dsim.h) and panel/s6e3ha8 of the S9's kernel (GPL: read for these facts, not copied).
  *
- * kern.hakios.brightness: 0-255, written to set it (read: what it was set to, -1 never). Boot-arg panel_brightness=N
- * sets it once at start.
+ * Reading the panel (dsim_drv.c dsim_read_data, dsim_reg.c, common_mipi_lcd.c mipi_read): first "set maximum return
+ * packet size" (data type 0x37, the count in the header's first byte), so the panel answers with no more than asked;
+ * then the DCS read (0x06, the register in the first byte) with PKTHDR's bit 24 set: the bus is turned round for the
+ * answer. The DSIM puts the answer in its RX FIFO, read a word at a time at RXFIFO (0x60); INTSRC bit 18 says it is in
+ * (RX data done, written back to clear; bit 20 a turn-round timeout, 21 a low-power receive timeout), and FIFOCTRL bit
+ * 12 is set while the FIFO is empty. A word's low byte is a packet's type: 0x02 acknowledge and error report (bits 23-8
+ * the errors, 0x3F3F of them real ones), 0x08 end of transmission, 0x21/0x22 (DCS) or 0x11/0x12 (generic) a short
+ * answer of 1 or 2 bytes in bits 15-8 and 23-16, 0x1C (DCS) or 0x1A (generic) a long one, its length in bits 23-8 and
+ * its bytes in the words after it, four a word, the first lowest. Samsung waits 100 ms for an answer, takes at most 64
+ * words, and wants exactly the count asked for; so does this. (A read from an offset would be preceded by B0 <offset>,
+ * data type 0x15; every read here starts at 0.) Whatever is in the RX FIFO before a read is read out first.
+ * Read at start, each logged (panel_gamma=1 or 2):
+ *   04, 3 bytes             the panel's ID, with no key (as Samsung's read_panel_id): which of Samsung's two tables
+ *   9F A5 A5, F0 5A 5A, FC 5A 5A    the three keys opened
+ *   C8, 34 bytes, twice     the MTP; the two must agree, and 34 times one byte is not an MTP
+ *   CA, 34 bytes; B1, 2     the gamma and AOR the boot loader left, and which of the 74 rows that gamma is, if one is:
+ *                           on the phone, the check that this calculation is Samsung's
+ *   FC A5 A5, F0 A5 A5, 9F 5A 5A    the keys closed
+ *
+ * Boot-args:
+ *   panel=1             the driver: without it nothing here runs
+ *   panel_brightness=N  a brightness of 0-255 set once at start
+ *   panel_gamma=2       gamma and AOR sent (the default)
+ *   panel_gamma=1       the panel read and its gamma worked out and logged; the AOR alone sent
+ *   panel_gamma=0       the AOR alone, nothing read: the driver as it was
+ *   panel_gamma_log=1   all 74 rows in the log, as Android's kernel prints them at start ("gamma[nits] : ...")
+ *                       to set beside Android's log of the same phone
+ *
+ * Sources: the phone's device tree (dsim@0x16080000; s6e3ha8_star_ddi: mode 2, command mode, data_lane 4, dsc_en;
+ * panel_drv@001's panel-lookup), Linux's drivers/video/fbdev/exynos/dpu_9810 (dsim_drv.c, dsim_reg.c, regs-dsim.h,
+ * dsim.h, panels/common_mipi_lcd.c), include/video/mipi_display.h, and panel/ (panel.c, panel_bl.c, s6e3ha8/) of the
+ * S9's kernel, github.com/ExyHyperBrick/android_kernel_samsung_exynos9810, lineage-24.0 (GPL: read for these facts, not
+ * copied).
+ *
+ * kern.hakios.brightness: 0-255, written to set it (read: what it was set to, -1 never).
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -34,6 +99,8 @@
 #include <pexpert/pexpert.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
+
+#include "hakios.s6e3ha8_gamma.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void delay(int usec);
@@ -59,17 +126,42 @@ say(const char *format, ...)
 }
 
 #define DSIM_PA         0x16080000UL
+#define DSIM_CONFIG     0x4C
+#define  PER_FRAME_READ (1u << 8)       /* (a read only once a frame; Samsung leaves it off) */
 #define DSIM_INTSRC     0x50
 #define  SFR_PH_EMPTY   (1u << 28)
+#define  LPRX_TIMEOUT   (1u << 21)
+#define  BTA_TIMEOUT    (1u << 20)
+#define  RX_DATA_DONE   (1u << 18)
 #define DSIM_PKTHDR     0x58
+#define  PKTHDR_BTA     (1u << 24)      /* turn the bus round after this packet: the panel answers */
 #define DSIM_PAYLOAD    0x5C
+#define DSIM_RXFIFO     0x60
 #define DSIM_FIFOCTRL   0x68
-#define  FULL_PL        (1u << 9)
+#define  EMPTY_RX       (1u << 12)
 #define  FULL_PH        (1u << 11)
 #define  EMPTY_PH       (1u << 10)      /* (the header FIFO empty: Samsung takes that for "sent" as well) */
+#define  FULL_PL        (1u << 9)
+#define RX_WORDS        64              /* Samsung's DSIM_RX_FIFO_MAX_DEPTH */
 
 #define DCS_SHORT       0x05
+#define DCS_READ        0x06
+#define MAX_RETURN      0x37            /* set maximum return packet size */
 #define DCS_LONG        0x39
+#define RX_ACK_ERROR    0x02
+#define RX_EOT          0x08
+#define RX_GEN_SHORT_1  0x11
+#define RX_GEN_SHORT_2  0x12
+#define RX_GEN_LONG     0x1A
+#define RX_DCS_LONG     0x1C
+#define RX_DCS_SHORT_1  0x21
+#define RX_DCS_SHORT_2  0x22
+#define RX_ERRORS       0x3F3F          /* MIPI_DSI_ERR_BIT_MASK */
+
+#define REG_ID          0x04
+#define REG_MTP         0xC8
+#define REG_GAMMA       0xCA
+#define REG_AOR         0xB1
 
 #define AOR_BRIGHTEST   0x000C
 #define AOR_DIMMEST     0x0B76
@@ -77,7 +169,13 @@ say(const char *format, ...)
 static vm_offset_t dsim;
 static lck_mtx_t *panel_lock;
 static int panel_level = -1;
-static uint32_t panel_failures;
+static uint32_t panel_failures, read_failures;
+
+/* the gamma, once worked out from the MTP at start (read only after) */
+static struct ha8_work gamma_work;
+static uint8_t gamma_rows[HA8_ROWS][HA8_CA];
+static const struct ha8_panel *gamma_panel;
+static bool gamma_ready;
 
 /* a moment `us` microseconds from now, by the clock: a loop bounded by it spins, where delay() would sleep a tick */
 static uint64_t
@@ -101,9 +199,9 @@ wr(uint32_t off, uint32_t v)
 	*(volatile uint32_t *)(dsim + off) = v;
 }
 
-/* one packet: true once the DSIM says its header has gone out */
+/* one packet, its payload (if any) and then its header: true once the DSIM says the header has gone out */
 static bool
-dsim_send(const uint8_t *data, uint32_t len)
+dsim_packet(uint32_t header, const uint8_t *payload, uint32_t len)
 {
 	uint64_t deadline = deadline_us(50000);
 
@@ -113,19 +211,15 @@ dsim_send(const uint8_t *data, uint32_t len)
 		return false;
 	}
 	wr(DSIM_INTSRC, SFR_PH_EMPTY);
-	if (len == 1) {
-		wr(DSIM_PKTHDR, DCS_SHORT | (uint32_t)data[0] << 8);
-	} else {
-		for (uint32_t i = 0; i < len; i += 4) {
-			uint32_t word = 0;
+	for (uint32_t i = 0; i < len; i += 4) {
+		uint32_t word = 0;
 
-			for (uint32_t j = 0; j < 4 && i + j < len; j++) {
-				word |= (uint32_t)data[i + j] << (8 * j);
-			}
-			wr(DSIM_PAYLOAD, word);
+		for (uint32_t j = 0; j < 4 && i + j < len; j++) {
+			word |= (uint32_t)payload[i + j] << (8 * j);
 		}
-		wr(DSIM_PKTHDR, DCS_LONG | (len & 0xff) << 8 | (len >> 8) << 16);
+		wr(DSIM_PAYLOAD, word);
 	}
+	wr(DSIM_PKTHDR, header);
 	for (deadline = deadline_us(50000); !(rd(DSIM_INTSRC) & SFR_PH_EMPTY) && !(rd(DSIM_FIFOCTRL) & EMPTY_PH) &&
 	    mach_absolute_time() < deadline;) {
 	}
@@ -135,20 +229,264 @@ dsim_send(const uint8_t *data, uint32_t len)
 	return sent;
 }
 
-/* brightness 0-255 as the AOR: the light is the frame's lit part, made to follow the level's square (a dim end that is usable) */
+/* one DCS command: a byte alone short, anything longer long */
+static bool
+dsim_send(const uint8_t *data, uint32_t len)
+{
+	if (len == 1) {
+		return dsim_packet(DCS_SHORT | (uint32_t)data[0] << 8, NULL, 0);
+	}
+	return dsim_packet(DCS_LONG | (len & 0xff) << 8 | (len >> 8) << 16, data, len);
+}
+
+/* the next word of the RX FIFO, waiting at most `us' for one */
+static bool
+rx_pop(uint32_t *word, uint64_t us)
+{
+	uint64_t deadline = deadline_us(us);
+
+	while ((rd(DSIM_FIFOCTRL) & EMPTY_RX) && mach_absolute_time() < deadline) {
+	}
+	if (rd(DSIM_FIFOCTRL) & EMPTY_RX) {
+		return false;
+	}
+	*word = rd(DSIM_RXFIFO);
+	return true;
+}
+
+/* a DCS read of `len' bytes (1-40) of register `reg' (dsim_read_data): true when exactly that many came */
+static bool
+dsim_read(uint8_t reg, uint8_t *buf, uint32_t len)
+{
+	uint32_t word = 0, first = 0, got = 0, words = 0, stale = 0, intsrc;
+	const char *why = NULL;
+	uint64_t deadline;
+
+	while (!(rd(DSIM_FIFOCTRL) & EMPTY_RX) && stale < RX_WORDS) {
+		(void)rd(DSIM_RXFIFO);
+		stale++;
+	}
+	wr(DSIM_INTSRC, RX_DATA_DONE | BTA_TIMEOUT | LPRX_TIMEOUT);
+	if (!dsim_packet(MAX_RETURN | len << 8, NULL, 0) ||
+	    !dsim_packet(DCS_READ | (uint32_t)reg << 8 | PKTHDR_BTA, NULL, 0)) {
+		why = "the request was not sent";
+		goto out;
+	}
+	for (deadline = deadline_us(100000); !(rd(DSIM_INTSRC) & (RX_DATA_DONE | BTA_TIMEOUT | LPRX_TIMEOUT)) &&
+	    mach_absolute_time() < deadline;) {
+	}
+	/* (an answer in the FIFO is read even without RX data done: whether INTSRC shows that bit while it is masked is
+	 * for the phone to say) */
+	while (why == NULL && words < RX_WORDS && rx_pop(&word, words == 0 ? 1000 : 0)) {
+		uint32_t size;
+
+		first = words++ == 0 ? word : first;
+		switch (word & 0xff) {
+		case RX_ACK_ERROR:
+			if ((word >> 8) & RX_ERRORS) {
+				why = "the panel reported an error";
+			}
+			break;
+		case RX_EOT:
+			break;
+		case RX_DCS_SHORT_1:
+		case RX_GEN_SHORT_1:
+		case RX_DCS_SHORT_2:
+		case RX_GEN_SHORT_2:
+			size = ((word & 0xff) == RX_DCS_SHORT_1 || (word & 0xff) == RX_GEN_SHORT_1) ? 1 : 2;
+			for (uint32_t i = 0; i < size && i < len; i++) {
+				buf[i] = (uint8_t)(word >> (8 + 8 * i));
+			}
+			got = size;
+			break;
+		case RX_DCS_LONG:
+		case RX_GEN_LONG:
+			size = (word >> 8) & 0xffff;
+			for (uint32_t i = 0; i < size && why == NULL; i += 4) {
+				uint32_t data;
+
+				if (words++ >= RX_WORDS || !rx_pop(&data, 1000)) {
+					why = "a long answer cut short";
+					break;
+				}
+				for (uint32_t j = 0; j < 4 && i + j < size && i + j < len; j++) {
+					buf[i + j] = (uint8_t)(data >> (8 * j));
+				}
+			}
+			got = size;
+			break;
+		default:
+			why = "a packet of unknown type";
+			break;
+		}
+	}
+	if (why == NULL && got != len) {
+		why = words == 0 ? "no answer" : "an answer of another length";
+	}
+out:
+	intsrc = rd(DSIM_INTSRC);
+	wr(DSIM_INTSRC, RX_DATA_DONE | BTA_TIMEOUT | LPRX_TIMEOUT);
+	if (why != NULL && read_failures++ < 8) {
+		say("s6e3ha8: read %02X (%u bytes): %s (got %u in %u words, first %08x; INTSRC %x, FIFOCTRL %x%s)\n", reg,
+		    len, why, got, words, first, intsrc, rd(DSIM_FIFOCTRL), stale ? ", stale words read out first" : "");
+	}
+	return why == NULL;
+}
+
+/* a read, tried three times (Samsung's mipi_read tries five, resetting the DSIM in between: not done here) */
+static bool
+panel_read(uint8_t reg, uint8_t *buf, uint32_t len)
+{
+	for (int attempt = 0; attempt < 3; attempt++) {
+		if (dsim_read(reg, buf, len)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/* the level-1, -2 and -3 keys opened (and closed again in the other order), as Samsung's resource-init sequence does */
+static bool
+panel_keys(bool open)
+{
+	static const uint8_t on[3][3] = { { 0x9F, 0xA5, 0xA5 }, { 0xF0, 0x5A, 0x5A }, { 0xFC, 0x5A, 0x5A } };
+	static const uint8_t off[3][3] = { { 0xFC, 0xA5, 0xA5 }, { 0xF0, 0xA5, 0xA5 }, { 0x9F, 0x5A, 0x5A } };
+	bool ok = true;
+
+	for (int i = 0; i < 3; i++) {
+		ok = dsim_send(open ? on[i] : off[i], 3) && ok;         /* (all three closed, whatever happened) */
+		if (open && !ok) {
+			break;
+		}
+	}
+	return ok;
+}
+
+static void
+say_bytes(const char *what, const uint8_t *bytes, uint32_t len)
+{
+	char line[3 * 40 + 1];
+	uint32_t at = 0;
+
+	for (uint32_t i = 0; i < len && i < 40; i++) {
+		at += (uint32_t)snprintf(line + at, sizeof(line) - at, " %02X", bytes[i]);
+	}
+	line[at] = 0;
+	say("s6e3ha8: %s:%s\n", what, line);
+}
+
+/* read the panel and work its gamma out (panel_gamma=1 or 2) */
+static void
+panel_gamma_init(uint32_t mode)
+{
+	uint8_t id[3] = { 0 }, mtp[2][HA8_CA], ca[HA8_CA], aor[2];
+	bool have_id, keys, have_mtp = false, have_ca = false, have_aor = false, same = true, repeated = true;
+	uint32_t panel_id, clamped, show_all = 0;
+	const char *refused = NULL;
+	int match = -1;
+
+	lck_mtx_lock(panel_lock);
+	have_id = panel_read(REG_ID, id, sizeof(id));
+	keys = panel_keys(true);
+	if (keys) {
+		have_mtp = panel_read(REG_MTP, mtp[0], HA8_CA) && panel_read(REG_MTP, mtp[1], HA8_CA);
+		have_ca = panel_read(REG_GAMMA, ca, HA8_CA);
+		have_aor = panel_read(REG_AOR, aor, sizeof(aor));
+	}
+	keys = panel_keys(false) && keys;
+	lck_mtx_unlock(panel_lock);
+
+	panel_id = (uint32_t)id[0] << 16 | (uint32_t)id[1] << 8 | id[2];
+	gamma_panel = ha8_panel_of(panel_id);
+	say("s6e3ha8: ID %06x%s: Samsung's tables for the %s panel; keys %s; DSIM CONFIG %x (per-frame read %s)\n",
+	    panel_id, have_id ? "" : " (NOT READ)", gamma_panel->name, keys ? "opened and closed" : "NOT ALL SENT",
+	    rd(DSIM_CONFIG), (rd(DSIM_CONFIG) & PER_FRAME_READ) ? "on" : "off");
+	if (have_mtp) {
+		say_bytes("MTP (C8)", mtp[0], HA8_CA);
+		for (int i = 0; i < HA8_CA; i++) {
+			same = same && mtp[0][i] == mtp[1][i];
+			repeated = repeated && mtp[0][i] == mtp[0][0];
+		}
+		if (!same) {
+			say_bytes("MTP read again", mtp[1], HA8_CA);
+		}
+		refused = !same ? "the two reads differ" : repeated ? "one byte 34 times" : NULL;
+	} else {
+		refused = keys ? "not read" : "not read (the keys were not sent)";
+	}
+	if (have_ca) {
+		say_bytes("the boot loader's gamma (CA)", ca, HA8_CA);
+	}
+	if (have_aor) {
+		say("s6e3ha8: the boot loader's AOR (B1): %02X %02X\n", aor[0], aor[1]);
+	}
+	if (refused != NULL) {
+		say("s6e3ha8: no MTP (%s): brightness by the AOR alone\n", refused);
+		return;
+	}
+	clamped = ha8_gamma(&gamma_work, gamma_panel, mtp[0], gamma_rows);
+	for (int r = 0; r < HA8_ROWS && have_ca && match < 0; r++) {
+		bool equal = true;
+
+		for (int i = 0; i < HA8_CA; i++) {
+			equal = equal && gamma_rows[r][i] == ca[i];
+		}
+		match = equal ? r : -1;
+	}
+	if (match >= 0) {
+		say("s6e3ha8: gamma worked out for the 74 luminances (%u values kept within range); the boot loader's is "
+		    "the row of %u nits: the calculation agrees with Samsung's\n", clamped,
+		    (unsigned)gamma_panel->rows[match].nits);
+	} else {
+		say("s6e3ha8: gamma worked out for the 74 luminances (%u values kept within range); the boot loader's "
+		    "is %s\n", clamped, have_ca ? "none of them" : "not known");
+	}
+	(void)PE_parse_boot_argn("panel_gamma_log", &show_all, sizeof(show_all));
+	for (int r = 0; r < HA8_ROWS; r++) {
+		unsigned nits = gamma_panel->rows[r].nits;
+		char what[16];
+
+		if (show_all || nits == 2 || nits == 100 || nits == 400) {
+			snprintf(what, sizeof(what), "gamma[%3u] ", nits);      /* (Android's "gamma[%3d] : ") */
+			say_bytes(what, gamma_rows[r], HA8_CA);
+		}
+	}
+	gamma_ready = mode >= 2;
+	say("s6e3ha8: brightness by %s\n", gamma_ready ? "gamma and AOR (Samsung's tables)" :
+	    "the AOR alone (panel_gamma=1: worked out, not sent)");
+}
+
+/* brightness 0-255: Samsung's gamma row and AOR for the level, or (the fallback) the AOR alone, the light made to
+ * follow the level's square (a dim end that is usable) */
 static int
 panel_set(int level)
 {
 	static const uint8_t key_on[] = { 0xF0, 0x5A, 0x5A }, take[] = { 0xF7, 0x03 }, key_off[] = { 0xF0, 0xA5, 0xA5 };
-	uint32_t lit = (uint32_t)(level * level), aor = AOR_DIMMEST - (AOR_DIMMEST - AOR_BRIGHTEST) * lit / (255 * 255);
-	uint8_t aor_packet[] = { 0xB1, (uint8_t)(aor >> 8), (uint8_t)aor };
+	uint8_t gamma[1 + HA8_CA] = { REG_GAMMA };
+	uint32_t aor;
 	bool ok;
 
 	if (dsim == 0 || level < 0 || level > 255) {
 		return EINVAL;
 	}
+	if (gamma_ready) {
+		int row = ha8_row_of_level(level);
+
+		aor = gamma_panel->aor[level];
+		for (int i = 0; i < HA8_CA; i++) {
+			gamma[1 + i] = gamma_rows[row][i];
+		}
+	} else {
+		uint32_t lit = (uint32_t)(level * level);
+
+		aor = AOR_DIMMEST - (AOR_DIMMEST - AOR_BRIGHTEST) * lit / (255 * 255);
+	}
+	uint8_t aor_packet[] = { REG_AOR, (uint8_t)(aor >> 8), (uint8_t)aor };
+
 	lck_mtx_lock(panel_lock);
-	ok = dsim_send(key_on, sizeof(key_on)) && dsim_send(aor_packet, sizeof(aor_packet)) && dsim_send(take, sizeof(take));
+	ok = dsim_send(key_on, sizeof(key_on));
+	ok = ok && (!gamma_ready || dsim_send(gamma, sizeof(gamma)));
+	ok = ok && dsim_send(aor_packet, sizeof(aor_packet)) && dsim_send(take, sizeof(take));
 	ok = dsim_send(key_off, sizeof(key_off)) && ok;         /* (the key off whatever happened) */
 	if (ok) {
 		panel_level = level;
@@ -157,8 +495,9 @@ panel_set(int level)
 	}
 	lck_mtx_unlock(panel_lock);
 	if (!ok && panel_failures <= 3) {
-		say("s6e3ha8: brightness %d (AOR 0x%x) not sent: the DSIM's FIFO did not take it (FIFOCTRL %x, INTSRC %x)\n",
-		    level, aor, rd(DSIM_FIFOCTRL), rd(DSIM_INTSRC));
+		say("s6e3ha8: brightness %d (%s, AOR 0x%x) not sent: the DSIM's FIFO did not take it "
+		    "(FIFOCTRL %x, INTSRC %x)\n", level, gamma_ready ? "gamma row and AOR" : "AOR alone", aor,
+		    rd(DSIM_FIFOCTRL), rd(DSIM_INTSRC));
 	}
 	return ok ? 0 : EIO;
 }
@@ -188,7 +527,7 @@ hakios_panel_brightness(int level)
 void
 hakios_s6e3ha8_init(void)
 {
-	uint32_t enabled = 0, level = 0;
+	uint32_t enabled = 0, level = 0, mode = 2;
 
 	if (!PE_parse_boot_argn("panel", &enabled, sizeof(enabled)) || enabled == 0) {
 		return;
@@ -199,11 +538,20 @@ hakios_s6e3ha8_init(void)
 		say("s6e3ha8: cannot map the DSIM at 0x%lx\n", DSIM_PA);
 		return;
 	}
-	say("s6e3ha8: DSIM0: FIFOCTRL %x, INTSRC %x; kern.hakios.brightness sets the panel's brightness\n",
-	    rd(DSIM_FIFOCTRL), rd(DSIM_INTSRC));
+	(void)PE_parse_boot_argn("panel_gamma", &mode, sizeof(mode));
+	say("s6e3ha8: DSIM0: FIFOCTRL %x, INTSRC %x; panel_gamma=%u; kern.hakios.brightness sets the panel's brightness\n",
+	    rd(DSIM_FIFOCTRL), rd(DSIM_INTSRC), mode);
+	if (mode >= 1) {
+		panel_gamma_init(mode);
+	}
 	if (PE_parse_boot_argn("panel_brightness", &level, sizeof(level))) {
 		int error = panel_set((int)level);
 
-		say("s6e3ha8: brightness %u: %s\n", level, error == 0 ? "sent" : "NOT SENT");
+		if (gamma_ready && level <= 255) {
+			say("s6e3ha8: brightness %u: %s (the row of %u nits, AOR 0x%04x)\n", level, error == 0 ? "sent" :
+			    "NOT SENT", gamma_panel->rows[ha8_row_of_level((int)level)].nits, gamma_panel->aor[level]);
+		} else {
+			say("s6e3ha8: brightness %u: %s\n", level, error == 0 ? "sent" : "NOT SENT");
+		}
 	}
 }
