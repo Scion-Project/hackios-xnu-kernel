@@ -1,10 +1,11 @@
 #!/bin/bash
-# Boot the XNU loader + kernel payload under QEMU (virt, GICv3, UEFI at EL1).
+# Boot the XNU loader + kernel payload under QEMU (virt, GICv3 or with QEMU_GIC=2 a GICv2, UEFI at EL1).
 # usage: run.sh [seconds] [extra qemu args...]
 # env: QEMU_TB_MB           megabytes for QEMU's cache of translated code (default 384; QEMU's own
 #                           default of 1 GB mostly costs host memory)
 #      QEMU_SMP             processor cores of the machine (default 1); the kernel uses as many of them as
 #                           its boot-arg cpus=N says (CMDLINE="cpus=4" for run-ios.sh), one without it
+#      QEMU_GIC=2           a GICv2 (GIC-400, as on the Exynos 9810) instead of a GICv3; at most 8 cores
 #      QEMU_ESP=1           no loader device: the payload is the file \EFI\hakios\payload.bin on the ESP, which the loader
 #                           reads itself (UEFI-native boot; what a boot menu or a USB stick does)
 #      QEMU_EFI, QEMU_VARS  the UEFI firmware for aarch64 guests (found by itself where Arch's edk2-aarch64
@@ -34,7 +35,7 @@ if [ -n "${QEMU_ESP:-}" ]; then
 	mkdir -p esp/EFI/hakios && cp payload.bin esp/EFI/hakios/payload.bin
 	PAYLOAD_DEVICE=()
 fi
-timeout "$T" qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a76 -smp ${QEMU_SMP:-1} -m ${QEMU_MEM:-6G} \
+timeout "$T" qemu-system-aarch64 -M virt,gic-version=${QEMU_GIC:-3} -cpu cortex-a76 -smp ${QEMU_SMP:-1} -m ${QEMU_MEM:-6G} \
   -accel tcg,tb-size=${QEMU_TB_MB:-384} \
   -drive if=pflash,format=raw,readonly=on,file="$EFI" \
   -drive if=pflash,format=raw,file=vars.fd \

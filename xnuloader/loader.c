@@ -546,6 +546,7 @@ struct platform {
 	const char *name;
 	uint64_t io_base, io_size;       /* one window covering the SoC peripherals */
 	uint64_t gic_dist, gic_redist;   /* GICv3 */
+	uint64_t gic_cpu;                /* not 0: the GIC is a GICv2 (GIC-400), with its CPU interface here and no redistributors */
 	uint64_t uart;                   /* PL011, 0 if none */
 	int psci_hvc;                    /* the firmware's power interface is called with HVC, not SMC */
 	int log_other_cpu;               /* keep notes in the log partition while a kernel starts on another core */
@@ -582,6 +583,23 @@ static const struct platform platform_redwood = {
 	.fb_base = 0xE1000000,
 };
 
+static const struct platform platform_starlte = {
+	/*
+	 * Samsung Galaxy S9 (SM-G960F), Exynos 9810, under Project Silicium's starlte UEFI. Every value is from
+	 * the phone's own device tree (devices/starlte/README.md): the SoC's registers from 0x10000000, a GIC-400
+	 * (distributor 0x10101000, CPU interface 0x10102000), PSCI by SMC, the panel's buffer at 0xCC000000.
+	 */
+	.name = "starlte", .io_base = 0x10000000, .io_size = 0x10000000,
+	.gic_dist = 0x10101000, .gic_cpu = 0x10102000, .uart = 0,
+	/*
+	 * Cores 0-3 are Cortex-A55s (MPIDR 0x000-0x003), 4-7 Samsung's own Exynos M3s (0x100-0x103). Only the
+	 * A55s for now: the M3s are a cluster of their own in MPIDR, which core_shift cannot number, and they
+	 * implement ARMv8.0 where the A55s and the iPhone's A11 implement 8.2.
+	 */
+	.cores = 4, .core_shift = 0,
+	.fb_base = 0xCC000000,
+};
+
 /*
  * The devices the loader knows, told apart by the framebuffer base their UEFI reports. A port to another
  * device adds its description here (devices/<name>/README.md says where each value comes from); a
@@ -589,7 +607,11 @@ static const struct platform platform_redwood = {
  */
 static const struct platform *const platforms[] = {
 	&platform_redwood,
+	&platform_starlte,
 };
+
+/* QEMU virt started with gic-version=2 (qemu/run.sh, QEMU_GIC=2): its GICv2's two frames */
+static struct platform platform_qemu_virt_gicv2;
 
 /* ------------------------------------------------------------------------ */
 /* PCI host bridge -> device tree node /pci0 (XNU: bsd/dev/hakios.pci.c)    */
@@ -802,6 +824,60 @@ pci_from_fdt(const uint8_t *fdt)
 	return PCI.present;
 }
 
+/*
+ * A GICv2 under the root of the FDT (QEMU virt with gic-version=2): its distributor and CPU interface, by the
+ * root's #address-cells and #size-cells. 0: none, or a GICv3.
+ */
+static int
+gic_v2_from_fdt(const uint8_t *fdt, uint64_t *dist, uint64_t *cpu)
+{
+	if (fdt32(fdt) != 0xd00dfeed) {
+		return 0;
+	}
+	const uint8_t *st = fdt + fdt32(fdt + 8);
+	const char *strs = (const char *)fdt + fdt32(fdt + 12);
+	uint32_t st_size = fdt32(fdt + 36);
+	uint32_t depth = 0, root_addr = 2, root_size = 1, is_v2 = 0, reg_len = 0;
+	const uint8_t *reg = 0;
+
+	for (uint32_t at = 0; at + 4 <= st_size;) {
+		uint32_t tok = fdt32(st + at);
+		at += 4;
+		if (tok == 1) {                 /* BEGIN_NODE name */
+			at += ((uint32_t)str_len((const char *)st + at) + 1 + 3) & ~3u;
+			depth++;
+			is_v2 = 0, reg = 0, reg_len = 0;
+		} else if (tok == 3) {          /* PROP len nameoff value */
+			uint32_t len = fdt32(st + at), nameoff = fdt32(st + at + 4);
+			const uint8_t *v = st + at + 8;
+			const char *pn = strs + nameoff;
+			at += 8 + ((len + 3) & ~3u);
+			if (depth == 1 && str_eq(pn, "#address-cells") && len == 4) {
+				root_addr = fdt32(v);
+			} else if (depth == 1 && str_eq(pn, "#size-cells") && len == 4) {
+				root_size = fdt32(v);
+			} else if (depth == 2 && str_eq(pn, "compatible")) {
+				is_v2 = compat_has((const char *)v, len, "arm,cortex-a15-gic") ||
+				    compat_has((const char *)v, len, "arm,gic-400");
+			} else if (depth == 2 && str_eq(pn, "reg")) {
+				reg = v, reg_len = len;
+			}
+		} else if (tok == 2) {          /* END_NODE */
+			uint32_t one = 4 * (root_addr + root_size);
+			if (depth == 2 && is_v2 && reg != 0 && root_addr <= 2 && root_size <= 2 && reg_len >= 2 * one) {
+				*dist = fdt_cells(reg, root_addr);
+				*cpu = fdt_cells(reg + one, root_addr);
+				return 1;
+			}
+			depth--;
+			is_v2 = 0, reg = 0;
+		} else if (tok == 9) {          /* END */
+			break;
+		}
+	}
+	return 0;
+}
+
 /* QEMU virt (gic-version=3, highmem): what its FDT says, for firmware that publishes ACPI instead */
 static void
 pci_qemu_virt(void)
@@ -864,7 +940,7 @@ pci_probe(const struct platform *plat)
 			break;
 		}
 	}
-	if (!PCI.present && plat == &platform_qemu_virt) {
+	if (!PCI.present && (plat == &platform_qemu_virt || plat == &platform_qemu_virt_gicv2)) {
 		pci_qemu_virt();
 		from = "QEMU virt's layout";
 	}
@@ -935,6 +1011,8 @@ enum {
 	CTX_ICC_PMR, CTX_ICC_IGRPEN1, CTX_ICC_BPR1, CTX_COUNT
 };
 uint64_t loader_ctx[CTX_COUNT];
+/* 0: the GIC is a GICv2, whose CPU interface is memory, not ICC_* registers (those are not there to read) */
+uint64_t loader_gic_sysregs = 1;
 int loader_save_ctx(void);
 void loader_return_stub(void);
 
@@ -967,9 +1045,13 @@ __asm__ (
         "  mrs x9, s3_3_c4_c4_0\n          str x9, [x10, #328]\n"
         "  mrs x9, s3_3_c4_c4_1\n          str x9, [x10, #336]\n"
         /* GICv3 CPU interface: the kernel reprograms it for its own interrupts */
+        "  adrp x11, loader_gic_sysregs\n"
+        "  ldr  x11, [x11, :lo12:loader_gic_sysregs]\n"
+        "  cbz  x11, 3f\n"
         "  mrs x9, icc_pmr_el1\n     str x9, [x10, #344]\n"
         "  mrs x9, icc_igrpen1_el1\n str x9, [x10, #352]\n"
         "  mrs x9, icc_bpr1_el1\n    str x9, [x10, #360]\n"
+        "3:\n"
         "  mrs x9, spsel\n"
         "  cbz x9, 1f\n"                  /* SP_EL0 is only accessible while running on SP_EL1 */
         "  mrs x9, sp_el0\n        str x9, [x10, #304]\n"
@@ -1026,9 +1108,13 @@ __asm__ (
         "  ldr x9, [x10, #296]\n msr tpidrro_el0, x9\n"
         "  ldr x9, [x10, #312]\n msr contextidr_el1, x9\n"
         "  ldr x9, [x10, #320]\n msr mdscr_el1, x9\n"
+        "  adrp x11, loader_gic_sysregs\n"   /* (x0-x7 are what the kernel returned: x11 is free) */
+        "  ldr  x11, [x11, :lo12:loader_gic_sysregs]\n"
+        "  cbz  x11, 3f\n"
         "  ldr x9, [x10, #344]\n msr icc_pmr_el1, x9\n"
         "  ldr x9, [x10, #360]\n msr icc_bpr1_el1, x9\n"
         "  ldr x9, [x10, #352]\n msr icc_igrpen1_el1, x9\n"
+        "3:\n"
         "  ldr x9, [x10, #328]\n msr s3_3_c4_c4_0, x9\n"
         "  ldr x9, [x10, #336]\n msr s3_3_c4_c4_1, x9\n"
         "  ldr x9, [x10, #104]\n msr cntkctl_el1, x9\n"
@@ -2662,8 +2748,10 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 			watching_only = 1;
 			daif = READ_SYSREG(DAIF);
 			__asm__ volatile ("msr daifset, #0xf");
-			group1 = READ_SYSREG(S3_0_C12_C12_7);          /* ICC_IGRPEN1_EL1 */
-			__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" ((uint64_t)0));
+			if (loader_gic_sysregs) {
+				group1 = READ_SYSREG(S3_0_C12_C12_7);  /* ICC_IGRPEN1_EL1 */
+				__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" ((uint64_t)0));
+			}
 		}
 		/* both are written by a core with its caches off: look at memory, not at our copy */
 		flush_dcache((uint64_t)(uintptr_t)&other_cpu_done, (uint64_t)(uintptr_t)&other_cpu_done + 8);
@@ -2727,7 +2815,9 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 	run_active = 0;
 
 	if (watching_only) {
-		__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" (group1));
+		if (loader_gic_sysregs) {
+			__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" (group1));
+		}
 		__asm__ volatile ("msr daif, %0" : : "r" (daif));
 	}
 	return status;
@@ -3702,9 +3792,16 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	}
 	dt_begin(&w, "gic");
 	dt_prop_str(&w, "device_type", "interrupt-controller");
-	dt_prop_str(&w, "compatible", "arm,gic-v3");
-	uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base, 0x100000 };
-	dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+	if (plat->gic_cpu != 0) {
+		/* GICv2: the distributor, then the CPU interface (osfmk/arm64/gic_v3_irq.c tells the two apart by this) */
+		dt_prop_str(&w, "compatible", "arm,gic-400");
+		uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x1000, plat->gic_cpu - plat->io_base, 0x2000 };
+		dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+	} else {
+		dt_prop_str(&w, "compatible", "arm,gic-v3");
+		uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base, 0x100000 };
+		dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+	}
 	dt_end(&w);
 	if (plat->uart != 0) {
 		dt_begin(&w, "uart0");
@@ -4608,7 +4705,36 @@ efi_main(efi_handle image, efi_system_table *st)
 			ramfb_phone_screen();
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
-	print("platform %s\n", PLAT->name);
+	if (PLAT == &platform_qemu_virt) {
+		/*
+		 * A GICv2: the FDT says where, when the firmware publishes one; else the processor says there is no
+		 * GICv3 register interface (ID_AA64PFR0_EL1.GIC, bits 27:24, 0) and it is QEMU virt's, at its usual place.
+		 */
+		static const efi_guid dtb_guid = EFI_DTB_TABLE_GUID;
+		uint64_t dist = 0, cpu = 0;
+
+		for (uint64_t i = 0; ST->tables != NULL && i < ST->nr_tables; i++) {
+			if (guid_eq(&ST->tables[i].guid, &dtb_guid) && gic_v2_from_fdt(ST->tables[i].table, &dist, &cpu)) {
+				break;
+			}
+		}
+		if (cpu == 0 && ((READ_SYSREG(ID_AA64PFR0_EL1) >> 24) & 0xf) == 0) {
+			dist = 0x08000000, cpu = 0x08010000;
+		}
+		if (cpu != 0) {
+			platform_qemu_virt_gicv2 = platform_qemu_virt;
+			platform_qemu_virt_gicv2.name = "qemu-virt-gicv2";
+			platform_qemu_virt_gicv2.gic_dist = dist;
+			platform_qemu_virt_gicv2.gic_redist = 0;
+			platform_qemu_virt_gicv2.gic_cpu = cpu;
+			PLAT = &platform_qemu_virt_gicv2;
+		}
+	}
+	if (PLAT->gic_cpu == 0 && ((READ_SYSREG(ID_AA64PFR0_EL1) >> 24) & 0xf) == 0) {
+		print("platform %s: a GICv3 by its description, but this processor has no GICv3 registers\n", PLAT->name);
+	}
+	loader_gic_sysregs = PLAT->gic_cpu == 0;
+	print("platform %s, %s\n", PLAT->name, PLAT->gic_cpu != 0 ? "GICv2" : "GICv3");
 	pci_probe(PLAT);
 
 	install_exception_hook();
