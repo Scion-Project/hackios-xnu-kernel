@@ -9,7 +9,9 @@
 #                      ALONE=1      the small image is the whole root, with no system image beside it (the Galaxy
 #                                   S9's BOOT image, which has room for nothing more): init is its /sbin/launchd,
 #                                   /redwood points back at the image itself, and etc/rc is rc.alone unless RC= says
-#                                   otherwise -- init's checks, then a wait while the kernel's drivers log
+#                                   otherwise -- init's checks, then a wait while the kernel's drivers log.
+#                                   With RC=rc.launchd and boot-arg system_apfs=ufs_NAME, init makes the system
+#                                   image on that partition the root and the boot goes on as a RAM boot's
 #                      RC=<file>    etc/rc: rc.launchd (default) hands process 1 to the iOS launchd
 #                                   after init's checks; rc.ios runs a few iOS programs and halts
 #                      JOBS="..."   labels of the stock iOS launchd jobs to load (default: IOS_JOBS)
@@ -188,6 +190,7 @@ if [ -n "$ALONE" ]; then
 	cp obj/init root/sbin/launchd
 	ln -s / root/redwood
 	ln -s private/var/tmp root/tmp          # as iOS's own root has it (the system image's, otherwise)
+	mkdir -p root/flash                     # where init mounts the system image off the flash (system_apfs=)
 fi
 # The data volume into the flash and back (src/var_store.c), and the job that saves it when a run
 # ends: the program and its job together, away from the iOS job list below, which several working
