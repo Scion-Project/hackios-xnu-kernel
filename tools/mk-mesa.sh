@@ -4,13 +4,16 @@
 # built with the cross compiler of the kernel (xnu-deps/host/bin/xnu-clang, see xnu-deps/setup.sh)
 # against the iOS SDK that userland/build.sh uses; nothing of it is in the repository.
 #
-#   DRIVERS="softpipe,freedreno"
+#   DRIVERS="softpipe,freedreno,panfrost"
 #                        the gallium drivers to build. softpipe: a rasterizer in plain C; it needs no
-#                        LLVM and nothing of the machine but its processor. freedreno: the Adreno's;
-#                        it talks to the kernel's GPU driver (the service HakiosGPU) through
-#                        tools/mesa/hakios-drm, which stands in for libdrm (tools/mesa/freedreno-darwin.patch
-#                        makes Mesa build it where there is no DRM). The library takes the GPU when the
-#                        kernel has one and the environment does not say OSMESA_SOFTWARE=1.
+#                        LLVM and nothing of the machine but its processor. freedreno: the Adreno's
+#                        (the POCO X5 Pro); it talks to the kernel's GPU driver (the service HakiosGPU)
+#                        through tools/mesa/hakios-drm, which stands in for libdrm (tools/mesa/freedreno-darwin.patch
+#                        makes Mesa build it where there is no DRM). panfrost: the Mali's (the Galaxy S9's
+#                        G72, Bifrost v6, OpenGL ES 3.1), through the same stand-in to the service
+#                        HakiosMali (drivers/gpu/hakios.mali.cpp; tools/mesa/panfrost-darwin.patch). The
+#                        library takes the GPU when the kernel has one -- whichever of the two services is
+#                        there -- and the environment does not say OSMESA_SOFTWARE=1.
 #
 # What comes out, in xnu-deps/build/mesa/out:
 #   libOSMesa.8.dylib    everything in one library (install name /redwood/lib/libOSMesa.8.dylib): the
@@ -101,7 +104,7 @@ endian = 'little'
 [properties]
 needs_exe_wrapper = true
 INI
-DRIVERS=${DRIVERS:-softpipe,freedreno}
+DRIVERS=${DRIVERS:-softpipe,freedreno,panfrost}
 BUILD=build-${DRIVERS//,/-}
 [ -f $BUILD/build.ninja ] || meson setup $BUILD mesa-$VERSION --cross-file cross.ini --wrap-mode=nofallback \
 	--prefix=/redwood --libdir=lib --buildtype=release -Db_ndebug=true \
