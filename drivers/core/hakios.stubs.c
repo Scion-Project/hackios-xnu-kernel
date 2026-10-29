@@ -50,6 +50,9 @@ void hakios_exynos_keys_init(void) {}
 #ifndef HAKIOS_S6SY761
 void hakios_s6sy761_init(void) {}
 #endif
+#ifndef HAKIOS_MAX77705
+void hakios_max77705_init(void) {}
+#endif
 
 #ifndef HAKIOS_UFS
 void hakios_ufs_init(void) {}

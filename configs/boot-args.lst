@@ -154,6 +154,8 @@ haptic_effect	k
 hv_wdt_pet	k
 loader_return_after	kl
 machine_name	k
+max77705	k
+max77705_steps	k
 md0	k
 membench	k
 metal	ku

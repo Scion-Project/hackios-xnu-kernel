@@ -28,3 +28,8 @@ standard bsd/dev/hakios.virtio.c
 
 standard bsd/dev/hakios.virtio_console.c
 	help    the virtio console, the AVF guest's boot log to the host
+
+driver EXYNOS_HSI2C
+	file    bsd/dev/hakios.exynos_hsi2c.c
+	help    an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery
+	help    (sys/hakios.exynos_hsi2c.h); nothing of its own on the command line

@@ -1,0 +1,231 @@
+/*
+ * An Exynos HSI2C -- the I2C master of a USI block of the Exynos 9810 -- as the Galaxy S9's drivers use it: the
+ * touch screen (hakios.s6sy761.c, USI03 of PERIC0) and the battery's fuel gauge and charger (hakios.max77705.c,
+ * USI03 of CMGP). sys/hakios.exynos_hsi2c.h says how a driver describes its bus.
+ *
+ * What it takes before the first transfer, none of which the UEFI does: the block's clock gates forced on and its
+ * Q-channel enabled (in its CMU), the USI block made an I2C (its mode word: 4), its two pins set to function 2.
+ * Then the controller: reset, its USI_CON cleared (its reset value holds the block in reset), its timing for the bus
+ * speed from its input clock, master, auto mode. A message is then: the FIFO's triggers, master with the receive or
+ * transmit channel on, the target's address, the length (and read, and STOP) in AUTO_CONF and RUN set; the bytes
+ * pushed into or pulled out of the FIFO as there is room or data; done when INT_STAT says so (and the transmit FIFO is
+ * empty) or the bytes are all in; abort, no acknowledgement, no device and time-out (INT_STAT 8-11) reset the bus.
+ *   CTL 0x00, FIFO_CTL 0x04, TRAILING 0x08, INT_EN 0x20, INT_STAT 0x24, FIFO_STAT 0x30, TX 0x34, RX 0x38, CONF 0x40,
+ *   AUTO_CONF 0x44, TIMEOUT 0x48, TRANS_STATUS 0x50, TIMING_FS1-3 0x60-0x68, ADDR 0x70, USI_CON 0xC4
+ * Sources: Linux's drivers/i2c/busses/i2c-exynos5.c and drivers/soc/samsung/usi_v2.c of the S9's kernel, and the
+ * Exynos 9810's CMU tables (GPL: read for these facts, not copied); the WoA port's HSI2C driver for the S9+
+ * (github.com/ntdevlabs/exynos9810-woa), which does the same and runs on the hardware.
+ */
+#include <kern/clock.h>
+#include <libkern/libkern.h>
+#include <mach/mach_types.h>
+#include <sys/hakios.exynos_hsi2c.h>
+
+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern void delay(int usec);
+
+#define CTL                     0x00
+#define  CTL_MASTER             (1u << 3)
+#define  CTL_RXCHON             (1u << 6)
+#define  CTL_TXCHON             (1u << 7)
+#define  CTL_SW_RST             (1u << 31)
+#define FIFO_CTL                0x04
+#define TRAILING                0x08
+#define INT_EN                  0x20
+#define INT_STAT                0x24
+#define  INT_DONE               (1u << 7)
+#define  INT_ERRORS             (0xfu << 8)
+#define FIFO_STAT               0x30
+#define  TX_FULL                (1u << 7)
+#define  TX_EMPTY               (1u << 8)
+#define  RX_EMPTY               (1u << 24)
+#define TX_DATA                 0x34
+#define RX_DATA                 0x38
+#define CONF                    0x40
+#define  CONF_AUTO              (1u << 31)
+#define AUTO_CONF               0x44
+#define  AUTO_READ              (1u << 16)
+#define  AUTO_STOP              (1u << 17)
+#define  AUTO_RUN               (1u << 31)
+#define TIMEOUT                 0x48
+#define TRANS_STATUS            0x50
+#define  MASTER_BUSY            (1u << 17)
+#define TIMING_FS1              0x60
+#define TIMING_FS2              0x64
+#define TIMING_FS3              0x68
+#define ADDR                    0x70
+#define USI_CON                 0xC4
+
+#define CMU_GATE_MANUAL         (1u << 20)
+#define CMU_GATE_ON             (1u << 21)
+#define USI_MODE_I2C            0x4
+
+static inline uint32_t
+rd(vm_offset_t base, uint32_t off)
+{
+	return *(volatile uint32_t *)(base + off);
+}
+
+static inline void
+wr(vm_offset_t base, uint32_t off, uint32_t v)
+{
+	*(volatile uint32_t *)(base + off) = v;
+}
+
+/* a register of its own page, wherever in it */
+static vm_offset_t
+map_word(uint64_t pa)
+{
+	vm_offset_t page = ml_io_map(pa & ~0xfffULL, 0x1000);
+
+	return page ? page + (pa & 0xfff) : 0;
+}
+
+bool
+hakios_hsi2c_map(struct hakios_hsi2c *bus, int (*say)(const char *, ...))
+{
+	bus->regs = ml_io_map(bus->regs_pa, 0x1000);
+	bus->usi = map_word(bus->usi_mode_pa);
+	bus->cmu = bus->cmu_pa ? ml_io_map(bus->cmu_pa, bus->cmu_size) : 0;
+	bus->pins = bus->pins_pa ? map_word(bus->pins_pa) : 0;
+	if (!bus->regs || !bus->usi || (bus->cmu_pa && !bus->cmu) || (bus->pins_pa && !bus->pins)) {
+		say("%s: a block of the bus could not be mapped\n", bus->name);
+		return false;
+	}
+	if (bus->cmu) {
+		uint32_t div = rd(bus->cmu, bus->div);
+
+		say("%s: USI mode %x (4 is I2C), CMU mux %x, divider %x (400 MHz / %u = %u MHz if the mux takes the 400 MHz "
+		    "branch; assumed %u), gates %x %x %x %x, Q-channel %x\n", bus->name, *(volatile uint32_t *)bus->usi,
+		    rd(bus->cmu, bus->mux), div, (div & 0xf) + 1, 400 / ((div & 0xf) + 1), bus->ipclk_mhz,
+		    bus->ngates > 0 ? rd(bus->cmu, bus->gates[0]) : 0, bus->ngates > 1 ? rd(bus->cmu, bus->gates[1]) : 0,
+		    bus->ngates > 2 ? rd(bus->cmu, bus->gates[2]) : 0, bus->ngates > 3 ? rd(bus->cmu, bus->gates[3]) : 0,
+		    bus->qch ? rd(bus->cmu, bus->qch) : 0);
+	}
+	if (bus->pins) {
+		say("%s: the pins' CON %x (function 2 is I2C)\n", bus->name, *(volatile uint32_t *)bus->pins);
+	}
+	return true;
+}
+
+void
+hakios_hsi2c_power(struct hakios_hsi2c *bus)
+{
+	for (uint32_t i = 0; bus->cmu && i < bus->ngates; i++) {
+		wr(bus->cmu, bus->gates[i], rd(bus->cmu, bus->gates[i]) | CMU_GATE_MANUAL | CMU_GATE_ON);
+	}
+	if (bus->cmu && bus->qch) {
+		wr(bus->cmu, bus->qch, rd(bus->cmu, bus->qch) | 3);
+	}
+	*(volatile uint32_t *)bus->usi = USI_MODE_I2C;
+	if (bus->pins) {
+		uint32_t con = *(volatile uint32_t *)bus->pins;
+
+		if ((con & bus->pins_mask) != bus->pins_want) {
+			*(volatile uint32_t *)bus->pins = (con & ~bus->pins_mask) | bus->pins_want;
+		}
+	}
+}
+
+/*
+ * The bus speed from the input clock, the way both other drivers work it out: the divider for 15 clocks of the input
+ * per bit, then the high time and the start's hold as masks of n bits (n at most 7).
+ */
+static void
+bus_timing(struct hakios_hsi2c *bus)
+{
+	uint32_t div = bus->ipclk_mhz * 1000000 / (bus->bus_hz * 15);
+	uint32_t n = (9 * bus->ipclk_mhz) / ((div + 1) * 10);
+
+	if (n > 7) {
+		n = 7;
+	}
+	uint32_t scl_h = (0xFFFFFFFFu >> n << n) & 0xff;
+	uint32_t m = n ? n - 1 : 0;
+	uint32_t start_hd = (0xFFFFFFFFu >> m << m) & 0xff;
+
+	wr(bus->regs, TIMING_FS3, (rd(bus->regs, TIMING_FS3) & ~(0xffu << 16)) | (div & 0xff) << 16);
+	wr(bus->regs, TIMING_FS2, (rd(bus->regs, TIMING_FS2) & ~0xffu) | scl_h);
+	wr(bus->regs, TIMING_FS1, (rd(bus->regs, TIMING_FS1) & ~(0xffu << 16)) | start_hd << 16);
+}
+
+void
+hakios_hsi2c_reset(struct hakios_hsi2c *bus)
+{
+	vm_offset_t r = bus->regs;
+
+	wr(r, USI_CON, 0);
+	wr(r, INT_STAT, rd(r, INT_STAT));
+	wr(r, CTL, rd(r, CTL) | CTL_SW_RST);
+	delay(10);
+	wr(r, CTL, rd(r, CTL) & ~CTL_SW_RST);
+	bus_timing(bus);
+	wr(r, CTL, CTL_MASTER);
+	wr(r, TRAILING, 0xffffff);
+	wr(r, TIMEOUT, rd(r, TIMEOUT) & ~(1u << 31));
+	wr(r, CONF, rd(r, CONF) | CONF_AUTO);
+}
+
+uint32_t
+hakios_hsi2c_message(struct hakios_hsi2c *bus, uint8_t addr, bool reading, uint8_t *buf, uint32_t len, bool stop)
+{
+	vm_offset_t r = bus->regs;
+	uint32_t trigger = len < 8 ? len : 8, done = 0, status = 0;
+	int waited;
+
+	bus->transfers++;
+	wr(r, INT_STAT, rd(r, INT_STAT));
+	wr(r, FIFO_CTL, 0x3 | trigger << 4 | trigger << 16);
+	wr(r, CTL, CTL_MASTER | (reading ? CTL_RXCHON : CTL_TXCHON));
+	wr(r, ADDR, (uint32_t)addr << 10);
+	wr(r, INT_EN, INT_DONE | INT_ERRORS);
+	wr(r, AUTO_CONF, len | (reading ? AUTO_READ : 0) | (stop ? AUTO_STOP : 0));
+	wr(r, AUTO_CONF, rd(r, AUTO_CONF) | AUTO_RUN);
+
+	/* a second at most, in steps of a microsecond and some */
+	for (waited = 0; waited < 1000000; waited++) {
+		uint32_t fifo = rd(r, FIFO_STAT);
+
+		status = rd(r, INT_STAT);
+		if (status & INT_ERRORS) {
+			break;
+		}
+		if (reading) {
+			while (done < len && !(fifo & RX_EMPTY)) {
+				buf[done++] = (uint8_t)rd(r, RX_DATA);
+				fifo = rd(r, FIFO_STAT);
+			}
+			if (done == len) {
+				break;
+			}
+		} else {
+			while (done < len && !(fifo & TX_FULL)) {
+				wr(r, TX_DATA, buf[done++]);
+				fifo = rd(r, FIFO_STAT);
+			}
+			if (done == len && (status & INT_DONE) && (fifo & TX_EMPTY)) {
+				break;
+			}
+		}
+		delay(1);
+	}
+	/* after a STOP: the master no longer busy (the target may stretch the clock); without one it holds the bus */
+	for (int idle = 0; stop && idle < 100000 && (rd(r, TRANS_STATUS) & MASTER_BUSY); idle++) {
+		delay(1);
+	}
+	if ((status & INT_ERRORS) || waited >= 1000000) {
+		bus->errors++;
+		bus->last_error = (status & INT_ERRORS) ? (status & INT_ERRORS) : 1;
+		hakios_hsi2c_reset(bus);
+		return bus->last_error;
+	}
+	return 0;
+}
+
+uint32_t
+hakios_hsi2c_read_reg(struct hakios_hsi2c *bus, uint8_t addr, uint8_t reg, uint8_t *buf, uint32_t len)
+{
+	uint32_t error = hakios_hsi2c_message(bus, addr, false, &reg, 1, false);
+
+	return error ? error : hakios_hsi2c_message(bus, addr, true, buf, len, true);
+}

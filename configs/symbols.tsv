@@ -140,6 +140,8 @@ GPU_RECOVER	arg	gpu_recover	GPU and display	k	hakios.adreno.c	a submission the c
 GPU_VA	arg	gpu_va	GPU and display	k	hakios.adreno.c	
 HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c	
 MACHINE_NAME	arg	machine_name	CPU, memory and boot	k	GenericARMPE.cpp	
+MAX77705	arg	max77705	Audio and battery	k	hakios.max77705.c	
+MAX77705_STEPS	arg	max77705_steps	Audio and battery	k	hakios.max77705.c	
 MD0	arg	md0	User space	k	1101-virtio-disk-as-md0.patch	
 MEMBENCH	arg	membench	CPU, memory and boot	k	hakios.cpufreq.c	
 METAL	arg	metal	GPU and display	ku	HakiosMetal.m,MiniIOMobileFramebuffer.cpp	only the program metal_test (userland/src/metal_test.m): the safe level, for seeing what Metal does with the device
