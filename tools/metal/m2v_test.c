@@ -343,7 +343,15 @@ main(int argc, char **argv)
 	/* 1. the bridge's self-test, on its own device */
 	uint32_t stage = nmb_selftest(argv[1], argv[2], NULL, 0, NULL, &self);
 	if (stage != 0) {
+		/* the steps before the one that failed ran: their counts are real (compute 0x6503, render 0x6504, import 0x6505) */
 		printf("FAIL  self-test: step 0x%x: %s\n", stage, self.message);
+		if (stage > 0x6503) {
+			printf("      self-test before it: compute %u of 1000 wrong", self.compute_bad);
+			if (stage > 0x6504) {
+				printf(", render %u of 64 wrong", self.render_bad);
+			}
+			printf("\n");
+		}
 		failures++;
 	} else {
 		printf("%s  self-test: compute %u of 1000 wrong, render %u of 64 wrong, import %u of 4096 wrong\n",
