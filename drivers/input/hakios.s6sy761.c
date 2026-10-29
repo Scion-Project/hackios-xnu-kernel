@@ -283,6 +283,10 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 	}
 	say("s6sy761: boot status %x (%s)\n", answer[0], answer[0] == BOOT_APPLICATION ? "its firmware runs" :
 	    answer[0] == 0x10 ? "IN ITS BOOT LOADER: no firmware running" : "unknown");
+	if (answer[0] != BOOT_APPLICATION) {
+		say("s6sy761: not its application: no sensing asked of it (its firmware would have to be written first)\n");
+		goto out;
+	}
 	if (chip_read(CMD_READ_ID, answer, 3) == 0) {
 		say("s6sy761: id %02x %02x %02x\n", answer[0], answer[1], answer[2]);
 	}
@@ -324,6 +328,7 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 		}
 		if (bus.errors >= 1000 && bus.errors * 2 > bus.transfers) {
 			say("s6sy761: more than half of %llu transfers have failed: giving up\n", bus.transfers);
+			all_up();               /* (no finger left down for good) */
 			break;
 		}
 		delay_for_interval(POLL_MS, NSEC_PER_MSEC);

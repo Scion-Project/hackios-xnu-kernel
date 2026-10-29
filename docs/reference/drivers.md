@@ -57,15 +57,16 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | Driver | Files | Requires | Boot arguments | qemu | starlte | |
 |---|---|---|---|---|---|
 | **`HAKIOS_SOCINFO`**<br>the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps SMEM item 137; where the shared memory is comes from soc_smem= | `hakios.socinfo.c` |  | `soc_smem=`, `soc_smem_size=`, `socinfo=` |  |  | |
-| **`HAKIOS_EXYNOS_HSI2C`**<br>an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery (sys/hakios.exynos_hsi2c.h); nothing of its own on the command line | `hakios.exynos_hsi2c.c` |  |  | built | built | |
+| **`HAKIOS_EXYNOS_HSI2C`**<br>an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery (sys/hakios.exynos_hsi2c.h); nothing of its own on the command line | `hakios.exynos_hsi2c.c` |  |  |  | built | |
+| **`HAKIOS_EXYNOS_ACPM`**<br>the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the clocks' DVFS rates (sys/hakios.exynos_acpm.h), for the Galaxy S9's GPU; nothing of its own on the command line | `hakios.exynos_acpm.c` |  |  |  | built | |
 
 ## gpu
 
 | Driver | Files | Requires | Boot arguments | qemu | starlte | |
 |---|---|---|---|---|---|
 | **`HAKIOS_ADRENO`**<br>the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and the window server draw through (gpu=1, adreno_keep=1). Needs the GPU's firmware from the phone (fw-gpu/) | `hakios.adreno.c`<br>`hakios.gpu.cpp` |  | `adreno=`, `adreno_blind=`, `adreno_dirty=`, `adreno_fine=`, `adreno_keep=`, `adreno_only=`, `adreno_pause=`, `adreno_return=` and 12 more |  |  | |
-| **`HAKIOS_MALI`**<br>the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the IOKit service Mesa's panfrost draws through. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported | `hakios.mali.c`<br>`hakios.mali.cpp` |  | `mali=`, `mali_fastmap=`, `mali_trace=` | built | built | |
-| **`HAKIOS_S6E3HA8`**<br>the Galaxy S9's panel brightness: its AOR sent through DSIM0's command FIFO (panel=1; kern.hakios.brightness 0-255, panel_brightness=N at start) | `hakios.s6e3ha8.c` |  | `panel=`, `panel_brightness=` | built | built | |
+| **`HAKIOS_MALI`**<br>the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the IOKit service Mesa's panfrost draws through. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported | `hakios.mali.c`<br>`hakios.mali.cpp` | `HAKIOS_EXYNOS_ACPM` | `mali=`, `mali_acpm=`, `mali_fastmap=`, `mali_flush=`, `mali_pll=`, `mali_trace=` |  | built | |
+| **`HAKIOS_S6E3HA8`**<br>the Galaxy S9's panel brightness: its AOR sent through DSIM0's command FIFO (panel=1; kern.hakios.brightness 0-255, panel_brightness=N at start) | `hakios.s6e3ha8.c` |  | `panel=`, `panel_brightness=` |  | built | |
 
 ## haptic
 
@@ -80,8 +81,8 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | **`HAKIOS_VIRTIO_INPUT`**<br>QEMU's virtio tablet and keyboard as the touch screen and the buttons (virtio_input=1). QEMU only | `hakios.virtio_input.c` |  | `virtio_input=` | built |  | |
 | **`HAKIOS_GOODIX`**<br>the touch screen: a Goodix GT9916 ("Berlin-D") or a FocalTech FT3680 on SPI (touchscreen=1). The bus, pins and supplies are the POCO X5 Pro's; another phone with one of these controllers changes those | `hakios.goodix.c` |  | `touch_flip=`, `touch_poll_us=`, `touch_rate=`, `touch_spi_hz=`, `touchscreen=` |  |  | |
 | **`HAKIOS_BUTTONS`**<br>the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1) | `hakios.buttons.c` |  | `buttons=`, `buttons_steps=`, `touchscreen=` |  |  | |
-| **`HAKIOS_EXYNOS_KEYS`**<br>the Galaxy S9's power, volume and Bixby keys, pins of the Exynos 9810's ALIVE GPIO block (exynos_keys=1). Bixby is the home button | `hakios.exynos_keys.c` |  | `exynos_keys=` | built | built | |
-| **`HAKIOS_S6SY761`**<br>the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz) | `hakios.s6sy761.c` | `HAKIOS_EXYNOS_HSI2C` | `s6sy761=`, `s6sy761_ipclk=`, `s6sy761_steps=` | built | built | |
+| **`HAKIOS_EXYNOS_KEYS`**<br>the Galaxy S9's power, volume and Bixby keys, pins of the Exynos 9810's ALIVE GPIO block (exynos_keys=1). Bixby is the home button | `hakios.exynos_keys.c` |  | `exynos_keys=` |  | built | |
+| **`HAKIOS_S6SY761`**<br>the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz) | `hakios.s6sy761.c` | `HAKIOS_EXYNOS_HSI2C` | `s6sy761=`, `s6sy761_ipclk=`, `s6sy761_steps=` |  | built | |
 
 ## modem
 
@@ -105,7 +106,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | **`HAKIOS_THERMAL`**<br>the SoC's temperature sensors (thermal=1): kern.hakios.thermal_*, and the run handed back to the loader when the phone gets too hot (thermal_stop=) | `hakios.thermal.c` |  | `thermal=`, `thermal_log=`, `thermal_poll=`, `thermal_stop=`, `thermal_tm0=`, `thermal_tm1=` |  |  | |
 | **`HAKIOS_PMIC`**<br>the blocks of the power-management chips the SPMI arbiter shows, and the PMIC's clock (pmic=1); read only | `hakios.pmic.c` |  | `pmic=`, `pmic_list=` |  |  | |
 | **`HAKIOS_BATTGUARD`**<br>the run handed back to the loader before the battery is flat (battery_stop=<percent>) | `hakios.battguard.c` |  | `battery_stop=`, `battery_stop_poll=` |  |  | |
-| **`HAKIOS_MAX77705`**<br>the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's HSI2C and handed to HakiosBattery, the power source iOS reads (max77705=1; max77705_steps=N) | `hakios.max77705.c` | `HAKIOS_EXYNOS_HSI2C`, `HAKIOS_BATTERY` | `max77705=`, `max77705_steps=` | built | built | |
+| **`HAKIOS_MAX77705`**<br>the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's HSI2C and handed to HakiosBattery, the power source iOS reads (max77705=1; max77705_steps=N) | `hakios.max77705.c` | `HAKIOS_EXYNOS_HSI2C`, `HAKIOS_BATTERY` | `max77705=`, `max77705_steps=` |  | built | |
 
 ## storage
 

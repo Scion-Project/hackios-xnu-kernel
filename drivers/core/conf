@@ -33,3 +33,8 @@ driver EXYNOS_HSI2C
 	file    bsd/dev/hakios.exynos_hsi2c.c
 	help    an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery
 	help    (sys/hakios.exynos_hsi2c.h); nothing of its own on the command line
+
+driver EXYNOS_ACPM
+	file    bsd/dev/hakios.exynos_acpm.c
+	help    the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the
+	help    clocks' DVFS rates (sys/hakios.exynos_acpm.h), for the Galaxy S9's GPU; nothing of its own on the command line

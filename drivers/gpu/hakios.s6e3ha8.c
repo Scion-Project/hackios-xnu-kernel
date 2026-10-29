@@ -29,6 +29,7 @@
 #include <kern/clock.h>
 #include <kern/locks.h>
 #include <libkern/libkern.h>
+#include <mach/mach_time.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
 #include <sys/sysctl.h>
@@ -65,6 +66,7 @@ say(const char *format, ...)
 #define DSIM_FIFOCTRL   0x68
 #define  FULL_PL        (1u << 9)
 #define  FULL_PH        (1u << 11)
+#define  EMPTY_PH       (1u << 10)      /* (the header FIFO empty: Samsung takes that for "sent" as well) */
 
 #define DCS_SHORT       0x05
 #define DCS_LONG        0x39
@@ -76,6 +78,16 @@ static vm_offset_t dsim;
 static lck_mtx_t *panel_lock;
 static int panel_level = -1;
 static uint32_t panel_failures;
+
+/* a moment `us` microseconds from now, by the clock: a loop bounded by it spins, where delay() would sleep a tick */
+static uint64_t
+deadline_us(uint64_t us)
+{
+	uint64_t interval;
+
+	nanoseconds_to_absolutetime(us * NSEC_PER_USEC, &interval);
+	return mach_absolute_time() + interval;
+}
 
 static inline uint32_t
 rd(uint32_t off)
@@ -93,12 +105,11 @@ wr(uint32_t off, uint32_t v)
 static bool
 dsim_send(const uint8_t *data, uint32_t len)
 {
-	int waited;
+	uint64_t deadline = deadline_us(50000);
 
-	for (waited = 0; waited < 50000 && (rd(DSIM_FIFOCTRL) & (FULL_PH | FULL_PL)); waited++) {
-		delay(1);
+	while ((rd(DSIM_FIFOCTRL) & (FULL_PH | FULL_PL)) && mach_absolute_time() < deadline) {
 	}
-	if (waited >= 50000) {
+	if (rd(DSIM_FIFOCTRL) & (FULL_PH | FULL_PL)) {
 		return false;
 	}
 	wr(DSIM_INTSRC, SFR_PH_EMPTY);
@@ -115,11 +126,13 @@ dsim_send(const uint8_t *data, uint32_t len)
 		}
 		wr(DSIM_PKTHDR, DCS_LONG | (len & 0xff) << 8 | (len >> 8) << 16);
 	}
-	for (waited = 0; waited < 50000 && !(rd(DSIM_INTSRC) & SFR_PH_EMPTY); waited++) {
-		delay(1);
+	for (deadline = deadline_us(50000); !(rd(DSIM_INTSRC) & SFR_PH_EMPTY) && !(rd(DSIM_FIFOCTRL) & EMPTY_PH) &&
+	    mach_absolute_time() < deadline;) {
 	}
+	bool sent = (rd(DSIM_INTSRC) & SFR_PH_EMPTY) || (rd(DSIM_FIFOCTRL) & EMPTY_PH);
+
 	wr(DSIM_INTSRC, SFR_PH_EMPTY);
-	return waited < 50000;
+	return sent;
 }
 
 /* brightness 0-255 as the AOR: the light is the frame's lit part, made to follow the level's square (a dim end that is usable) */
@@ -165,11 +178,11 @@ panel_sysctl_brightness(__unused struct sysctl_oid *oidp, __unused void *arg1, _
 SYSCTL_PROC(_kern_hakios, OID_AUTO, brightness, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_ANYBODY, NULL, 0,
     panel_sysctl_brightness, "I", "the panel's brightness, 0-255 (-1: never set); writing sets it (Galaxy S9, panel=1)");
 
-/* for the framebuffer, when iOS asks (MiniIOMobileFramebuffer.cpp): 0-255 */
-void
+/* for the framebuffer, when iOS asks (MiniIOMobileFramebuffer.cpp): 0-255; 0 if the panel took it */
+int
 hakios_panel_brightness(int level)
 {
-	(void)panel_set(level);
+	return panel_set(level);
 }
 
 void

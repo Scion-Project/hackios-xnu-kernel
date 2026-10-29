@@ -95,6 +95,7 @@
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
+#include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.input.h>
 #include <sys/sysctl.h>
 #include <stdarg.h>
@@ -181,6 +182,21 @@ static vm_offset_t pmu, cmu_g3d, mali;
 static uint32_t reached, gpu_id, shader_mask, l2_mask, last_step, step;
 static bool powered_here;               /* step 2 switched the domain on: off again if the steps end short */
 static bool gpu_answered;               /* step 4 read a G72: a soft reset before the power goes */
+/*
+ * The supply and the clock through ACPM (drivers/core/hakios.exynos_acpm.c), as Samsung's kernel has them made: the
+ * S2MPS18's BUCK6 (vdd_g3d) held on before the domain's power-on -- PMIC register 0x2a, bits [7:6] = 11; the CAL sends
+ * it as an update of "type" 3 (cal-if.c:178-186), the regulator driver addresses the same register as type 1, so it is
+ * read back through type 1 and sent that way as well if type 3 left it unchanged -- and, once the domain is on, the
+ * GPU's DVFS rate set (index 4, kHz) so that ACPM programs PLL_G3D and the voltage together from its own tables. Bits
+ * [7:6] are put back as found when the domain goes off again. Boot-arg mali_acpm=0: none of it.
+ */
+#define B6CTRL                  0x2a
+#define B6CTRL_ON               0xc0u           /* [7:6] = 11: always on; 10 the G3D power pin's, 00 off */
+#define DVFS_G3D                4               /* GET_IDX(0x0B040004), cal-if */
+#define DVFS_G3D_KHZ            260000u         /* the lowest of the device tree's levels */
+static uint32_t mali_acpm = 1;
+static bool acpm_ok, b6_changed;
+static uint8_t b6_found;
 
 SYSCTL_UINT(_kern_hakios, OID_AUTO, mali, CTLFLAG_RD | CTLFLAG_LOCKED, &reached, 0,
     "how far the Mali came up: 9 is the GPU there for programs (drivers/gpu/hakios.mali.c)");
@@ -624,6 +640,11 @@ g3d_off(void)
 	wr(cmu_g3d, CMU_G3D_100, rd(cmu_g3d, CMU_G3D_100) & ~CMU_G3D_BIT4);
 	wr(cmu_g3d, CMU_G3D_PLL_CON0, rd(cmu_g3d, CMU_G3D_PLL_CON0) & ~CMU_G3D_BIT4);
 	wr(cmu_g3d, CMU_G3D_148, CMU_G3D_148_OFF);
+	if (b6_changed) {
+		say("mali: BUCK6 back as it was found: B6CTRL bits [7:6] = %u\n", (b6_found >> 6) & 3);
+		(void)hakios_acpm_pmic_update(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, b6_found & B6CTRL_ON, B6CTRL_ON);
+		b6_changed = false;
+	}
 	say("mali: the G3D domain: configuration %#x, status %#x; CMU_G3D +0x100 %#x, +0x140 %#x, +0x148 %#x\n",
 	    rd(pmu, PMU_G3D_CONFIGURATION), rd(pmu, PMU_G3D_STATUS), rd(cmu_g3d, CMU_G3D_100), rd(cmu_g3d, CMU_G3D_PLL_CON0),
 	    rd(cmu_g3d, CMU_G3D_148));
@@ -679,6 +700,17 @@ step_look(void)
 	} else {
 		say("mali: 1: the domain is not on: the GPU's own registers are not read\n");
 	}
+	if (mali_acpm && (acpm_ok = hakios_acpm_init(say))) {
+		uint8_t b6 = 0;
+		uint32_t khz = 0;
+		int error = hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, &b6);
+
+		say("mali: 1: ACPM: the S2MPS18's B6CTRL (vdd_g3d) %s %#x: [7:6] = %u (%s)\n", error ? "NOT READ, error" : "is",
+		    error ? (unsigned)error : b6, (b6 >> 6) & 3, error ? "?" : (b6 >> 6) == 3 ? "always on" :
+		    (b6 >> 6) == 2 ? "the G3D power pin's" : (b6 >> 6) == 1 ? "on in standby" : "OFF");
+		error = hakios_acpm_dvfs_get(DVFS_G3D, &khz);
+		say("mali: 1: ACPM: the GPU's DVFS rate %s %u kHz\n", error ? "NOT READ, error" : "is", error ? (unsigned)error : khz);
+	}
 	return true;
 }
 
@@ -713,8 +745,26 @@ step_power(void)
 			}
 			(void)pll_say("started here");
 		}
-		say("mali: 2: KNOWN GAP: Samsung's kernel first has ACPM hand over the S2MPS18's BUCK6 (vdd_g3d: PMIC register "
-		    "0x2a, bits [7:6] = 11). Not done here: if that rail is off, the domain will not come up\n");
+		if (acpm_ok && hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, &b6_found) == 0) {
+			uint8_t now = b6_found;
+
+			if ((b6_found & B6CTRL_ON) != B6CTRL_ON) {
+				say("mali: 2: ACPM: holding BUCK6 (vdd_g3d) on as Samsung's CAL does: PMIC update type 3, register %#x, "
+				    "bits [7:6] = 11 (B6CTRL was %#x)\n", B6CTRL, b6_found);
+				b6_changed = true;
+				(void)hakios_acpm_pmic_update(3, B6CTRL, B6CTRL_ON, B6CTRL_ON);
+				if (hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, &now) == 0 && (now & B6CTRL_ON) != B6CTRL_ON) {
+					say("mali: 2: ACPM: type 3 left B6CTRL at %#x: the same through type 1, the regulator driver's\n", now);
+					(void)hakios_acpm_pmic_update(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, B6CTRL_ON, B6CTRL_ON);
+					(void)hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, B6CTRL, &now);
+				}
+			}
+			say("mali: 2: ACPM: B6CTRL %#x: BUCK6 %s\n", now, (now & B6CTRL_ON) == B6CTRL_ON ? "held on" :
+			    "NOT HELD ON (the domain may not come up, or the GPU not answer)");
+		} else {
+			say("mali: 2: no ACPM (mali_acpm=0, or it did not answer): BUCK6 (vdd_g3d) is left as it is, under the G3D "
+			    "power pin if the PMIC is set so\n");
+		}
 		say("mali: 2: writing CMU_G3D +0x148 = %#x (was %#x)\n", CMU_G3D_148_ON, rd(cmu_g3d, CMU_G3D_148));
 		powered_here = true;            /* from the first write on, the way back is g3d_off() */
 		wr(cmu_g3d, CMU_G3D_148, CMU_G3D_148_ON);
@@ -732,7 +782,15 @@ step_power(void)
 		}
 		say("mali: 2: the domain is on: status %#x\n", rd(pmu, PMU_G3D_STATUS));
 	}
-	/* never programmed here (ACPM's DVFS sets its rate), only looked at: without it running, the GPU has no clock */
+	if (acpm_ok) {
+		uint32_t khz = 0;
+		int error = hakios_acpm_dvfs_set(DVFS_G3D, DVFS_G3D_KHZ);
+
+		(void)hakios_acpm_dvfs_get(DVFS_G3D, &khz);
+		say("mali: 2: ACPM: the GPU's DVFS rate set to %u kHz (%s): it reads %u kHz\n", DVFS_G3D_KHZ,
+		    error ? "the request failed" : "asked", khz);
+	}
+	/* only looked at here (ACPM's DVFS sets its rate, or step 2 started it): without it running, the GPU has no clock */
 	if (!wait_for(cmu_g3d, CMU_G3D_PLL_CON0, PLL_STABLE, PLL_STABLE, PLL_STABLE_MS)) {
 		(void)pll_say("with the domain on");
 		say("mali: 2: PLL_G3D is not stable after %u ms: the GPU would have no clock to answer with\n", PLL_STABLE_MS);
@@ -1477,6 +1535,7 @@ hakios_mali_init(void)
 	(void)PE_parse_boot_argn("mali_fastmap", &mali_fastmap, sizeof(mali_fastmap));
 	(void)PE_parse_boot_argn("mali_trace", &mali_trace, sizeof(mali_trace));
 	(void)PE_parse_boot_argn("mali_pll", &mali_pll, sizeof(mali_pll));
+	(void)PE_parse_boot_argn("mali_acpm", &mali_acpm, sizeof(mali_acpm));
 	if (!PE_parse_boot_argn("mali", &last_step, sizeof(last_step)) || last_step == 0) {
 		return;
 	}

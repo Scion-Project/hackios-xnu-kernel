@@ -55,7 +55,7 @@ void hakios_max77705_init(void) {}
 #endif
 #ifndef HAKIOS_S6E3HA8
 void hakios_s6e3ha8_init(void) {}
-void hakios_panel_brightness(__unused int level) {}
+int hakios_panel_brightness(__unused int level) { return ENODEV; }
 #endif
 
 #ifndef HAKIOS_UFS

@@ -11,6 +11,7 @@ driver ADRENO
 driver MALI
 	file    bsd/dev/hakios.mali.c
 	file    iokit/Kernel/hakios.mali.cpp iokitcpp
+	requires EXYNOS_ACPM
 	help    the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the
 	help    IOKit service Mesa's panfrost draws through. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported
 

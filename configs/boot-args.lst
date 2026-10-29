@@ -155,6 +155,7 @@ hv_wdt_pet	k
 loader_return_after	kl
 machine_name	k
 mali	k
+mali_acpm	k
 mali_fastmap	k
 mali_flush	k
 mali_pll	k

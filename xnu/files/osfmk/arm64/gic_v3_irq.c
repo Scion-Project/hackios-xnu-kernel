@@ -373,6 +373,11 @@ gic_irq_handler(__unused void *target, __unused void *refCon, __unused void *nub
 		uint64_t iar = gic_v2 ? gic_read32(gicc_base + GICC_IAR) : __builtin_arm_rsr64("ICC_IAR1_EL1");
 		uint32_t intid = (uint32_t)(iar & (gic_v2 ? 0x3ff : 0xffffff));
 
+		if (gic_v2 && intid < 16) {
+			/* what the sender wrote before its signal, seen after we took it (Linux's smp_rmb() in arm-gic.c) */
+			__builtin_arm_dmb(DMB_ISHLD);
+		}
+
 		if (intid >= GIC_INTID_SPURIOUS_MIN) {
 			break;
 		}
@@ -537,7 +542,12 @@ gic_v2_cpu_init(int cpu)
 	gic_write32(gicc_base + GICC_APR0, 0);
 	gic_write32(gicc_base + GICC_PMR, 0xff);
 	gic_write32(gicc_base + GICC_BPR, 0);
-	gic_write32(gicc_base + GICC_CTLR, gic_read32(gicc_base + GICC_CTLR) | GICC_CTLR_ENABLE);
+	/*
+	 * Written whole, not added to: an EOImodeNS (bit 9) the firmware left set would make an end of interrupt drop its
+	 * priority only, every interrupt then staying active (the timer's would fire once). The bypass-disable bits (5, 6)
+	 * are the firmware's and kept, as Linux keeps them.
+	 */
+	gic_write32(gicc_base + GICC_CTLR, (gic_read32(gicc_base + GICC_CTLR) & ((1u << 5) | (1u << 6))) | GICC_CTLR_ENABLE);
 	__builtin_arm_dsb(DSB_SY);
 
 	ml_install_interrupt_handler(NULL, 0, NULL, gic_irq_handler, NULL);
@@ -545,6 +555,15 @@ gic_v2_cpu_init(int cpu)
 	os_atomic_store(&gic_v2_target[cpu], target, release);
 	kprintf("gic: v2, distributor %p, CPU interface %p, cpu %d is interface %d, virtual timer on PPI %d\n",
 	    (void *)gicd_base, (void *)gicc_base, cpu, __builtin_ctz(target), GIC_INTID_VTIMER);
+	/*
+	 * Two things only the hardware can say: whether the timer's PPI really is enabled (one the secure world left in
+	 * Group 0 reads as 0 from here and never arrives), and how far this core's virtual counter is from the physical one
+	 * (CNTVOFF_EL2 is EL2's to set: under a hypervisor that leaves it, cores could disagree on the time).
+	 */
+	kprintf("gic: v2, cpu %d: ISENABLER0 %#x (the timer's PPI %s), CTLR %#x; CNTPCT - CNTVCT = %lld\n", cpu,
+	    gic_read32(gicd_base + GICD_ISENABLER(0)),
+	    (gic_read32(gicd_base + GICD_ISENABLER(0)) & (1u << GIC_INTID_VTIMER)) ? "on" : "NOT ON", gic_read32(gicc_base + GICC_CTLR),
+	    (long long)(__builtin_arm_rsr64("CNTPCT_EL0") - __builtin_arm_rsr64("CNTVCT_EL0")));
 }
 
 /* Per-CPU bring-up: every processor calls this for itself, the boot processor first. */

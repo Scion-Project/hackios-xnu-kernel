@@ -593,6 +593,7 @@ struct platform {
 	uint64_t fb_base;                /* the framebuffer the firmware reports (GOP): it tells this device apart */
 	uint64_t ram_log, ram_log_size;  /* where the log is kept across a restart when there is no log partition (write_ram_log) */
 	uint64_t ufs_hc;                 /* the UFS host controller the kernel's own driver may take over (ufs_native=); 0: none */
+	uint64_t timer_hz;               /* the timer's frequency where CNTFRQ_EL0 reads 0 (the firmware never set it), 0: none */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -638,6 +639,11 @@ static const struct platform platform_starlte = {
 	 */
 	.cores = 8, .core_mpidr = (const uint32_t[]){ 0x000, 0x001, 0x002, 0x003, 0x100, 0x101, 0x102, 0x103 },
 	.small_cores = 0x0f,
+	/*
+	 * The Exynos 9810's EL3 leaves CNTFRQ_EL0 at 0 (Silicium's S5E9810Pkg: HAS_CNTFRQ_EL0_EMPTY_ERRATA, the frequency
+	 * given instead as 26 MHz; Samsung's device tree: the timer's clock-frequency 26000000), and only EL3 can write it.
+	 */
+	.timer_hz = 26000000,
 	.fb_base = 0xCC000000,
 	/*
 	 * Samsung's pstore (exynos-snapshot's log_pstore, 0xFED10000 + 32 KB), its second half: the pmsg zone, where the
@@ -916,7 +922,9 @@ gic_v2_from_fdt(const uint8_t *fdt, uint64_t *dist, uint64_t *cpu)
 		if (tok == 1) {                 /* BEGIN_NODE name */
 			at += ((uint32_t)str_len((const char *)st + at) + 1 + 3) & ~3u;
 			depth++;
-			is_v2 = 0, reg = 0, reg_len = 0;
+			if (depth == 2) {       /* (a child of the GIC's node, QEMU's v2m@, must not forget the GIC's) */
+				is_v2 = 0, reg = 0, reg_len = 0;
+			}
 		} else if (tok == 3) {          /* PROP len nameoff value */
 			uint32_t len = fdt32(st + at), nameoff = fdt32(st + at + 4);
 			const uint8_t *v = st + at + 8;
@@ -940,7 +948,6 @@ gic_v2_from_fdt(const uint8_t *fdt, uint64_t *dist, uint64_t *cpu)
 				return 1;
 			}
 			depth--;
-			is_v2 = 0, reg = 0;
 		} else if (tok == 9) {          /* END */
 			break;
 		}
@@ -1354,6 +1361,22 @@ __asm__ (
 static uint64_t smc_call(uint64_t id, uint64_t a1, uint64_t a2, uint64_t *r1, uint64_t *r2);
 static uint64_t smc_x3;
 static const struct platform *PLAT;
+
+/*
+ * The architected timer's frequency: CNTFRQ_EL0, or where the firmware left that at 0 (the Galaxy S9), the platform's
+ * own, else 26 MHz (before a platform is chosen). Everything here that turns ticks into time, and the device tree the
+ * kernel takes its timebase from, goes through this: a 0 there divided every delay and timeout of the kernel by zero.
+ */
+static uint64_t
+timer_hz(void)
+{
+	uint64_t hz = READ_SYSREG(CNTFRQ_EL0);
+
+	if (hz != 0) {
+		return hz;
+	}
+	return PLAT != NULL && PLAT->timer_hz != 0 ? PLAT->timer_hz : 26000000;
+}
 static void clean_dcache(uint64_t start, uint64_t end);
 static void flush_dcache(uint64_t start, uint64_t end);
 
@@ -1460,7 +1483,7 @@ static void usb_poll_command(void);
 static uint64_t
 seconds_since(uint64_t then)
 {
-	return (READ_SYSREG(CNTVCT_EL0) - then) / READ_SYSREG(CNTFRQ_EL0);
+	return (READ_SYSREG(CNTVCT_EL0) - then) / timer_hz();
 }
 
 /* Reverse a stretch of memory in place. */
@@ -1727,7 +1750,7 @@ ufs_hash_partition(efi_block_io *bio, const char *name, uint64_t bytes)
 		}
 	}
 	print("ufs: %s: fnv %x over %d bytes, %d ms\n", name, h, bytes,
-	    (READ_SYSREG(CNTVCT_EL0) - started) * 1000 / READ_SYSREG(CNTFRQ_EL0));
+	    (READ_SYSREG(CNTVCT_EL0) - started) * 1000 / timer_hz());
 }
 
 /* CRC-32 as GPT uses it (IEEE 802.3, reflected, 0xedb88320) */
@@ -2182,7 +2205,7 @@ hc_wr(uint32_t off, uint32_t v)
 static uint64_t
 hc_ms_since(uint64_t then)
 {
-	return (READ_SYSREG(CNTVCT_EL0) - then) * 1000 / READ_SYSREG(CNTFRQ_EL0);
+	return (READ_SYSREG(CNTVCT_EL0) - then) * 1000 / timer_hz();
 }
 
 /* UEFI's list in, and running: what UEFI's driver needs to read or write */
@@ -2524,7 +2547,7 @@ block_io2_probe(efi_handle h, efi_block_io *bio)
 	efi_status (EFIAPI *check_event)(void *) = (efi_status (EFIAPI *)(void *))BS->check_event;
 	static efi_block_io2_token tokens[8];
 	efi_block_io2 *bio2 = NULL;
-	uint64_t bs = bio->media->block_size, t0, t_sync, t_issue = 0, t_all, freq = READ_SYSREG(CNTFRQ_EL0);
+	uint64_t bs = bio->media->block_size, t0, t_sync, t_issue = 0, t_all, freq = timer_hz();
 	uint64_t returned_done = 0, pending, polls = 0;
 	efi_status s;
 
@@ -3646,7 +3669,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	/* --- device tree ---------------------------------------------------- */
 	const struct platform *plat = PLAT;
 	struct dt_writer w = { .base = (uint8_t *)dt_pa, .cur = (uint8_t *)dt_pa, .end = (uint8_t *)(dt_pa + dt_max), .depth = 0 };
-	uint64_t cntfrq = READ_SYSREG(CNTFRQ_EL0);
+	uint64_t cntfrq = timer_hz();
 	uint64_t ranges[3] = { 0, plat->io_base, plat->io_size };
 	uint64_t reg2[2];
 	uint8_t seed[64];
@@ -3809,6 +3832,14 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	}
 
 	if (more_cores) {
+		/*
+		 * The cores of the boot core's own kind first (both small or both not), then the others: the kernel takes the
+		 * first cpus=N, and on the Galaxy S9 a fourth core by nearness alone was an Exynos M3, an ARMv8.0 core under a
+		 * kernel that had said ARMv8.2 from the A55 it boots on.
+		 */
+		int boot_small = (int)((plat->small_cores >> boot_core) & 1);
+
+		for (int pass = 0; pass < 2; pass++)
 		for (int distance = 1; distance < plat->cores; distance++) {
 			for (int side = 0; side < 2; side++) {
 				int core = side == 0 ? boot_core + distance : boot_core - distance;
@@ -3816,6 +3847,9 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 				int64_t state;
 
 				if (core < 0 || core >= plat->cores || (mpidr = core_mpidr(plat, core)) == this_mpidr) {
+					continue;
+				}
+				if (((int)((plat->small_cores >> core) & 1) == boot_small) != (pass == 0)) {
 					continue;
 				}
 				state = psci_call(PSCI_AFFINITY_INFO, mpidr, 0, 0);
@@ -4150,7 +4184,7 @@ usb_wait(uint8_t endpoint)
 {
 	/* static: a long transfer is many short waits, and the watchdog must be fed across them */
 	static uint64_t last_pet;
-	uint64_t freq = READ_SYSREG(CNTFRQ_EL0), began = READ_SYSREG(CNTVCT_EL0);
+	uint64_t freq = timer_hz(), began = READ_SYSREG(CNTVCT_EL0);
 
 	for (;;) {
 		uint32_t msg = UsbDeviceEventNoEvent;
@@ -4767,7 +4801,7 @@ efi_main(efi_handle image, efi_system_table *st)
 		print("payload: none in memory, and %s\n", volume_payload_note);
 	}
 	print("CurrentEL=%x MIDR=%x MMFR0=%x CNTFRQ=%d image=%x\n", READ_SYSREG(CurrentEL) >> 2, READ_SYSREG(MIDR_EL1),
-	    READ_SYSREG(ID_AA64MMFR0_EL1), READ_SYSREG(CNTFRQ_EL0), (uint64_t)(uintptr_t)&__ImageBase);
+	    READ_SYSREG(ID_AA64MMFR0_EL1), READ_SYSREG(CNTFRQ_EL0) /* the register itself */, (uint64_t)(uintptr_t)&__ImageBase);
 
 	PLAT = &platform_qemu_virt;
 	if (EFI_ERROR(BS->locate_protocol(&gop_guid, NULL, (void **)&GOP)) || GOP->mode == NULL ||

@@ -18,6 +18,7 @@
  */
 #include <kern/clock.h>
 #include <libkern/libkern.h>
+#include <mach/mach_time.h>
 #include <mach/mach_types.h>
 #include <sys/hakios.exynos_hsi2c.h>
 
@@ -59,6 +60,16 @@ extern void delay(int usec);
 #define CMU_GATE_MANUAL         (1u << 20)
 #define CMU_GATE_ON             (1u << 21)
 #define USI_MODE_I2C            0x4
+
+/* a moment `us` microseconds from now, by the clock: a loop bounded by it spins, where delay() would sleep a tick */
+static uint64_t
+deadline_us(uint64_t us)
+{
+	uint64_t interval;
+
+	nanoseconds_to_absolutetime(us * NSEC_PER_USEC, &interval);
+	return mach_absolute_time() + interval;
+}
 
 static inline uint32_t
 rd(vm_offset_t base, uint32_t off)
@@ -171,7 +182,8 @@ hakios_hsi2c_message(struct hakios_hsi2c *bus, uint8_t addr, bool reading, uint8
 {
 	vm_offset_t r = bus->regs;
 	uint32_t trigger = len < 8 ? len : 8, done = 0, status = 0;
-	int waited;
+	uint64_t deadline;
+	bool late = false;
 
 	bus->transfers++;
 	wr(r, INT_STAT, rd(r, INT_STAT));
@@ -182,8 +194,8 @@ hakios_hsi2c_message(struct hakios_hsi2c *bus, uint8_t addr, bool reading, uint8
 	wr(r, AUTO_CONF, len | (reading ? AUTO_READ : 0) | (stop ? AUTO_STOP : 0));
 	wr(r, AUTO_CONF, rd(r, AUTO_CONF) | AUTO_RUN);
 
-	/* a second at most, in steps of a microsecond and some */
-	for (waited = 0; waited < 1000000; waited++) {
+	/* a second at most, by the clock */
+	for (deadline = deadline_us(1000000);;) {
 		uint32_t fifo = rd(r, FIFO_STAT);
 
 		status = rd(r, INT_STAT);
@@ -207,13 +219,15 @@ hakios_hsi2c_message(struct hakios_hsi2c *bus, uint8_t addr, bool reading, uint8
 				break;
 			}
 		}
-		delay(1);
+		if (mach_absolute_time() > deadline) {
+			late = true;
+			break;
+		}
 	}
 	/* after a STOP: the master no longer busy (the target may stretch the clock); without one it holds the bus */
-	for (int idle = 0; stop && idle < 100000 && (rd(r, TRANS_STATUS) & MASTER_BUSY); idle++) {
-		delay(1);
+	for (deadline = deadline_us(100000); stop && (rd(r, TRANS_STATUS) & MASTER_BUSY) && mach_absolute_time() < deadline;) {
 	}
-	if ((status & INT_ERRORS) || waited >= 1000000) {
+	if ((status & INT_ERRORS) || late) {
 		bus->errors++;
 		bus->last_error = (status & INT_ERRORS) ? (status & INT_ERRORS) : 1;
 		hakios_hsi2c_reset(bus);
