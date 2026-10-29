@@ -26,7 +26,7 @@ driver BATTGUARD
 	help    the run handed back to the loader before the battery is flat (battery_stop=<percent>)
 
 standard bsd/dev/hakios.scfb_battery.c
-	help    the phone's battery under AVF, as the Scion app writes it into the shared framebuffer (patch 1403)
+	help    the phone's battery under AVF, as the Scion app writes it into the shared framebuffer (scfb.addr=)
 
 driver MAX77705
 	file    bsd/dev/hakios.max77705.c

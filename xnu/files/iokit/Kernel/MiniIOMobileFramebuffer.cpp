@@ -41,7 +41,6 @@ extern struct vc_info vinfo;            /* the boot framebuffer, as the text con
 #include "MiniIOSurface.h"
 
 extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
-extern "C" void hakios_panel_brightness(int level);      /* drivers/gpu/hakios.s6e3ha8.c, or nothing (hakios.stubs.c) */
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */
 enum {
@@ -230,7 +229,6 @@ class IOMobileFramebuffer : public IOService
 	OSDeclareDefaultStructors(IOMobileFramebuffer);
 
 public:
-	virtual IOReturn setProperties(OSObject * properties) APPLE_KEXT_OVERRIDE;
 	IOLock *        fLock;
 	uint8_t *       fBase;                  /* the boot framebuffer: the panel */
 	uint32_t        fPanelWidth, fPanelHeight, fRowBytes;
@@ -391,76 +389,6 @@ IOMobileFramebuffer::publishModes(void)
 	OSSafeReleaseNULL(horizontal);
 	OSSafeReleaseNULL(vertical);
 	OSSafeReleaseNULL(color);
-}
-
-/*
- * What iOS sets on the display service -- its brightness, among other things, on a phone whose panel this kernel can
- * dim (the Galaxy S9: hakios_panel_brightness(), drivers/gpu/hakios.s6e3ha8.c). Which key iOS 16's CoreBrightness
- * uses for an OLED iPhone's display is not known here yet: the first calls are said in the log, key by key, with the
- * value of a number, and a key named "brightness" (any case) with a number from 0 to 1 or to 255 is taken as the
- * brightness. Nothing is kept in the registry, and what is not a brightness is refused as IOService refuses it.
- */
-static bool
-is_brightness(const char * key)
-{
-	static const char want[] = "brightness";
-
-	for (unsigned i = 0; i < sizeof(want); i++) {
-		char c = key[i];
-
-		if (c >= 'A' && c <= 'Z') {
-			c = (char)(c - 'A' + 'a');
-		}
-		if (c != want[i]) {
-			return false;
-		}
-	}
-	return true;
-}
-
-IOReturn
-IOMobileFramebuffer::setProperties(OSObject * properties)
-{
-	OSDictionary * dict = OSDynamicCast(OSDictionary, properties);
-	OSCollectionIterator * keys;
-	OSObject * next;
-	static unsigned said;
-	char who[32] = "?";
-	bool taken = false;
-
-	if (dict == NULL) {
-		return kIOReturnBadArgument;
-	}
-	keys = OSCollectionIterator::withCollection(dict);
-	if (keys == NULL) {
-		return kIOReturnNoMemory;
-	}
-	proc_selfname(who, sizeof(who));
-	while ((next = keys->getNextObject()) != NULL) {
-		const OSSymbol * key = OSDynamicCast(OSSymbol, next);
-		OSNumber * number = key ? OSDynamicCast(OSNumber, dict->getObject(key)) : NULL;
-
-		if (key == NULL) {
-			continue;
-		}
-		if (said < 64) {
-			said++;
-			if (number != NULL) {
-				IOLog("IOMobileFramebuffer: %s sets %s = %llu\n", who, key->getCStringNoCopy(), number->unsigned64BitValue());
-			} else {
-				IOLog("IOMobileFramebuffer: %s sets %s (%s)\n", who, key->getCStringNoCopy(),
-				    dict->getObject(key) ? dict->getObject(key)->getMetaClass()->getClassName() : "?");
-			}
-		}
-		if (number != NULL && is_brightness(key->getCStringNoCopy())) {
-			uint64_t value = number->unsigned64BitValue();
-
-			hakios_panel_brightness(value <= 1 ? (int)(value * 255) : value > 255 ? 255 : (int)value);
-			taken = true;
-		}
-	}
-	keys->release();
-	return taken ? kIOReturnSuccess : kIOReturnUnsupported;
 }
 
 bool

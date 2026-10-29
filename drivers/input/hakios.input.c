@@ -233,6 +233,7 @@ hakios_input_init(void)
 	hakios_s6sy761_init();
 	hakios_s6e3ha8_init();
 	hakios_battery_init();
+	hakios_scfb_battery_init();
 	hakios_max77705_init();
 	hakios_ufs_init();
 	hakios_net_init();

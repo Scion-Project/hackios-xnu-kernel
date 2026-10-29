@@ -1,5 +1,5 @@
 /*
- * The battery under AVF (patch 1403): the phone's own, as Android sees it, for iOS's battery gauge.
+ * The battery under AVF: the phone's own, as Android sees it, for iOS's battery gauge.
  *
  * The Scion app writes Android's battery state (BatteryManager: the level, charging, the charger,
  * voltage, current, temperature, charge counter, cycles) into a block of the shared framebuffer's
