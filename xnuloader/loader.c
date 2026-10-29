@@ -600,6 +600,8 @@ struct platform {
 	uint64_t exynos_wdt;             /* Samsung Exynos: the cluster watchdog armed for the run (exynos_wdt_start), 0: none */
 	uint64_t exynos_wdt_other;       /* ... the other cluster's, stopped */
 	uint32_t exynos_wdt_pmu_bit;     /* ... its bit in recovery_pmu's MASK_WDT_RESET_REQUEST and DISABLE_WDT */
+	uint32_t parked_cores;           /* a bit for each core the boot loader leaves running in a loop of its own: never the kernel's */
+	uint8_t affinity_unreliable;     /* PSCI AFFINITY_INFO says "on" of cores that are off: CPU_ON's answer is what counts */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -673,6 +675,14 @@ static const struct platform platform_starlte = {
 	 * (watchdog_cl0@10050000), which S-Boot also leaves running, is stopped.
 	 */
 	.exynos_wdt = 0x10060000, .exynos_wdt_other = 0x10050000, .exynos_wdt_pmu_bit = 23,
+	/*
+	 * Seen on the phone (29 October 2026): S-Boot powers core 1 up and parks it before the hand-over (its log: "Powers up
+	 * core(1)", CPU_SEQ_STATUS cpu0 and cpu1 on, cpu2-7 off). CPU_ON for it then answers 0 (not ALREADY_ON) and the core
+	 * never comes; and AFFINITY_INFO answers 0 ("on") of cores 2-7, which are off. So core 1 is never the kernel's, and
+	 * that answer is not taken as a no.
+	 */
+	.parked_cores = 0x2,
+	.affinity_unreliable = 1,
 };
 
 static const struct platform platform_frankel = {
@@ -3841,8 +3851,15 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	block_enabled = 0;
 	for (const char *c = pi.cmdline; *c; c++) {
 		if (starts_with(c, "bootcpu=") && (c == pi.cmdline || c[-1] == ' ') && c[8] >= '0' && c[8] <= '7') {
-			if (c[8] - '0' < PLAT->cores) {
-				kernel_mpidr = core_mpidr(PLAT, c[8] - '0');
+			int want = c[8] - '0';
+
+			/* a core the boot loader keeps (parked_cores) never comes when asked: the next one instead */
+			while (want < PLAT->cores && ((PLAT->parked_cores >> want) & 1)) {
+				print("bootcpu=%d: that core is the boot loader's (parked); core %d instead\n", want, want + 1);
+				want++;
+			}
+			if (want < PLAT->cores) {
+				kernel_mpidr = core_mpidr(PLAT, want);
 			}
 		}
 		more_cores |= (starts_with(c, "cpus=") || starts_with(c, "cpumask=")) && (c == pi.cmdline || c[-1] == ' ');
@@ -4229,8 +4246,12 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 				if (((int)((plat->small_cores >> core) & 1) == boot_small) != (pass == 0)) {
 					continue;
 				}
+				if ((plat->parked_cores >> core) & 1) {
+					print("core %x is the boot loader's (parked): not the kernel's\n", mpidr);
+					continue;
+				}
 				state = psci_call(PSCI_AFFINITY_INFO, mpidr, 0, 0);
-				if (state == 1 || state == PSCI_NOT_SUPPORTED) {
+				if (state == 1 || state == PSCI_NOT_SUPPORTED || (state == 0 && plat->affinity_unreliable)) {
 					cpu_mpidr[cpu_count++] = mpidr;
 				} else if (state >= 0) {
 					print("core %x is not off (the firmware says %d): not the kernel's to take\n", mpidr, (uint64_t)state);
