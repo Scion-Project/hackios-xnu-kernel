@@ -43,6 +43,7 @@ void hakios_virtio_input_init(void);   /* boot-arg virtio_input=1: QEMU's virtio
 void hakios_goodix_init(void);         /* boot-arg touchscreen=1: the phone's Goodix or FocalTech touch screen */
 void hakios_buttons_init(void);        /* boot-arg buttons=1: the phone's power and volume keys */
 void hakios_exynos_keys_init(void);    /* boot-arg exynos_keys=1: the Galaxy S9's keys (GPIO) */
+void hakios_s6sy761_init(void);        /* boot-arg s6sy761=1: the Galaxy S9's touch screen (I2C) */
 void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage, read only, through the loader (ufs_shared_pa=) */
 void hakios_ufs_report(const char *when); /* where reading the storage has spent its time so far */
 bool hakios_ufs_dev(dev_t dev);           /* one of the storage's devices */

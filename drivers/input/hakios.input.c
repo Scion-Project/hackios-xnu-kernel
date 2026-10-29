@@ -230,6 +230,7 @@ hakios_input_init(void)
 	hakios_goodix_init();
 	hakios_buttons_init();
 	hakios_exynos_keys_init();
+	hakios_s6sy761_init();
 	hakios_battery_init();
 	hakios_ufs_init();
 	hakios_net_init();

@@ -118,6 +118,14 @@ List the partitions and their sizes first: `adb shell ls -l /dev/block/by-name`.
 Then: `devices/starlte/mkimage.sh cpus=8 bootcpu=4 exynos_keys=1 ufs=2 root_apfs=ufs_NAME`. Nothing writes to the flash: `ufs_write=1` is for the
 POCO's `darwin` partition only, and the loader refuses any other.
 
+## Touch
+
+`drivers/input/hakios.s6sy761.c` (`s6sy761=1`, on by default here). Its first run on the phone should go one step at a
+time: `s6sy761_steps=1` only reads (the bus's clock divider among other things: if it says the HSI2C's input clock is not
+200 MHz, `s6sy761_ipclk=` corrects the timing); 4 asks the chip its boot status, which should be 0x20 (its firmware
+running, powered as the boot loader left it); 6 is touch. The coordinates are the chip's own range (its panel
+information, else 0-4095 on both axes), spread over the whole panel, which is where the iPhone's picture is drawn.
+
 ## What comes next
 
 | Step | How |
@@ -125,5 +133,4 @@ POCO's `darwin` partition only, and the loader refuses any other.
 | A longer log | 16 KB of pstore holds a panic but not a whole boot: a partition of the phone's, or USB |
 | Storage, writing | /private/var kept between runs needs a writable partition of the port's own (the POCO's `darwin`) |
 | Buttons | GPIO keys: a driver, the pins from `gpio_keys` |
-| Touch | S6SY761 on HSI2C: an I2C controller driver and the touch protocol (the WoA port's are BSD and GPL; facts only) |
 | The M3s | the ISA question above, then a loader that numbers two clusters |

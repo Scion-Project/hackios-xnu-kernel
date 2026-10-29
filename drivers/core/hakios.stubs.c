@@ -47,6 +47,9 @@ void hakios_buttons_init(void) {}
 #ifndef HAKIOS_EXYNOS_KEYS
 void hakios_exynos_keys_init(void) {}
 #endif
+#ifndef HAKIOS_S6SY761
+void hakios_s6sy761_init(void) {}
+#endif
 
 #ifndef HAKIOS_UFS
 void hakios_ufs_init(void) {}

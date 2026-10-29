@@ -22,3 +22,8 @@ driver EXYNOS_KEYS
 	file    bsd/dev/hakios.exynos_keys.c
 	help    the Galaxy S9's power, volume and Bixby keys, pins of the Exynos 9810's ALIVE GPIO block (exynos_keys=1).
 	help    Bixby is the home button
+
+driver S6SY761
+	file    bsd/dev/hakios.s6sy761.c
+	help    the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this
+	help    file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz)
