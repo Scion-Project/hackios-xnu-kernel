@@ -16,10 +16,10 @@
 | Part | State | |
 |---|---|---|
 | display | partly | the panel through UEFI's framebuffer (1440 x 2960 at 0xCC000000): written, not yet seen on the phone |
-| cpu | partly | the four Cortex-A55s (cpus=4); the M3 cluster is left off: written, not yet seen on the phone |
+| cpu | partly | the four A55s (cpus=4), all eight with bootcpu=4 cpus=8 (Carbon starts the M3s): written, not yet seen |
 | touch | no | Samsung S6SY761 on HSI2C: no driver yet |
-| buttons | no | GPIO keys (Silicium's KeypadDeviceLib has the pins): no driver yet |
-| storage | no | Exynos UFS: no driver yet; the root is a RAM disk |
+| buttons | partly | power, volume, Bixby as home (exynos_keys=1): written, not yet seen on the phone |
+| storage | partly | UFS read through the loader and Silicium's UEFI (ufs=2): written, not yet seen on the phone |
 | gpu | no | Mali-G72 MP18: no driver |
 | audio | no |  |
 | battery | no |  |

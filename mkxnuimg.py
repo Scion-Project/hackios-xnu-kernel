@@ -18,7 +18,7 @@ The device and what it takes are set in the environment:
   UEFI_TARGET   Mu-Silicium device name: redwood (default) or starlte    UEFI_FD, DTB   files to use instead
   FD_BASE, FD_SIZE, PAYLOAD_BASE    addresses from its UEFI port's memory map (defaults: the device's, in DEVICES below)
 """
-import argparse, gzip, os, subprocess, sys
+import argparse, gzip, os, struct, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MU = os.path.join(HERE, 'Mu-Silicium')
@@ -29,7 +29,9 @@ def env_int(name, default):
 DEVICES = {
     'redwood': dict(fd_base=0x9FD00000, gzip=True, append_dtb=True, dtb_arg=False),
     # (Samsung's boot loader reads the device tree from the phone's own dtb partition: none goes in the image)
-    'starlte': dict(fd_base=0x8F000000, gzip=False, append_dtb=False, dtb_arg=False),
+    # (... and the arm64 header's image size made the whole image's, the payload's included: a boot loader that puts
+    # the device tree or anything else past the image it was told of would otherwise put it over the payload)
+    'starlte': dict(fd_base=0x8F000000, gzip=False, append_dtb=False, dtb_arg=False, header_size=True),
 }
 TARGET = os.environ.get('UEFI_TARGET') or 'redwood'
 if TARGET not in DEVICES:
@@ -76,6 +78,10 @@ fd = open(parts['fd'], 'rb').read()
 assert len(fd) == FD_SIZE, hex(len(fd))
 
 blob = shim + fd
+if DEV.get('header_size') and shim[56:60] == b'ARMd':
+    size = len(blob) + (os.path.getsize(args.payload) + 0x1000 if args.payload else 0)
+    shim = shim[:16] + struct.pack('<Q', (size + 0xFFFF) & ~0xFFFF) + shim[24:]
+    blob = shim + fd
 if args.payload:
     data = open(args.payload, 'rb').read()
     # the payload file is a complete "XNUP" container (see xnuloader/mkpayload.py)

@@ -49,28 +49,33 @@ The device tree is Samsung's own (Silicium's `Resources/DTBs/starlte.dts`). Pull
 [ExyHyperBrick's kernel](https://github.com/ExyHyperBrick/android_kernel_samsung_exynos9810) (GPL-2.0: read for facts, never
 copied into this tree) are the references for the drivers still to write.
 
-## Why only four cores
+## The cores
 
-The loader gives the kernel the four A55s. The M3s are a second cluster in MPIDR (0x100-0x103), which the loader's
-`core_shift` cannot number. They also implement ARMv8.0, while the A55s implement 8.2 like the iPhone X's A11.
+Cores 0-3 are Cortex-A55s (MPIDR 0x000-0x003). Cores 4-7 are Exynos M3s (0x100-0x103, 2.7 GHz), which Carbon's PSCI
+starts. The loader numbers them through `platform_starlte.core_mpidr`. The default configuration (`cpus=4`) gives the kernel
+the four A55s.
 
-iOS 16.5's own code does not need 8.1 to start with. A count over three files of the iPhone X's shared cache (57.6 million
-words) found 7088 `LDAXR`s and 7208 `STLXR`s, the 8.0 way of doing atomics, while `CAS`/`LDADD`/`SWP` turn up no more
-often than random bytes would. What remains is code that asks which features the processor has (`hw.optional.arm.FEAT_*`)
-and then uses them. With the M3s in, the kernel must answer for the weakest core: no LSE, no FP16. Carbon already starts
-both clusters.
+The M3s implement ARMv8.0, while the A55s and the iPhone X's A11 implement 8.2. That does not keep iOS off them: a count
+over three files of the iPhone X's shared cache (57.6 million words) found 7088 `LDAXR`s and 7208 `STLXR`s, the 8.0 way of
+doing atomics, while `CAS`/`LDADD`/`SWP` turn up no more often than random bytes would. What remains is code that asks
+which features the processor has (`hw.optional.arm.FEAT_*`) and then uses them. XNU answers from the core it boots on, so
+**a kernel with the M3s boots on one: `bootcpu=4 cpus=8`.** It then reports no more than every core can do, runs on
+the big cores first, and leaves core 0 to the loader, which is also what the storage needs (below).
 
 ## Build
 
 ```sh
 make starlte_defconfig && make kernel        # the common kernel, no driver of another phone (configs/starlte.config)
-make loader
-python3 xnuloader/mkpayload.py -o payload.bin kernel=hakios-kernel ramdisk=userland/root.apfs --cmdline "$(tools/hakios-config.py args)"
-UEFI_TARGET=starlte python3 mkxnuimg.py -p payload.bin -o xnu-starlte.img
+make loader                                  # with the iPhone identity from your own IPSW
+devices/starlte/mkimage.sh -s 120            # xnu-starlte.img: the shim, the UEFI, the loader, the kernel, the small root
+devices/starlte/mkimage.sh -s 300 cpus=8 bootcpu=4 exynos_keys=1     # the same with other boot-arguments
 ```
 
-`mkxnuimg.py` takes the UEFI image from `Mu-Silicium/` when there is one (`devices/starlte/uefi/apply.sh`, then
-`cd Mu-Silicium && python3 build_uefi.py -d starlte -r RELEASE`), else from `prebuilt/`.
+Samsung has no `fastboot boot`, and Silicium's UEFI has no USB gadget, so there is no resident loader to send runs to as
+on the POCO. Each run is an image, and the run returns to the loader by itself after `-s` seconds. The loader then keeps
+the log in RAM and restarts the phone. The UEFI comes from `prebuilt/` (built from source, open throughout:
+`prebuilt/README.md`), or from `Mu-Silicium/` when one is built here (`devices/starlte/uefi/apply.sh`, then
+`build_uefi.py -d starlte -r RELEASE`).
 
 ## On the phone
 
@@ -99,7 +104,7 @@ lays the zones out differently: `cat /sys/module/ramoops/parameters/*` and the `
 ## Storage: iOS from the phone's flash
 
 There is no Exynos UFS driver in the kernel, and none is needed for reading. Silicium's UEFI drives the UFS and stays
-resident. With `ufs=2 bootcpu=3`, the loader keeps core 0 and reads for the kernel, which runs on cores 1-3: the same
+resident. With `ufs=2 bootcpu=4 cpus=8`, the loader keeps core 0 and reads for the kernel, which runs on the other seven: the same
 service the POCO uses (`drivers/storage/hakios.ufs.c`). Every GPT partition becomes `/dev/ufs_NAME`, read-only, and
 `root_apfs=ufs_NAME` mounts iOS's root volume from one.
 
@@ -110,7 +115,7 @@ decides what is lost:
 - `USERDATA`: Android's data is wiped.
 
 List the partitions and their sizes first: `adb shell ls -l /dev/block/by-name`.
-Then: `--cmdline "cpus=4 ufs=2 bootcpu=3 root_apfs=ufs_NAME"`. Nothing writes to the flash: `ufs_write=1` is for the
+Then: `devices/starlte/mkimage.sh cpus=8 bootcpu=4 exynos_keys=1 ufs=2 root_apfs=ufs_NAME`. Nothing writes to the flash: `ufs_write=1` is for the
 POCO's `darwin` partition only, and the loader refuses any other.
 
 ## What comes next
