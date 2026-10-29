@@ -211,6 +211,8 @@ modem_wait	k
 modem_wda_off	k
 net_names	k
 net_trace	k
+panel	k
+panel_brightness	k
 pmic	k
 pmic_list	k
 privs	k

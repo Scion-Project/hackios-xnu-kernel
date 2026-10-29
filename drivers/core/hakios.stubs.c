@@ -53,6 +53,10 @@ void hakios_s6sy761_init(void) {}
 #ifndef HAKIOS_MAX77705
 void hakios_max77705_init(void) {}
 #endif
+#ifndef HAKIOS_S6E3HA8
+void hakios_s6e3ha8_init(void) {}
+void hakios_panel_brightness(__unused int level) {}
+#endif
 
 #ifndef HAKIOS_UFS
 void hakios_ufs_init(void) {}
