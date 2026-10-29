@@ -22,7 +22,7 @@ has to be in `docs/boot-args.md` (`python3 tools/boot-args.py --check`).
 | Directory | Drivers | Boot arguments | What it is |
 |---|---|---|---|
 | `input/` | `hakios.goodix.c`, `hakios.input.c`, `hakios.buttons.c`, `hakios.virtio_input.c` | `touchscreen=` | the touch controller, the event queue behind `/dev/hakios-touch`, the buttons, QEMU's virtio input |
-| `storage/` | `hakios.ufs.c`, `hakios.ufshc.c/.h`, `hakios.sparse.c`, `hakios.image.c`, `hakios.apfs_check.c`, `hakios.virtio_blk.c` | `ufs=`, `ufs_write=`, `ufs_native=` | the phone's flash (UFS), the sparse and image devices, the checks of the APFS read path, QEMU's virtio-blk. **The only code of the kernel that may write to the phone**: see `tools/provenance.allow` |
+| `storage/` | `hakios.ufs.c`, `hakios.ufshc.c/.h`, `hakios.sparse.c`, `hakios.image.c`, `hakios.apfs_check.c`, `hakios.virtio_blk.c` | `ufs=`, `ufs_write=`, `ufs_native=`, `ufs_native_soc=`, `ufs_native_write=` | the phone's flash (UFS): through the loader, or the kernel's own UFSHCI driver with per-SoC hooks (Qualcomm, Exynos; QEMU's PCI UFS as the test bench); the sparse and image devices, the checks of the APFS read path, QEMU's virtio-blk. **The only code of the kernel that may write to the phone**: see `tools/provenance.allow` |
 | `gpu/` | `hakios.adreno.c`, `hakios.gpu.cpp` | `gpu=`, `adreno=` | the Adreno GPU bring-up and the IOKit object user space talks to |
 | `camera/` | `hakios.camera.c`, `hakios.torch.c` | `cam=`, `torch=` | the camera sensors and ISP interface, the flashlight LED |
 | `haptic/` | `hakios.haptic.c` | `haptic=` | the vibration motor |

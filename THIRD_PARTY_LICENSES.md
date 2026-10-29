@@ -40,6 +40,44 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 | Procursus / Sileo packages | `tools/mk-jb.sh` | Procursus team | their own licenses |
 | Phone firmware (GPU, Wi-Fi, DSP, modem, haptics, cameras) | `devices/redwood/pull-firmware.sh` | Qualcomm / Xiaomi | vendor's — user's own device |
 
+## Read for reference, not copied
+
+| Component | Read for | Origin | License | How it was used |
+|---|---|---|---|---|
+| ShengUfs | `drivers/storage/hakios.ufshc.c/.h` | [UniXNU/ShengUfs](https://github.com/UniXNU/ShengUfs) at `f2d6a4a72f5e7be7d2c9b78eba16cf373868fa30`, Copyright (c) 2026, blu-sharky | BSD-2-Clause (files marked BSD-2-Clause-Patent) | compared with this driver item by item (`hakios.ufshc.h`); the behaviour adopted was written again here, no line of it is in this tree. Its notice, below, goes with it all the same |
+| Samsung's Exynos 9810 kernel (the Galaxy S9's) | the S9's UFS facts in `hakios.ufshc.c` | Samsung, Linux | GPL-2.0 | facts only (addresses, register offsets, descriptor layout, quirks), each named with its file there; no code |
+| galaxy-s9plus-mainline-linux | the same, cross-checked | [SheroAbi/galaxy-s9plus-mainline-linux](https://github.com/SheroAbi/galaxy-s9plus-mainline-linux) at `bcee6014fc2e44a4c4f1c34bca0a880d4b543ec3` (`src/ufs/ufs-exynos9810.c`, `src/mainline-dts/exynos9810-star2lte.dts`) | GPL-2.0 | facts only (the protector's descriptor type and PRDT entry size, 4 KB entries, OCS 7 for device errors, LUN 0's layout), named in `hakios.ufshc.c`; no code |
+
+ShengUfs's notice:
+
+```
+BSD 2-Clause License
+
+Copyright (c) 2026, blu-sharky
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 ## How to rebuild the inventory
 
 - Tracked non-text/binary files: `git ls-files -z | xargs -0 file --mime-type | grep -v text/`

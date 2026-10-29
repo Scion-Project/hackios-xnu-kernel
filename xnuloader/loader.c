@@ -3625,8 +3625,10 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		block_probe_requested |= starts_with(c, "ufs_probe=1") && (c == pi.cmdline || c[-1] == ' ');
 		block_write_requested |= starts_with(c, "ufs_write=1") && (c == pi.cmdline || c[-1] == ' ') &&
 		    (c[11] == 0 || c[11] == ' ');
+		/* 1-3: the kernel's list beside UEFI's, in this loader's area; 4 and 5 are the kernel's alone (it has the
+		 * controller for the run, and this loader serves no storage then: drivers/storage/hakios.ufshc.c, own mode) */
 		hc_requested |= starts_with(c, "ufs_native=") && (c == pi.cmdline || c[-1] == ' ') && c[11] >= '1' &&
-		    c[11] <= '9';
+		    c[11] <= '3';
 	}
 	if (hc_requested && HC_PA == 0) {
 		print("ufs: ufs_native= refused: platform %s has no UFS host controller for the kernel's own driver\n", PLAT->name);
