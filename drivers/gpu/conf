@@ -8,6 +8,12 @@ driver ADRENO
 	help    the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and
 	help    the window server draw through (gpu=1, adreno_keep=1). Needs the GPU's firmware from the phone (fw-gpu/)
 
+driver MALI
+	file    bsd/dev/hakios.mali.c
+	file    iokit/Kernel/hakios.mali.cpp iokitcpp
+	help    the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the
+	help    IOKit service Mesa's panfrost draws through. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported
+
 standard bsd/dev/hakios.vgpu.c
 	help    the virtio GPU (AVF): the 2D display path, the cursor queue and the device's interrupts (patches 1202, 1300-1305)
 

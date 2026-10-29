@@ -154,6 +154,9 @@ haptic_effect	k
 hv_wdt_pet	k
 loader_return_after	kl
 machine_name	k
+mali	k
+mali_fastmap	k
+mali_trace	k
 md0	k
 membench	k
 metal	ku

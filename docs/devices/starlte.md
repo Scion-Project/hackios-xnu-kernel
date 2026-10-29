@@ -20,7 +20,7 @@
 | touch | no | Samsung S6SY761 on HSI2C: no driver yet |
 | buttons | partly | power, volume, Bixby as home (exynos_keys=1): written, not yet seen on the phone |
 | storage | partly | UFS read through the loader and Silicium's UEFI (ufs=2): written, not yet seen on the phone |
-| gpu | no | Mali-G72 MP18: no driver |
+| gpu | partly | Mali-G72 MP18 (mali=N, nine steps; HakiosMali for Mesa's panfrost): written, not yet run on the phone |
 | audio | no |  |
 | battery | no |  |
 | wifi | no | BCM4361 on PCIe |

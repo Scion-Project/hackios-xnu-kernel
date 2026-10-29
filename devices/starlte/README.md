@@ -41,7 +41,7 @@ S-Boot (Samsung's, unlocked)  -->  boot image on RECOVERY  -->  HakiOS UEFI     
 | Touch | Samsung S6SY761 (`sec,sec_ts`) at 0x48 on HSI2C 0x104B0000 (SPI 0x194) | device tree `touchscreen@48` |
 | Buttons | GPIO keys: power, volume up and down, Bixby | device tree `gpio_keys`; Silicium `KeypadDeviceLib` |
 | Storage | UFS at 0x11120000 (UniPro 0x11130000) | device tree `ufs@0x11120000`; Silicium `PlatformUfsLib` |
-| GPU | Mali-G72 MP18 at 0x17500000 | device tree `mali@17500000` |
+| GPU | Mali-G72 MP18 at 0x17500000 (GPU_ID >> 16 = 0x6221); SPI 282/281/283 (job, MMU, GPU); power domain `pd-embedded_g3d` (PMU 0x14064040/44); PLL_G3D in CMU_G3D 0x17400000 | device tree `mali@17500000`; ExyHyperBrick's kernel (G3D CAL) |
 
 The device tree is Samsung's own (Silicium's `Resources/DTBs/starlte.dts`). Pull your phone's
 (`adb shell su -c 'cat /sys/firmware/fdt'`) and compare before believing an address from it. The
@@ -117,6 +117,27 @@ decides what is lost:
 List the partitions and their sizes first: `adb shell ls -l /dev/block/by-name`.
 Then: `devices/starlte/mkimage.sh cpus=8 bootcpu=4 exynos_keys=1 ufs=2 root_apfs=ufs_NAME`. Nothing writes to the flash: `ufs_write=1` is for the
 POCO's `darwin` partition only, and the loader refuses any other.
+
+## The GPU
+
+`drivers/gpu/hakios.mali.c` and `hakios.mali.cpp` (`CONFIG_HAKIOS_MALI`, built in): HakiOS's Mali-G52 driver of the
+Infinix Hot 20 ([hakios-mt6768](https://github.com/oosexgang/hakios-mt6768), `redwood_mali.c` and `RedwoodMali.cpp`),
+with MediaTek's power and clocks replaced by the Exynos 9810's. `mali=N` makes the first N of nine steps, each said in
+the log before it is made, and nothing without it:
+
+| Step | What |
+|---|---|
+| 1 | reads only: the PMU's G3D status, CMU_G3D +0x100/+0x140/+0x148 (PLL_G3D's rate), GPU_ID if the domain is on |
+| 2 | power on: CMU_G3D +0x148 = 0x30000003, +0x140 and +0x100 bit 4, PMU 0x14064040 [3:0] = 0xF; PLL_G3D must be stable |
+| 3 | the DTZPC restore, SMC 0x82000410 (1, 0x17410204), passed to EL3 by Carbon |
+| 4 | GPU_ID (a G72), MMU_FEATURES (35 bits of GPU address at least), the cores |
+| 5-6 | a soft reset with COHERENCY_ENABLE = 31 (none); the L2, tiler and shader cores powered |
+| 7-8 | one job in identity mode, then the same through the GPU's page tables |
+| 9 | HakiosMali, the IOKit service Mesa's panfrost draws through |
+
+Start with `mali=1`, then one step more per run. Short of step 9 the domain is switched off again. **A known gap:**
+Samsung's kernel has ACPM hand the S2MPS18's BUCK6 (vdd_g3d) over before power-on, and nothing here does: if that rail
+is off, step 2 says the domain did not come up. `sysctl kern.hakios.mali` says the last step done.
 
 ## What comes next
 
