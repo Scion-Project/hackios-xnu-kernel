@@ -1,0 +1,14 @@
+# Commands run by the launchd job com.hakios.demo (see com.hakios.demo.plist).
+# The data volume at work, with or without a seed (boot-arg var_seed=1, src/var_store.c): what is in it
+# when this job starts, a file written and read back, and the same names two minutes later. Compare a run
+# with var_seed=1 against one without: the containers and SpringBoard's files are there from the start in
+# the first, and made during the run in the second.
+/redwood/bin/vol_ls fs /private/var
+/redwood/bin/vol_ls ls /private/var/mobile/Containers/Data/Application
+/redwood/bin/vol_ls ls /private/var/mobile/Library/SpringBoard
+/redwood/bin/var_store stamp /private/var/hakios-stamp
+/redwood/bin/vol_ls cat /private/var/hakios-stamp 4096
+sleep 120
+/bin/ps -A
+/redwood/bin/vol_ls fs /private/var
+/redwood/bin/vol_ls ls /private/var/mobile/Library/SpringBoard

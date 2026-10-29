@@ -31,6 +31,10 @@
 #                                   a directory). This goes into the boot volume, which every recipe
 #                                   carries and which the flash recipe puts in RAM, so its size is paid
 #                                   for at every boot -- a few megabytes, not more
+#                      SEED=<file>  a seed of the data volume, as share/var.seed: /private/var as an earlier
+#                                   boot left it (tools/var-seed.py takes it out of a store's disk image), which
+#                                   init unpacks over the template with boot-arg var_seed=1 (src/var_store.c).
+#                                   It travels in this image, so its size is paid in RAM at every boot
 #                      RC_JOBS=<file> what the job com.hakios.demo runs: rc.jobs (default), or
 #                                   rc.jobs.unlock, which also swipes the lock screen away (for the phone,
 #                                   where nothing else can touch the screen yet).
@@ -213,6 +217,11 @@ for d in $EXTRA_SHARE; do
 	[ -d "$d" ] || { echo "build.sh: EXTRA_SHARE: $d is not a directory"; exit 1; }
 	cp -rL "$d" root/share/
 done
+if [ -n "$SEED" ]; then
+	[ -f "$SEED" ] || { echo "build.sh: SEED: $SEED is not a file"; exit 1; }
+	cp "$SEED" root/share/var.seed
+	echo "build.sh: share/var.seed: a seed of the data volume, $(( $(wc -c < "$SEED") / 1048576 )) MB (boot-arg var_seed=1)"
+fi
 if [ -d $IOS/rootfs/usr/lib ]; then
 	if [ -z "$PREBUILT" ]; then
 		# ordinary dynamically linked programs of our own, built against the iOS SDK
