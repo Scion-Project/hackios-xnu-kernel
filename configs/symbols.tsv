@@ -147,6 +147,7 @@ MALI_FLUSH	arg	mali_flush	GPU and display	k	hakios.mali.cpp
 MALI_PLL	arg	mali_pll	GPU and display	k	hakios.mali.c	a PLL_G3D that does not run is left alone, and step 2 stops there
 MALI_TRACE	arg	mali_trace	GPU and display	k	hakios.mali.c	a line for every job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
 MAX77705	arg	max77705	Audio and battery	k	hakios.max77705.c	
+MAX77705_HAPTIC	arg	max77705_haptic	Audio and battery	k	hakios.max77705.c	
 MAX77705_STEPS	arg	max77705_steps	Audio and battery	k	hakios.max77705.c	
 MD0	arg	md0	User space	k	1101-virtio-disk-as-md0.patch	
 MEMBENCH	arg	membench	CPU, memory and boot	k	hakios.cpufreq.c	

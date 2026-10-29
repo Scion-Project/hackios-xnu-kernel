@@ -25,5 +25,7 @@
 | battery | partly | the MAX77705's gauge and charger, read only, and the thermistor (ADC), into iOS's battery (max77705=1): written, not yet seen |
 | wifi | no | BCM4361 on PCIe |
 | cellular | no |  |
+| haptic | partly | the MAX77705's haptic block and a PWM of the SoC, for iOS (max77705_haptic=1): written, not yet felt |
+| torch | partly | the S2MPB02's flash block, lit by a pin (torch=1 a look, 3 for iOS): written, not yet seen |
 
 The state is what has been seen on this device, written down in `devices/starlte/device.conf`; a part the table does not name has not been looked at.
