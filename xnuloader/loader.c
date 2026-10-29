@@ -587,6 +587,7 @@ struct platform {
 	int log_other_cpu;               /* keep notes in the log partition while a kernel starts on another core */
 	int cores;                       /* at most this many processor cores, numbered from 0 ... */
 	int core_shift;                  /* ... in this bit of MPIDR: the phone numbers them in the second affinity field */
+	const uint32_t *core_mpidr;      /* ... or this: core N's MPIDR, for a phone whose cores are in two clusters */
 	uint32_t timeout_scale;          /* a kernel on several cores gets this much longer to wait for a lock, 0: as it is */
 	uint32_t small_cores;            /* a bit for each of the slower cores, by number: "small-core" in the device tree */
 	uint64_t fb_base;                /* the framebuffer the firmware reports (GOP): it tells this device apart */
@@ -630,11 +631,13 @@ static const struct platform platform_starlte = {
 	.name = "starlte", .io_base = 0x10000000, .io_size = 0x10000000,
 	.gic_dist = 0x10101000, .gic_cpu = 0x10102000, .uart = 0,
 	/*
-	 * Cores 0-3 are Cortex-A55s (MPIDR 0x000-0x003), 4-7 Samsung's own Exynos M3s (0x100-0x103). Only the
-	 * A55s for now: the M3s are a cluster of their own in MPIDR, which core_shift cannot number, and they
-	 * implement ARMv8.0 where the A55s and the iPhone's A11 implement 8.2.
+	 * Cores 0-3 are Cortex-A55s (MPIDR 0x000-0x003, 1.8 GHz at most), 4-7 Samsung's own Exynos M3s (0x100-0x103,
+	 * 2.7 GHz), started by Carbon's PSCI. The M3s implement ARMv8.0 where the A55s implement 8.2: a kernel that is
+	 * to use both boots on an M3 (bootcpu=4), so that what it says the processor can do is what every core can
+	 * (devices/starlte/README.md).
 	 */
-	.cores = 4, .core_shift = 0,
+	.cores = 8, .core_mpidr = (const uint32_t[]){ 0x000, 0x001, 0x002, 0x003, 0x100, 0x101, 0x102, 0x103 },
+	.small_cores = 0x0f,
 	.fb_base = 0xCC000000,
 	/*
 	 * Samsung's pstore (exynos-snapshot's log_pstore, 0xFED10000 + 32 KB), its second half: the pmsg zone, where the
@@ -653,6 +656,24 @@ static const struct platform *const platforms[] = {
 	&platform_redwood,
 	&platform_starlte,
 };
+
+/* Core N's MPIDR (its affinity fields), and the number of the core with that MPIDR (-1: none of the platform's) */
+static uint64_t
+core_mpidr(const struct platform *plat, int core)
+{
+	return plat->core_mpidr != NULL ? plat->core_mpidr[core] : (uint64_t)core << plat->core_shift;
+}
+
+static int
+core_number(const struct platform *plat, uint64_t mpidr)
+{
+	for (int core = 0; core < plat->cores; core++) {
+		if (core_mpidr(plat, core) == (mpidr & 0xFFFFFF)) {
+			return core;
+		}
+	}
+	return -1;
+}
 
 /* QEMU virt started with gic-version=2 (qemu/run.sh, QEMU_GIC=2): its GICv2's two frames */
 static struct platform platform_qemu_virt_gicv2;
@@ -3420,7 +3441,9 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	block_enabled = 0;
 	for (const char *c = pi.cmdline; *c; c++) {
 		if (starts_with(c, "bootcpu=") && (c == pi.cmdline || c[-1] == ' ') && c[8] >= '0' && c[8] <= '7') {
-			kernel_mpidr = (uint64_t)(c[8] - '0') << PLAT->core_shift;
+			if (c[8] - '0' < PLAT->cores) {
+				kernel_mpidr = core_mpidr(PLAT, c[8] - '0');
+			}
 		}
 		more_cores |= (starts_with(c, "cpus=") || starts_with(c, "cpumask=")) && (c == pi.cmdline || c[-1] == ' ');
 		battery_requested |= starts_with(c, "battery=1") && (c == pi.cmdline || c[-1] == ' ') &&
@@ -3774,16 +3797,20 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	 * this loader stays on while it watches is not the kernel's, nor any the firmware runs.
 	 */
 	uint64_t cpu_mpidr[8] = { kernel_mpidr };
-	int cpu_count = 1, boot_core = (int)(kernel_mpidr >> plat->core_shift);
+	int cpu_count = 1, boot_core = core_number(plat, kernel_mpidr);
+
+	if (boot_core < 0) {
+		boot_core = 0;          /* (a boot core the platform does not number: the others counted from 0) */
+	}
 
 	if (more_cores) {
 		for (int distance = 1; distance < plat->cores; distance++) {
 			for (int side = 0; side < 2; side++) {
 				int core = side == 0 ? boot_core + distance : boot_core - distance;
-				uint64_t mpidr = (uint64_t)core << plat->core_shift;
+				uint64_t mpidr;
 				int64_t state;
 
-				if (core < 0 || core >= plat->cores || mpidr == this_mpidr) {
+				if (core < 0 || core >= plat->cores || (mpidr = core_mpidr(plat, core)) == this_mpidr) {
 					continue;
 				}
 				state = psci_call(PSCI_AFFINITY_INFO, mpidr, 0, 0);
@@ -3816,7 +3843,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		dt_prop_u64(&w, "bus-frequency", 100000000ULL);
 		dt_prop_u64(&w, "memory-frequency", 100000000ULL);
 		dt_prop_u64(&w, "peripheral-frequency", 24000000ULL);
-		if (plat->small_cores & (1u << ((cpu_mpidr[i] >> plat->core_shift) & 31))) {
+		if (core_number(plat, cpu_mpidr[i]) >= 0 && (plat->small_cores & (1u << core_number(plat, cpu_mpidr[i])))) {
 			dt_prop_u32(&w, "small-core", 1);
 		}
 		dt_end(&w);
