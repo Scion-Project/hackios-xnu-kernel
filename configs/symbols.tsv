@@ -149,6 +149,8 @@ MALI_TRACE	arg	mali_trace	GPU and display	k	hakios.mali.c	a line for every job: 
 MAX77705	arg	max77705	Audio and battery	k	hakios.max77705.c	
 MAX77705_HAPTIC	arg	max77705_haptic	Audio and battery	k	hakios.max77705.c	
 MAX77705_STEPS	arg	max77705_steps	Audio and battery	k	hakios.max77705.c	
+MAX98512	arg	max98512	Audio and battery	k	hakios.max98512.c	a look: the bus brought up (its clocks, the USI, the pins), both chips' revisions and registers
+MAX98512_GAIN	arg	max98512_gain	Audio and battery	k	hakios.max98512.c	the bottom speaker's gain at start, 1 to 5 (+3 to +15 dB; 1); the top one's is always 1
 MD0	arg	md0	User space	k	1101-virtio-disk-as-md0.patch	
 MEMBENCH	arg	membench	CPU, memory and boot	k	hakios.cpufreq.c	
 METAL	arg	metal	GPU and display	ku	HakiosMetal.m,MiniIOMobileFramebuffer.cpp	only the program metal_test (userland/src/metal_test.m): the safe level, for seeing what Metal does with the device
