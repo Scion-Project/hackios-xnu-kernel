@@ -269,6 +269,7 @@ SURFTRACE	arg	surftrace	GPU and display	k	MiniIOSurface.cpp	log the first N surf
 SURFTRACE_OF	arg	surftrace_of	GPU and display	k	MiniIOSurface.cpp	
 SWITCHER_WALLPAPER	arg	switcher_wallpaper	User space	u	inject_sb.c	
 SYSSLEEP	arg	syssleep	CPU, memory and boot	k	(patch)	
+SYSTEM_APFS	arg	system_apfs	User space	u	init.c	the root is to be the big system image (userland/system.apfs, a RAM boot's md0) on /dev/DEV, read
 SYSTRACE	arg	systrace	CPU, memory and boot	k	(patch),user_exception_trace.c	
 SYSTRACE_NAME	arg	systrace_name	CPU, memory and boot	k	(patch)	
 THERMAL_LOG	arg	thermal_log	Chip, thermal and PMIC	k	hakios.thermal.c	a summary line this often (0: only on a rise; 60)
@@ -284,14 +285,17 @@ TOUCH_RATE	arg	touch_rate	Touch and buttons	k	hakios.goodix.c	the chip reports t
 TOUCH_SPI_HZ	arg	touch_spi_hz	Touch and buttons	k	hakios.goodix.c	the bus at N Hz (Android's device tree gives the chip 5 MHz)
 UFS_BENCH	arg	ufs_bench	Storage and APFS	k	hakios.ufs.c	what one request through the loader costs, by size
 UFS_CHECK	arg	ufs_check	Storage and APFS	k	hakios.ufs.c	
-UFS_NATIVE	arg	ufs_native	Storage and APFS	kl	hakios.ufs.c,loader.c	through this kernel's own driver instead, its own transfer list in the controller for the run, if all is as expected; 2: only look; 3: a dry run --
+UFS_NATIVE	arg	ufs_native	Storage and APFS	kl	hakios.ufs.c,hakios.ufshc.c,loader.c	this kernel's own UFS driver has the controller for the run, no loader (1: beside UEFI's; 5: only look)
 UFS_NATIVE_BENCH	arg	ufs_native_bench	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE_BUFFER	hex	ufs_native_buffer	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_CHECK	arg	ufs_native_check	Storage and APFS	k	hakios.ufs.c	what this kernel's own driver reads is what the loader reads, byte for byte
 UFS_NATIVE_HANG	arg	ufs_native_hang	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_LEAVE	arg	ufs_native_leave	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_SLOTS	arg	ufs_native_slots	Storage and APFS	k	hakios.ufshc.c	
+UFS_NATIVE_SOC	arg	ufs_native_soc	Storage and APFS	k	hakios.ufshc.c	the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810
 UFS_NATIVE_SPIN	arg	ufs_native_spin	Storage and APFS	k	hakios.ufshc.c	
+UFS_NATIVE_TEST	arg	ufs_native_test	Storage and APFS	k	hakios.ufs.c	own mode's test at start: the refusals, and writes put back (2: one block left written)
+UFS_NATIVE_WRITE	arg	ufs_native_write	Storage and APFS	k	hakios.ufs.c	own mode: the one partition that takes writes, through /dev/rufs_NAME (never EFS, BOOT, PARAM ...)
 UFS_PROBE	arg	ufs_probe	Loader	l	loader.c	
 USTACKS	arg	ustacks	Debugging	k	user_exception_trace.c	
 USTACKS_AT	arg	ustacks_at	Debugging	k	user_exception_trace.c	

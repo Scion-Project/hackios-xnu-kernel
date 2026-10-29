@@ -32,6 +32,24 @@
  * firmware-update/ (bluetooth, xbl, tz, ...) through the same path and prints an FNV-1a hash of
  * as many bytes as each image has: tools/ufs-survey.py compares those with the images and with
  * what the loader read itself before the kernel started.
+ *
+ * ufs_native=4 (own mode): no loader page at all. This kernel's own driver (hakios.ufshc.c) has
+ * the controller for the run -- QEMU's -device ufs, or the SoC's ufs_native_soc= names -- and
+ * this file reads each logical unit's GPT itself (checked as ShengUfs checks it: the header's
+ * signature, revision, size and CRC, the entries' CRC, the usable range, every partition inside
+ * it, none overlapping another, no name twice) and makes the same /dev/ufs_NAME and /dev/rufs_NAME
+ * of every partition. The table is kept in a struct loader_block of this kernel's own, so that
+ * everything below reads it as it reads the loader's. ufs_native=5 only looks (hakios.ufshc.c).
+ *
+ * Writes in own mode go to one partition only, the one ufs_native_write=NAME names, through its
+ * character device /dev/rufs_NAME, in whole blocks, and only if NAME is not one that must never be
+ * written (ufs_never_written below: the S9's EFS, SEC_EFS, BOOT, RECOVERY, PARAM and the rest of its
+ * boot chain and device-unique data, the POCO's modem file systems and boot images, any name with
+ * "efs" in it) and its unit is neither a boot unit nor write protected. The controller's driver is
+ * told the partition's blocks (ufshc_open_window) and refuses any write outside them on its own.
+ * Closing the device synchronizes the device's cache. ufs_native_test=1 tries all of it at start:
+ * refusals that must happen, and a write, read back and put back as it was, at three places of
+ * the partition.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -166,6 +184,11 @@ static bool ufs_native_mapped;
 static uint32_t ufs_native_luns;                /* how many units are mapped (LUN 0..n-1) */
 static volatile bool ufs_native_on;
 static uint64_t ufs_native_fallbacks, ufs_mailbox_refused;
+
+/* own mode (ufs_native=4): the table is this kernel's, the loader serves nothing */
+static bool ufs_own;
+static int ufs_own_write_part = -1;             /* the partition ufs_native_write= names; -1: none */
+static struct loader_block *ufs_own_table;
 
 static LCK_GRP_DECLARE(ufs_lck_grp, "hakios-ufs");
 static LCK_MTX_DECLARE(ufs_lock, &ufs_lck_grp);
@@ -422,6 +445,9 @@ hakios_ufs_report(const char *when)
 		return;
 	}
 	ufshc_report(when);
+	if (ufs_own) {
+		return;                 /* (no loader, no page: the driver's own report is all there is) */
+	}
 	absolutetime_to_nanoseconds(ufs_page->answer.ticks, &loader_ns);
 	printf("ufs: %s: %llu requests (%llu of 4 KB or less, %llu to 64 KB, %llu more; %llu right after "
 	    "the one before), %llu errors, %llu bytes; waiting %llu ms, of it in ReadBlocks %llu ms; "
@@ -452,6 +478,9 @@ ufs_read_mailbox(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 	static uint8_t *bounce;
 	int error = 0;
 
+	if (ufs_own || ufs_buffer == NULL) {
+		return ENXIO;           /* own mode: there is no loader to ask */
+	}
 	lck_mtx_lock(&ufs_lock);
 	/*
 	 * Allocated under the lock: two first readers at once would both allocate (one 4 MB leak),
@@ -547,6 +576,9 @@ ufs_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 
 	if (offset > part_size || len > part_size - offset) {
 		return EINVAL;
+	}
+	if (ufs_own) {
+		return ufs_read_native(part, offset, dst, len);         /* the only way there is */
 	}
 	if (ufs_native_on && ufs_lun[part] != 0xff) {
 		int error = ufs_read_native(part, offset, dst, len);
@@ -677,6 +709,9 @@ ufs_copen(dev_t dev, int flags, int devtype, proc_t p)
 	if ((flags & FWRITE) && ufs_write_part >= 0 && (uint32_t)minor(dev) == (uint32_t)ufs_write_part) {
 		flags &= ~FWRITE;
 	}
+	if ((flags & FWRITE) && ufs_own && ufs_own_write_part >= 0 && (uint32_t)minor(dev) == (uint32_t)ufs_own_write_part) {
+		flags &= ~FWRITE;
+	}
 	return ufs_open(dev, flags, devtype, p);
 }
 
@@ -694,6 +729,13 @@ ufs_cclose(dev_t dev, int flags, int devtype, proc_t p)
 {
 	if (ufs_write_part >= 0 && (uint32_t)minor(dev) == (uint32_t)ufs_write_part) {
 		ufs_write_restore();
+	}
+	if (ufs_own && ufs_own_write_part >= 0 && (uint32_t)minor(dev) == (uint32_t)ufs_own_write_part && (flags & FWRITE)) {
+		int e = ufshc_sync();
+
+		if (e != 0) {
+			printf("ufs: own: %s: SYNCHRONIZE CACHE at close failed (%d)\n", ufs_page->part[minor(dev)].name, e);
+		}
 	}
 	return ufs_close(dev, flags, devtype, p);
 }
@@ -829,6 +871,8 @@ ufs_cread(dev_t dev, struct uio *uio, __unused int ioflag)
 	return error;
 }
 
+static int ufs_own_cwrite(uint32_t part, struct uio *uio);
+
 /*
  * A write to /dev/rufs_darwin: whole blocks, out of user memory a bufferful at a time and into the
  * partition. Nothing of this driver is held while user memory is touched -- a fault there can come
@@ -842,6 +886,9 @@ ufs_cwrite(dev_t dev, struct uio *uio, __unused int ioflag)
 	uint8_t *bounce;
 	int error = 0;
 
+	if (ufs_own) {
+		return ufs_own_cwrite(part, uio);
+	}
 	if (!ufs_ready || part >= ufs_parts || ufs_write_part < 0 || part != (uint32_t)ufs_write_part) {
 		return EROFS;
 	}
@@ -1488,6 +1535,9 @@ ufs_sysctl_native(__unused struct sysctl_oid *oidp, __unused void *arg1, __unuse
 	if (error != 0 || !changed) {
 		return error;
 	}
+	if (ufs_own) {
+		return value != 0 ? 0 : EPERM;  /* own mode: there is no other way to the storage */
+	}
 	if (value != 0) {
 		if (!(ufs_native_mapped && ufshc_available()) || ufs_native_in(true) != 0) {
 			return ENXIO;
@@ -1504,17 +1554,546 @@ SYSCTL_PROC(_kern_hakios, OID_AUTO, ufs_native, CTLTYPE_INT | CTLFLAG_RW | CTLFL
 SYSCTL_QUAD(_kern_hakios, OID_AUTO, ufs_native_fallbacks, CTLFLAG_RD | CTLFLAG_LOCKED, &ufs_native_fallbacks,
     "times a read of this kernel's own UFS driver failed and the loader's was used instead");
 
+/* ---- own mode (ufs_native=4): the GPTs read here, one partition that takes writes ---- */
+
+/*
+ * Never written, whatever ufs_native_write= says. The Galaxy S9's: EFS (the IMEI and the radio's
+ * calibration: losing it is permanent), SEC_EFS, BOOT, RECOVERY, PARAM -- and with them, as a
+ * precaution, the other partitions of a Samsung phone's boot chain and device-unique data. The
+ * POCO's: its modem file systems, persist and the boot chain's images. Compared without case; a
+ * slot suffix (_a, _b) does not make a name another. Any name with "efs" in it is refused too.
+ */
+static const char *const ufs_never_written[] = {
+	"EFS", "SEC_EFS", "CPEFS", "BOOT", "RECOVERY", "PARAM", "UP_PARAM", "BOTA0", "BOTA1", "RADIO", "CP_DEBUG",
+	"PERSISTENT", "STEADY", "KEYSTORAGE", "KEYREFUGE", "DNT", "NAD_REFER", "DQMDBG", "VBMETA", "DTBO", "DTB",
+	"modemst1", "modemst2", "fsg", "fsc", "persist", "modem", "xbl", "xbl_config", "abl", "aop", "tz", "hyp",
+	"devcfg", "keymaster", "cmnlib", "cmnlib64", "qupfw", "uefisecapp", "imagefv", "shrm", "cpucp", "vendor_boot",
+	"init_boot", "vbmeta_system", "frp", "devinfo", "secdata", "logdump",
+};
+
+static bool
+ufs_name_is(const char *name, const char *ref)
+{
+	size_t n = strlen(ref);
+
+	if (strncasecmp(name, ref, n) != 0) {
+		return false;
+	}
+	return name[n] == 0 || (name[n] == '_' && (name[n + 1] == 'a' || name[n + 1] == 'b') && name[n + 2] == 0);
+}
+
+/* why the partition may not take writes; NULL: it may */
+static const char *
+ufs_own_unwritable(uint32_t part)
+{
+	const char *name = (const char *)ufs_page->part[part].name;
+	const struct ufshc_unit *u = ufshc_unit((uint8_t)ufs_page->part[part].unit);
+
+	for (unsigned i = 0; i < sizeof(ufs_never_written) / sizeof(ufs_never_written[0]); i++) {
+		if (ufs_name_is(name, ufs_never_written[i])) {
+			return "it is one that is never written";
+		}
+	}
+	for (const char *c = name; *c != 0; c++) {
+		if (strncasecmp(c, "efs", 3) == 0) {
+			return "its name has \"efs\" in it";
+		}
+	}
+	if (ufs_page->part[part].flags & BLOCK_PART_UNIT) {
+		return "it is a whole logical unit";
+	}
+	if (u == NULL || u->boot_lun_id != 0 || u->write_protect != 0) {
+		return "its logical unit is a boot unit, write protected, or not there";
+	}
+	if (ufs_page->part[part].block_size != 4096) {
+		return "its blocks are not 4096 bytes";
+	}
+	return NULL;
+}
+
+/* Whole blocks [offset, offset + len) of the partition that takes writes, from src. */
+static int
+ufs_own_write(uint32_t part, uint64_t offset, const uint8_t *src, uint64_t len)
+{
+	uint64_t size;
+
+	if (!ufs_own || ufs_own_write_part < 0 || part != (uint32_t)ufs_own_write_part) {
+		ufs_write_refused++;
+		return EROFS;
+	}
+	size = ufs_part_bytes(part);
+	if (len == 0 || offset % 4096 != 0 || len % 4096 != 0) {
+		return EINVAL;
+	}
+	if (offset > size || len > size - offset) {
+		ufs_write_refused++;
+		return EROFS;
+	}
+	if (ufshc_write(ufs_lun[part], ufs_lun_offset[part] + offset, src, len) != 0) {
+		ufs_write_errors++;
+		return EIO;
+	}
+	ufs_writes++;
+	ufs_write_bytes += len;
+	return 0;
+}
+
+/* A write to /dev/rufs_NAME in own mode: whole blocks, out of user memory a megabyte at a time. */
+static int
+ufs_own_cwrite(uint32_t part, struct uio *uio)
+{
+	uint8_t *bounce;
+	int error = 0;
+
+	if (!ufs_ready || part >= ufs_parts || ufs_own_write_part < 0 || part != (uint32_t)ufs_own_write_part) {
+		ufs_write_refused++;
+		return EROFS;
+	}
+	if (uio_offset(uio) < 0 || (uint64_t)uio_offset(uio) % 4096 != 0 || (uint64_t)uio_resid(uio) % 4096 != 0) {
+		return EINVAL;
+	}
+	bounce = kalloc_data(ufs_buffer_size, Z_WAITOK);
+	if (bounce == NULL) {
+		return ENOMEM;
+	}
+	while (error == 0 && uio_resid(uio) > 0) {
+		user_ssize_t want = uio_resid(uio);
+		off_t at = uio_offset(uio);
+
+		if (want > (user_ssize_t)ufs_buffer_size) {
+			want = (user_ssize_t)ufs_buffer_size;
+		}
+		error = uiomove((caddr_t)bounce, (int)want, uio);
+		if (error == 0) {
+			lck_mtx_lock(&ufs_write_mtx);
+			error = ufs_own_write(part, (uint64_t)at, bounce, (uint64_t)want);
+			lck_mtx_unlock(&ufs_write_mtx);
+			if (error != 0) {
+				uio_setoffset(uio, at);
+				uio_setresid(uio, uio_resid(uio) + want);
+			}
+		}
+	}
+	kfree_data(bounce, ufs_buffer_size);
+	return error;
+}
+
+static uint32_t
+ufs_le32(const uint8_t *p)
+{
+	return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static uint64_t
+ufs_le64(const uint8_t *p)
+{
+	return (uint64_t)ufs_le32(p) | (uint64_t)ufs_le32(p + 4) << 32;
+}
+
+/*
+ * One logical unit's GPT, read with the controller's driver, into the table: its partitions,
+ * then the unit itself. Refused whole (and the unit left out) on anything not right.
+ */
+static const char *
+ufs_own_gpt(uint8_t lun, const struct ufshc_unit *u, uint32_t *added)
+{
+	uint8_t *h = kalloc_data(4096, Z_WAITOK), *t = NULL;
+	uint32_t count, esize, hsize, crc, tblocks, first_new = ufs_parts;
+	uint64_t elba, first, last, backup;
+	const char *why = NULL;
+
+	*added = 0;
+	if (h == NULL) {
+		return "no memory";
+	}
+	if (ufshc_read(lun, 4096, h, 4096) != 0) {
+		why = "its block 1 could not be read";
+		goto out;
+	}
+	hsize = ufs_le32(h + 12);
+	count = ufs_le32(h + 80);
+	esize = ufs_le32(h + 84);
+	elba = ufs_le64(h + 72);
+	first = ufs_le64(h + 40);
+	last = ufs_le64(h + 48);
+	backup = ufs_le64(h + 32);
+	if (memcmp(h, "EFI PART", 8) != 0) {
+		why = "no GPT header";
+		goto out;
+	}
+	if (ufs_le32(h + 8) != 0x00010000 || hsize < 92 || hsize > 4096 || ufs_le64(h + 24) != 1) {
+		why = "the header's revision, size or own LBA";
+		goto out;
+	}
+	crc = ufs_le32(h + 16);
+	*(uint32_t *)(h + 16) = 0;
+	if (crc32(0, h, hsize) != crc) {
+		why = "the header's CRC";
+		goto out;
+	}
+	tblocks = (count * 128 + 4095) / 4096;
+	if (esize != 128 || count == 0 || count > 256 || elba < 2 || first < elba + tblocks || last < first ||
+	    last >= u->blocks || backup <= last || backup >= u->blocks) {
+		why = "its geometry (entries, usable range, backup header)";
+		goto out;
+	}
+	t = kalloc_data(tblocks * 4096, Z_WAITOK);
+	if (t == NULL || ufshc_read(lun, elba * 4096, t, tblocks * 4096) != 0) {
+		why = "its partition table could not be read";
+		goto out;
+	}
+	if (crc32(0, t, count * 128) != ufs_le32(h + 88)) {
+		why = "the partition table's CRC";
+		goto out;
+	}
+	for (uint32_t i = 0; i < count; i++) {
+		const uint8_t *e = t + 128 * i;
+		struct loader_block_part *bp;
+		uint64_t a = ufs_le64(e + 32), b = ufs_le64(e + 40);
+		bool used = false;
+		char name[36];
+		uint32_t n = 0;
+
+		for (int k = 0; k < 16; k++) {
+			used |= e[k] != 0;
+		}
+		if (!used) {
+			continue;
+		}
+		if (a < first || b < a || b > last) {
+			why = "a partition outside the usable range";
+			goto out;
+		}
+		for (uint32_t j = 0; j < i; j++) {
+			const uint8_t *o = t + 128 * j;
+			bool other = false;
+
+			for (int k = 0; k < 16; k++) {
+				other |= o[k] != 0;
+			}
+			if (other && a <= ufs_le64(o + 40) && ufs_le64(o + 32) <= b) {
+				why = "two partitions overlap";
+				goto out;
+			}
+		}
+		for (; n < 35 && (e[56 + 2 * n] | e[57 + 2 * n]) != 0; n++) {
+			uint16_t ch = (uint16_t)(e[56 + 2 * n] | e[57 + 2 * n] << 8);
+
+			name[n] = ch < 0x80 ? (char)ch : '?';
+		}
+		name[n] = 0;
+		if (n == 0) {
+			printf("ufs: own: LUN %u: a partition with no name (blocks %llu..%llu): left out\n", lun, a, b);
+			continue;
+		}
+		if (ufs_entry(name) != BLOCK_MAX_PARTS) {
+			printf("ufs: own: LUN %u: a second partition named %s: left out\n", lun, name);
+			continue;
+		}
+		if (ufs_parts + 1 >= BLOCK_MAX_PARTS) {
+			why = "more partitions than the table holds";
+			goto out;
+		}
+		bp = &ufs_own_table->part[ufs_parts];
+		strlcpy(bp->name, name, sizeof(bp->name));
+		bp->block_size = 4096;
+		bp->blocks = b - a + 1;
+		bp->start_lba = a;
+		bp->unit = lun;
+		bp->lun = lun;
+		ufs_lun[ufs_parts] = lun;
+		ufs_lun_offset[ufs_parts] = a * 4096;
+		ufs_parts++;
+		(*added)++;
+	}
+	{
+		struct loader_block_part *bp = &ufs_own_table->part[ufs_parts];
+
+		snprintf(bp->name, sizeof(bp->name), "unit%u", lun);
+		bp->block_size = 4096;
+		bp->blocks = u->blocks;
+		bp->unit = lun;
+		bp->lun = lun;
+		bp->flags = BLOCK_PART_UNIT;
+		ufs_lun[ufs_parts] = lun;
+		ufs_lun_offset[ufs_parts] = 0;
+		ufs_parts++;
+	}
+	printf("ufs: own: LUN %u: GPT right (header and table CRCs, %u entries, usable %llu..%llu, backup at %llu): %u "
+	    "partitions\n", lun, count, first, last, backup, *added);
+out:
+	if (why != NULL) {
+		ufs_parts = first_new;          /* (none of this unit's is kept) */
+		*added = 0;
+	}
+	if (t != NULL) {
+		kfree_data(t, tblocks * 4096);
+	}
+	kfree_data(h, 4096);
+	return why;
+}
+
+/*
+ * ufs_native_test=1 (own mode): the refusals that must happen, then, if a partition takes
+ * writes, a pattern written, read back, and what was there put back and read back, at its
+ * first blocks, its middle and its last blocks.
+ */
+static void
+ufs_own_test(uint32_t mode)
+{
+	uint8_t *saved = kalloc_data(64 << 10, Z_WAITOK), *pattern = kalloc_data(64 << 10, Z_WAITOK);
+	uint8_t *back = kalloc_data(64 << 10, Z_WAITOK);
+	uint32_t refused = 0, wrong = 0, places = 0;
+
+	if (saved == NULL || pattern == NULL || back == NULL) {
+		printf("ufs: own test: no memory\n");
+		goto out;
+	}
+	bzero(pattern, 64 << 10);
+	/* 1. every partition that is not the one: a write refused by the partition layer */
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		int e;
+
+		if ((int)i == ufs_own_write_part || (ufs_page->part[i].flags & BLOCK_PART_UNIT)) {
+			continue;
+		}
+		e = ufs_own_write(i, 0, pattern, 4096);
+		printf("ufs: own test: a write to %s: %s (%d)\n", ufs_page->part[i].name, e == EROFS ? "refused, as it should be" :
+		    "NOT REFUSED", e);
+		e == EROFS ? refused++ : wrong++;
+	}
+	if (ufs_own_write_part >= 0) {
+		uint32_t wp = (uint32_t)ufs_own_write_part;
+		uint64_t size = ufs_part_bytes(wp), first = ufs_page->part[wp].start_lba, blocks = ufs_page->part[wp].blocks;
+		uint8_t lun = ufs_lun[wp];
+		const uint64_t at[3] = { 0, size / 2 / 4096 * 4096, size - (64 << 10) };
+		int e;
+
+		/* 2. past its end, by the partition layer; around it, by the controller's own whitelist */
+		e = ufs_own_write(wp, size, pattern, 4096);
+		printf("ufs: own test: a write past the end of %s: %s (%d)\n", ufs_page->part[wp].name, e != 0 ? "refused" :
+		    "NOT REFUSED", e);
+		e != 0 ? refused++ : wrong++;
+		e = ufs_own_write(wp, size - 4096, pattern, 8192);
+		printf("ufs: own test: a write across the end of %s: %s (%d)\n", ufs_page->part[wp].name, e != 0 ? "refused" :
+		    "NOT REFUSED", e);
+		e != 0 ? refused++ : wrong++;
+		{
+			const struct {
+				uint8_t lun;
+				uint64_t lba;
+				const char *what;
+			} probe[] = {
+				{ lun, first - 1, "the block before it" }, { lun, first + blocks, "the block after it" },
+				{ (uint8_t)(lun ^ 1), first, "its first block's number on the other unit" }, { lun, 1, "the GPT header" },
+			};
+
+			for (unsigned k = 0; k < sizeof(probe) / sizeof(probe[0]); k++) {
+				e = ufshc_selftest_refusal(probe[k].lun, probe[k].lba);
+				printf("ufs: own test: the controller's whitelist on a write of %s (LUN %u, block %llu): %s\n",
+				    probe[k].what, probe[k].lun, probe[k].lba, e == EPERM ? "refused, as it should be" : "LET THROUGH");
+				e == EPERM ? refused++ : wrong++;
+			}
+			e = ufshc_selftest_refusal(lun, first + blocks - 1);
+			printf("ufs: own test: ... and on its own last block: %s\n", e == 0 ? "let through, as it should be" :
+			    "REFUSED");
+			e == 0 ? (void)0 : (void)wrong++;
+		}
+		/* 3. write, read back, put back, read back */
+		for (unsigned k = 0; k < 3 && size >= (192 << 10); k++) {
+			uint64_t seed = 0x5c10a + k * 7919;
+			bool same;
+
+			for (uint32_t i = 0; i < (64 << 10); i++) {
+				seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+				pattern[i] = (uint8_t)(seed >> 33);
+			}
+			if (ufs_read(wp, at[k], saved, 64 << 10) != 0 || ufs_own_write(wp, at[k], pattern, 64 << 10) != 0 ||
+			    ufs_read(wp, at[k], back, 64 << 10) != 0) {
+				printf("ufs: own test: %s, 64 KB at %llu: a read or the write FAILED\n", ufs_page->part[wp].name, at[k]);
+				wrong++;
+				continue;
+			}
+			same = memcmp(back, pattern, 64 << 10) == 0;
+			if (ufs_own_write(wp, at[k], saved, 64 << 10) != 0 || ufs_read(wp, at[k], back, 64 << 10) != 0) {
+				printf("ufs: own test: %s, 64 KB at %llu: putting it back FAILED\n", ufs_page->part[wp].name, at[k]);
+				wrong++;
+				continue;
+			}
+			printf("ufs: own test: %s, 64 KB at byte %llu (LUN %u blocks %llu..%llu): written, read back %s; put back, "
+			    "read back %s\n", ufs_page->part[wp].name, at[k], lun, first + at[k] / 4096, first + at[k] / 4096 + 15,
+			    same ? "the same" : "DIFFERENT", memcmp(back, saved, 64 << 10) == 0 ? "as it was" : "NOT AS IT WAS");
+			same && memcmp(back, saved, 64 << 10) == 0 ? places++ : wrong++;
+		}
+		if (mode == 2) {
+			/* 4. one block left written, for the computer to find in the image after the run */
+			bzero(pattern, 4096);
+			snprintf((char *)pattern, 4096, "SCION-UFS-OWN-WRITE %s LUN %u block %llu", ufs_page->part[wp].name, lun, first);
+			for (uint32_t i = 64; i < 4096; i++) {
+				pattern[i] = (uint8_t)(i * 7 + 3);
+			}
+			e = ufs_own_write(wp, 0, pattern, 4096);
+			printf("ufs: own test: ufs_native_test=2: the first block of %s left written (\"%s\", then i*7+3): %d\n",
+			    ufs_page->part[wp].name, (const char *)pattern, e);
+			e == 0 ? (void)0 : (void)wrong++;
+		}
+		e = ufshc_sync();
+		printf("ufs: own test: SYNCHRONIZE CACHE: %d\n", e);
+		e == 0 ? (void)0 : (void)wrong++;
+	}
+	printf("ufs: own test %s: %u refusals as they should be, %u places written and put back, %u wrong\n",
+	    wrong == 0 ? "PASSED" : "FAILED", refused, places, wrong);
+out:
+	if (saved != NULL) {
+		kfree_data(saved, 64 << 10);
+	}
+	if (pattern != NULL) {
+		kfree_data(pattern, 64 << 10);
+	}
+	if (back != NULL) {
+		kfree_data(back, 64 << 10);
+	}
+}
+
+static uint32_t ufs_make_nodes(void);
+
+/* ufs_native=4: this kernel's own UFS driver has the controller for the run, no loader (1: beside UEFI's; 5: only look) */
+static void
+ufs_own_init(uint32_t mode)
+{
+	char wname[40] = "";
+	uint32_t test = 0, made, units = 0;
+
+	if (!ufshc_own_probe()) {
+		if (mode == 4) {
+			printf("ufs: own: this kernel's own UFS driver is not used: no storage\n");
+		}
+		return;
+	}
+	ufs_own_table = kalloc_data(sizeof(struct loader_block), Z_WAITOK | Z_ZERO);
+	if (ufs_own_table == NULL) {
+		return;
+	}
+	ufs_own_table->magic = BLOCK_MAGIC;
+	ufs_own_table->version = BLOCK_VERSION;
+	ufs_own_table->size = sizeof(struct loader_block);
+	ufs_page = ufs_own_table;
+	ufs_parts = 0;
+	memset(ufs_lun, 0xff, sizeof(ufs_lun));
+	for (uint8_t lun = 0; lun < UFSHC_LUNS; lun++) {
+		const struct ufshc_unit *u = ufshc_unit(lun);
+		const char *why;
+		uint32_t added;
+
+		if (u == NULL || u->block_size != 4096) {
+			continue;
+		}
+		why = ufs_own_gpt(lun, u, &added);
+		if (why != NULL) {
+			printf("ufs: own: LUN %u: no partitions read: %s\n", lun, why);
+		}
+		units++;
+	}
+	ufs_own_table->parts = ufs_parts;
+	ufs_buffer_size = 1u << 20;     /* (no loader buffer: the size reads and writes are cut into) */
+	ufs_buffer = NULL;
+	ufs_own = true;
+	ufs_native_on = true;
+	ufs_native_mapped = true;
+	made = ufs_make_nodes();
+	ufs_ready = true;
+	printf("ufs: own: %u partitions on %u logical units as /dev/ufs_NAME and /dev/rufs_NAME, read by this kernel's own "
+	    "UFS driver; nothing asked of the loader\n", made, units);
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		volatile struct loader_block_part *e = &ufs_page->part[i];
+
+		printf("ufs: own: %-12s LUN %u, blocks %llu..%llu (%llu MB)%s\n", e->name, e->unit, e->start_lba,
+		    e->start_lba + e->blocks - 1, e->blocks * e->block_size >> 20, (e->flags & BLOCK_PART_UNIT) ? ", the whole unit" :
+		    "");
+	}
+
+	/* ufs_native_write=NAME: own mode: the one partition that takes writes, through /dev/rufs_NAME (never EFS, BOOT, PARAM ...) */
+	if (PE_parse_boot_arg_str("ufs_native_write", wname, sizeof(wname)) && wname[0] != 0) {
+		uint32_t part = ufs_entry(wname);
+		const char *why = part == BLOCK_MAX_PARTS ? "there is no partition of that name" : ufs_own_unwritable(part);
+
+		if (why == NULL && ufshc_open_window(ufs_lun[part], ufs_page->part[part].start_lba, ufs_page->part[part].blocks) != 0) {
+			why = "the controller's driver would not open the window";
+		}
+		if (why != NULL) {
+			printf("ufs: own: ufs_native_write=%s REFUSED: %s; nothing takes writes\n", wname, why);
+		} else {
+			ufs_own_write_part = (int)part;
+			printf("ufs: own: /dev/rufs_%s takes writes (whole blocks, LUN %u blocks %llu..%llu); everything else of the "
+			    "storage is read only\n", wname, ufs_lun[part], ufs_page->part[part].start_lba,
+			    ufs_page->part[part].start_lba + ufs_page->part[part].blocks - 1);
+		}
+	}
+	/* ufs_native_test=1: own mode's test at start: the refusals, and writes put back (2: one block left written) */
+	if (PE_parse_boot_argn("ufs_native_test", &test, sizeof(test)) && test != 0) {
+		ufs_own_test(test);
+	}
+	test = 0;
+	if (PE_parse_boot_argn("ufs_native_bench", &test, sizeof(test)) && test != 0) {
+		/* (as with the loader: N threads at random places of darwin, then back to the loader) */
+		ufs_native_bench();
+		hakios_ufs_report("after the bench");
+		loader_return();
+	}
+}
+
 /* ---- bringing it up ---- */
+
+/* the block and character device of every partition (not of the units): how many were made */
+static uint32_t
+ufs_make_nodes(void)
+{
+	uint32_t made = 0;
+
+	ufs_bmajor = bdevsw_add(-1, &ufs_bdevsw);
+	ufs_cmajor = ufs_bmajor < 0 ? -1 : cdevsw_add_with_bdev(-1, &ufs_cdevsw, ufs_bmajor);
+	if (ufs_cmajor < 0) {
+		printf("ufs: no device numbers to be had\n");
+		return 0;
+	}
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		char name[48];
+
+		ufs_bsize[i] = ufs_page->part[i].block_size;
+		if (ufs_page->part[i].flags & BLOCK_PART_UNIT) {
+			continue;               /* the units are for this kernel's own driver to be checked against */
+		}
+		snprintf(name, sizeof(name), "ufs_%s", ufs_page->part[i].name);
+		if (devfs_make_node(makedev(ufs_bmajor, i), DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "%s", name) == NULL) {
+			printf("ufs: no node for %s (the same name twice?)\n", name);
+			continue;
+		}
+		snprintf(name, sizeof(name), "rufs_%s", ufs_page->part[i].name);
+		(void)devfs_make_node(makedev(ufs_cmajor, i), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "%s", name);
+		made++;
+	}
+	return made;
+}
 
 void
 hakios_ufs_init(void)
 {
 	uint64_t pa = 0, buffer_pa;
-	uint32_t check = 0, made = 0;
+	uint32_t check = 0, made = 0, native = 0;
 	vm_offset_t base;
 
+	PE_parse_boot_argn("ufs_native", &native, sizeof(native));
 	if (!PE_parse_boot_argn("ufs_shared_pa", &pa, sizeof(pa)) || pa == 0) {
-		return;                 /* the loader was not asked for ufs=2: there is nothing to read through */
+		/* the loader was not asked for ufs=2: nothing to read through, unless this kernel has the controller */
+		if (native == 4 || native == 5) {
+			ufs_own_init(native);
+		}
+		return;
+	}
+	if (native == 4 || native == 5) {
+		printf("ufs: ufs_native=%u refused: the loader serves the storage (ufs=2), and the two would drive one "
+		    "controller; through the loader\n", native);
+		native = 0;
 	}
 	base = ml_io_map_unmappable((vm_offset_t)(pa & ~(UFS_PAGE - 1)),
 	    ((pa & (UFS_PAGE - 1)) + sizeof(struct loader_block) + UFS_PAGE - 1) & ~(UFS_PAGE - 1), VM_WIMG_WCOMB);
@@ -1533,27 +2112,9 @@ hakios_ufs_init(void)
 	    (buffer_pa & (UFS_PAGE - 1)));
 	ufs_seq = ufs_page->answer.answered;      /* a loader that served an earlier kernel counts on from there */
 
-	ufs_bmajor = bdevsw_add(-1, &ufs_bdevsw);
-	ufs_cmajor = ufs_bmajor < 0 ? -1 : cdevsw_add_with_bdev(-1, &ufs_cdevsw, ufs_bmajor);
+	made = ufs_make_nodes();
 	if (ufs_cmajor < 0) {
-		printf("ufs: no device numbers to be had\n");
 		return;
-	}
-	for (uint32_t i = 0; i < ufs_parts; i++) {
-		char name[48];
-
-		ufs_bsize[i] = ufs_page->part[i].block_size;
-		if (ufs_page->part[i].flags & BLOCK_PART_UNIT) {
-			continue;               /* the units are for this kernel's own driver to be checked against */
-		}
-		snprintf(name, sizeof(name), "ufs_%s", ufs_page->part[i].name);
-		if (devfs_make_node(makedev(ufs_bmajor, i), DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "%s", name) == NULL) {
-			printf("ufs: no node for %s (the same name twice?)\n", name);
-			continue;
-		}
-		snprintf(name, sizeof(name), "rufs_%s", ufs_page->part[i].name);
-		(void)devfs_make_node(makedev(ufs_cmajor, i), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "%s", name);
-		made++;
 	}
 	ufs_ready = true;
 	printf("ufs: %u partitions of the phone's storage as /dev/ufs_NAME and /dev/rufs_NAME, read only, "
@@ -1614,9 +2175,9 @@ hakios_ufs_init(void)
 	 * controller for the run, if all is as expected; 2: only look; 3: a dry run -- the list in and
 	 * out again, and in once more for the end of the run to take out, no command sent.
 	 */
-	check = 0;
+	check = native;
 	memset(ufs_lun, 0xff, sizeof(ufs_lun));
-	if (PE_parse_boot_argn("ufs_native", &check, sizeof(check)) && check != 0) {
+	if (check >= 1 && check <= 3) {
 		struct ufshc_loader offer = {
 			.hc_pa = ufs_page->native.hc_pa, .area_pa = ufs_page->native.area_pa,
 			.area_size = ufs_page->native.area_size, .ucd_offset = ufs_page->native.ucd_offset,
