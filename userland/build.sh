@@ -47,6 +47,8 @@
 #                                   ../fw-gpu -- the library is not even loaded and nothing changes
 #                                   (src/inject.c, opengl_es()). The Galaxy S9's Mali counts as well: its
 #                                   service, HakiosMali, is there once the kernel's mali=9 has brought it up.
+#                                   NO_AIR=1 beside it: without the AIR compiler library (Metal shaders on
+#                                   the Adreno, docs/air.md), which the S9 does not use.
 #                                   GL=gfx: the library draws with the HOST's GPU instead: gfxstream over
 #                                   virtio-gpu (src/gfx, /dev/vgpu3d; AVF on the Pixel: the PowerVR), as
 #                                   lib/libhakios.gl.dylib (no Mesa), plus bin/gfx_test. Boot-arg gl=1 loads
@@ -345,7 +347,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			# contract warns about, and nothing in it said so. Silence is what made it expensive:
 			# the library is stripped, so the driver found the symbols it wanted and read a stride
 			# where a pixel format was.
-			[ "$(cat $M/built-from-air 2>/dev/null)" = "$(cat ../tools/mesa/air/* | sha256sum)" ] || {
+			# NO_AIR=1: not this library at all (the Galaxy S9's image: its GPU's Metal path is not AIR's, and the
+			# library's build needs the whole of Mesa again); the image then simply has no libhakiosair.dylib.
+			[ -n "$NO_AIR" ] || [ "$(cat $M/built-from-air 2>/dev/null)" = "$(cat ../tools/mesa/air/* | sha256sum)" ] || {
 				echo "build.sh: tools/mesa/air/ has changed since libhakiosair.dylib was built"
 				AIR=1 ../tools/mk-mesa.sh
 			}
@@ -367,7 +371,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			# Adreno out (tools/mesa/air/air_metal.h). It is copied whether or not
 			# GL is wanted, because src/hakiosmetal_air.m dlopens it by that path --
 			# and its absence is a sentence the driver prints, not a crash.
-			[ -f $M/libhakiosair.dylib ] && cp $M/libhakiosair.dylib obj/
+			[ -z "$NO_AIR" ] && [ -f $M/libhakiosair.dylib ] && cp $M/libhakiosair.dylib obj/
 		fi
 	fi
 	# (drawable_test is built in the same block as surf_test, so it is copied with it)
