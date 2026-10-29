@@ -16,6 +16,7 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 | LinuxKPI / Linux headers | `wifi/lx/include/linux/`, `wifi/lx/include/net/` | Linux / FreeBSD LinuxKPI | GPL-2.0 (Linux) / BSD-2-Clause (FreeBSD) | small compatibility headers; see each file's notice |
 | Linux DRM shim | `tools/mesa/hakios-drm/`, `xf86drm.h` | Linux / X.Org | MIT | build-time shim for Mesa |
 | AIR / Metal-library tooling | `tools/mesa/air/` | HakiOS (Darwin on redwood contributors) | MIT | our own; LLVM bitcode layout is a published format |
+| AdrenoMetal (Metal frontend and C-ABI bridge) | `userland/src/metalvk/NativeBridgeMetalFrontend.{mm,h}`, `tools/metal/bridge/NativeMetal{Objects,Bridge}.{rs,h}` | UniXNU, github.com/UniXNU/AdrenoMetal at `ce5e19e33e05` ("NativeMetal contributors") | MIT (`LICENSE.AdrenoMetal` beside each) | copied with the notice; Scion's changes marked `Scion:`; METAL=vk only |
 | mkbootimg.py | `devices/redwood/prebuilt/mkbootimg.py` | Android Open Source Project | Apache-2.0 | |
 | Mu-Silicium / Project Mu derived files | `devices/redwood/uefi/` | Project Silicium, Microsoft, contributors | BSD-2-Clause-Patent; some GPL-2.0+ OR MIT | derived parts keep upstream license |
 | Qualcomm/Xiaomi UEFI driver binaries | `devices/redwood/uefi/files/Binaries/` | Qualcomm / Xiaomi (from device `xbl.img`) | vendor's — **to verify** | needed only to rebuild UEFI; removable, re-extract with UEFIReader |
@@ -34,6 +35,8 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 | lzfse | `xnuloader/mkidentity.sh` (when no decoder present) | Apple, github.com/lzfse/lzfse | BSD-3-Clause |
 | ath11k (Wi-Fi driver) | `tools/mk-ath11k.sh` | Linux | BSD-3-Clause-Clear |
 | Mesa (GL=1 images) | `tools/mk-mesa.sh` | Mesa project | MIT and others |
+| metal2vulkan (runtime, translator, AIR reader; METAL=vk images) | `tools/metal/mk-metal2vulkan.sh` (github.com/steelbrain/metal2vulkan at `720ef1ce9ae2`, with AdrenoMetal's patches and ours in `tools/metal/m2v/`) | Anees Iqbal | GPL-2.0-or-later OR LGPL-3.0-or-later; only ever in its own `libmetal2vulkan.dylib`, which can be replaced |
+| Rust toolchain and crates (ash, libc, sha2, serde ...) | `tools/metal/mk-metal2vulkan.sh` (rustup into `xnu-deps/rust`, crates.io) | the Rust project, crate authors | MIT / Apache-2.0 |
 | Procursus / Sileo packages | `tools/mk-jb.sh` | Procursus team | their own licenses |
 | Phone firmware (GPU, Wi-Fi, DSP, modem, haptics, cameras) | `devices/redwood/pull-firmware.sh` | Qualcomm / Xiaomi | vendor's — user's own device |
 

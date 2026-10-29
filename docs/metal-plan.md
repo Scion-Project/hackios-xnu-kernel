@@ -15,6 +15,12 @@ What "real Metal" would be, and why games are out of reach, is argued in `docs/r
 changed. What this plan aims at is the part that is within reach: **Metal clients of the system itself** (the window
 server's compositor, CoreImage, the camera's viewfinder) running on the Adreno through B and C, with shaders from A.
 
+**A second route, for a guest with no GPU of its own: Metal on Vulkan** (the last section, "Metal on Vulkan"). The Pixel's
+guest under AVF reaches its GPU only through gfxstream, which speaks OpenGL ES and Vulkan, not the Adreno's kernel
+interface, so A and C do not apply there. metal2vulkan's runtime gives the whole Metal API on any Vulkan 1.2 driver; with
+AdrenoMetal's frontend it is a second build of part B (`METAL=vk`), on gfxstream's guest Vulkan driver on the Pixel and on
+Mesa's panvk on the Galaxy S9 later. It runs on three Vulkan drivers of a Mac; on the guest it waits for that driver.
+
 ## The order, and how each step is checked
 
 | # | Step | Checked by | Where |
@@ -119,12 +125,13 @@ command buffer and compute encoder on the GPU's buffers (part C), which need the
 ## What UniXNU's AdrenoMetal showed, and what was taken
 
 [UniXNU](https://github.com/UniXNU) runs iPadOS 17 on a Xiaomi Pad 6S Pro (SM8550, Adreno 740), and its
-[AdrenoMetal](https://github.com/UniXNU/AdrenoMetal) (MIT) composes the system UI on the GPU. Read on 27 October 2026; no code of
-it is in this repository, the facts below are written here in our own words and code, with the source named where it is used.
+[AdrenoMetal](https://github.com/UniXNU/AdrenoMetal) (MIT) composes the system UI on the GPU. Read on 27 October 2026; the facts
+below are written here in our own words and code, with the source named where it is used. (Since 29 October the Metal-on-Vulkan
+build of the plug-in, the last section, does carry code of theirs: the frontend and the bridge, copied under MIT with their notice.)
 
 - **Their route is Metal on Vulkan**: the plug-in's device is a subclass of `_MTLDevice` (as ours), and every Metal object is
-  translated by a runtime of theirs ("metal2vulkan", `bridge/NativeMetalObjects.rs`) onto Turnip, Mesa's Vulkan driver for Adreno,
-  over the kernel's GPU interface. Ours is AIR through NIR to ir3 directly (part A), on the same Mesa. Turnip supports the A6xx
+  handed by a bridge of theirs (`bridge/NativeMetalObjects.rs`) to metal2vulkan's runtime (steelbrain's, LGPL), which runs it on
+  Turnip, Mesa's Vulkan driver for Adreno, over the kernel's GPU interface. Ours is AIR through NIR to ir3 directly (part A), on the same Mesa. Turnip supports the A6xx
   generation our Adreno 642L belongs to, so their route is open to this port as well; which of the two is less work from here is
   the question of the next step, and it is not decided here.
 - **Universal metallibs.** Newer systems ship framework libraries as a fat container (0xCAFEBABE) of an AIR64 slice and a binary
@@ -151,5 +158,174 @@ in those numbers is in the compositor, not the driver. This needs a stable GPU r
 
 ## What is not claimed
 
-Nothing here draws. No Metal client has used this device for anything: the first one that tried (the window server) asked
-for a command queue and stopped. Everything above was seen in QEMU; none of it was run on the phone.
+Nothing of the Adreno route draws. No Metal client has used this device for anything: the first one that tried (the window
+server) asked for a command queue and stopped. Everything above was seen in QEMU; none of it was run on the phone. (The
+Metal-on-Vulkan route below has drawn and computed on a Mac, and on nothing else yet.)
+
+## Metal on Vulkan (29 October 2026): metal2vulkan, AdrenoMetal's frontend, Scion's Vulkan driver
+
+Why. On the Pixel the guest has no GPU of its own: it reaches the host's through gfxstream (`tools/gfxstream/`, the scion
+repository's `docs/GPU.md`), which speaks OpenGL ES and Vulkan. Parts A and C above are the Adreno's (ir3, KGSL-like submits),
+and do not apply. [metal2vulkan](https://github.com/steelbrain/metal2vulkan) is the Metal API on any Vulkan 1.2 device, with its
+own AIR-to-SPIR-V translator (no LLVM at run time), and AdrenoMetal (previous section) is a complete Metal plug-in over it. Put
+together and pointed at a Vulkan driver of ours, that is a second build of part B: `userland/build.sh METAL=vk`.
+
+### The pieces
+
+| Piece | From | Licence | Where |
+|---|---|---|---|
+| the runtime, the translator, the AIR reader (`metal2vulkan-runtime`, `metal2vulkan`, `metal2vulkan-air` 0.2.0) | steelbrain/metal2vulkan at `720ef1ce9ae2`, with AdrenoMetal's 16 patches to it | GPL-2.0-or-later OR LGPL-3.0-or-later | fetched (a sparse checkout of the three crates) and patched into `xnu-deps/build/metal2vulkan/src` by `tools/metal/mk-metal2vulkan.sh`; never committed; built only into `libmetal2vulkan.dylib` |
+| the C-ABI bridge over the runtime: `NativeMetalObjects.rs/.h`, `NativeMetalBridge.rs/.h` (`nmb_*`, 132 functions) | AdrenoMetal at `ce5e19e33e05` | MIT, NativeMetal contributors | `tools/metal/bridge/`, copied with the notice; our changes marked `Scion:` |
+| `icd.rs` (the driver by path), `build.rs`, `Cargo.toml` | ours | MIT | `tools/metal/bridge/` |
+| the Metal frontend: `NativeBridgeMetalFrontend.mm/.h` (a dynamic subclass of `_MTLDevice`, a class per Metal object) | AdrenoMetal | MIT | `userland/src/metalvk/`, copied with the notice; changes marked `Scion:` |
+| the plug-in's entry: `HakiosMetalVK.mm` (the class Metal takes, the driver, the cache, the device) | ours | MIT | `userland/src/metalvk/` |
+| the checks: `m2v_test.c` + `m2v_test.metal`, `metalvk_plugin_test.m`, the self-test's shaders | ours | MIT | `tools/metal/` |
+
+**Why that revision.** AdrenoMetal's bridge and patches were made against metal2vulkan as it was around 14 October; metal2vulkan's
+history was landed again on 26 October. Matching the patches' base blobs against every commit of the new history, `720ef1ce9ae2`
+is the newest where 37 of the 38 files the patches touch are byte for byte their bases (the 38th, `texture.rs`, takes its hunks
+cleanly); all 16 apply. At metal2vulkan's master of 29 October 13 of the 16 do not apply, and the bridge would have to follow the
+runtime's API (it uses at least one patched-in API, `PaddedReadsPolicy::AliasWrites`). So the patches apply and the bridge needs
+them; moving the pin forward is a port of the bridge (below, "what is needed").
+
+**One dylib, replaceable.** The runtime is LGPL (or GPL): it is only ever in `/redwood/lib/libmetal2vulkan.dylib`, a library of
+its own that the bundle links by install name, so a user can rebuild and replace it (`tools/metal/mk-metal2vulkan.sh ios`, from
+the pinned source). No line of metal2vulkan is in any MIT or APSL file here; a change of ours to it would be a patch file in
+`tools/metal/m2v/` under its licence (there is none yet).
+
+### How the plug-in reaches the Vulkan driver
+
+1. The kernel's `metal=1` names `HakiosMetal`/`HakiosMetalDevice` (unchanged, step 1 above). The bundle's constructor registers
+   `HakiosMetalDevice` on `_MTLDevice` if this process is shown the device (`metal=N`, `HakiosMetal.clients`: the same rule as
+   the other build, now in `userland/src/hakios_metal_shown.c` for both).
+2. Metal sends `-initWithAcceleratorPort:`. The plug-in picks the driver: `HAKIOS_VK_ICD` in the environment, else the first
+   line of `HakiosMetal.icd` beside the bundle (`METAL_ICD=PATH` at build time writes it), else
+   **`/redwood/lib/libhakios.vk.dylib`**, the gfxstream driver's install name. No file there: no device, Metal has no plug-in,
+   nothing changes for anyone. It picks a writable shader cache (the user's cache directory, its temp directory, `/tmp`,
+   `/private/var/tmp`, each `/m2v`), turns off Apple's IOSurface compression for the process (a layout of Apple's GPUs), and calls
+   the frontend's `native_bridge_metal_open(driver, cache, registryID, missing)`.
+3. The bridge's `nmb_device_open` hands the path to `icd.rs`, which `dlopen`s it, takes `vk_icdGetInstanceProcAddr` (else
+   `vkGetInstanceProcAddr`), negotiates the loader-ICD interface (version 5) if the driver exports
+   `vk_icdNegotiateLoaderICDInterfaceVersion`, and keeps the entry. There is no Vulkan loader on iOS, and the runtime opens a
+   *loader* by path (ash's `Entry::load_from`, which wants `vkGetInstanceProcAddr`): so `libmetal2vulkan.dylib` exports a
+   `vkGetInstanceProcAddr` of its own that forwards to the driver's entry, and the runtime is told to open the library itself.
+   No layers, no dispatch table written into the driver's objects: every call goes straight to the driver, as a driver is used
+   without a loader. One driver per process.
+4. The runtime makes the device (Vulkan 1.2 and timeline semaphores are its floor), and `-initWithAcceleratorPort:` returns the
+   frontend's `NativeBridgeMetalDevice` in place of the object Metal allocated (as AdrenoMetal's plug-in does). The log says
+   `HakiosMetal: a device for the accelerator port N: <name>, on <driver> (<entry>, ICD interface 5), shaders cached in ...`; every
+   selector the frontend lacks is `HakiosMetal: asked and not implemented: -[Class selector]`, once.
+
+### What ran, on this Mac (an M1 Pro, macOS 27)
+
+`tools/metal/mk-metal2vulkan.sh mac` builds the library for macOS, compiles `tools/metal/m2v_test.metal` with Xcode's Metal
+compiler (`xcrun metal`, then `metallib`) and runs `m2v_test`, which goes through the same C ABI the plug-in uses. On lavapipe
+(`/opt/homebrew/lib/libvulkan_lvp.dylib`, Mesa 26.2.5, a CPU Vulkan 1.4), the exact output (the runtime's own notices, lines
+beginning `metal2vulkan:`, left out):
+
+```
+ok    self-test: compute 0 of 1000 wrong, render 0 of 64 wrong, import 0 of 4096 wrong
+      device: llvmpipe (LLVM 23.1.3, 128 bits); driver /opt/homebrew/lib/libvulkan_lvp.dylib (vk_icdGetInstanceProcAddr, ICD interface 5); runtime metal2vulkan-720ef1ce9ae2-d91d85dac5dae0d1
+      library: 5 functions from out/mac/m2v_test.metallib (18978 bytes)
+ok    axpb: 4096 floats, 0 wrong (out[1234] = 3564.0, the CPU says 3564.0)
+ok    collatz: 4096 numbers, 0 wrong (the longest: 237 steps from 3711)
+ok    group_sum: 65536 numbers in 256 groups, total 134183984 (the CPU: 134183984), 0 group sums wrong
+ok    triangle: 64x64 RGBA8, 1062 pixels inside and 2619 outside judged (415 on edges not), 0 wrong
+m2v_test: everything ran and every number is the CPU's
+```
+
+The self-test is AdrenoMetal's (`nmb_selftest`) on our own shaders (`tools/metal/m2v_selftest.metal`): 1000 floats through a
+kernel, a quad into an 8x8 target read back by a blit, and the same quad into 64x64 host pages imported without a copy. The other
+three kernels exercise loops and branches, threadgroup memory with barriers, and a device atomic; the triangle is compared pixel
+by pixel with the coverage and the interpolated colour its corners give (red bottom left, green bottom right, blue at the top, as
+predicted). MoltenVK (`libMoltenVK.dylib` 1.4.2, on the M1 Pro's GPU) and KosmicKrisp (Mesa's Vulkan on Metal) give the same
+lines, `ok` every one.
+
+`tools/metal/metalvk-plugin-test.sh` then builds the plug-in's own three sources for macOS, makes the device the way Metal makes
+it (`[[HakiosMetalDevice alloc] initWithAcceleratorPort:]`) and uses **the Metal API**: a library from the metallib's URL,
+compute pipelines, a queue, compute, render and blit encoders, a completion handler, and a texture over an IOSurface, rendered
+into and read from the surface's own memory. On lavapipe:
+
+```
+ok    the plug-in registered HakiosMetalDevice, a subclass of _MTLDevice
+ok    -initWithAcceleratorPort: gives the frontend's device (NativeBridgeMetalDevice, on _MTLDevice): llvmpipe (LLVM 23.1.3, 128 bits)
+ok    maxBufferLength 2147483648, unified memory
+ok    newLibraryWithURL: axpb collatz group_sum triangle_vertex triangle_fragment ((null))
+ok    newComputePipelineStateWithFunction: axpb ((null))
+ok    axpb through the Metal API: 0 of 4096 floats wrong
+ok    the completion handler ran, with the status completed
+ok    group_sum through the Metal API: 134183984 (the CPU: 134183984)
+ok    newRenderPipelineStateWithDescriptor: RGBA8 ((null))
+ok    the triangle through the Metal API: 1062 pixels inside judged, 0 wrong
+ok    newTextureWithDescriptor:iosurface:plane: a 128x96 BGRA8 texture over the surface (512 bytes a row)
+ok    the triangle read from the IOSurface's own memory: 3407 pixels inside judged, 0 wrong
+metalvk_plugin_test: the plug-in did everything asked, every number the CPU's
+```
+
+On MoltenVK (`tools/metal/metalvk-plugin-test.sh /opt/homebrew/lib/libMoltenVK.dylib`) every line is `ok` as well.
+
+macOS's Metal is not iOS 16.5's: this shows the frontend, the bridge and the runtime doing what the Metal API asks on a real Vulkan
+driver from the plug-in's own entry. It does not show that iOS's `MTLAddDevice` takes the device; `metal_test` on the guest says that.
+
+### What is built for the guest
+
+- `xnu-deps/build/metal2vulkan/out/ios/libmetal2vulkan.dylib`: arm64, iOS (`LC_BUILD_VERSION` platform 2, minos 16.0), install name
+  `/redwood/lib/libmetal2vulkan.dylib`, 17.7 MB stripped, linking only libSystem and libiconv; built by rustup's Rust 1.98.1
+  (metal2vulkan's own pin) for `aarch64-apple-ios`, kept apart from the machine's Rust in `xnu-deps/rust` (`HAKIOS_RUST`).
+- `HakiosMetal.bundle` with `METAL=vk`: `HakiosMetalVK.mm` and the frontend (ARC, C++17) and `hakios_metal_shown.c`, compiled
+  against the iPhoneOS 16.5 SDK (with `-Wall -Wextra` the only warnings are three deprecations in AdrenoMetal's code) and linked
+  against the dylib, every symbol resolved; minos 16.0.
+- `/redwood/bin/m2v_test` and `/redwood/share/m2v_test.metallib`: the Mac's test for the guest; `RC_JOBS=rc.jobs.metalvk` runs it
+  on `/redwood/lib/libhakios.vk.dylib`, then `metal_test`.
+
+None of it has run on iOS: there is no Vulkan driver in the guest yet.
+
+### What is stubbed or missing, plainly
+
+- **The driver.** gfxstream's guest Vulkan driver (`libhakios.vk.dylib`, branch `gpu/gfxstream-vulkan`) is not finished. Until it
+  is, `METAL=vk` gives a plug-in that makes no device, and this route has computed and drawn on a Mac only.
+- **IOSurfaces, and with them drawables, need the driver to import host memory.** A texture over an IOSurface is a no-copy buffer
+  over the surface's pages (the frontend's `newTextureWithDescriptor:iosurface:plane:`), and at this pin the runtime makes one only
+  through `VK_EXT_external_memory_host` (or dma-bufs on Linux); without it the texture is refused, logged
+  (`native-metal: surface import refused`), and the caller gets nil. CAMetalLayer's drawables and every surface CoreAnimation hands
+  Metal are such textures. Whether gfxstream's guest driver can import guest pages is not known here; it is not the usual shape of
+  gfxstream. metal2vulkan's master (after 26 October) has *copied host buffers*: where a driver cannot import the pages, the no-copy
+  object is a copy of them, compared and synced at each commit. That needs the pin moved.
+- **Present.** The frontend has no drawable or present code of its own (AdrenoMetal's scanout client, `GpuScanout*`, is the
+  tablet's display hand-off and is not taken). A CAMetalLayer presents through CoreAnimation, which composites the drawable's
+  IOSurface: so it is the point above, and then the window server's own path to `MiniIOMobileFramebuffer`.
+- **The window server still cannot run on Metal** on iOS 16.5: QuartzCore's `default.metallib` is not in the image (step 7 above).
+  This route does not change that; its clients are CoreImage, RenderBox, the camera's views, applications.
+- **Not implemented by the frontend**, each refused with its reason: argument buffers and indirect command buffers,
+  `newTextureWithBytesNoCopy:`, Apple's texture layouts and pipeline libraries (Apple GPU binaries), protected content, shared events
+  across processes. GPU priorities are not applied.
+- **Device answers the runtime has not got** (logged once at creation, left at `_MTLDevice`'s 0/NO): `gpuCoreCount`,
+  `maxVertexAmplificationCount`, `maxComputeThreadgroupMemory`, `isLargeMRTSupported`, `supportsComputeCompressedTextureWrite`,
+  `supportsConditionalLoadStore`.
+- **Changes to AdrenoMetal's code** (each marked `Scion:`): the `_MTLDevice` size check of iPadOS 17.7.11 (536 bytes) is only
+  logged, since iOS 16.5's is not known to match and the subclass adds no instance variables; the frame-trace writer (a thread
+  writing under backboardd's caches every 0.4 s) runs only with `HAKIOS_METAL_TRACE` set; the driver is opened through `icd.rs`.
+  The frontend still flushes the CPU caches of a command's surfaces at commit (`sys_dcache_flush`), which the tablet's GPU needed
+  and which costs only time here. Shader priming (their `PrimeShaders.h`) is not taken; its counters stay zero.
+- **One object kept per process.** `-initWithAcceleratorPort:` returns another object than the one Metal allocated; that one, a
+  `_MTLDevice` whose `-init` never ran, is deliberately not released.
+- **Building** needs Xcode's Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`, 839 MB, once) for the shaders, rustup's
+  toolchain (0.6 GB in `xnu-deps/rust`, installed by the script when missing), and about 0.4 GB of intermediates per platform,
+  removed after the build unless `KEEP=1`.
+
+### What is needed once the gfxstream driver lands
+
+1. The driver at `/redwood/lib/libhakios.vk.dylib` (or anywhere, with `METAL_ICD=PATH`), exporting `vk_icdGetInstanceProcAddr` or
+   `vkGetInstanceProcAddr`, giving a Vulkan 1.2 device with `timelineSemaphore` and a queue family with graphics and compute.
+2. An image with `METAL=vk` and whatever the driver needs of the kernel (gfxstream's `/dev/vgpu3d` path), booted with `metal=1`
+   and `RC_JOBS=rc.jobs.metalvk`: `m2v_test`'s lines are the first result, the same lines as the Mac's above; `metal_test` the
+   second (does iOS 16.5's Metal take the device?).
+3. IOSurfaces (the point above), one of: the driver offering `VK_EXT_external_memory_host` over guest pages; IOSurfaces allocated
+   from memory the driver can import (gfxstream's blob resources) and the runtime taught that kind of import; or the pin moved to a
+   metal2vulkan with copied host buffers, which means porting the bridge to the runtime's newer API and checking AdrenoMetal's
+   patches again (they will have moved upstream or need redoing).
+4. Then `metal=2` for clients other than the window server (CoreImage, RenderBox), reading the `asked and not implemented` lines
+   as the next list, as steps 1 and 2 above did.
+
+On the Galaxy S9 the same build would point at Mesa's panvk (`METAL_ICD`); the runtime's floor (Vulkan 1.2, timeline semaphores)
+is the question to ask of panvk on the Mali G72.

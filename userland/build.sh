@@ -61,6 +61,13 @@
 #                                   it into the window server.
 #                                   GL=test: only the library and bin/gl_test (a triangle, src/gl_test.c;
 #                                   RC_JOBS=rc.jobs.gltest runs it); the window server stays as it is.
+#                      METAL=vk     the Metal plug-in (lib/HakiosMetal.bundle) is Metal on Vulkan instead of src/HakiosMetal.m:
+#                                   AdrenoMetal's frontend (src/metalvk/) over lib/libmetal2vulkan.dylib, metal2vulkan's runtime
+#                                   (tools/metal/mk-metal2vulkan.sh ios builds it; 18 MB), on the Vulkan driver at
+#                                   /redwood/lib/libhakios.vk.dylib (gfxstream's, on the Pixel) or the one METAL_ICD=PATH names
+#                                   (lib/HakiosMetal.icd). Plus bin/m2v_test and share/m2v_test.metallib: the same checks as on a
+#                                   Mac, on the guest's driver (RC_JOBS=rc.jobs.metalvk). Still behind boot-arg metal=N like the
+#                                   other plug-in; with no driver at that path there is simply no device. docs/metal-plan.md.
 #                      ADSP=1       with the audio DSP's firmware from ../fw-audio in fw/ (20 MB; for the
 #                                   kernel's adsp_step=N, drivers/audio/hakios.adsp.c, which runs before the root is
 #                                   mounted). Not beside GL=1: the two do not fit the 64 MB the loader takes with
@@ -347,7 +354,27 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			METAL_GPU="-DHAKIOS_METAL_GPU -I$HM/include $HM/out/ios/libhakios-metal.a -lc++ -framework IOKit"
 			echo "build.sh: HakiosMetal with hakios-metal ($HM)"
 		fi
-		$DYN -bundle -framework Foundation -framework Metal -lobjc -o obj/HakiosMetal src/HakiosMetal.m src/hakios_metallib.c $METAL_GPU
+		if [ "$METAL" = vk ]; then
+			# METAL=vk: Metal on Vulkan instead (src/metalvk/HakiosMetalVK.mm says how its device is made). The library is built
+			# again when it is missing or tools/metal/ has changed since (its pins, the bridge, the shaders: the same hash
+			# tools/metal/mk-metal2vulkan.sh writes beside it). ARC and C++17 for AdrenoMetal's frontend; -fuse-cxa-atexit
+			# undoes the kernel's -fno-use-cxa-atexit that xnu-clang++ adds, as tools/mk-mesa.sh does.
+			V=../xnu-deps/build/metal2vulkan/out/ios
+			[ -f $V/libmetal2vulkan.dylib ] && [ "$(cat $V/built-from-tree 2>/dev/null)" = "$(cat ../tools/metal/mk-metal2vulkan.sh \
+				../tools/metal/bridge/* ../tools/metal/*.metal ../tools/metal/m2v_test.c ../tools/metal/m2v/*.patch 2>/dev/null |
+				sha256sum)" ] || ../tools/metal/mk-metal2vulkan.sh ios
+			$DYN -c -o obj/hakios_metal_shown.o src/hakios_metal_shown.c
+			xnu-clang++ -arch arm64 -isysroot ${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk -O1 -fuse-cxa-atexit -std=c++17 -fobjc-arc \
+				-I../tools/metal -Isrc/metalvk -bundle -framework Foundation -framework Metal -framework IOSurface -framework IOKit \
+				-framework CoreFoundation -lobjc -o obj/HakiosMetal src/metalvk/HakiosMetalVK.mm \
+				src/metalvk/NativeBridgeMetalFrontend.mm obj/hakios_metal_shown.o $V/libmetal2vulkan.dylib
+			cp $V/libmetal2vulkan.dylib $V/m2v_test $V/m2v_test.metallib obj/
+			echo "build.sh: HakiosMetal is Metal on Vulkan (libmetal2vulkan.dylib, $(cat $V/built-from))"
+		else
+			$DYN -bundle -framework Foundation -framework Metal -lobjc -o obj/HakiosMetal src/HakiosMetal.m src/hakios_metallib.c \
+				src/hakios_metal_shown.c $METAL_GPU
+			rm -f obj/libmetal2vulkan.dylib obj/m2v_test obj/m2v_test.metallib
+		fi
 		if [ "$GL" = gfx ]; then
 			# the OpenGL ES library that draws with the host's GPU: gfxstream over virtio-gpu
 			# (/dev/vgpu3d), behind the same eagl.c (tools/gfxstream/mk-gfx.sh)
@@ -492,6 +519,13 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		mkdir -p root/lib/HakiosMetal.bundle
 		cp obj/HakiosMetal root/lib/HakiosMetal.bundle/
 		cp src/HakiosMetal.plist root/lib/HakiosMetal.bundle/Info.plist
+	fi
+	# METAL=vk: the runtime the plug-in links, the guest's test of it, and the Vulkan driver it opens if not the default
+	if [ -f obj/libmetal2vulkan.dylib ]; then
+		cp obj/libmetal2vulkan.dylib root/lib/
+		cp obj/m2v_test root/bin/
+		cp obj/m2v_test.metallib root/share/
+		[ -z "$METAL_ICD" ] || echo "$METAL_ICD" > root/lib/HakiosMetal.icd
 	fi
 	if [ "$GL" = gfx ]; then
 		cp obj/libhakios.gl.dylib root/lib/
@@ -849,6 +883,8 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	# the plug-in Metal opens when the accelerator names it (boot-arg metal=1; without it nothing names this bundle)
 	mkdir -p sysroot/System/Library/Extensions
 	[ -d root/lib/HakiosMetal.bundle ] && ln -sfn /redwood/lib/HakiosMetal.bundle sysroot/System/Library/Extensions/HakiosMetal.bundle
+	# METAL_ICD's file is read "beside the bundle", which is either directory depending on the path the bundle was loaded by
+	if [ -f root/lib/HakiosMetal.icd ]; then ln -sfn /redwood/lib/HakiosMetal.icd sysroot/System/Library/Extensions/HakiosMetal.icd; fi
 	# the OS cryptex: on a device a separate volume grafted at /System/Cryptexes/OS. It holds the dyld
 	# shared cache (dyld looks there first) and a few libraries and resources outside the cache.
 	mkdir -p sysroot/System/Cryptexes

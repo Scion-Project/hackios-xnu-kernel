@@ -1464,82 +1464,14 @@ registerQueueClass(void)
 #endif
 }
 
-/*
- * Whether this process may be shown the device, by the level of boot-arg metal (read from sysctl kern.bootargs):
- *
- *   metal=1  only the program metal_test (userland/src/metal_test.m): the safe level, for seeing what Metal does with the device
- *   metal=2  every process but backboardd
- *   metal=3  every process, backboardd too, to find out what the window server asks
- *
- * Why not simply everyone. CoreAnimation's window server tries Metal FIRST and goes to its OpenGL ES path (which works on this port)
- * only when no Metal device exists; with ours it takes Metal and stops on "metallib_url != nil": its own shader library,
- * QuartzCore.framework/default.metallib, is not in this system image (the framework has only a default.pipelinelib that names
- * it), so the window server cannot run on Metal here at all. And mediaserverd, given a device that cannot do anything, ends and
- * is started again. A device that is shown to a process that cannot use it costs that process, so it is shown to as few as the
- * experiment needs.
- *
- * Besides the level, a file HakiosMetal.clients beside the bundle (the way UniXNU's AdrenoMetal chooses its clients) names more
- * processes, one per line, "*" for every one: an image can show the device to the one program being worked on without a boot-arg.
- */
-static BOOL
-listedBesideTheBundle(const char *name)
+/* Whether this process may be shown the device: boot-arg metal=N and HakiosMetal.clients (src/hakios_metal_shown.c, shared with the
+ * other build of this plug-in, src/metalvk/). */
+#include "hakios_metal_shown.h"
+
+static void
+sayLine(const char *line)
 {
-	Dl_info info;
-	char path[1024], line[256];
-	char *slash;
-	FILE *file;
-	BOOL listed = NO;
-
-	if (dladdr((const void *)&listedBesideTheBundle, &info) == 0 || info.dli_fname == NULL) {
-		return NO;
-	}
-	strlcpy(path, info.dli_fname, sizeof(path));            /* <Extensions>/HakiosMetal.bundle/HakiosMetal */
-	if ((slash = strrchr(path, '/')) == NULL) {
-		return NO;
-	}
-	*slash = '\0';
-	if ((slash = strrchr(path, '/')) == NULL) {
-		return NO;
-	}
-	strlcpy(slash + 1, "HakiosMetal.clients", sizeof(path) - (size_t)(slash + 1 - path));
-	if ((file = fopen(path, "r")) == NULL) {
-		return NO;
-	}
-	while (!listed && fgets(line, sizeof(line), file) != NULL) {
-		line[strcspn(line, " \t\r\n#")] = '\0';
-		listed = strcmp(line, "*") == 0 || (line[0] != '\0' && strcmp(line, name) == 0);
-	}
-	fclose(file);
-	return listed;
-}
-
-static BOOL
-shownToThisProcess(void)
-{
-	char args[1024] = "";
-	size_t size = sizeof(args) - 1;
-	const char * name = getprogname();
-	int level = 1;
-
-	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0) {
-		const char * at = strstr(args, "metal=");
-
-		if (at != NULL) {
-			level = atoi(at + 6);
-		}
-	}
-	if (name == NULL) {
-		return NO;
-	}
-	if (level >= 3 || (level == 2 && strcmp(name, "backboardd") != 0) || (level == 1 && strcmp(name, "metal_test") == 0)) {
-		return YES;
-	}
-	if (listedBesideTheBundle(name)) {
-		say([NSString stringWithFormat:@"%s is shown the device: HakiosMetal.clients beside the bundle names it", name]);
-		return YES;
-	}
-	say([NSString stringWithFormat:@"%s is not shown the device (metal=%d; 1 is metal_test only, 2 all but backboardd, 3 all)", name, level]);
-	return NO;
+	say([NSString stringWithUTF8String:line]);
 }
 
 __attribute__((constructor)) static void
@@ -1547,7 +1479,7 @@ registerDevice(void)
 {
 	Class device;
 
-	if (!shownToThisProcess()) {
+	if (!hakios_metal_shown(sayLine)) {
 		return;
 	}
 

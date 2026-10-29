@@ -20,6 +20,9 @@ In the repository:
 - the Wi-Fi driver: Linux's ath11k (BSD-3-Clause-Clear) and FreeBSD's LinuxKPI headers (BSD-2-Clause) are
   fetched by tools/mk-ath11k.sh at pinned releases and built on our layer wifi/lx (MIT); only the layer is here.
 
+- AdrenoMetal (UniXNU, "NativeMetal contributors"), userland/src/metalvk/NativeBridgeMetalFrontend.* and
+  tools/metal/bridge/NativeMetal*: MIT, see LICENSE.AdrenoMetal beside them; the Metal-on-Vulkan plug-in (METAL=vk).
+
 Fetched at build time, never committed:
 
 - the iOS 16.5 IPSW (Apple): the user space of the system image; the user gets it and
@@ -30,3 +33,7 @@ Fetched at build time, never committed:
   user's own phone (devices/redwood/pull-firmware.sh).
 - lzfse (Apple, BSD-3-Clause), built by xnuloader/mkidentity.sh when no LZFSE decoder is installed.
 - Mesa (for GL=1 images), Procursus and Sileo packages (tools/mk-jb.sh): their own licenses.
+- metal2vulkan (github.com/steelbrain/metal2vulkan; GPL-2.0-or-later OR LGPL-3.0-or-later), for METAL=vk images:
+  fetched and patched by tools/metal/mk-metal2vulkan.sh and built only into libmetal2vulkan.dylib, a library of its own
+  that the plug-in links and that can be replaced. None of its code is in this repository's files; changes of ours to it
+  would be patch files in tools/metal/m2v/, under its licence and saying so (there are none yet).

@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 clang -O1 -g -fsanitize=address -Wall -Wno-unused-parameter -Iuserland/src -framework Foundation -framework Metal -lobjc \
-	tools/metal_plugin_test.m userland/src/HakiosMetal.m userland/src/hakios_metallib.c -o "$tmp/metal_test"
+	tools/metal_plugin_test.m userland/src/HakiosMetal.m userland/src/hakios_metallib.c userland/src/hakios_metal_shown.c -o "$tmp/metal_test"
 files=
 if [ -n "$1" ]; then
 	# the MTLB ones (the GPU driver's own runtime libraries are another format: tools/metallib-test.sh)
