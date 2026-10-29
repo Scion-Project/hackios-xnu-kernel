@@ -594,6 +594,7 @@ struct platform {
 	uint64_t ram_log, ram_log_size;  /* where the log is kept across a restart when there is no log partition (write_ram_log) */
 	uint64_t ufs_hc;                 /* the UFS host controller the kernel's own driver may take over (ufs_native=); 0: none */
 	uint64_t timer_hz;               /* the timer's frequency where CNTFRQ_EL0 reads 0 (the firmware never set it), 0: none */
+	uint64_t recovery_pmu;           /* Samsung: the PMU whose INFORM registers send a restart into recovery (recovery_after_reset) */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -656,6 +657,11 @@ static const struct platform platform_starlte = {
 	 * way, and when the kernel hangs: into the RAM log, which survives the restart that follows.
 	 */
 	.log_other_cpu = 1,
+	/*
+	 * The PMU (system-controller@14060000 in the phone's device tree): its INFORM registers tell S-Boot where a restart
+	 * is to go, and a run's restart goes to recovery, where its log is read (recovery_after_reset).
+	 */
+	.recovery_pmu = 0x14060000,
 };
 
 /*
@@ -1055,11 +1061,33 @@ dt_pci_node(struct dt_writer *w)
 
 /* ------------------------------------------------------------------------ */
 
+/*
+ * A Samsung phone restarted from here goes to its recovery (TWRP), where the run's log is read, and not back into BOOT:
+ * that is this image again, and its next run would write over the log in RAM. S-Boot reads why it was restarted from
+ * two registers of the PMU, which a reset leaves alone, and the phone's own kernel sets them for "reboot recovery" so
+ * (Samsung's sec_reboot.c, sec_reboot(); the offsets in include/linux/sec_ext.h): INFORM2 (+0x808) 0x12345678, a
+ * restart and not a power-off; INFORM3 (+0x80C) 0x12345674, recovery. recovery=0 on the command line: back into BOOT.
+ */
+static const struct platform *PLAT;      /* (the device found, below) */
+static int reset_to_recovery = 1;
+
+static void
+recovery_after_reset(void)
+{
+	if (PLAT == NULL || PLAT->recovery_pmu == 0 || !reset_to_recovery) {
+		return;
+	}
+	*(volatile uint32_t *)(uintptr_t)(PLAT->recovery_pmu + 0x808) = 0x12345678;
+	*(volatile uint32_t *)(uintptr_t)(PLAT->recovery_pmu + 0x80C) = 0x12345674;
+	__asm__ volatile ("dsb sy" ::: "memory");
+}
+
 static void
 reboot(void)
 {
 	hc_take_back("before the reset");
 	flush_log();
+	recovery_after_reset();
 	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
 	for (;;) {
 	}
@@ -3002,6 +3030,7 @@ exception_handler(int64_t type, uint64_t *ctx)
 	print("loader image base %x (elr offset %x)\n", (uint64_t)(uintptr_t)&__ImageBase,
 	    ctx[EXC_CTX_ELR] - (uint64_t)(uintptr_t)&__ImageBase);
 	flush_log();
+	recovery_after_reset();
 	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
 	for (;;) {
 	}
@@ -3482,6 +3511,9 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		if (starts_with(c, "ufs=") && (c == pi.cmdline || c[-1] == ' ') && c[4] >= '1' && c[4] <= '2' &&
 		    (c[5] == 0 || c[5] == ' ')) {
 			ufs_requested = c[4] - '0';
+		}
+		if (starts_with(c, "recovery=0") && (c == pi.cmdline || c[-1] == ' ') && (c[10] == 0 || c[10] == ' ')) {
+			reset_to_recovery = 0;
 		}
 		block_probe_requested |= starts_with(c, "ufs_probe=1") && (c == pi.cmdline || c[-1] == ' ');
 		block_write_requested |= starts_with(c, "ufs_write=1") && (c == pi.cmdline || c[-1] == ' ') &&
