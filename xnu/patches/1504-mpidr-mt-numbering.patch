@@ -1,0 +1,144 @@
+diff --git a/osfmk/arm/machine_routines.h b/osfmk/arm/machine_routines.h
+--- a/osfmk/arm/machine_routines.h
++++ b/osfmk/arm/machine_routines.h
+@@ -289,6 +289,8 @@
+ int ml_get_boot_cpu_number(void);
+ 
+ int ml_get_cpu_number(uint32_t phys_id);
++/* the device tree's number for the core with this MPIDR (HakiOS, patch 1504: ml_mpidr_mt_aff1) */
++uint32_t ml_phys_id_from_mpidr(uint64_t mpidr);
+ 
+ unsigned int ml_get_cpu_number_local(void);
+ 
+diff --git a/osfmk/arm64/gic_v3_irq.c b/osfmk/arm64/gic_v3_irq.c
+--- a/osfmk/arm64/gic_v3_irq.c
++++ b/osfmk/arm64/gic_v3_irq.c
+@@ -528,7 +528,7 @@
+ 		/* (a GIC with a single CPU interface may say nothing: it is the only one) */
+ 		target = 1;
+ 	}
+-	gic_v2_phys[cpu] = (uint32_t)(__builtin_arm_rsr64("MPIDR_EL1") & 0xffff);
++	gic_v2_phys[cpu] = ml_phys_id_from_mpidr(__builtin_arm_rsr64("MPIDR_EL1"));    /* as phys_id has it (patch 1504) */
+ 
+ 	if (ml_get_cpu_count() > 1) {
+ 		uint32_t sgis = (1u << GIC_SGI_SIGNAL) | (1u << GIC_SGI_STOP);
+diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
+--- a/osfmk/arm64/loader_return.c
++++ b/osfmk/arm64/loader_return.c
+@@ -361,6 +361,7 @@
+ void loader_log_vprintf(const char *fmt, va_list *ap);
+ void loader_log_panic(const char *fmt, va_list *ap, unsigned long caller);
+ void loader_log_cpu_facts(void);
++extern uint32_t ml_mpidr_mt_aff1;
+ 
+ void
+ loader_early_log_init(void)
+@@ -468,9 +469,10 @@
+ 		return;
+ 	}
+ 	loader_log_printf("early_log: topology: %u cpus (max id %u), %u clusters; boot cpu id %d phys %x; "
+-	    "this processor by its MPIDR: cpu %d\n", t->num_cpus, t->max_cpu_id, t->num_clusters,
++	    "this processor by its MPIDR: phys %x, cpu %d%s\n", t->num_cpus, t->max_cpu_id, t->num_clusters,
+ 	    t->boot_cpu != NULL ? (int)t->boot_cpu->cpu_id : -1, t->boot_cpu != NULL ? t->boot_cpu->phys_id : 0,
+-	    ml_get_cpu_number((uint32_t)mpidr));
++	    ml_phys_id_from_mpidr(mpidr), ml_get_cpu_number(ml_phys_id_from_mpidr(mpidr)),
++	    ml_mpidr_mt_aff1 ? " (MT: the device tree numbers the cores one affinity field lower)" : "");
+ 	for (unsigned i = 0; i < t->num_cpus; i++) {
+ 		loader_log_printf("early_log:   cpu %u phys %x cluster %u type %d\n", t->cpus[i].cpu_id,
+ 		    t->cpus[i].phys_id, t->cpus[i].cluster_id, (int)t->cpus[i].cluster_type);
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -1032,6 +1032,8 @@
+ 	recount_processor_usage(&processor_array[cpu_id]->pr_recount, &usage, idle);
+ 	return true;
+ }
++
++static void ml_mpidr_numbering(void);
+ 
+ void
+ ml_parse_cpu_topology(void)
+@@ -1223,6 +1225,7 @@
+ 	cluster_offsets[0] = 0;
+ #endif
+ 	assert(topology_info.boot_cpu != NULL);
++	ml_mpidr_numbering();
+ 	ml_choose_slow_core_partners();
+ 	ml_read_chip_revision(&topology_info.chip_revision);
+ 
+@@ -1297,6 +1300,38 @@
+ 	return topology_info.boot_cluster->cluster_type;
+ }
+ 
++/*
++ * HakiOS (patch 1504): a device tree that numbers the cores as the firmware does, where the cores' own MPIDR has them
++ * one affinity field higher. The Galaxy S9's Cortex-A55s sit in a DynamIQ cluster: MT set, the core in Affinity1
++ * (core 2 reads 0x81000200). Samsung's device tree, its EL3 and Carbon's PSCI all call that core 2 (Affinity0). Set
++ * when the boot processor's MPIDR is in the device tree only that way; read by the reset vector as well (start.s),
++ * with the MMU off, so it is cleaned to memory.
++ */
++uint32_t ml_mpidr_mt_aff1;
++
++uint32_t
++ml_phys_id_from_mpidr(uint64_t mpidr)
++{
++	if (ml_mpidr_mt_aff1 && (mpidr & (1ULL << 24)) != 0) {
++		return (uint32_t)((mpidr >> MPIDR_AFF1_SHIFT) & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK));
++	}
++	return (uint32_t)(mpidr & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK));
++}
++
++static void
++ml_mpidr_numbering(void)
++{
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++
++	if (ml_get_cpu_number((uint32_t)mpidr) >= 0 || (mpidr & (1ULL << 24)) == 0) {
++		return;
++	}
++	if (ml_get_cpu_number((uint32_t)(mpidr >> MPIDR_AFF1_SHIFT)) >= 0) {
++		ml_mpidr_mt_aff1 = 1;
++		CleanPoC_DcacheRegion((vm_offset_t)&ml_mpidr_mt_aff1, sizeof(ml_mpidr_mt_aff1));
++	}
++}
++
+ int
+ ml_get_cpu_number(uint32_t phys_id)
+ {
+@@ -1332,7 +1367,7 @@
+ 
+ 	/* We identify the CPU based on the constant bits of MPIDR_EL1. */
+ 	MRS(mpidr_el1_value, "MPIDR_EL1");
+-	cpu_id = ml_get_cpu_number((uint32_t)mpidr_el1_value);
++	cpu_id = ml_get_cpu_number(ml_phys_id_from_mpidr(mpidr_el1_value));
+ 
+ 	assert(cpu_id <= (unsigned int)ml_get_max_cpu_number());
+ 
+@@ -1347,7 +1382,7 @@
+ 
+ 	/* We identify the cluster based on the constant bits of MPIDR_EL1. */
+ 	MRS(mpidr_el1_value, "MPIDR_EL1");
+-	cluster_id = ml_get_cluster_number((uint32_t)mpidr_el1_value);
++	cluster_id = ml_get_cluster_number(ml_phys_id_from_mpidr(mpidr_el1_value));
+ 
+ 	assert(cluster_id <= (unsigned int)ml_get_max_cluster_number());
+ 
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -169,6 +169,15 @@
+ 	// (generic boards: some number their cores in Affinity1 and leave Affinity0 at zero;
+ 	// a cpu data's phys id is both fields, as the device tree's "reg" has them)
+ 	and		x0, x15, #0xFFFF					// CPU number in Affinity0, cluster ID in Affinity1
++	// HakiOS (patch 1504): a device tree numbering the cores one affinity field lower than an MT MPIDR
++	// does (the Galaxy S9's A55s: 0x81000200 is its core 2), as ml_phys_id_from_mpidr()
++	adrp	x2, EXT(ml_mpidr_mt_aff1)@page
++	add		x2, x2, EXT(ml_mpidr_mt_aff1)@pageoff
++	ldr		w2, [x2]
++	cbz		w2, Lmpidr_numbered
++	tbz		x15, #24, Lmpidr_numbered
++	ubfx	x0, x15, #8, #16
++Lmpidr_numbered:
+ #else
+ 	and		x0, x15, #0xFF						// CPU number is in MPIDR Affinity Level 0
+ #endif
