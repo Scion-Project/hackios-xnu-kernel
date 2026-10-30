@@ -1,0 +1,88 @@
+diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
+--- a/osfmk/arm64/psci_smp.c
++++ b/osfmk/arm64/psci_smp.c
+@@ -29,6 +29,7 @@
+  * one core, the boot processor's. psci_smp_stop_others() makes every other
+  * core switch itself off first, wherever it is.
+  */
++#include <stdarg.h>
+ #include <mach/mach_types.h>
+ #include <kern/clock.h>
+ #include <kern/cpu_number.h>
+@@ -60,6 +61,8 @@
+ 
+ extern void loader_return(void);
+ extern void loader_log_putc(char c);
++extern void loader_log_line(const char *line);
++extern int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
+ extern unsigned long gVirtBase, gPhysBase;
+ 
+ /* The firmware is called with HVC, not SMC. (start.s reads this too, at its physical address.) */
+@@ -180,13 +183,42 @@
+  * joined the scheduler, and says what became of it if it has not: on a phone the log is all
+  * there is to go by.
+  */
++/*
++ * HakiOS (patch 1505): each step of a core's start, straight into the loader's log. On the Galaxy S9 the start of the
++ * first big core (an M3, MPIDR 0x100) left the boot processor silent for good (round 4): this says whether the
++ * firmware's CPU_ON came back, and how far the new core got.
++ */
++static void psci_smp_step(const char *fmt, ...) __printflike(1, 2);
++
++static void
++psci_smp_step(const char *fmt, ...)
++{
++	char line[200];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(line, sizeof(line), fmt, ap);
++	va_end(ap);
++	loader_log_line(line);
++}
++
++static uint64_t
++psci_smp_us(uint64_t abs)
++{
++	uint64_t ns;
++
++	absolutetime_to_nanoseconds(abs, &ns);
++	return ns / 1000;
++}
++
+ kern_return_t
+ psci_smp_start_cpu(int cpu)
+ {
+ 	cpu_data_t *cdp = cpu_datap(cpu);
+ 	uint32_t phys_id = cdp->cpu_phys_id, stage;
+ 	uint64_t entry = ml_static_vtop((vm_offset_t)&LowResetVectorBase);
+-	uint64_t now, deadline;
++	uint64_t now, deadline, t0 = mach_absolute_time(), t1;
++	uint32_t seen = 0;
+ 	int64_t status;
+ 
+ 	/*
+@@ -210,7 +242,12 @@
+ 	__builtin_arm_dsb(DSB_SY);
+ 
+ 	os_atomic_store(&psci_smp_cpu_stage[cpu], PSCI_SMP_CPU_ASKED, release);
++	t1 = mach_absolute_time();
++	psci_smp_step("psci: cpu %d (MPIDR 0x%x): the kernel's segments cleaned in %llu us; CPU_ON with entry 0x%llx (%s)\n",
++	    cpu, phys_id, psci_smp_us(t1 - t0), entry, psci_smp_hvc ? "HVC" : "SMC");
+ 	status = psci_call(PSCI_CPU_ON, phys_id, entry, 0);
++	psci_smp_step("psci: cpu %d: the firmware answered %lld (%s) in %llu us\n", cpu, status, psci_error(status),
++	    psci_smp_us(mach_absolute_time() - t1));
+ 	if (status != 0) {
+ 		os_atomic_store(&psci_smp_cpu_stage[cpu], 0, release);
+ 		printf("psci: cpu %d (MPIDR 0x%x) was not started: the firmware answers %lld (%s)\n",
+@@ -222,6 +259,10 @@
+ 	clock_interval_to_deadline(PSCI_SMP_START_SECONDS, NSEC_PER_SEC, &deadline);
+ 	do {
+ 		stage = os_atomic_load(&psci_smp_cpu_stage[cpu], acquire);
++		if (stage != seen) {
++			seen = stage;
++			psci_smp_step("psci: cpu %d: stage %u after %llu us\n", cpu, stage, psci_smp_us(mach_absolute_time() - t1));
++		}
+ 		if (stage >= PSCI_SMP_CPU_RUNNING) {
+ 			return KERN_SUCCESS;
+ 		}
