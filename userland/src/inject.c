@@ -786,7 +786,12 @@ number(int value)
 struct service {
 	CFMutableDictionaryRef properties;
 	volatile bool opened;
+	volatile bool taken;            /* backboardd took it as its touch screen: it set "QuantizationDPI" */
+	volatile bool judged;           /* backboardd has decided about it: it set "TouchDetectionMode" */
 };
+
+/* touch_fault=1: the touch screen first made answers no "PrimaryUsagePage" (tests the remake) */
+static bool touch_fault;
 
 /* The properties of a service of ours; the event server asks for them one at a time. */
 static CFTypeRef
@@ -795,6 +800,10 @@ service_copy_property(__unused void *target, void *refcon, __unused IOHIDService
 	static CFMutableSetRef asked;
 	CFTypeRef value = CFDictionaryGetValue(((struct service *)refcon)->properties, key);
 
+	if (touch_fault && ((struct service *)refcon)->judged == false && CFEqual(key, CFSTR("PrimaryUsagePage")) &&
+	    CFDictionaryContainsKey(((struct service *)refcon)->properties, CFSTR("DisplayIntegrated"))) {
+		return NULL;
+	}
 	if (asked == NULL) {
 		asked = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
 	}
@@ -833,9 +842,14 @@ service_set_property(__unused void *target, void *refcon, __unused IOHIDServiceC
 	    CFGetTypeID(value) == CFBooleanGetTypeID() && CFBooleanGetValue(value)) {
 		((struct service *)refcon)->opened = true;
 	}
+	/* backboardd sets this on the digitizer it takes for its main screen, as it takes it */
+	if (key != NULL && CFEqual(key, CFSTR("QuantizationDPI"))) {
+		((struct service *)refcon)->taken = true;
+	}
 	if (key != NULL && value != NULL && CFEqual(key, CFSTR("TouchDetectionMode")) && CFGetTypeID(value) == CFNumberGetTypeID()) {
 		int mode = 0;
 
+		((struct service *)refcon)->judged = true;
 		CFNumberGetValue(value, kCFNumberIntType, &mode);
 		if (mode != touch_mode) {
 			say("hakios: input: touch detection mode %#x\n", mode);
@@ -881,7 +895,8 @@ static const struct virtual_service_callbacks service_callbacks = {
  * the service is made again until the server has opened it.
  */
 static IOHIDServiceClientRef
-make_service(IOHIDEventSystemClientRef client, const char *product, int page, int usage, bool display)
+make_service(IOHIDEventSystemClientRef client, const char *product, int page, int usage, bool display,
+    struct service **made_out)
 {
 	struct service *made = calloc(1, sizeof(*made));
 	IOHIDServiceClientRef service = NULL;
@@ -929,7 +944,43 @@ make_service(IOHIDEventSystemClientRef client, const char *product, int page, in
 		CFRelease(service);
 		service = NULL;
 	}
+	if (made_out != NULL) {
+		*made_out = made;
+	}
 	return service;
+}
+
+/*
+ * The other way the event server's start goes wrong: backboardd sees the touch screen, but reads
+ * its usage page as 0 ("*** unexpected digitizer usage pair 0x4") and keeps waiting for a main
+ * screen digitizer, so no touch ever arrives. It sets "TouchDetectionMode" on the service either
+ * way, and "QuantizationDPI" just before that only when it takes it. A touch screen turned down
+ * is made again, and backboardd reads it afresh. Returns the screen to use.
+ */
+static IOHIDServiceClientRef
+keep_screen(IOHIDEventSystemClientRef client, IOHIDServiceClientRef screen, struct service *made)
+{
+	for (int attempt = 1; attempt <= 3 && screen != NULL; attempt++) {
+		int tenths = 0;
+
+		while (!made->judged && !made->taken && tenths++ < 600) {
+			usleep(100000);
+		}
+		for (tenths = 0; made->judged && !made->taken && tenths < 20; tenths++) {
+			usleep(100000);
+		}
+		if (made->taken || !made->judged) {
+			say("hakios: input: backboardd %s the touch screen\n", made->taken ? "took" :
+			    "has not decided about");
+			return screen;
+		}
+		say("hakios: input: backboardd turned the touch screen down (remake %d): making it again\n", attempt);
+		touch_fault = false;
+		IOHIDVirtualServiceClientRemove(screen);
+		CFRelease(screen);
+		screen = make_service(client, "HakiOS touch screen", HID_PAGE_DIGITIZER, HID_USAGE_TOUCH_SCREEN, true, &made);
+	}
+	return screen;
 }
 
 /* One frame of the touch screen: the hand, and under it every finger that is down or has just lifted. */
@@ -1031,6 +1082,7 @@ input_thread(__unused void *arg)
 	static const int types[] = { HID_CLIENT_SIMPLE, HID_CLIENT_RATE_CONTROLLED };
 	IOHIDEventSystemClientRef client = NULL;
 	IOHIDServiceClientRef screen = NULL, buttons = NULL;
+	struct service *screen_made = NULL;
 	struct hakios_touch t;
 	unsigned count = 0, waking = 0;         /* waking: the fingers whose touch went into waking the display */
 	int device;
@@ -1042,6 +1094,7 @@ input_thread(__unused void *arg)
 
 		if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
 			touch_latency = strstr(arguments, "touch_lat=1") != NULL;
+			touch_fault = strstr(arguments, "touch_fault=1") != NULL;
 		}
 		mach_timebase_info(&timebase);
 	}
@@ -1059,17 +1112,23 @@ input_thread(__unused void *arg)
 			continue;
 		}
 		IOHIDEventSystemClientScheduleWithDispatchQueue(client, dispatch_queue_create("redwood.input", NULL));
-		screen = make_service(client, "HakiOS touch screen", HID_PAGE_DIGITIZER, HID_USAGE_TOUCH_SCREEN, true);
+		screen = make_service(client, "HakiOS touch screen", HID_PAGE_DIGITIZER, HID_USAGE_TOUCH_SCREEN, true,
+		    &screen_made);
 		if (screen == NULL) {
 			say("hakios: input: a HID client of type %d may not create services\n", types[i]);
 		}
 	}
 	if (screen != NULL) {
-		buttons = make_service(client, "HakiOS buttons", HID_PAGE_CONSUMER, HID_USAGE_CONSUMER_CONTROL, false);
+		buttons = make_service(client, "HakiOS buttons", HID_PAGE_CONSUMER, HID_USAGE_CONSUMER_CONTROL, false, NULL);
 	}
 	say("hakios: input: touch screen service %p, buttons %p\n", (void *)screen, (void *)buttons);
 	dispatch_semaphore_signal(input_services_made); /* see wait_for_als_arrival() */
 	if (screen == NULL) {
+		return NULL;
+	}
+	screen = keep_screen(client, screen, screen_made);
+	if (screen == NULL) {
+		say("hakios: input: no touch screen service after making it again\n");
 		return NULL;
 	}
 
