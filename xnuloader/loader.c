@@ -378,6 +378,16 @@ write_ram_log(void)
  */
 static uint64_t ram_dump_base, ram_dump_size;   /* the platform's; 0: none */
 
+/* At the start: no record of a run before, which this one could be taken for if its kernel never comes back */
+static void
+clear_ram_dump(void)
+{
+	if (ram_dump_base != 0 && ram_dump_size >= sizeof(uint32_t)) {
+		*(volatile uint32_t *)(uintptr_t)ram_dump_base = 0;
+		clean_dcache(ram_dump_base, ram_dump_base + sizeof(uint32_t));
+	}
+}
+
 static void
 write_ram_dump(const char *klog, uint64_t klog_len)
 {
@@ -386,12 +396,11 @@ write_ram_dump(const char *klog, uint64_t klog_len)
 	static const char hdr[] = "====0.0-D\n== THE KERNEL'S LOG FROM ITS START (its end: pmsg-ramoops-0) ==\n";
 	uint64_t room, n;
 
-	if (ram_dump_base == 0 || ram_dump_size <= sizeof(*h) + sizeof(hdr)) {
-		return;
-	}
-	if (klog == NULL || klog_len == 0) {
-		h->sig = 0;             /* no kernel this time: not last run's log taken for this one's */
-		clean_dcache(ram_dump_base, ram_dump_base + sizeof(*h));
+	/*
+	 * Only a kernel's log is written: flush_log() comes here with none after it (round 3 on the S9 lost the record
+	 * that way). Last run's record is taken away once, at the start (clear_ram_dump).
+	 */
+	if (ram_dump_base == 0 || ram_dump_size <= sizeof(*h) + sizeof(hdr) || klog == NULL || klog_len == 0) {
 		return;
 	}
 	room = ram_dump_size - sizeof(*h) - (sizeof(hdr) - 1);
@@ -5291,6 +5300,7 @@ efi_main(efi_handle image, efi_system_table *st)
 	loader_gic_sysregs = PLAT->gic_cpu == 0;
 	ram_log_base = PLAT->ram_log, ram_log_size = PLAT->ram_log_size;
 	ram_dump_base = PLAT->ram_dump, ram_dump_size = PLAT->ram_dump_size;
+	clear_ram_dump();
 	print("platform %s, %s\n", PLAT->name, PLAT->gic_cpu != 0 ? "GICv2" : "GICv3");
 	pci_probe(PLAT);
 
