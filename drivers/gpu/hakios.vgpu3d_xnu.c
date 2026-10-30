@@ -109,6 +109,22 @@ struct vopen {
 static LCK_GRP_DECLARE(vgpu3d_lck_grp, "hakios-vgpu3d");
 static LCK_MTX_DECLARE(vgpu3d_opens_lock, &vgpu3d_lck_grp);
 static struct vopen *opens[MAX_OPENS];
+/*
+ * A minor handed out by vgpu3d_clone() and not opened yet: until this time (mach_absolute_time),
+ * no other lookup is given it. devfs asks for the minor under its lock but opens the device after
+ * dropping it, so two threads opening /dev/vgpu3d at once were given the same minor, and the
+ * second open failed with EBUSY (gfxstream's Vulkan opens a stream a thread). devfs gives a minor
+ * back only when making the vnode fails; a lookup that never opens (a stat) leaves its minor
+ * reserved, hence the time limit.
+ */
+static uint64_t reserved_until[MAX_OPENS];
+#define RESERVE_MS              2000
+/*
+ * opens[] slots and reserved_until[]: a lock of its own, never held while waiting, since
+ * vgpu3d_clone() runs under devfs's lock (and vgpu3d_opens_lock is held while the GPU answers).
+ * Taken inside vgpu3d_opens_lock, never the other way round.
+ */
+static LCK_MTX_DECLARE(vgpu3d_minor_lock, &vgpu3d_lck_grp);
 static int vgpu3d_major = -1;
 static uint64_t vgpu3d_features;
 static uint32_t vgpu3d_gles = 0xffffffff;       /* the context type: unknown yet */
@@ -973,12 +989,20 @@ static int
 vgpu3d_clone(__unused dev_t dev, int action)
 {
 	if (action == DEVFS_CLONE_ALLOC) {
+		uint64_t now = mach_absolute_time(), hold;
+		int m = -1;
+
+		nanoseconds_to_absolutetime(RESERVE_MS * NSEC_PER_MSEC, &hold);
+		lck_mtx_lock(&vgpu3d_minor_lock);
 		for (int i = 0; i < MAX_OPENS; i++) {
-			if (opens[i] == NULL) {
-				return i;
+			if (opens[i] == NULL && reserved_until[i] <= now) {
+				reserved_until[i] = now + hold;
+				m = i;
+				break;
 			}
 		}
-		return -1;
+		lck_mtx_unlock(&vgpu3d_minor_lock);
+		return m;
 	}
 	return 0;
 }
@@ -995,15 +1019,21 @@ vgpu3d_dev_open(dev_t dev, __unused int flags, __unused int devtype, __unused pr
 	}
 	lck_mtx_lock(&vgpu3d_opens_lock);
 	err = vgpu3d_probe();
-	if (err == 0 && opens[m] != NULL) {
-		err = EBUSY;
+	o = err == 0 ? IOMallocZeroData(sizeof(*o)) : NULL;
+	if (err == 0 && o == NULL) {
+		err = ENOMEM;
 	}
 	if (err == 0) {
-		o = IOMallocZeroData(sizeof(*o));
-		if (o == NULL) {
-			err = ENOMEM;
+		lck_mtx_lock(&vgpu3d_minor_lock);
+		if (opens[m] != NULL) {
+			err = EBUSY;
 		} else {
 			opens[m] = o;
+			reserved_until[m] = 0;
+		}
+		lck_mtx_unlock(&vgpu3d_minor_lock);
+		if (err) {
+			IOFreeData(o, sizeof(*o));
 		}
 	}
 	lck_mtx_unlock(&vgpu3d_opens_lock);
@@ -1020,7 +1050,9 @@ vgpu3d_dev_open(dev_t dev, __unused int flags, __unused int devtype, __unused pr
 		printf("vgpu3d: /dev/vgpu3d minor %d: no pipe (%d)\n", m, o->g.err);
 		vgpu3d_close(&o->g);
 		lck_mtx_lock(&vgpu3d_opens_lock);
+		lck_mtx_lock(&vgpu3d_minor_lock);
 		opens[m] = NULL;
+		lck_mtx_unlock(&vgpu3d_minor_lock);
 		lck_mtx_unlock(&vgpu3d_opens_lock);
 		lck_mtx_destroy(&o->lock, &vgpu3d_lck_grp);
 		IOFreeData(o, sizeof(*o));
@@ -1052,7 +1084,9 @@ vgpu3d_dev_close(dev_t dev, __unused int flags, __unused int devtype, __unused p
 	}
 	lck_mtx_unlock(&o->lock);
 	lck_mtx_lock(&vgpu3d_opens_lock);
+	lck_mtx_lock(&vgpu3d_minor_lock);
 	opens[m] = NULL;
+	lck_mtx_unlock(&vgpu3d_minor_lock);
 	lck_mtx_unlock(&vgpu3d_opens_lock);
 	lck_mtx_destroy(&o->lock, &vgpu3d_lck_grp);
 	IOFreeData(o, sizeof(*o));
