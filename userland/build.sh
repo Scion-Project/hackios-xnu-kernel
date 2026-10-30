@@ -35,6 +35,10 @@
 #                                   a directory). This goes into the boot volume, which every recipe
 #                                   carries and which the flash recipe puts in RAM, so its size is paid
 #                                   for at every boot -- a few megabytes, not more
+#                      SEED=<file>  a seed of the data volume, as share/var.seed: /private/var as an earlier
+#                                   boot left it (tools/var-seed.py takes it out of a store's disk image), which
+#                                   init unpacks over the template with boot-arg var_seed=1 (src/var_store.c).
+#                                   It travels in this image, so its size is paid in RAM at every boot
 #                      RC_JOBS=<file> what the job com.hakios.demo runs: rc.jobs (default), or
 #                                   rc.jobs.unlock, which also swipes the lock screen away (for the phone,
 #                                   where nothing else can touch the screen yet).
@@ -232,6 +236,11 @@ for d in $EXTRA_SHARE; do
 	[ -d "$d" ] || { echo "build.sh: EXTRA_SHARE: $d is not a directory"; exit 1; }
 	cp -rL "$d" root/share/
 done
+if [ -n "$SEED" ]; then
+	[ -f "$SEED" ] || { echo "build.sh: SEED: $SEED is not a file"; exit 1; }
+	cp "$SEED" root/share/var.seed
+	echo "build.sh: share/var.seed: a seed of the data volume, $(( $(wc -c < "$SEED") / 1048576 )) MB (boot-arg var_seed=1)"
+fi
 if [ -d $IOS/rootfs/usr/lib ]; then
 	if [ -z "$PREBUILT" ]; then
 		# ordinary dynamically linked programs of our own, built against the iOS SDK
@@ -334,6 +343,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -framework CoreFoundation -framework Security -o obj/keychain_test src/keychain_test.c &&
 			{ ${LDID:-ldid} -Ssrc/keychain_test.entitlements obj/keychain_test 2>/dev/null ||
 			  echo "build.sh: no ldid: keychain_test is unsigned, and the keychain will refuse it (-34018)"; }
+		# IOAESAccelerator round trips, the way iOS's own clients call it (src/aes_test.c; the kernel's
+		# MiniIOAESAccelerator.cpp, UniXNU's SoftwareAES)
+		$DYN -framework CoreFoundation -framework IOKit -o obj/aes_test src/aes_test.c
 		# (and wifid's way of keeping a network's password, by wifid's name: src/wifipw_test.c)
 		$DYN -framework CoreFoundation -framework Security -o obj/wifipw_test src/wifipw_test.c &&
 			{ ${LDID:-ldid} -Ssrc/wifipw_test.entitlements obj/wifipw_test 2>/dev/null ||
@@ -455,6 +467,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/battery_test ] && cp obj/battery_test root/bin/
 	[ -f obj/keychain_test ] && cp obj/keychain_test root/bin/
 	[ -f obj/wifipw_test ] && cp obj/wifipw_test root/bin/
+	[ -f obj/aes_test ] && cp obj/aes_test root/bin/
 	[ -f obj/sound_test ] && cp obj/sound_test root/bin/
 	[ -f obj/torch_test ] && cp obj/torch_test root/bin/
 	[ -f obj/camera_test ] && cp obj/camera_test root/bin/

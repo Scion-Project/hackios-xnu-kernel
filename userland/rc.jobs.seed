@@ -1,0 +1,9 @@
+# Commands run by the launchd job com.hakios.demo (see com.hakios.demo.plist).
+# Make a seed of the data volume (boot-arg var_seed=1, src/var_store.c): let a boot do its first-boot work,
+# then save /private/var into the store -- under AVF and in QEMU's AVF layout a second, writable virtio disk
+# (boot-arg virtio_blk_rw=1) -- and take the seed out of that disk on the host:
+#   tools/var-seed.py DISK var.seed && SEED=var.seed userland/build.sh
+sleep 150
+/redwood/bin/vol_ls fs /private/var
+/redwood/bin/var_store save
+/redwood/bin/var_store show

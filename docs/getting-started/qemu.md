@@ -59,6 +59,23 @@ Check these in order.
    Without that the host swaps and everything is very slow.
 6. **The images.** `qemu/run-ios.sh` needs `userland/system.apfs` and `userland/root.apfs`; a missing one is reported at once.
 
+### A warm data volume (`var_seed=1`)
+
+`/private/var` is a memory filesystem that every boot starts empty, so iOS does its first-boot work at every boot. A seed of the
+data volume skips that (the idea of UniXNU's RamBlock, whose Data volume starts from a seed): `/private/var` as a boot left it,
+carried in the small image and unpacked over the template before launchd starts.
+
+1. Boot once with a second, writable virtio disk for the store (boot-arg `virtio_blk_rw=1`; under AVF, the Scion app's `disk.1`)
+   and `RC_JOBS=rc.jobs.seed`, which lets iOS settle and then saves `/private/var` into that disk (`var_store save`).
+2. `tools/var-seed.py DISK var.seed` takes the newest good slot out of the disk image, both checksums checked.
+3. Either `SEED=var.seed userland/build.sh` puts it into `root.apfs` as `share/var.seed` (boot with `var_seed=1`), or the seed
+   file is a read-only disk of its own, after the system image (boot with `var_seed=rvblk1`).
+
+The seed is made from your own system and stays on your machine, like the system image. In `root.apfs` it costs its compressed
+size in RAM at every boot (a 120 MB seed made `root.apfs` 36 MB instead of 4, and the payload 54 MB, past the 31 MB that avfboot
+leaves in place); as a disk it costs nothing until it is unpacked. Unpacking took 1 s from the image and 3 s from a disk; a store (`var_store=1`) still
+goes in over it.
+
 ## Metal in QEMU
 
 `RC_JOBS=rc.jobs.metal` with the boot argument `metal=1` runs `metal_test`, which prints what iOS believes about Metal, what the

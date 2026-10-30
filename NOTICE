@@ -6,6 +6,8 @@ In the repository:
 - XNU (Apple): the kernel sources are fetched by xnu/apply.sh from github.com/apple-oss-distributions/xnu;
   our patch and files are a derivative work under the Apple Public Source License 2.0 (LICENSE.APSL).
 - libdeflate (Eric Biggers), xnu/files/bsd/miscfs/apfs/libdeflate/: MIT, see its COPYING.
+- SoftwareAES (UniXNU, ArmVirtPlatform contributors), github.com/UniXNU/SoftwareAES at 4a45326da5c2:
+  xnu/files/iokit/Kernel/MiniIOAESAccelerator.cpp is a port of it, under BSD-2-Clause-Patent (notice in the file).
 - mkbootimg.py (Android Open Source Project), devices/redwood/prebuilt/mkbootimg.py: Apache License 2.0.
 - Mu-Silicium / Project Mu (Project Silicium, Microsoft and contributors): devices/redwood/uefi/ holds a
   patch and files against it; their license applies to the derived parts (BSD-2-Clause-Patent).

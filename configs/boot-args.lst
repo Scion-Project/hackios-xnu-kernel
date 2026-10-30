@@ -162,6 +162,7 @@ hakios_kver	k
 haptic	k
 haptic_effect	k
 hv_wdt_pet	k
+ioaes	k
 loader_return_after	kl
 machine_name	k
 mali	k
@@ -339,6 +340,7 @@ ustacks_ms	k
 ustacks_threads	k
 ustacks_tname	k
 var_save_ms	k
+var_seed	u
 var_store	u
 vblur	u
 vgpu_height	k
