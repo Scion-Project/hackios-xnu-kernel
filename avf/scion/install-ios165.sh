@@ -17,7 +17,7 @@
 # list and releases the lock on exit.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-FILES=${FILES:-$HERE/out}   # Image, payload.bin (see the header); avf.properties is next to this script
+FILES=${FILES:-$HERE/out}   # Image, payload.bin (see the header); avf.properties from there, else the one next to this script
 SERIAL=57281FDCR008PJ
 PKG=io.github.dylanneve1.iosonpixel
 DIR=/data/user/0/$PKG/files/ios165
@@ -38,7 +38,15 @@ sh_() { "${ADB[@]}" shell "$@"; }
 OUT=${OUT:-avf-ios165-$(date +%Y%m%d-%H%M%S)}
 mkdir -p "$OUT"
 LOCK=/data/local/tmp/pixel.lock
-EXEMPT='Landroid/system/virtualmachine/VirtualMachineCustomImageConfig,Landroid/system/virtualmachine/VirtualMachineConfig$Builder;->setCustomImageConfig('
+# The app's whole list (AvfApi.EXEMPTIONS, ScfbIo.EXEMPTIONS for the display and SCGPU,
+# AvfApi.NETWORK_EXEMPTIONS): with the first two alone the app boots the VM console-only.
+NEED=(
+	'Landroid/system/virtualmachine/VirtualMachineCustomImageConfig'
+	'Landroid/system/virtualmachine/VirtualMachineConfig$Builder;->setCustomImageConfig('
+	'Landroid/system/virtualmachine/VirtualizationService;'
+	'Landroid/system/virtualizationservice/'
+	'Landroid/system/virtualmachine/VirtualMachineManager;->isFeatureEnabled('
+)
 
 echo "== waiting for the phone and $LOCK"
 "${ADB[@]}" wait-for-device
@@ -54,6 +62,12 @@ cleanup() {
 	sh_ rmdir "$LOCK" && echo "== lock released"
 }
 trap cleanup EXIT
+# the phone's own entries are kept, ours added after them
+EXEMPT=$prev
+[[ "$EXEMPT" == "null" ]] && EXEMPT=
+for e in "${NEED[@]}"; do
+	[[ ",$EXEMPT," == *",$e,"* ]] || EXEMPT=${EXEMPT:+$EXEMPT,}$e
+done
 
 runas() { sh_ "run-as $PKG sh -c '$1'"; }
 
@@ -61,7 +75,7 @@ echo "== files into $DIR"
 runas "ls -l files/ios165" | tee "$OUT/before.txt"
 runas "test -f files/ios165/system.apfs" || { echo "no system.apfs in $DIR" >&2; exit 1; }
 for f in Image payload.bin avf.properties; do
-	src=$FILES/$f; [ "$f" = avf.properties ] && src=$HERE/$f
+	src=$FILES/$f; [ "$f" = avf.properties ] && [ ! -f "$src" ] && src=$HERE/$f
 	"${ADB[@]}" push "$src" "/data/local/tmp/ios165-$f" >/dev/null
 	sh_ "cat /data/local/tmp/ios165-$f | run-as $PKG sh -c 'cat > files/ios165/$f.new && mv files/ios165/$f.new files/ios165/$f && chmod 600 files/ios165/$f'"
 	sh_ rm -f "/data/local/tmp/ios165-$f"
