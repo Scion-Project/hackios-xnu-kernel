@@ -99,6 +99,7 @@ ddr	k
 ddr_rest	k
 ddr_vote	k
 display_probe	k
+early_log	k
 epoch	k
 exynos_keys	k
 fb_beat	k
