@@ -16,6 +16,9 @@
 # 1's entry, never force-stops the app while a VM of it runs, restores the hidden-API exemption
 # list and releases the lock on exit.
 set -euo pipefail
+# The whole script is read before any of it runs (the braces, and the exit inside them): a checkout
+# that changes this file while a boot is being watched does not change what runs.
+{
 HERE=$(cd "$(dirname "$0")" && pwd)
 FILES=${FILES:-$HERE/out}   # Image, payload.bin (see the header); avf.properties from there, else the one next to this script
 SERIAL=57281FDCR008PJ
@@ -130,3 +133,5 @@ if [[ $BOOT == 1 ]]; then
 	"${ADB[@]}" logcat -d > "$OUT/logcat.txt" || true
 	echo "== console: $OUT/avf-console.log (the VM keeps running; stop it from the app)"
 fi
+exit
+}
