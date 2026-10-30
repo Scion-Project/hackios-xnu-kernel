@@ -864,8 +864,10 @@ mount_writable(void)
 	int ok, fd, made = 0, files = 0;
 	const char *jb;
 	struct stat st;
+	struct timeval t0, t1;
 
 	printf("\n-- writable filesystem --\n");
+	gettimeofday(&t0, NULL);
 	ok = mount("ramfs", "/private/var", 0, NULL) == 0;
 	if (!ok) {
 		printf("  mount: %s\n", strerror(errno));
@@ -915,7 +917,9 @@ mount_writable(void)
 		ok = fd >= 0 && chown(markers[i], 272, 272) == 0;
 		close(fd);
 	}
-	printf("  %d directories, %d files\n", made, files);
+	gettimeofday(&t1, NULL);
+	printf("  %d directories, %d files, in %ld ms\n", made, files,
+	    (long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000);
 	check(ok && made > 50, "create the directories of the data volume");
 
 	/*
@@ -998,6 +1002,57 @@ mount_writable(void)
 		    users ? ", users resolvable" : "");
 		check(grafted, "graft the package manager's prefix onto the data volume");
 	}
+}
+
+/*
+ * var_seed=1: the data volume starts from the seed in this image, share/var.seed, not from the empty template.
+ * var_seed=DEV (rvblk1, say) takes the seed from the disk /dev/rDEV instead.
+ *
+ * A seed of the data volume (var_store.c says what one is): /private/var as an earlier boot
+ * left it, carried in this image (share/var.seed), unpacked over the template -- so that the work of a
+ * first boot (the containers, LaunchServices' database, the caches) is done once, when the seed is made,
+ * and not at every boot. The idea is UniXNU's RamBlock's, whose Data volume starts from such a seed. A
+ * store (var_store=1) is unpacked after it and wins where both have a name. Without the boot-arg, or
+ * without a seed in the image, nothing changes.
+ */
+static void
+restore_seed(void)
+{
+	const char *wanted = boot_arg("var_seed");
+	static char program[256], seed[256];   /* in_image() answers in one buffer of its own */
+	char *argv[4];
+	int status = 0;
+	pid_t pid;
+
+	if (wanted == NULL || strcmp(wanted, "0") == 0) {
+		return;
+	}
+	printf("\n-- the seed of the data volume --\n");
+	strcpy(program, in_image("/bin/var_store"));      /* both as long as in_image()'s own */
+	if (strcmp(wanted, "1") == 0) {
+		strcpy(seed, in_image("/share/var.seed"));
+	} else if (strlen(wanted) < 32 && strchr(wanted, '/') == NULL) {
+		/* var_seed=DEV: the seed is the disk /dev/rDEV (a read-only disk of its own: no RAM for it in the payload) */
+		strcpy(seed, "/dev/r");
+		strcpy(seed + strlen(seed), wanted);
+	} else {
+		printf("  var_seed=%s: neither 1 nor a disk's name\n", wanted);
+		return;
+	}
+	argv[0] = program;
+	argv[1] = (char *)"seed";
+	argv[2] = seed;
+	argv[3] = NULL;
+	pid = fork();
+	if (pid == 0) {
+		execve(argv[0], argv, environ);
+		printf("  %s: %s\n", argv[0], strerror(errno));
+		_exit(127);
+	}
+	if (pid < 0 || wait4(pid, &status, 0, NULL) != pid || !WIFEXITED(status)) {
+		printf("  var_store did not run\n");
+	}
+	check(pid > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0, "unpack the seed of the data volume");
 }
 
 /*
@@ -1502,6 +1557,7 @@ main(int argc, char **argv, char **envp)
 
 	show_system();
 	mount_writable();
+	restore_seed();
 	restore_var();
 	test_files();
 	test_writable();

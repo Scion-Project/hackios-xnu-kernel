@@ -42,6 +42,7 @@ Every `make` target is a script below it; run the script itself for its options 
 | `modem-cycle.sh` | a whole phone session in one command | [On the phone](../getting-started/phone.md) |
 | `soc-args.py` | the `soc_*` addresses out of a device tree | |
 | `backup-partitions.py` | a read-only backup of the phone's partitions, each copy proven | [Install, safely](../install-safe.md) |
+| `var-seed.py` | a seed of the data volume, out of a store's disk image: `userland/build.sh SEED=` carries it, boot-arg `var_seed=1` starts `/private/var` from it | |
 
 ## xnu/
 

@@ -303,6 +303,7 @@ GenericARMPE::start(IOService * provider)
 	MiniIOMobileFramebufferStart(this);
 	MiniAppleKeyStoreStart();
 	MiniIONetworkStackStart();
+	MiniIOAESAcceleratorStart();
 	return true;
 }
 
