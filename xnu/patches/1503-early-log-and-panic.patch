@@ -1,0 +1,296 @@
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -340,6 +340,8 @@
+ __startup_func
+ /* Bring-up checkpoints, see osfmk/arm64/loader_return.c */
+ extern void loader_checkpoint(uint64_t n);
++extern void loader_early_log_init(void);
++extern void loader_log_cpu_facts(void);
+ 
+ void
+ 
+@@ -371,6 +373,7 @@
+ 
+ 	PE_init_platform(FALSE, args); /* Get platform expert set up */
+ 	loader_checkpoint(11);
++	loader_early_log_init();
+ 
+ #if __arm64__
+ 	configure_timer_apple_regs();
+@@ -439,6 +442,7 @@
+ 	loader_checkpoint(35);
+ 	ml_parse_cpu_topology();
+ 	loader_checkpoint(12);
++	loader_log_cpu_facts();
+ 
+ 
+ 	master_cpu = ml_get_boot_cpu_number();
+@@ -487,6 +491,7 @@
+ 	 * Initialize the timer callout world
+ 	 */
+ 	timer_call_init();
++	loader_checkpoint(50);
+ 
+ 	cpu_init();
+ 	loader_checkpoint(16);
+diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -677,6 +677,10 @@
+ 
+ 	Idle_load_context();
+ }
++
++/* HakiOS (patch 1503): the boot processor's way through cpu_init() in the loader's log, as "[c51]"... */
++extern void loader_checkpoint(uint64_t n);
++#define BOOT_CPU_CHECKPOINT(n) do { if (cdp == &BootCpuData) { loader_checkpoint(n); } } while (0)
+ 
+ void
+ cpu_init(void)
+@@ -691,10 +695,13 @@
+ 
+ 		timer_call_queue_init(&cdp->rtclock_timer.queue);
+ 		cdp->rtclock_timer.deadline = EndOfAllTime;
++		BOOT_CPU_CHECKPOINT(51);
+ 
+ 		if (cdp == &BootCpuData) {
+ 			do_cpuid();
++			loader_checkpoint(52);
+ 			do_mvfpid();
++			loader_checkpoint(53);
+ 		} else {
+ 			/*
+ 			 * We initialize non-boot CPUs here; the boot CPU is
+@@ -704,9 +711,11 @@
+ 		}
+ 
+ 		do_cacheid();
++		BOOT_CPU_CHECKPOINT(54);
+ 
+ 		/* ARM_SMP: Assuming identical cpu */
+ 		do_debugid();
++		BOOT_CPU_CHECKPOINT(55);
+ 
+ 		cpu_info_p = cpuid_info();
+ 
+@@ -726,6 +735,7 @@
+ 		}
+ 
+ 		cdp->cpu_threadtype = CPU_THREADTYPE_NONE;
++		BOOT_CPU_CHECKPOINT(56);
+ 	}
+ 	cdp->cpu_stat.irq_ex_cnt_wake = 0;
+ 	cdp->cpu_stat.ipi_cnt_wake = 0;
+@@ -741,6 +751,7 @@
+ #if MONOTONIC
+ 	mt_cpu_up(cdp);
+ #endif /* MONOTONIC */
++	BOOT_CPU_CHECKPOINT(57);
+ }
+ 
+ void
+diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
+--- a/osfmk/arm64/loader_return.c
++++ b/osfmk/arm64/loader_return.c
+@@ -11,10 +11,12 @@
+  *
+  * Only valid while the kernel does not drive hardware that UEFI also uses.
+  */
++#include <stdarg.h>
+ #include <mach/mach_types.h>
+ #include <machine/atomic.h>
+ #include <kern/cpu_number.h>
+ #include <kern/debug.h>
++#include <kern/misc_protos.h>
+ #include <kern/startup.h>
+ #include <kern/thread_call.h>
+ #include <kern/clock.h>
+@@ -347,6 +349,135 @@
+ }
+ 
+ /*
++ * A new phone's first runs, said in full in the log the loader gets back. A panic's own text, the registers of the
++ * last exception and the calls that led to it are always written here: before arm_vm_init there is no panic buffer,
++ * and on a phone without a serial port such a panic otherwise comes back as nothing but loader_return()'s caller.
++ * Boot-arg early_log=1 adds every kprintf from PE_init_platform on (the drivers' and the VM's bring-up lines, which
++ * no console shows that early) and what the kernel takes the processors to be.
++ */
++bool loader_early_log;
++
++void loader_early_log_init(void);
++void loader_log_vprintf(const char *fmt, va_list *ap);
++void loader_log_panic(const char *fmt, va_list *ap, unsigned long caller);
++void loader_log_cpu_facts(void);
++
++void
++loader_early_log_init(void)
++{
++	uint32_t on = 0;
++
++	if (PE_parse_boot_argn("early_log", &on, sizeof(on)) && on != 0) {
++		loader_early_log = true;
++	}
++}
++
++void
++loader_log_vprintf(const char *fmt, va_list *ap)
++{
++	va_list copy;
++
++	va_copy(copy, *ap);
++	_doprnt(fmt, &copy, loader_log_putc, 16);
++	va_end(copy);
++}
++
++static void
++loader_log_printf(const char *fmt, ...)
++{
++	va_list ap;
++
++	va_start(ap, fmt);
++	_doprnt(fmt, &ap, loader_log_putc, 16);
++	va_end(ap);
++}
++
++static void
++loader_log_frame(uint64_t pc)
++{
++	loader_log_puts("  ");
++	loader_log_hex(pc);
++	if (vm_kernel_slide != 0) {
++		loader_log_puts(" unslid ");
++		loader_log_hex(pc - vm_kernel_slide);
++	}
++	loader_log_putc('\n');
++}
++
++/* Called first thing by panic_trap_to_debugger() (patch 1503), on whichever processor panicked */
++void
++loader_log_panic(const char *fmt, va_list *ap, unsigned long caller)
++{
++	static uint32_t panics;
++	uint64_t *fp = __builtin_frame_address(0);
++
++	if (os_atomic_inc(&panics, relaxed) > 2) {
++		return;                 /* a panic inside the panic, over and over: the first two say enough */
++	}
++	loader_log_puts("\n--- panic on MPIDR ");
++	loader_log_hex(__builtin_arm_rsr64("MPIDR_EL1") & 0xffffff);
++	loader_log_puts(": ");
++	if (fmt != NULL && ap != NULL) {
++		loader_log_vprintf(fmt, ap);
++	} else if (fmt != NULL) {
++		loader_log_puts(fmt);
++	}
++	loader_log_puts("\n--- the last exception: ESR_EL1 ");
++	loader_log_hex(__builtin_arm_rsr64("ESR_EL1"));
++	loader_log_puts(" FAR_EL1 ");
++	loader_log_hex(__builtin_arm_rsr64("FAR_EL1"));
++	loader_log_puts(" ELR_EL1 ");
++	loader_log_hex(__builtin_arm_rsr64("ELR_EL1"));
++	loader_log_puts("\n--- panic() called from\n");
++	loader_log_frame(caller);
++	loader_log_puts("--- frames (nm on the unstripped kernel names them)\n");
++	/* the frame records: [fp] the caller's fp, [fp + 8] the return address; on the stack, each above the last */
++	for (int i = 0; i < 32; i++) {
++		uint64_t *next;
++
++		if (fp == NULL || ((uintptr_t)fp & 0xf) != 0 || (uintptr_t)fp < VM_MIN_KERNEL_AND_KEXT_ADDRESS) {
++			break;
++		}
++		loader_log_frame(fp[1]);
++		next = (uint64_t *)fp[0];
++		if (next <= fp || (uintptr_t)next - (uintptr_t)fp > 64 * 1024) {
++			break;
++		}
++		fp = next;
++	}
++	loader_log_puts("---\n");
++}
++
++/* early_log: right after ml_parse_cpu_topology(), what the kernel will match each processor's MPIDR against */
++void
++loader_log_cpu_facts(void)
++{
++	const ml_topology_info_t *t = ml_get_topology_info();
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++
++	if (!loader_early_log) {
++		return;
++	}
++	loader_log_printf("\nearly_log: MPIDR %llx MIDR %llx CurrentEL %llu CLIDR %llx CTR %llx ID_AA64PFR0 %llx "
++	    "ID_AA64MMFR0 %llx ID_AA64ISAR0 %llx\n", mpidr, __builtin_arm_rsr64("MIDR_EL1"),
++	    (__builtin_arm_rsr64("CurrentEL") >> 2) & 3, __builtin_arm_rsr64("CLIDR_EL1"), __builtin_arm_rsr64("CTR_EL0"),
++	    __builtin_arm_rsr64("ID_AA64PFR0_EL1"), __builtin_arm_rsr64("ID_AA64MMFR0_EL1"),
++	    __builtin_arm_rsr64("ID_AA64ISAR0_EL1"));
++	if (t == NULL || t->cpus == NULL) {
++		loader_log_puts("early_log: no topology\n");
++		return;
++	}
++	loader_log_printf("early_log: topology: %u cpus (max id %u), %u clusters; boot cpu id %d phys %x; "
++	    "this processor by its MPIDR: cpu %d\n", t->num_cpus, t->max_cpu_id, t->num_clusters,
++	    t->boot_cpu != NULL ? (int)t->boot_cpu->cpu_id : -1, t->boot_cpu != NULL ? t->boot_cpu->phys_id : 0,
++	    ml_get_cpu_number((uint32_t)mpidr));
++	for (unsigned i = 0; i < t->num_cpus; i++) {
++		loader_log_printf("early_log:   cpu %u phys %x cluster %u type %d\n", t->cpus[i].cpu_id,
++		    t->cpus[i].phys_id, t->cpus[i].cluster_id, (int)t->cpus[i].cluster_type);
++	}
++}
++
++/*
+  * Everything printf()/IOLog()/os_log wrote ends up in the kernel message
+  * buffer (what dmesg shows), whether or not a console displayed it.
+  */
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1063,12 +1063,21 @@
+ 
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wmissing-noreturn"
++#if defined(__arm64__)
++extern void loader_log_panic(const char *fmt, va_list *ap, unsigned long caller) __attribute__((weak));
++#endif
+ void
+ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsigned int reason, void *ctx,
+     uint64_t panic_options_mask, void *panic_data_ptr, unsigned long panic_caller)
+ {
+ #pragma clang diagnostic pop
+ 
++#if defined(__arm64__)
++	/* HakiOS (patch 1503): the panic's text and frames into the log the loader gets back, before anything can fail */
++	if (loader_log_panic != NULL) {
++		loader_log_panic(panic_format_str, panic_args, panic_caller);
++	}
++#endif
+ #if defined(__x86_64__) && (DEVELOPMENT || DEBUG)
+ 	read_lbr();
+ #endif
+diff --git a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
+--- a/pexpert/arm/pe_kprintf.c
++++ b/pexpert/arm/pe_kprintf.c
+@@ -95,6 +95,9 @@
+ static int      cpu_last_locked = 0;
+ 
+ __attribute__((noinline, not_tail_called))
++extern bool loader_early_log __attribute__((weak));
++extern void loader_log_vprintf(const char *fmt, va_list *ap) __attribute__((weak));
++
+ void
+ kprintf(const char *fmt, ...)
+ {
+@@ -103,6 +106,13 @@
+ 	boolean_t       state;
+ 	void           *caller = __builtin_return_address(0);
+ 
++	/* HakiOS (patch 1503): boot-arg early_log=1, every kprintf in the log the loader gets back */
++	if (&loader_early_log != NULL && loader_early_log) {
++		va_start(listp, fmt);
++		loader_log_vprintf(fmt, &listp);
++		va_end(listp);
++	}
++
+ 	if (!disable_serial_output && !disable_kprintf_output) {
+ 		va_start(listp, fmt);
+ 		va_copy(listp2, listp);

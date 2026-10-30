@@ -370,6 +370,40 @@ write_ram_log(void)
 	clean_dcache(ram_log_base, ram_log_base + sizeof(*h) + n);
 }
 
+/*
+ * The pstore's other half, where the platform has one (ram_dump): Linux's ramoops keeps there one record of the kind a
+ * panic leaves (dmesg-ramoops-0 in /sys/fs/pstore), and it keeps it only behind its header line ("====sec.nsec-D",
+ * fs/pstore/ram.c, ramoops_read_kmsg_hdr). It gets the kernel's log from its start, where ram_log has the end: twice
+ * the log of a run that comes back.
+ */
+static uint64_t ram_dump_base, ram_dump_size;   /* the platform's; 0: none */
+
+static void
+write_ram_dump(const char *klog, uint64_t klog_len)
+{
+	struct { uint32_t sig, start, size; } *h = (void *)(uintptr_t)ram_dump_base;
+	uint8_t *data = (uint8_t *)(uintptr_t)ram_dump_base + sizeof(*h);
+	static const char hdr[] = "====0.0-D\n== THE KERNEL'S LOG FROM ITS START (its end: pmsg-ramoops-0) ==\n";
+	uint64_t room, n;
+
+	if (ram_dump_base == 0 || ram_dump_size <= sizeof(*h) + sizeof(hdr)) {
+		return;
+	}
+	if (klog == NULL || klog_len == 0) {
+		h->sig = 0;             /* no kernel this time: not last run's log taken for this one's */
+		clean_dcache(ram_dump_base, ram_dump_base + sizeof(*h));
+		return;
+	}
+	room = ram_dump_size - sizeof(*h) - (sizeof(hdr) - 1);
+	n = klog_len < room ? klog_len : room;
+	memcpy(data, hdr, sizeof(hdr) - 1);
+	memcpy(data + sizeof(hdr) - 1, klog, n);
+	h->sig = 0x43474244;    /* "DBGC" */
+	h->start = 0;
+	h->size = (uint32_t)(sizeof(hdr) - 1 + n);
+	clean_dcache(ram_dump_base, ram_dump_base + sizeof(*h) + h->size);
+}
+
 static void
 write_logs(const char *klog, uint64_t klog_len)
 {
@@ -377,6 +411,7 @@ write_logs(const char *klog, uint64_t klog_len)
 
 	compose_logs(klog, klog_len);
 	write_ram_log();
+	write_ram_dump(klog, klog_len);
 	if (bio == NULL) {
 		/* No log partition (QEMU): echo the returned kernel log on the console instead. */
 		if (klog != NULL) {
@@ -592,6 +627,7 @@ struct platform {
 	uint32_t small_cores;            /* a bit for each of the slower cores, by number: "small-core" in the device tree */
 	uint64_t fb_base;                /* the framebuffer the firmware reports (GOP): it tells this device apart */
 	uint64_t ram_log, ram_log_size;  /* where the log is kept across a restart when there is no log partition (write_ram_log) */
+	uint64_t ram_dump, ram_dump_size; /* ... and the start of the kernel's, in ramoops' dmesg record (write_ram_dump) */
 	uint64_t ufs_hc;                 /* the UFS host controller the kernel's own driver may take over (ufs_native=); 0: none */
 	uint64_t timer_hz;               /* the timer's frequency where CNTFRQ_EL0 reads 0 (the firmware never set it), 0: none */
 	uint64_t recovery_pmu;           /* Samsung: the PMU whose INFORM registers send a restart into recovery (recovery_after_reset) */
@@ -659,6 +695,11 @@ static const struct platform platform_starlte = {
 	 * memory map (devices/starlte/uefi).
 	 */
 	.ram_log = 0xFED14000, .ram_log_size = 0x4000,
+	/*
+	 * Its first half: ramoops' one dmesg record (Samsung sets record_size and pmsg_size to half of log_pstore each,
+	 * the dmesg records coming first). The start of the kernel's log goes there.
+	 */
+	.ram_dump = 0xFED10000, .ram_dump_size = 0x4000,
 	/*
 	 * With the kernel on a core of its own (bootcpu=, the S9's default), this core watches it and writes the log on the
 	 * way, and when the kernel hangs: into the RAM log, which survives the restart that follows.
@@ -5249,6 +5290,7 @@ efi_main(efi_handle image, efi_system_table *st)
 	}
 	loader_gic_sysregs = PLAT->gic_cpu == 0;
 	ram_log_base = PLAT->ram_log, ram_log_size = PLAT->ram_log_size;
+	ram_dump_base = PLAT->ram_dump, ram_dump_size = PLAT->ram_dump_size;
 	print("platform %s, %s\n", PLAT->name, PLAT->gic_cpu != 0 ? "GICv2" : "GICv3");
 	pci_probe(PLAT);
 
