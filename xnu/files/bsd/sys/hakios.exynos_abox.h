@@ -47,6 +47,7 @@ struct hakios_abox_amp {
 void hakios_abox_set_amp(const struct hakios_abox_amp *amp);              /* NULL: none */
 
 void hakios_exynos_abox_init(void);    /* boot-arg abox=N on the Galaxy S9: the first N steps of ABOX's speaker path */
+void hakios_exynos_abox_quiesce(void); /* loader_return(): RDMA0 and UAIF1 stopped, if they run */
 #endif
 
 /*

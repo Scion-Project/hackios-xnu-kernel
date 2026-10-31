@@ -186,6 +186,7 @@ static const struct { uint16_t off; const char *name; } qchs[] = {
 
 static vm_offset_t elbi, phy, pcs, sysreg, dbi, cfg, pmu, cmu, cmu_top, peric0, fsys1, alive;
 static bool linked;
+static bool reg_on;            /* WLAN_REG_ON driven high by this run (step 2), until put back */
 
 static inline uint32_t
 rd(vm_offset_t base, uint32_t off)
@@ -704,6 +705,7 @@ wifi_pcie_thread(void *arg, __unused wait_result_t wr_)
 	set_bits(fsys1, BANK_GPF2 + 8, 0xfu << (4 * PIN_CLKREQ), 0x3u << (4 * PIN_CLKREQ));
 	set_bits(fsys1, BANK_GPF2, 0xfu << (4 * PIN_CLKREQ), 0x2u << (4 * PIN_CLKREQ));
 	pin_out(peric0, BANK_GPG0, PIN_WLAN_EN, 1);
+	reg_on = true;
 	delay_for_interval(WIFI_TURNON_MS, NSEC_PER_MSEC);
 	say_pins("2");
 	if (pin_dat(peric0, BANK_GPG0, PIN_WLAN_EN) != 1) {
@@ -761,8 +763,27 @@ off:
 		wr(elbi, ELBI_APP_LTSSM_ENABLE, 0);
 	}
 	pin_out(peric0, BANK_GPG0, PIN_WLAN_EN, 0);
+	reg_on = false;
 out:
 	thread_terminate(current_thread());
+}
+
+/*
+ * On the way back to the loader (loader_return(), a panic's way out too: one processor left, no lock taken): the chip held
+ * in reset and its power off, PERST# low then WLAN_REG_ON low, as the stopping path above does -- if this run powered it.
+ * From step 2 on the steps leave it powered "until the run ends", and with its firmware up (brcmfmac=3 and on) it is a bus
+ * master with rings in the kernel's memory, which the loader reuses for the log while the BCM4361 would still write there.
+ */
+void
+hakios_exynos_pcie_quiesce(void)
+{
+	if (!reg_on || peric0 == 0 || fsys1 == 0) {
+		return;
+	}
+	pin_out(fsys1, BANK_GPF2, PIN_PERST, 0);
+	pin_out(peric0, BANK_GPG0, PIN_WLAN_EN, 0);
+	reg_on = false;
+	say("exynos_pcie: at the run's end: PERST# low, WLAN_REG_ON low (reads %u)\n", pin_dat(peric0, BANK_GPG0, PIN_WLAN_EN));
 }
 
 void

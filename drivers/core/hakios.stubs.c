@@ -23,6 +23,7 @@
 #include <sys/hakios.exynos_abox.h>
 #include <sys/hakios.exynos_pcie.h>
 #include <sys/hakios.input.h>
+#include <sys/hakios.max98512.h>
 #include <sys/hakios.net.h>
 #include <sys/hakios.sta.h>
 #include <sys/hakios.virtio_blk.h>
@@ -60,9 +61,11 @@ void hakios_max77705_init(void) {}
 #endif
 #ifndef HAKIOS_S2MPB02_TORCH
 void hakios_s2mpb02_torch_init(void) {}
+void hakios_s2mpb02_torch_quiesce(void) {}
 #endif
 #ifndef HAKIOS_EXYNOS_PCIE
 void hakios_exynos_pcie_init(void) {}
+void hakios_exynos_pcie_quiesce(void) {}
 #endif
 #ifndef HAKIOS_BRCMFMAC
 void hakios_brcmfmac_start(void) {}     /* wifi_pcie=6 in a kernel without the S9's radio driver: the link stays as it is */
@@ -104,7 +107,11 @@ bool hakios_wifi_network(__unused uint8_t *name, __unused unsigned *name_length,
 #endif
 #ifndef HAKIOS_EXYNOS_ABOX
 void hakios_exynos_abox_init(void) {}
+void hakios_exynos_abox_quiesce(void) {}
 void hakios_abox_set_amp(__unused const struct hakios_abox_amp *amp) {}   /* an amplifiers' driver built without ABOX's */
+#endif
+#ifndef HAKIOS_MAX98512
+void hakios_max98512_quiesce(void) {}
 #endif
 #ifndef HAKIOS_S6E3HA8
 void hakios_s6e3ha8_init(void) {}

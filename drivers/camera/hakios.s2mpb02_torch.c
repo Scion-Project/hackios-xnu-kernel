@@ -191,6 +191,20 @@ light(uint32_t permille)
 	return true;
 }
 
+/*
+ * On the way back to the loader (loader_return(), a panic's way out too: one processor left, no lock taken): the light
+ * off, if it is lit. dark() is the two pins only, no I2C; the chip keeps its registers, the pins are what light it.
+ */
+void
+hakios_s2mpb02_torch_quiesce(void)
+{
+	if (peric0 == 0 || peric1 == 0 || lit == 0) {
+		return;
+	}
+	dark();
+	say("s2mpb02: at the run's end: the light off (torch and flash pins low)\n");
+}
+
 static bool
 too_hot(void)
 {

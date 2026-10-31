@@ -703,6 +703,42 @@ amp_stop(void)
 	lck_mtx_unlock(&amp_lock);
 }
 
+/*
+ * On the way back to the loader (loader_return(), a panic's way out too): both shut down, if start() left them playing.
+ * One processor is left and no lock may be taken, so the bus is used directly: reset first (a transfer may have been cut
+ * off with the processor that made it), then GLOBAL_SHDN's enable bit cleared in each, then the ramp down with UAIF1's
+ * clocks still running (hakios_exynos_abox_quiesce() stops them next). Nothing else is written.
+ */
+void
+hakios_max98512_quiesce(void)
+{
+	uint64_t deadline;
+
+	if (!playing) {
+		return;
+	}
+	hakios_hsi2c_reset(&bus);
+	for (unsigned i = 0; i < 2; i++) {
+		uint16_t at = address(&amps[i], GLOBAL_SHDN);
+		uint8_t buf[3] = { (uint8_t)(at >> 8), (uint8_t)at, 0 };
+		uint8_t now = 0;
+		uint32_t error = hakios_hsi2c_message(&bus, amps[i].addr, false, buf, 2, false);
+
+		if (error == 0) {
+			error = hakios_hsi2c_message(&bus, amps[i].addr, true, &now, 1, true);
+		}
+		if (error == 0) {
+			buf[2] = now & ~0x01;
+			error = hakios_hsi2c_message(&bus, amps[i].addr, false, buf, 3, true);
+		}
+		say("max98512: at the run's end: %s (%#x) GLOBAL_SHDN %#x -> %#x%s\n", amps[i].name, amps[i].addr, now,
+		    now & ~0x01, error == 0 ? "" : ": the bus FAILED");
+	}
+	for (deadline = deadline_us(RAMP_US); mach_absolute_time() < deadline;) {
+	}
+	playing = false;
+}
+
 static const struct hakios_abox_amp amp_hook = {
 	.name = "max98512", .start = amp_start, .stop = amp_stop,
 };

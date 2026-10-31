@@ -14,6 +14,8 @@
 
 #include <sys/hakios.exynos_abox.h>
 
+void hakios_max98512_quiesce(void);    /* loader_return(): both amplifiers shut down, if they were started */
+
 /*
  * What the MAX98512 driver's hook asks of its caller: start() and stop() from a thread (they take a lock and talk over
  * I2C), never at once from two; start() takes some tens of milliseconds (both amplifiers reset and set up anew), stop()
