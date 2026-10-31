@@ -1,35 +1,43 @@
 Build the AIR compute path as a shared library for the Metal driver.
 
 tools/mesa/air/air_metal.c is air_run's compute path -- a Metal function's LLVM module
-through the AIR frontend into a Gallium compute state and a grid on the Adreno -- behind
+through the AIR frontend into a Gallium compute state and a grid on the GPU -- behind
 the contract in tools/mesa/air/air_metal.h, which mentions nothing of NIR, Gallium or
-ir3: the Metal driver (userland/src/hakiosmetal.m) must not grow a dependency on Mesa's
-headers for it. On the device it is /redwood/lib/libhakiosair.dylib, which is where
--newComputePipelineStateWithDescriptor: will compile the bitcode Metal hands it
-(docs/metal.md 10.12).
+the GPU's compiler: the Metal driver (userland/src/hakiosmetal_air.m) must not grow a
+dependency on Mesa's headers for it. On the device it is /redwood/lib/libhakiosair.dylib,
+which is where -newComputePipelineStateWithDescriptor: compiles the bitcode Metal hands
+it (docs/metal.md 10.12). It opens the GPU the kernel serves: the Adreno through
+freedreno (HakiosGPU) or the Galaxy S9's Mali through panfrost (HakiosMali).
 
-Both targets are declared here rather than with the rest of the frontend for the reason
-air_run already is: they need libgallium, which meson has not defined when
-src/compiler/air is read, and they are given air_run's dependencies exactly so that a
-driver linking the library gets the path the harness measured.
+Both targets are in a directory of their own, src/gallium/targets/hakiosair, read last:
+they need libgallium and the GPU drivers, which meson has not defined when
+src/compiler/air is read, and panfrost's directory is read after freedreno's, where they
+were first declared.
 
 air_metal_test is that library driven the way the driver will drive it, on softpipe: it
 is handed the frontend's include directory and nothing else, so a call air_metal.h fails
 to provide shows up as a test that cannot be written.
 
---- a/src/gallium/drivers/freedreno/meson.build
-+++ b/src/gallium/drivers/freedreno/meson.build
-@@ -335,6 +335,46 @@
-   install : false,
- )
- 
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -272,3 +272,7 @@
+   subdir('frontends/teflon')
+   subdir('targets/teflon')
+ endif
++
++# The Metal driver's compiler library (src/gallium/targets/hakiosair): last, because it takes
++# whichever GPU drivers were built above, freedreno's and panfrost's alike.
++subdir('targets/hakiosair')
+--- /dev/null
++++ b/src/gallium/targets/hakiosair/meson.build
+@@ -0,0 +1,39 @@
 +# libhakiosair: the same path air_run takes -- a Metal shader through the AIR frontend
-+# into a compute state and a grid on the Adreno -- as a shared library, for the Metal
-+# driver in userland/src/hakiosmetal.m. Its contract is src/compiler/air/air_metal.h and
-+# mentions nothing of Mesa; this is only where it is built, beside air_run and for the
-+# same reason, that libgallium exists here and not where the frontend is read. The
-+# dependencies are deliberately air_run's: a driver that links this gets the path the
-+# harness measured, not a second one assembled for it.
++# into a compute state and a grid on the GPU -- as a shared library, for the Metal
++# driver in userland/src/hakiosmetal_air.m. Its contract is src/compiler/air/air_metal.h and
++# mentions nothing of Mesa; this is only where it is built: after every gallium driver,
++# because it takes whichever of the phones' GPU drivers the build has (freedreno for the
++# Adreno, panfrost for the Mali; each an empty dependency when it is not built), and meson
++# reads panfrost's directory after freedreno's, where this was first declared.
 +hakiosair_link_args = []
 +if host_machine.system() == 'darwin'
 +  # the Metal driver links against this by name, so the name has to be where
@@ -44,8 +52,8 @@ to provide shows up as a test that cannot be written.
 +                         inc_gallium_aux, inc_gallium_winsys_sw, inc_gallium_winsys,
 +                         include_directories('../../drivers')],
 +  dependencies : [dep_m, idep_air, idep_mesautil, driver_softpipe, driver_freedreno,
-+                  dep_libdrm],
-+  link_with : [libgallium, libgalliumvl_stub, libws_null, libfreedrenowinsys],
++                  driver_panfrost, dep_libdrm],
++  link_with : [libgallium, libgalliumvl_stub, libws_null],
 +  link_args : hakiosair_link_args,
 +  build_by_default : false,
 +  install : false,
@@ -62,7 +70,3 @@ to provide shows up as a test that cannot be written.
 +  build_by_default : false,
 +  install : false,
 +)
-+
- gmemtool = executable(
-   'gmemtool',
-   [

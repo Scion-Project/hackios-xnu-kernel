@@ -1154,7 +1154,9 @@ struct gem_close { uint32_t handle, pad; };
 
 	_gpu = IO_OBJECT_NULL;
 	if (gpu == IO_OBJECT_NULL) {
-		rw_print("no HakiosGPU service (the gpu was not started)\n");
+		/* (on the Galaxy S9 there never is: its GPU is the Mali, HakiosMali, which only the
+		 * compiler library below opens, through Mesa's panfrost) */
+		rw_print("no HakiosGPU service (no Adreno, or it was not started)\n");
 	} else {
 		kern_return_t kr = IOServiceOpen(gpu, mach_task_self(), 0, &_gpu);
 
@@ -1292,8 +1294,9 @@ struct gem_close { uint32_t handle, pad; };
 		return [self fail:error with:@"no render pipeline descriptor"];
 	}
 	if (_mesa == NULL) {
-		return [self fail:error with:@"there is no GPU compiler here: either the Adreno "
-					     @"was not started (gpu=1) or libhakiosair.dylib is "
+		return [self fail:error with:@"there is no GPU compiler here: either the GPU "
+					     @"was not started (gpu=1 for the Adreno, mali=9 for "
+					     @"the Mali) or libhakiosair.dylib is "
 					     @"missing or older than this driver"];
 	}
 	if (mesa.render_create == NULL) {
@@ -2105,8 +2108,9 @@ struct gem_close { uint32_t handle, pad; };
 		return [self fail:error with:@"the descriptor has no compute function"];
 	}
 	if (_mesa == NULL) {
-		return [self fail:error with:@"there is no GPU compiler here: either the Adreno "
-					     @"was not started (gpu=1) or libhakiosair.dylib "
+		return [self fail:error with:@"there is no GPU compiler here: either the GPU "
+					     @"was not started (gpu=1 for the Adreno, mali=9 for "
+					     @"the Mali) or libhakiosair.dylib "
 					     @"is missing"];
 	}
 	if (![function respondsToSelector:bitcode]) {
@@ -2410,7 +2414,12 @@ struct gem_close { uint32_t handle, pad; };
 		return [NSString stringWithFormat:@"Adreno 7c+ Gen 3 (chip %#x, Hakios)",
 				 (unsigned)(chip & 0xffffffffu)];
 	}
-	return @"Adreno (Hakios; the GPU is not started)";
+	/* no Adreno: the GPU the compiler library opened, by Mesa's name for it ("Mali-G72" on the
+	 * Galaxy S9, through HakiosMali and panfrost), if it opened one */
+	if (_mesa != NULL && mesa.device_name != NULL) {
+		return [NSString stringWithFormat:@"%s (Hakios)", mesa.device_name(_mesa)];
+	}
+	return @"Hakios GPU (not started)";
 }
 
 /*

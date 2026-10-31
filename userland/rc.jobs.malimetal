@@ -1,0 +1,16 @@
+# Commands run by the launchd job com.hakios.demo (RC_JOBS=rc.jobs.malimetal): the Galaxy S9's Mali-G72 from the kernel's
+# service up to Metal, each step needing the one before it (devices/starlte/GPU.md, run M1). Boot with mali=9, and build
+# the root with GL=1 and without NO_AIR, so that /redwood/lib/libhakiosair.dylib is there: it is what opens the Mali
+# for Metal (HakiosMali, through Mesa's panfrost; tools/mesa/air/air_metal.c).
+#
+# 1. the kernel's half alone: a buffer, a write-value job, its number waited for (src/mali_test.c)
+/redwood/bin/mali_test
+# 2. OpenGL ES through panfrost: a triangle, its pixels counted by the kernel ("mali: gl_test drew on THE MALI")
+/redwood/bin/rwtouch wait 14
+/redwood/bin/gl_test 8
+# 3. Metal compute: one of the system's kernels that binds only buffers and ends on any input (rc.jobs.metalcompute's
+#    list), compiled from Apple's AIR by the Bifrost compiler and dispatched; "status 4" is completed
+/redwood/bin/metal_drv_test /System/Library/CoreImage/PortraitFilters.cifilter/default.metallib image_calcminmax0
+/redwood/bin/metal_drv_test /System/Library/CoreImage/PortraitFilters.cifilter/default.metallib MetalFaceMask_InitMinMax
+# 4. Metal render: one of Apple's fragment shaders (clearFragment20) drawn, its pixel set beside softpipe's answer
+/redwood/bin/metal_drv_test --draw /System/Library/Extensions/AppleMetalGLRenderer.bundle/default.metallib

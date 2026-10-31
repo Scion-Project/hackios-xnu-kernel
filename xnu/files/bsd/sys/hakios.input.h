@@ -145,7 +145,7 @@ void hakios_gpu_stop(void);
  */
 bool hakios_mali_ready(void);
 bool hakios_mali_parameter(uint32_t which, uint64_t *value);
-uint64_t hakios_mali_address(uint64_t size);
+uint64_t hakios_mali_address(uint64_t size, bool executable);
 bool hakios_mali_map(uint64_t gpu, uint64_t phys);
 void hakios_mali_mapped(void);
 void hakios_mali_unmap(uint64_t gpu, uint64_t size);

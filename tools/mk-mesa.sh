@@ -126,8 +126,8 @@ if [ "${AIR:-}" = 1 ]; then
 	# libOSMesa is below -- -x keeps the global symbols, which here are the rwa_* of
 	# tools/mesa/air/air_metal.h, and the install name has to be the path on the device
 	# because meson's own is @rpath.
-	ninja -C $BUILD src/gallium/drivers/freedreno/libhakiosair.dylib >> ninja.log
-	llvm-strip -x -o out/libhakiosair.dylib $BUILD/src/gallium/drivers/freedreno/libhakiosair.dylib
+	ninja -C $BUILD src/gallium/targets/hakiosair/libhakiosair.dylib >> ninja.log
+	llvm-strip -x -o out/libhakiosair.dylib $BUILD/src/gallium/targets/hakiosair/libhakiosair.dylib
 	install_name_tool -id /redwood/lib/libhakiosair.dylib out/libhakiosair.dylib
 	echo "mk-mesa.sh: $B/out/libhakiosair.dylib ($(stat -c %s out/libhakiosair.dylib) bytes," \
 		"$(nm -gU out/libhakiosair.dylib | grep -c ' _rwa_') rwa_* functions)"

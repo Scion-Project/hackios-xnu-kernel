@@ -32,7 +32,7 @@
 # argument buffer at all (0 of 456).
 set -u
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
-TEST=${AIR_METAL_TEST:-$ROOT/build/mesa-host/build/src/gallium/drivers/freedreno/air_metal_test}
+TEST=${AIR_METAL_TEST:-$ROOT/build/mesa-host/build/src/gallium/targets/hakiosair/air_metal_test}
 [ -x "$TEST" ] || { echo "argbufruncheck.sh: run tools/air/mk-host.sh first"; exit 1; }
 command -v llvm-as > /dev/null || { echo "argbufruncheck.sh: no llvm-as"; exit 1; }
 

@@ -102,6 +102,10 @@
  *     panicked flushing the cache over an address it had not checked.
  *   - The page of the first jobs is taken out of the GPU's tables before it is freed (the original left its entry).
  *   - NR_CORE_GROUPS is the number of L2 caches present, as Linux panfrost answers it, not a fixed 1.
+ *   - Programs' buffers get GPU addresses between 32 MB and 4 GB, given back when a buffer is freed, and a buffer of code
+ *     never crosses a 16 MB line: Linux panfrost's range and rule, which Mesa's panfrost assumes (a Bifrost blend
+ *     shader's address is 32 bits, its upper half the fragment shader's). The original gave 32 GB from 16 MB, never an
+ *     address twice, whatever the buffer (hakios.mali_va.h, checked by tools/mali-va-test.sh).
  *   - The steps' lines go to the loader's log as they are said (say()), as this tree's drivers do: the end of a run
  *     that dies in a step is what is kept. The minute's report and the per-job lines stay in the kernel's log only.
  *   - Waits are bounded by the clock, not by a count of delay()s (which may each sleep far longer than asked).
@@ -150,6 +154,8 @@
 #include <stdarg.h>
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
+
+#include "hakios.mali_va.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern uint64_t kvtophys(vm_offset_t va);                       /* pmap_paddr_t */
@@ -1343,15 +1349,13 @@ wait_job(uint32_t at, uint32_t mask, uint32_t want, uint32_t ms)
 #define AS_COMMAND_LOCK     2
 #define AS_COMMAND_FLUSH_PT 4
 #define JS0                 0x1800      /* fragment jobs; everything else goes to slot 1 */
-#define GPU_ADDRESS_FIRST   0x01000000ull
-#define GPU_ADDRESS_END     (1ull << GPU_VA_BITS)
-
-static uint64_t next_address = GPU_ADDRESS_FIRST;
+/* The GPU addresses programs' buffers get: 32 MB to 4 GB, given out and taken back (hakios.mali_va.h says why). */
+static struct mali_va mali_va;          /* with mali_lock held */
 
 /*
- * The last buffers handed GPU addresses, and whether they have been taken out of the tables since: addresses are never
- * given twice, so a translation fault is a job writing into a buffer already freed or past the end of one, and this
- * says which. With mali_lock held.
+ * The last buffers handed GPU addresses, and whether they have been taken out of the tables since: a translation fault
+ * is a job writing into a buffer already freed or past the end of one, and this says which. An address freed is given
+ * out again, but not soon (above): the newest buffer at an address is the one asked about. With mali_lock held.
  */
 #define MALI_RECENT 4096
 static struct {
@@ -1368,7 +1372,7 @@ hakios_mali_tag(uint64_t address, uint32_t kind, uint32_t width, uint32_t height
 {
 	lck_mtx_lock(&mali_lock);
 	for (int i = 0; i < MALI_RECENT; i++) {
-		if (mali_recent[i].address == address && mali_recent[i].size != 0) {
+		if (mali_recent[i].address == address && mali_recent[i].size != 0 && !mali_recent[i].freed) {
 			mali_recent[i].kind = kind;
 			mali_recent[i].width = width;
 			mali_recent[i].height = height;
@@ -1396,7 +1400,10 @@ describe_address(uint64_t address)
 {
 	int below = -1;
 
-	for (int i = 0; i < MALI_RECENT; i++) {
+	/* newest first: an address given out again belongs to its last buffer */
+	for (uint32_t n = 0; n < MALI_RECENT; n++) {
+		int i = (int)((mali_recent_next - 1 - n) % MALI_RECENT);
+
 		if (mali_recent[i].size == 0) {
 			continue;
 		}
@@ -1407,7 +1414,8 @@ describe_address(uint64_t address)
 			say_kind(i);
 			return;
 		}
-		if (mali_recent[i].address <= address && (below < 0 || mali_recent[i].address > mali_recent[below].address)) {
+		if (mali_recent[i].address <= address && (below < 0 || mali_recent[i].address > mali_recent[below].address ||
+		    (mali_recent[i].address == mali_recent[below].address && !mali_recent[i].freed))) {
 			below = i;
 		}
 	}
@@ -1508,18 +1516,18 @@ hakios_mali_parameter(uint32_t which, uint64_t *value)
 	}
 }
 
-/* `size` bytes of GPU addresses, never given out twice: there are 32 GB of them. 0: none left. */
+/*
+ * `size` bytes of GPU addresses between 32 MB and 4 GB (hakios.mali_va.h). `executable`: a buffer the GPU may run code
+ * from (Linux's flags without PANFROST_BO_NOEXEC), kept off 16 MB lines. 0: none left, or a size of nothing.
+ */
 uint64_t
-hakios_mali_address(uint64_t size)
+hakios_mali_address(uint64_t size, bool executable)
 {
 	uint64_t address;
 
 	lck_mtx_lock(&mali_lock);
-	address = next_address;
-	if (address + size > GPU_ADDRESS_END) {
-		address = 0;
-	} else {
-		next_address += (size + 0xffff) & ~0xffffull;   /* 64 KB between buffers: an overrun faults */
+	address = mali_va_alloc(&mali_va, size, executable);
+	if (address != 0) {
 		mali_recent[mali_recent_next % MALI_RECENT].address = address;
 		mali_recent[mali_recent_next % MALI_RECENT].size = size;
 		mali_recent[mali_recent_next % MALI_RECENT].freed = 0;
@@ -1544,6 +1552,8 @@ hakios_mali_unmap(uint64_t gpu, uint64_t size)
 	lck_mtx_lock(&mali_job_lock);                   /* an entry taken out: the TLB may hold it */
 	lck_mtx_lock(&mali_lock);
 	as0_update(pt_transtab, pt_transcfg());
+	/* only now, with nothing of the buffer left in the tables or the MMU, are its addresses free to be given again */
+	(void)mali_va_free(&mali_va, gpu, size);
 	lck_mtx_unlock(&mali_lock);
 	lck_mtx_unlock(&mali_job_lock);
 }
@@ -1820,8 +1830,9 @@ mali_thread(__unused void *parameter, __unused wait_result_t result)
 	for (;;) {
 		delay(60 * 1000 * 1000);
 		printf("mali: step %u of %u; user space says %u%s; %u clients, %u buffers, %u job chains (%u failed), "
-		    "%u pictures shown\n", reached, STEPS, user_said, user_said == 1 ? " -- a program ran a job on the GPU" : "",
-		    gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShown);
+		    "%u pictures shown; %llu MB of the GPU's 4 GB of addresses in use\n", reached, STEPS, user_said,
+		    user_said == 1 ? " -- a program ran a job on the GPU" : "", gMaliClients, gMaliBuffers, gMaliSubmits,
+		    gMaliFailed, gMaliShown, mali_va.taken * MALI_VA_GRANULE >> 20);
 		lck_mtx_lock(&kept_lock);
 		for (uint32_t i = kept_next > KEPT_LINES ? kept_next - KEPT_LINES : 0; i < kept_next; i++) {
 			printf("kept: %s\n", kept_lines[i % KEPT_LINES]);

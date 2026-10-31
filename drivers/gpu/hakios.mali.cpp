@@ -29,7 +29,7 @@
  * The original's common tree had that wait in MiniIOSurfaceDrawn() itself; this tree's is the Adreno's
  * (hakios.gpu.cpp), or drivers/core/hakios.stubs.cpp's without it, and both ask this one.
  *
- * Status: written, not yet run on the phone, and not compiled.
+ * Status: written and built into the S9's kernel (CONFIG_HAKIOS_MALI); not yet run on the phone.
  */
 
 #include <IOKit/IOLib.h>
@@ -54,7 +54,7 @@ extern "C" {
 /* drivers/gpu/hakios.mali.c (declared in bsd/sys/hakios.input.h, which is not seen from here) */
 bool hakios_mali_ready(void);
 bool hakios_mali_parameter(uint32_t which, uint64_t * value);
-uint64_t hakios_mali_address(uint64_t size);
+uint64_t hakios_mali_address(uint64_t size, bool executable);
 bool hakios_mali_map(uint64_t gpu, uint64_t phys);
 void hakios_mali_mapped(void);
 void hakios_mali_unmap(uint64_t gpu, uint64_t size);
@@ -143,6 +143,11 @@ struct drm_panfrost_create_bo {
 	uint32_t size, flags, handle, pad;
 	uint64_t offset;
 };
+/* its flags: NOEXEC, no code is run from it (its addresses may then cross a 16 MB line); HEAP, the tiler's heap, which
+ * Linux grows on a fault and which is made whole here (Mesa's is 128 MB). Both taken from Mesa as 1.1 of the interface
+ * has them. */
+#define PANFROST_BO_NOEXEC      (1u << 0)
+#define PANFROST_BO_HEAP        (1u << 1)
 
 struct drm_panfrost_mmap_bo {
 	uint32_t handle, flags;
@@ -297,7 +302,8 @@ class HakiosMaliUserClient : public IOUserClient
 	struct mali_buffer * buffer(uint32_t handle);
 	void freeBuffer(struct mali_buffer * b);
 	IOReturn createBO(struct drm_panfrost_create_bo * request);
-	struct mali_buffer * newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint64_t size, uint32_t * handle);
+	struct mali_buffer * newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint64_t size, uint32_t * handle,
+	    uint32_t flags);
 	IOReturn surfaceBuffer(struct mali_surface * request);
 
 public:
@@ -351,11 +357,14 @@ HakiosMaliUserClient::freeBuffer(struct mali_buffer * b)
 
 /*
  * A handle and GPU addresses for `size` bytes of `memory` from byte `from` on, every page entered into the GPU's tables.
+ * `flags` are Linux's PANFROST_BO_*: without NOEXEC the GPU may run code from it, and its addresses do not cross a 16 MB
+ * line (hakios_mali_address()).
  * With the lock held; NULL: no handle, no addresses, or a page that would not go in. The caller sets `memory` (and
  * `surface`) of what comes back.
  */
 struct mali_buffer *
-HakiosMaliUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint64_t size, uint32_t * handle)
+HakiosMaliUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint64_t size, uint32_t * handle,
+    uint32_t flags)
 {
 	struct mali_buffer * b = NULL;
 	bool mapped = true;
@@ -374,7 +383,7 @@ HakiosMaliUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint
 		IOLog("HakiosMali: no handles left\n");
 		return NULL;
 	}
-	b->address = hakios_mali_address(size);
+	b->address = hakios_mali_address(size, !(flags & PANFROST_BO_NOEXEC));
 	/* every 4 KB of it: the GPU's pages, a quarter of the kernel's 16 KB ones */
 	for (uint64_t offset = 0; offset < size && mapped && b->address != 0; offset += 4096) {
 		IOByteCount length = 0;
@@ -393,7 +402,7 @@ HakiosMaliUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint
 	}
 	hakios_mali_mapped();
 	if (gMaliBuffers < 32) {
-		gMaliMade[gMaliBuffers] = (struct mali_made) { b->address, size, (uint32_t) size, 0 };
+		gMaliMade[gMaliBuffers] = (struct mali_made) { b->address, size, (uint32_t) size, flags };
 	}
 	OSIncrementAtomic((SInt32 *) &gMaliBuffers);
 	b->size = size;
@@ -417,7 +426,7 @@ HakiosMaliUserClient::createBO(struct drm_panfrost_create_bo * request)
 		IOLog("HakiosMali: no memory for a buffer of %llu bytes\n", size);
 		return kIOReturnNoMemory;
 	}
-	b = newBuffer(memory, 0, size, &request->handle);
+	b = newBuffer(memory, 0, size, &request->handle, request->flags);
 	if (b == NULL) {
 		memory->release();
 		return kIOReturnNoMemory;
@@ -481,7 +490,7 @@ HakiosMaliUserClient::surfaceBuffer(struct mali_surface * request)
 		MiniIOSurfaceDrop(s);
 		return kIOReturnSuccess;
 	}
-	b = newBuffer(s->memory, PAGE_SIZE, size, &request->handle);
+	b = newBuffer(s->memory, PAGE_SIZE, size, &request->handle, PANFROST_BO_NOEXEC);
 	if (b == NULL) {
 		memory->release();
 		MiniIOSurfaceDrop(s);

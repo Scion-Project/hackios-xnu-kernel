@@ -163,7 +163,7 @@ echo "== Metal's packed 16-bit colour formats: which field became which channel"
 # field of all ones is exactly 1.0, so there is no rounding in the expectation. What it
 # cannot decide is Apple's convention -- see air_metal.c's format table and the last line
 # this prints.
-AMT=$ROOT/build/mesa-host/build/src/gallium/drivers/freedreno/air_metal_test
+AMT=$ROOT/build/mesa-host/build/src/gallium/targets/hakiosair/air_metal_test
 if [ -x "$AMT" ]; then
 	"$AMT" --pixel-formats \
 		"$IOS/rootfs/System/Library/Extensions/AppleMetalGLRenderer.bundle/default.metallib" \
