@@ -354,6 +354,15 @@ ufs_native_write	k
 ufs_probe	l
 ufs_shared_pa	k
 ufs_write	kl
+usb_gadget	k
+usb_gadget_clk	k
+usb_gadget_crlf	k
+usb_gadget_drain	k
+usb_gadget_fs	k
+usb_gadget_ldo	k
+usb_gadget_poll	k
+usb_gadget_soc	k
+usb_gadget_susphy	k
 ustacks	k
 ustacks_at	k
 ustacks_count	k

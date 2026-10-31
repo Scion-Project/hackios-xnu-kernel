@@ -78,6 +78,10 @@ core     bsd/dev/hakios.platform.c
 core     bsd/dev/hakios.stubs.c
 core     bsd/dev/hakios.exynos_hsi2c.c
 core     bsd/dev/hakios.exynos_acpm.c
+core     bsd/dev/hakios.dwc3.c
+core     bsd/dev/hakios.usb_acm.h
+core     bsd/dev/hakios.usb_glue.h
+core     bsd/dev/hakios.exynos_usb.c
 core     iokit/Kernel/hakios.stubs.cpp
 core    bsd/dev/hakios.socinfo.c
 power   bsd/dev/hakios.thermal.c

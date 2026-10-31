@@ -323,6 +323,15 @@ UFS_NATIVE_STEP	arg	ufs_native_step	Storage and APFS	k	hakios.ufshc.c	own mode g
 UFS_NATIVE_TEST	arg	ufs_native_test	Storage and APFS	k	hakios.ufs.c	own mode's test at start: the refusals, and writes put back (2: one block left written)
 UFS_NATIVE_WRITE	arg	ufs_native_write	Storage and APFS	k	hakios.ufs.c	own mode: the one partition that takes writes, through /dev/rufs_NAME (never EFS, BOOT, PARAM ...)
 UFS_PROBE	arg	ufs_probe	Loader	l	loader.c	
+USB_GADGET	arg	usb_gadget	USB	k	hakios.dwc3.c	the steps (0, or none: nothing)
+USB_GADGET_CLK	arg	usb_gadget_clk	USB	k	hakios.dwc3.c	the glue may open a clock the boot left shut (Android's mux, divider and gate)
+USB_GADGET_CRLF	arg	usb_gadget_crlf	USB	k	hakios.dwc3.c	send the log's line ends as they are (LF) rather than CR LF
+USB_GADGET_DRAIN	arg	usb_gadget_drain	USB	k	hakios.dwc3.c	
+USB_GADGET_FS	arg	usb_gadget_fs	USB	k	hakios.dwc3.c	full speed (12 Mbit/s) instead of high speed
+USB_GADGET_LDO	arg	usb_gadget_ldo	USB	k	hakios.dwc3.c	the glue puts the PHY's supplies into Android's USB mode (S9: S2MPS18 LDO9-14 mode 3, read back)
+USB_GADGET_POLL	arg	usb_gadget_poll	USB	k	hakios.dwc3.c	the poll period while a host is attached (1-50; 2)
+USB_GADGET_SOC	arg	usb_gadget_soc	USB	k	hakios.dwc3.c	
+USB_GADGET_SUSPHY	arg	usb_gadget_susphy	USB	k	hakios.dwc3.c	let the link suspend the 2.0 PHY when idle (GUSB2PHYCFG SUSPHY, as Linux does; off by default)
 USTACKS	arg	ustacks	Debugging	k	user_exception_trace.c	
 USTACKS_AT	arg	ustacks_at	Debugging	k	user_exception_trace.c	
 USTACKS_COUNT	arg	ustacks_count	Debugging	k	user_exception_trace.c	

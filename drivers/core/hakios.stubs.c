@@ -120,6 +120,15 @@ void hakios_max98512_quiesce(void) {}
 void hakios_s6e3ha8_init(void) {}
 #endif
 
+#ifndef HAKIOS_USB_GADGET
+void hakios_usb_gadget_quiesce(void) {}
+#endif
+#ifndef HAKIOS_EXYNOS_USB
+struct hakios_usb_glue;
+const struct hakios_usb_glue *hakios_usb_glue_exynos9810(void);
+const struct hakios_usb_glue *hakios_usb_glue_exynos9810(void) { return NULL; }     /* usb_gadget= then says there is no glue */
+#endif
+
 #ifndef HAKIOS_UFS
 void hakios_ufs_init(void) {}
 void hakios_ufs_report(__unused const char *when) {}

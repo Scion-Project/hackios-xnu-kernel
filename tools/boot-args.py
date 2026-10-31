@@ -67,6 +67,7 @@ GROUPS = [
     ("Touch and buttons", r"hakios\.(goodix|input|buttons|exynos_keys|s6sy761|exynos_hsi2c|virtio_input)\."),
     ("Storage and APFS", r"hakios\.(ufs|ufshc|virtio_blk|sparse|apfs_check)\.|apfs_vfsops\."),
     ("Network", r"hakios\.(net|virtio_net)\."),
+    ("USB", r"hakios\.(dwc3|exynos_usb)\."),
     ("Haptics and torch", r"hakios\.(haptic|torch|s2mpb02_torch)\."),
     ("Chip, thermal and PMIC", r"hakios\.(socinfo|thermal|pmic|exynos_tmu)\."),
     ("Version", r"hakios\.version\."),
