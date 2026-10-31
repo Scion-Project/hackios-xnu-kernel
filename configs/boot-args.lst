@@ -77,6 +77,10 @@ brcmfmac_poll	k
 brcmfmac_poll_ms	k
 bt	k
 bt_again	k
+bt_expander_reset	k
+bt_hcd	k
+bt_keep	k
+bt_uart_mhz	k
 buttons	k
 buttons_steps	k
 ca_vbl	u

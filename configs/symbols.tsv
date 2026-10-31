@@ -70,8 +70,12 @@ BRCMFMAC	arg	brcmfmac	Wi-Fi	k	hakios.brcmfmac.c,lx_brcmf.c	brcmfmac's probe: its
 BRCMFMAC_DEBUG	arg	brcmfmac_debug	Wi-Fi	k	lx_brcmf.c	
 BRCMFMAC_POLL	arg	brcmfmac_poll	Wi-Fi	k	lx_pci.c	
 BRCMFMAC_POLL_MS	arg	brcmfmac_poll_ms	Wi-Fi	k	lx_pci.c	
-BT	arg	bt	User space	k	hakios.bt.c	
+BT	arg	bt	User space	k	hakios.bcm4361_bt.c,hakios.bt.c	
 BT_AGAIN	arg	bt_again	User space	k	hakios.bt.c	the second look this many seconds later (0: no second look; 30)
+BT_EXPANDER_RESET	arg	bt_expander_reset	User space	k	hakios.bcm4361_bt.c	at bt=2 and up, take the expander out of reset if it is held there
+BT_HCD	arg	bt_hcd	User space	k	hakios.bcm4361_bt.c	the patch file's name in fw/ (default bcm4361B2.hcd)
+BT_KEEP	arg	bt_keep	User space	k	hakios.bcm4361_bt.c	leave the chip powered at the end (default: BT_EN and BT_WAKE low once the steps are done or one fails)
+BT_UART_MHZ	arg	bt_uart_mhz	User space	k	hakios.bcm4361_bt.c	UART_BT's clock in MHz, if bt=1 shows the divider or mux not as Android leaves them (default 200)
 BUTTONS	arg	buttons	Touch and buttons	k	hakios.buttons.c	
 BUTTONS_STEPS	arg	buttons_steps	Touch and buttons	k	hakios.buttons.c	
 CA_VBL	arg	ca_vbl	User space	u	inject.c	CoreAnimation's frame clock from the display driver's refresh notifications

@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **410 arguments**: 352 read by the kernel, 16 by the loader, 52 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **414 arguments**: 356 read by the kernel, 16 by the loader, 52 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -449,14 +449,18 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (44)
+## User space (48)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `autounlock` | U | `inject_sb.c` | `CONFIG_AUTOUNLOCK` |  |
 | `avf_exit` | K | `1001-avf-psci-system-off.patch` | `CONFIG_AVF_EXIT` |  |
-| `bt` | K | `hakios.bt.c` | `CONFIG_BT` |  |
+| `bt` | K | `hakios.bcm4361_bt.c`, `hakios.bt.c` | `CONFIG_BT` |  |
 | `bt_again` | K | `hakios.bt.c` | `CONFIG_BT_AGAIN` |  |
+| `bt_expander_reset` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_EXPANDER_RESET` |  |
+| `bt_hcd` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_HCD` |  |
+| `bt_keep` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_KEEP` |  |
+| `bt_uart_mhz` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_UART_MHZ` |  |
 | `ca_vbl` | U | `inject.c` | `CONFIG_CA_VBL` |  |
 | `caenv` | U | `inject.c` | `CONFIG_CAENV` |  |
 | `camtl` | U | `inject.c` | `CONFIG_CAMTL` |  |

@@ -63,6 +63,9 @@ void hakios_max77705_init(void) {}
 void hakios_s2mpb02_torch_init(void) {}
 void hakios_s2mpb02_torch_quiesce(void) {}
 #endif
+#ifndef HAKIOS_BCM4361_BT
+void hakios_bcm4361_bt_init(void) {}
+#endif
 #ifndef HAKIOS_EXYNOS_PCIE
 void hakios_exynos_pcie_init(void) {}
 void hakios_exynos_pcie_quiesce(void) {}

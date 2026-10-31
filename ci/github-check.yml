@@ -70,6 +70,8 @@ jobs:
         run: sh tools/metallib-test.sh
       - name: The Galaxy S9 panel's gamma, worked out from made-up MTPs, holds together (sanitizers)
         run: sh tools/s6e3ha8-gamma-test.sh
+      - name: The Galaxy S9's Bluetooth H4 framing, HCI events, .hcd reading and UART divisor hold together (sanitizers)
+        run: sh tools/bcm-hci-test.sh
       - name: The kernel patch applies to Apple's tree
         run: |
           git clone -q --depth 1 --branch xnu-8796.121.2 https://github.com/apple-oss-distributions/xnu.git /tmp/xnu
