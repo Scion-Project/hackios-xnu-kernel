@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **400 arguments**: 342 read by the kernel, 16 by the loader, 52 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **408 arguments**: 350 read by the kernel, 16 by the loader, 52 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -366,7 +366,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `torch_max_s` | K | `hakios.s2mpb02_torch.c`, `hakios.torch.c` | `CONFIG_TORCH_MAX_S` |  |
 | `torch_secs` | K | `hakios.s2mpb02_torch.c`, `hakios.torch.c` | `CONFIG_TORCH_SECS` |  |
 
-## Chip, thermal and PMIC (10)
+## Chip, thermal and PMIC (18)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -380,6 +380,14 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `thermal_stop` | K | `hakios.thermal.c` | `CONFIG_THERMAL_STOP` |  |
 | `thermal_tm0` | K | `hakios.thermal.c` | `CONFIG_THERMAL_TM0` |  |
 | `thermal_tm1` | K | `hakios.thermal.c` | `CONFIG_THERMAL_TM1` |  |
+| `tmu` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU` |  |
+| `tmu_batt_stop` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_BATT_STOP` |  |
+| `tmu_enable` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_ENABLE` |  |
+| `tmu_log` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_LOG` |  |
+| `tmu_off` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_OFF` |  |
+| `tmu_poll` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_POLL` |  |
+| `tmu_stop` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_STOP` |  |
+| `tmu_ungate` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_UNGATE` |  |
 
 ## Version (1)
 
