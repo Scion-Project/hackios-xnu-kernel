@@ -17,3 +17,9 @@ driver WIFI_STA
 	file    iokit/Kernel/hakios.wlan.cpp iokitcpp
 	help    the station and the Apple80211 surface iOS's wifid talks to, over whichever link is below: the WCN6750's
 	help    (WIFI) or QEMU's virtio network device seen as Wi-Fi (VIRTIO_NET, virtio_net_wifi=1)
+
+driver EXYNOS_PCIE
+	file    bsd/dev/hakios.exynos_pcie.c
+	help    the Galaxy S9's Wi-Fi, stage 1: the Exynos 9810's PCIe root complex of channel 0 (DesignWare and Samsung's
+	help    PHY), WLAN_REG_ON and PERST#, the link to the BCM4361 and its ID and BARs (wifi_pcie=N, 5 for all); no
+	help    firmware, no radio driver yet (devices/starlte/WIFI.md)

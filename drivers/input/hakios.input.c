@@ -240,6 +240,7 @@ hakios_input_init(void)
 	hakios_net_init();
 	hakios_adreno_init();
 	hakios_mali_init();
+	hakios_exynos_pcie_init();
 	hakios_wifi_init();
 	hakios_adsp_init();
 	hakios_mpss_init();
