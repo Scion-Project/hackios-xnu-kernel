@@ -6,5 +6,8 @@ int	lx_pci_find(void);		/* lx_pci.c: the device handed over, as a struct pci_dev
 bool	lx_brcmf_may(unsigned step, const char *what);	/* lx_brcmf.c: brcmfmac=N allows this step (said, either way) */
 bool	lx_brcmf_reached(unsigned step);	/* lx_brcmf.c: ... the same, not said */
 void	lx_brcmf_attached(struct device *dev);	/* lx_brcmf.c: brcmf_attach() came through (pcie.c, bcm4361.patch) */
+void	lx_cfg_begin(void);			/* lx_cfg.c: the station, brcmfmac=7 */
+int	lx_cfg_transmit(const unsigned char *frame, unsigned long length);	/* lx_cfg.c: a frame to the network joined */
+void	lx_cfg_stop(void);			/* lx_cfg.c: the station taken back, the network left, the interface down */
 
 #endif

@@ -18,13 +18,16 @@
  *      hakios.brcmfmac.c); brcmfmac_poll=1 keeps the thread that looks
  *   6  ... the phone's address given to brcmfmac at its probe (lx_cfg.c's brcmf_dmi_probe()), which sets it in the
  *      firmware at step 4 (cur_etheraddr)
- *   7, 8  the station and joining: roaming off (lx_board.c); the rest is not in this object yet
+ *   7  ... the station (lx_cfg.c): roaming off; once brcmf_attach() is through, the interface up (the firmware's "up"),
+ *      en0 on it and the station given to the kernel (sys/hakios.sta.h): scans for iOS's Wi-Fi settings
+ *   8  ... joining: brcmfmac's connect, the four-way handshake by lx_wpa.c, the keys to the firmware, frames
  * What stands between steps 2 and 3 and 3 and 4 is two lines brcmfmac's pcie.c is given for this
  * (wifi/lx/brcmfmac/patches/bcm4361.patch): where the step ends, brcmf_pcie_setup() returns and leaves things as they
- * are (its way of failing would reset the chip and say that its firmware crashed). A third tells this file that
+ * are (its way of failing would reset the chip and say that its firmware crashed). A third tells lx_cfg.c that
  * brcmf_attach() is through.
  *
- * lx_stop() (the kernel's hakios_wifi_stop(), where a run ends in order): brcmfmac's module end (its PCI driver's removal: the interrupt let go, the chip reset through its watchdog,
+ * lx_stop() (the kernel's hakios_wifi_stop(), where a run ends in order): the station taken back and the interface down,
+ * then brcmfmac's module end (its PCI driver's removal: the interrupt let go, the chip reset through its watchdog,
  * memory given back), if the driver got as far as its interface; before that (brcmfmac=1 to 3, or a step 4 still
  * under way) the driver is left as it is, and the kernel only takes the radio's power.
  *
@@ -77,7 +80,9 @@ lx_brcmf_attached(struct device *dev)
 	b.attached = true;
 	lx_tell("lx: brcmfmac's interface to the firmware is up\n");
 	if (lx_brcmf_reached(7)) {
-		lx_tell("lx: brcmfmac=%u: the station (7, 8) is not in this object yet\n", b.steps);
+		lx_cfg_begin();
+	} else {
+		lx_brcmf_may(7, "the station: the interface up, en0 on it, the kernel's to ask");
 	}
 }
 
@@ -129,13 +134,14 @@ lx_stop(void)
 		return;
 	}
 	b.started = false;
+	lx_cfg_stop();
 	brcmf_core_exit();
 	lx_tell("lx: brcmfmac is down again\n");
 }
 
-/* frames: not until a station above the firmware's interface is built (brcmfmac=7 and 8) */
+/* frames: once a network is joined (brcmfmac=8) */
 int
 lx_transmit(const unsigned char *frame, unsigned long length)
 {
-	return (ENETDOWN);
+	return (lx_cfg_transmit(frame, length));
 }

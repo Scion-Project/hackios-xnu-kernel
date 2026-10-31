@@ -13,7 +13,10 @@ usage: tools/brcmfmac-test.py
 
   3. xnu/files/bsd/sys/hakios.macaddr.h, compiled with the host's cc: the phone's address as Samsung's Android writes it
      in /efs/wifi/.mac.info (brcmfmac=6), and what is refused (all zeroes, a group's address, anything malformed).
-  4. the patched driver again: lx_brcmf_attached() once brcmf_attach() is through, and brcmf_dmi_probe() called (the
+  4. wifi/lx/brcmfmac/lx_rsn.h, compiled with the host's cc: an access point's RSN element read, and ours for the
+     association request made (brcmfmac=8): CCMP, PSK, the group's CCMP or TKIP; WPA3, enterprise networks, protected
+     management frames required, WEP and broken elements refused.
+  5. the patched driver again: lx_brcmf_attached() once brcmf_attach() is through, and brcmf_dmi_probe() called (the
      phone's settings) when built with CONFIG_DMI, as tools/mk-brcmfmac.sh builds it.
 
 Exit status 0 when everything holds.
@@ -78,7 +81,7 @@ with tempfile.TemporaryDirectory() as tmp:
         check("lx_pci_word.h: reads and writes of 1, 2 and 4 bytes; the command word's status half", run.returncode == 0)
 
 
-# ---- 3. the phone's address -----------------------------------------------------------------
+# ---- 3, 4. the phone's address, and the RSN elements -----------------------------------------------------------------
 MAC_HARNESS = r"""
 #include <stdint.h>
 #include <stdio.h>
@@ -122,9 +125,90 @@ int main(void) {
 }
 """
 
+RSN_HARNESS = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include "lx_rsn.h"
+static int bad;
+#define EQ(a, b) do { long long x = (a), y = (b); if (x != y) { printf("%s = %lld, not %lld\n", #a, x, y); bad = 1; } } while (0)
+/* a beacon's elements: SSID "home", rates, DS channel 6, then the RSN element given, then a vendor element */
+static unsigned beacon(uint8_t *out, const uint8_t *rsn, unsigned rsn_length) {
+	static const uint8_t before[] = { 0, 4, 'h', 'o', 'm', 'e', 1, 4, 0x82, 0x84, 0x8b, 0x96, 3, 1, 6 };
+	static const uint8_t after[] = { 0xdd, 7, 0x00, 0x50, 0xf2, 0x02, 0x00, 0x01, 0x00 };
+	memcpy(out, before, sizeof(before));
+	memcpy(out + sizeof(before), rsn, rsn_length);
+	memcpy(out + sizeof(before) + rsn_length, after, sizeof(after));
+	return (unsigned)(sizeof(before) + rsn_length + sizeof(after));
+}
+static const char *choose(const uint8_t *rsn, unsigned rsn_length, uint8_t *ours, unsigned *group) {
+	uint8_t e[256];
+	unsigned n = beacon(e, rsn, rsn_length);
+	return lx_rsn_choose(e, n, ours, group);
+}
+int main(void) {
+	/* WPA2-PSK, CCMP for both: the commonest home network */
+	static const uint8_t wpa2[] = { 48, 20, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0x0c, 0 };
+	static const uint8_t want[] = { 48, 20, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0, 0 };
+	/* WPA/WPA2 mixed: the group's TKIP, pairwise TKIP and CCMP */
+	static const uint8_t mixed[] = { 48, 24, 1, 0, 0, 0x0f, 0xac, 2, 2, 0, 0, 0x0f, 0xac, 2, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0, 0 };
+	/* WPA2/WPA3 transition: PSK and SAE, MFP capable (not required) */
+	static const uint8_t transition[] = { 48, 24, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 2, 0, 0, 0x0f, 0xac, 2, 0, 0x0f, 0xac, 8, 0x80, 0 };
+	/* WPA3 only: SAE, MFP required */
+	static const uint8_t wpa3[] = { 48, 20, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 8, 0xc0, 0 };
+	/* PSK, but MFP required */
+	static const uint8_t mfpr[] = { 48, 20, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0x40, 0 };
+	/* enterprise (802.1X) */
+	static const uint8_t eap[] = { 48, 20, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 1, 0, 0 };
+	/* TKIP only */
+	static const uint8_t tkip[] = { 48, 20, 1, 0, 0, 0x0f, 0xac, 2, 1, 0, 0, 0x0f, 0xac, 2, 1, 0, 0, 0x0f, 0xac, 2, 0, 0 };
+	/* a count that runs past the element's end */
+	static const uint8_t broken[] = { 48, 14, 1, 0, 0, 0x0f, 0xac, 4, 3, 0, 0, 0x0f, 0xac, 4, 1, 0 };
+	uint8_t ours[LX_RSN_OURS_LENGTH], e[256];
+	unsigned group = 0, n;
+	const char *why;
+
+	why = choose(wpa2, sizeof(wpa2), ours, &group);
+	EQ(why == 0, 1);
+	EQ(memcmp(ours, want, sizeof(want)), 0);
+	EQ(group, LX_RSN_CCMP);
+	why = choose(mixed, sizeof(mixed), ours, &group);
+	EQ(why == 0, 1);
+	EQ(group, LX_RSN_TKIP);
+	EQ(ours[7], 2);
+	EQ(ours[13], 4);
+	why = choose(transition, sizeof(transition), ours, &group);
+	EQ(why == 0, 1);
+	EQ(ours[19], 2);
+	EQ(choose(wpa3, sizeof(wpa3), ours, &group) != 0, 1);
+	EQ(choose(mfpr, sizeof(mfpr), ours, &group) != 0, 1);
+	EQ(choose(eap, sizeof(eap), ours, &group) != 0, 1);
+	EQ(choose(tkip, sizeof(tkip), ours, &group) != 0, 1);
+	EQ(choose(broken, sizeof(broken), ours, &group) != 0, 1);
+	/* what kind of network */
+	n = beacon(e, wpa2, sizeof(wpa2));
+	EQ(lx_rsn_kind(e, n, 0x0411), LX_RSN_WPA2);
+	n = beacon(e, (const uint8_t *)"", 0);
+	EQ(lx_rsn_kind(e, n, 0x0401), LX_RSN_OPEN);
+	EQ(lx_rsn_kind(e, n, 0x0411), LX_RSN_OLDER);	/* (privacy without RSN: WEP or WPA) */
+	EQ(lx_rsn_choose(e, n, ours, &group) != 0, 1);
+	/* an element whose length runs past the end is not read */
+	{
+		static const uint8_t cut[] = { 3, 1, 6, 48, 20, 1, 0, 0, 0x0f, 0xac, 4 };
+		EQ(lx_rsn_element(cut, sizeof(cut), 3) == cut, 1);
+		EQ(lx_rsn_element(cut, sizeof(cut), 48) == 0, 1);
+		EQ(lx_rsn_kind(cut, sizeof(cut), 0x0011), LX_RSN_OLDER);
+	}
+	return bad;
+}
+"""
+
 for name, harness, include, what in (
         ("macaddr", MAC_HARNESS, "xnu/files/bsd/sys",
-         "hakios.macaddr.h: the phone's .mac.info and wifi_mac read; zeroes, a group's address and malformed text refused"),):
+         "hakios.macaddr.h: the phone's .mac.info and wifi_mac read; zeroes, a group's address and malformed text refused"),
+        ("rsn", RSN_HARNESS, "wifi/lx/brcmfmac",
+         "lx_rsn.h: WPA2 CCMP, mixed (the group's TKIP) and WPA2/WPA3 transition taken, with our RSN element; WPA3, "
+         "enterprise, MFP required, TKIP only, WEP and broken elements refused")):
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(tmp, "t.c")
         exe = os.path.join(tmp, "t")
@@ -196,7 +280,7 @@ check("pcie.c: the device table has BRCM_PCIE_4361_DEVICE_ID (vendor 0x14e4, cla
 check("pcie.c: brcmfmac=N stops it before the firmware goes to the chip (3) and before brcmf_attach() (4)",
       pcie.count("lx_brcmf_may(3,") == 1 and pcie.count("lx_brcmf_may(4,") == 1)
 
-# ---- 4. the hooks in the patched driver ------------------------------------------------------------------
+# ---- 5. the station's hooks in the patched driver ------------------------------------------------------------------
 setup = pcie[pcie.rindex("static void brcmf_pcie_setup(struct device *dev, int ret,\n"):]  # (the definition)
 setup = setup[:setup.index("\nfail:")]
 check("pcie.c: lx_brcmf_attached() once, in brcmf_pcie_setup(), after brcmf_attach() has come through",
