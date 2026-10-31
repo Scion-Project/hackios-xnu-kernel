@@ -1401,8 +1401,29 @@ hc_scsi_result(struct hc_slot *s, uint8_t lun, const char *what, bool quiet)
 	if (r[2] != lun) {
 		return hc_protocol(s, what, "logical unit");
 	}
-	if (r[8] != 0 || seg > hc_soc->rsp_length - 32) {
-		return hc_protocol(s, what, "extra header segment or data segment length");
+	if (r[8] != 0) {
+		return hc_protocol(s, what, "extra header segment");
+	}
+	if (seg > hc_soc->rsp_length - 32) {
+		/*
+		 * QEMU's UFS model (hw/ufs/lu.c ufs_build_scsi_response_upiu, through 10.1 at least) swaps the data
+		 * segment length to big-endian twice, so it arrives little-endian: 2 reads as 0x0200, 2 + 18 bytes
+		 * of sense as 0x1400. Linux's ufshcd never reads this field (it takes the sense length from the
+		 * segment itself), so nothing else notices. A length that only fits swapped is taken swapped, and
+		 * said once; one that fits neither way is still refused.
+		 */
+		uint32_t swapped = (seg >> 8 | seg << 8) & 0xffff;
+		static bool said_swapped;
+
+		if (swapped > hc_soc->rsp_length - 32) {
+			return hc_protocol(s, what, "data segment length");
+		}
+		if (!said_swapped) {
+			said_swapped = true;
+			hc_say("ufs: native: the response's data segment length %u only fits byte-swapped (%u): taken so "
+			    "(QEMU's model writes it little-endian)\n", seg, swapped);
+		}
+		seg = swapped;
 	}
 	if (seg >= 2) {
 		uint32_t sense_len = (uint32_t)r[32] << 8 | r[33];
