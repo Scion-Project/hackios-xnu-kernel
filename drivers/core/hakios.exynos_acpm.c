@@ -99,7 +99,13 @@ static struct channel {
 	uint32_t in_rear, in_front, in_base, out_rear, out_front, out_base, len, elem;
 	uint32_t seq;
 } channels[CHANNELS_MOST];
-static lck_mtx_t *acpm_lock;
+/*
+ * One lock for everything here: a request, and the first call's setup, which the touch screen's, ABOX's and Mali's threads
+ * may make at the same moment (each calls hakios_acpm_init() from its own thread): the second waits for the first's
+ * answer instead of taking an unfinished one (acpm_tried set, acpm_ready not yet) for "no ACPM".
+ */
+static LCK_GRP_DECLARE(acpm_lock_group, "hakios-acpm");
+static LCK_MTX_DECLARE(acpm_lock, &acpm_lock_group);
 static bool acpm_ready, acpm_tried;
 
 /* a moment `us` microseconds from now, by the clock: a loop bounded by it ends on time, however long delay() takes */
@@ -187,17 +193,12 @@ drain(struct channel *c, uint32_t id)
 	wr(mbox, MBOX_INTCR1, 1u << id);
 }
 
-bool
-hakios_acpm_init(int (*say)(const char *, ...))
+static bool
+acpm_setup(int (*say)(const char *, ...))
 {
 	uint32_t table, count, ap_max;
 	char version[26], built[26];
 
-	if (acpm_tried) {
-		return acpm_ready;
-	}
-	acpm_tried = true;
-	acpm_lock = lck_mtx_alloc_init(lck_grp_alloc_init("hakios-acpm", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
 	mbox = ml_io_map(MBOX_PA, 0x1000);
 	sram = ml_io_map(SRAM_PA + SRAM_FIRST, SRAM_SIZE - SRAM_FIRST);
 	if (mbox == 0 || sram == 0) {
@@ -256,10 +257,24 @@ hakios_acpm_init(int (*say)(const char *, ...))
 			drain(c, id);   /* answers nobody read (a kernel before this one, or none): out of the way */
 		}
 	}
-	acpm_ready = channels[HAKIOS_ACPM_CH_PMIC].usable || channels[HAKIOS_ACPM_CH_DVFS].usable;
 	say("acpm: the PMIC's channel %s, DVFS's %s\n", channels[HAKIOS_ACPM_CH_PMIC].usable ? "usable" : "NOT usable",
 	    channels[HAKIOS_ACPM_CH_DVFS].usable ? "usable" : "NOT usable");
-	return acpm_ready;
+	return channels[HAKIOS_ACPM_CH_PMIC].usable || channels[HAKIOS_ACPM_CH_DVFS].usable;
+}
+
+bool
+hakios_acpm_init(int (*say)(const char *, ...))
+{
+	bool ready;
+
+	lck_mtx_lock(&acpm_lock);
+	if (!acpm_tried) {
+		acpm_tried = true;
+		acpm_ready = acpm_setup(say);
+	}
+	ready = acpm_ready;
+	lck_mtx_unlock(&acpm_lock);
+	return ready;
 }
 
 /* the answer with our number, if it has come: copied out, and the answer queue emptied */
@@ -364,9 +379,9 @@ hakios_acpm_request(uint32_t id, uint32_t cmd[4])
 	if (!acpm_ready || id >= CHANNELS_MOST || !channels[id].usable) {
 		return ENXIO;
 	}
-	lck_mtx_lock(acpm_lock);
+	lck_mtx_lock(&acpm_lock);
 	error = channels[id].buffer ? request_buffer(&channels[id], id, cmd) : request_queue(&channels[id], id, cmd);
-	lck_mtx_unlock(acpm_lock);
+	lck_mtx_unlock(&acpm_lock);
 	return error;
 }
 
