@@ -313,6 +313,14 @@ thermal_poll	k
 thermal_stop	k
 thermal_tm0	k
 thermal_tm1	k
+tmu	k
+tmu_batt_stop	k
+tmu_enable	k
+tmu_log	k
+tmu_off	k
+tmu_poll	k
+tmu_stop	k
+tmu_ungate	k
 torch	kl
 torch_max_s	k
 torch_secs	k

@@ -113,6 +113,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | **`HAKIOS_PMIC`**<br>the blocks of the power-management chips the SPMI arbiter shows, and the PMIC's clock (pmic=1); read only | `hakios.pmic.c` |  | `pmic=`, `pmic_list=` |  |  | built |  | |
 | **`HAKIOS_BATTGUARD`**<br>the run handed back to the loader before the battery is flat (battery_stop=<percent>) | `hakios.battguard.c` |  | `battery_stop=`, `battery_stop_poll=` |  |  | built |  | |
 | **`HAKIOS_MAX77705`**<br>the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's HSI2C and handed to HakiosBattery, the power source iOS reads (max77705=1; max77705_steps=N, max77705_ipclk=MHz); and its haptic block, the vibration motor for iOS through /dev/hakios-haptic (max77705_haptic=1) | `hakios.max77705.c` | `HAKIOS_EXYNOS_HSI2C`, `HAKIOS_BATTERY` | `max77705=`, `max77705_haptic=`, `max77705_ipclk=`, `max77705_steps=` |  |  | built | built | |
+| **`HAKIOS_EXYNOS_TMU`**<br>the Galaxy S9's temperatures: the Exynos 9810's TMU (BIG, LITTLE, G3D, ISP), read with each sensor's fuses (tmu=1), published as kern.hakios.temp.* and the POCO's kern.hakios.thermal_* (tmu=2), and the run ended or the phone powered off when a zone or the battery is too hot (tmu=3; tmu_stop=, tmu_batt_stop=, tmu_off=1) | `hakios.exynos_tmu.c` |  | `tmu=`, `tmu_batt_stop=`, `tmu_enable=`, `tmu_log=`, `tmu_off=`, `tmu_poll=`, `tmu_stop=`, `tmu_ungate=` | built |  | built | built | |
 
 ## storage
 
