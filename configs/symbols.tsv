@@ -343,6 +343,9 @@ WIFI_MAC	arg	wifi_mac	Wi-Fi	k	hakios.wifi.c	the radio's own address for the driv
 WIFI_MISSION	arg	wifi_mission	Wi-Fi	k	hakios.wlfw.c	
 WIFI_NEW	arg	wifi_new	Wi-Fi	k	hakios.wifi.c	steps K and later have not been seen to work (default: the last one)
 WIFI_PAUSE	arg	wifi_pause	Wi-Fi	k	hakios.wifi.c	
+WIFI_PCIE	arg	wifi_pcie	Wi-Fi	k	hakios.exynos_pcie.c	a look, reading only: the PMU's isolation, CMU_FSYS1's gates and Q-channels, the five pins
+WIFI_PCIE_TRIES	arg	wifi_pcie_tries	Wi-Fi	k	hakios.exynos_pcie.c	
+WIFI_PCIE_UNGATE	arg	wifi_pcie_ungate	Wi-Fi	k	hakios.exynos_pcie.c	
 WIFI_QUIET	arg	wifi_quiet	Wi-Fi	k	lx_bus.c	
 WIFI_RADIO_READ	arg	wifi_radio_read	Wi-Fi	k	hakios.wifi.c	step 16 does read (2: whatever mode the firmware is in)
 WIFI_READY	arg	wifi_ready	Wi-Fi	k	hakios.wlfw.c	

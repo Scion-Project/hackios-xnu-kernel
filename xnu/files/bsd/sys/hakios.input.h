@@ -46,6 +46,7 @@ void hakios_exynos_keys_init(void);    /* boot-arg exynos_keys=1: the Galaxy S9'
 void hakios_s6sy761_init(void);        /* boot-arg s6sy761=1: the Galaxy S9's touch screen (I2C) */
 void hakios_s6e3ha8_init(void);        /* boot-arg panel=1: the Galaxy S9's panel brightness (kern.hakios.brightness) */
 void hakios_s2mpb02_torch_init(void);  /* boot-arg torch=N on the Galaxy S9: its flashlight (/dev/hakios-torch) */
+void hakios_exynos_pcie_init(void);    /* boot-arg wifi_pcie=N on the Galaxy S9: PCIe to the BCM4361, stage 1 */
 int hakios_panel_brightness(int level);        /* 0-255; 0 where a panel driver is built in, started and took it */
 void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage, read only, through the loader (ufs_shared_pa=) */
 void hakios_ufs_report(const char *when); /* where reading the storage has spent its time so far */

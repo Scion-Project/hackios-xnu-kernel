@@ -60,7 +60,7 @@ USER = re.compile(r'strstr\(\s*(?:arguments|args|argument)\s*,\s*"([a-z][a-z0-9_
 GROUPS = [
     ("GPU and display", r"hakios\.(adreno|gpu|s6e3ha8|mali|backlight)\.|MiniIO(Surface|MobileFramebuffer)|gl_osmesa|eagl\.c"),
     ("Security stand-ins", r"kern_minimac|miniamfi"),
-    ("Wi-Fi", r"hakios\.(wifi|wlfw|lx|sta|apple80211)\.|^lx_[a-z0-9]+\.c$"),     # wifi/lx/src/lx_*.c: the Linux layer
+    ("Wi-Fi", r"hakios\.(wifi|wlfw|lx|sta|apple80211|exynos_pcie)\.|^lx_[a-z0-9]+\.c$"),     # wifi/lx/src/lx_*.c: the Linux layer
     ("Cellular", r"hakios\.(mpss|ipa|cell|nas|qmi)\."),
     ("Audio and battery", r"hakios\.(adsp|audio|sound|speaker|mic|virtio_sound|battery|battguard|max77705|exynos_abox|max98512|guard)\."),
     ("Cameras", r"hakios\.camera\."),
