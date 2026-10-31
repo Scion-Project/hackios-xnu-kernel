@@ -2814,15 +2814,16 @@ ufshc_own_probe(void)
 		return false;
 	}
 	if (hc_step == 2) {
-		if (hce & 1) {
-			no = hc_link_look();
-			if (no == NULL && hc_soc->look != NULL) {
-				no = hc_soc->look(true);
-			}
-		} else {
-			hc_say("ufs: own: not enabled: no link to look at before step 3 enables it here\n");
-		}
 		hc_stopped_at = 2;
+		if ((hce & 1) == 0) {
+			hc_say("ufs: own: step 2 done: not enabled, so no link to look at, nothing changed; ufs_native_step=3 enables it "
+			    "here, starts the link and sends NOP OUT\n");
+			return false;
+		}
+		no = hc_link_look();
+		if (no == NULL && hc_soc->look != NULL) {
+			no = hc_soc->look(true);
+		}
 		hc_say("ufs: own: step 2 done: %s%s; nothing changed but DME_GET's own registers (UICCMD, its arguments, IS's UCCS)%s\n",
 		    no == NULL ? "the link is up" : "THE LINK IS NOT USABLE: ", no == NULL ? "" : no,
 		    no == NULL ? "; ufs_native_step=3 puts this kernel's list in and sends NOP OUT" : "");
