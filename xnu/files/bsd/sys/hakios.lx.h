@@ -84,6 +84,17 @@ void	 lx_os_irq_detach_all(void);				/* returns when no function is running */
 unsigned long long lx_os_irq_count(unsigned vector);		/* how many have arrived */
 
 /*
+ * ---- or one line, level-triggered, which the radio's driver shares with nobody (the Galaxy S9's INTx, SPI 253, for
+ * brcmfmac; the WCN6750's kernel has none of these, and ath11k's object does not ask for them). The same contract as a
+ * vector's: function(argument) is called on the kernel's thread for it after the line has fired, with the line masked and
+ * the root complex's latch of it already cleared, until lx_os_irq_line_enable(); attached masked. 0, or an errno.
+ */
+int	 lx_os_irq_line_attach(void (*function)(void *), void *argument);
+void	 lx_os_irq_line_enable(void);
+void	 lx_os_irq_line_detach(void);				/* returns when function is not running (unless it is the caller) */
+unsigned long long lx_os_irq_line_count(void);			/* how many have arrived */
+
+/*
  * ---- a radio on PCIe (the Galaxy S9's BCM4361, for brcmfmac: drivers/wifi/hakios.brcmfmac.c; the WCN6750's kernel has
  * none of these, and ath11k's object does not ask for them). One device, already enumerated and decoding.
  */

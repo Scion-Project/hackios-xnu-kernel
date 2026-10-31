@@ -13,11 +13,20 @@
  *      and write, and their addresses given to it. Nothing has gone over them yet
  *   4  ... the chip's interrupt (lx_pci.c's thread that looks), and the firmware's interface: brcmf_attach(), whose
  *      first command goes over the rings (the first time the chip reads and writes memory: DMA), its events,
- *      cfg80211's wiphy (registered: lx_kpi.c says what the firmware can do; nothing above takes it yet) and the
- *      network device
+ *      cfg80211's wiphy (registered: lx_cfg.c says what the firmware can do) and the network device
+ *   5  ... the chip's interrupt by INTx instead (lx_pci.c; SPI 253 through the root complex's latch, the kernel's
+ *      hakios.brcmfmac.c); brcmfmac_poll=1 keeps the thread that looks
+ *   6  ... the phone's address given to brcmfmac at its probe (lx_cfg.c's brcmf_dmi_probe()), which sets it in the
+ *      firmware at step 4 (cur_etheraddr)
+ *   7, 8  the station and joining: roaming off (lx_board.c); the rest is not in this object yet
  * What stands between steps 2 and 3 and 3 and 4 is two lines brcmfmac's pcie.c is given for this
  * (wifi/lx/brcmfmac/patches/bcm4361.patch): where the step ends, brcmf_pcie_setup() returns and leaves things as they
- * are (its way of failing would reset the chip and say that its firmware crashed).
+ * are (its way of failing would reset the chip and say that its firmware crashed). A third tells this file that
+ * brcmf_attach() is through.
+ *
+ * lx_stop() (the kernel's hakios_wifi_stop(), where a run ends in order): brcmfmac's module end (its PCI driver's removal: the interrupt let go, the chip reset through its watchdog,
+ * memory given back), if the driver got as far as its interface; before that (brcmfmac=1 to 3, or a step 4 still
+ * under way) the driver is left as it is, and the kernel only takes the radio's power.
  *
  * brcmfmac's own log: brcmfmac_debug=MASK (debug.h: 0x4 INFO, 0x80000 PCIE, 0x100000 FWCON, 0x2 TRACE...);
  * 0x180004 if not given. A run that only looks is quieter with brcmfmac_debug=1 (errors only).
@@ -40,7 +49,14 @@ void brcmf_core_exit(void);
 static struct {
 	unsigned steps;				/* brcmfmac=N */
 	bool started;
+	bool attached;				/* brcmf_attach() came through: the firmware's interface is there */
 } b;
+
+bool
+lx_brcmf_reached(unsigned step)
+{
+	return (b.steps >= step);
+}
 
 bool
 lx_brcmf_may(unsigned step, const char *what)
@@ -52,6 +68,17 @@ lx_brcmf_may(unsigned step, const char *what)
 	lx_tell("lx: brcmfmac %u: %s\n", step, what);
 	lx_mark(what);
 	return (true);
+}
+
+/* brcmf_pcie_setup() has come through brcmf_attach() (bcm4361.patch), on the thread the firmware was given on */
+void
+lx_brcmf_attached(struct device *dev)
+{
+	b.attached = true;
+	lx_tell("lx: brcmfmac's interface to the firmware is up\n");
+	if (lx_brcmf_reached(7)) {
+		lx_tell("lx: brcmfmac=%u: the station (7, 8) is not in this object yet\n", b.steps);
+	}
 }
 
 int
@@ -97,12 +124,16 @@ lx_stop(void)
 	if (!b.started) {
 		return;
 	}
+	if (!b.attached) {
+		lx_tell("lx: brcmfmac did not get as far as its interface: it is left as it is\n");
+		return;
+	}
 	b.started = false;
 	brcmf_core_exit();
 	lx_tell("lx: brcmfmac is down again\n");
 }
 
-/* frames: not until the firmware's interface and a station above it are built (step 4 and after) */
+/* frames: not until a station above the firmware's interface is built (brcmfmac=7 and 8) */
 int
 lx_transmit(const unsigned char *frame, unsigned long length)
 {

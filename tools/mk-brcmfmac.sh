@@ -10,7 +10,8 @@
 #   wifi/lx               ours: src/lx_base.c (locks, sleeping, work, memory, firmware) and
 #                         brcmfmac/*.c, what this driver needs besides: a struct pci_dev on the
 #                         kernel's PCIe root complex (lx_os_pci_*() of sys/hakios.lx.h), the bit of
-#                         cfg80211 the files built so far ask for, and lx_start().
+#                         cfg80211 the files built so far ask for, and lx_start(); CONFIG_DMI makes
+#                         brcmf_dmi_probe() lx_board.c's (the phone's settings).
 #
 # Not all of the driver is built yet: DRIVER below lists the files that are. What they call in
 # the files that are not becomes a function that says its name in the log and answers 0
@@ -119,7 +120,7 @@ CFLAGS="-mkernel -mgeneral-regs-only -fno-builtin -fno-common -ffreestanding -fn
 	-include $S/compat/linuxkpi/common/include/linux/kconfig.h -DLINUXKPI_VERSION=70000"
 D=src/brcm80211
 DFLAGS="-I$D/brcmfmac -I$D/include -include $W/brcmfmac/lx_prelude.h -I$W/brcmfmac
-	-DCONFIG_BRCMFMAC_PCIE -DCONFIG_BRCMFMAC_PROTO_MSGBUF -DCONFIG_BRCMDBG -DDEBUG -DKBUILD_MODNAME=\"brcmfmac\""
+	-DCONFIG_BRCMFMAC_PCIE -DCONFIG_BRCMFMAC_PROTO_MSGBUF -DCONFIG_BRCMDBG -DDEBUG -DCONFIG_DMI -DKBUILD_MODNAME=\"brcmfmac\""
 source "$ROOT/xnu-env.sh"
 [ -f "$XNU_SRC/bsd/sys/hakios.lx.h" ] || { echo "mk-brcmfmac.sh: the kernel tree has no bsd/sys/hakios.lx.h" >&2; exit 1; }
 DFLAGS="$DFLAGS -DLX_HAKIOS_LX_H=\"$XNU_SRC/bsd/sys/hakios.lx.h\""

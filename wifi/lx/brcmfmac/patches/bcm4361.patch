@@ -1,5 +1,6 @@
-The BCM4361 (the Galaxy S9's radio) in Linux 7.0.14's brcmfmac, and the two places where the kernel's
-brcmfmac=N stops the driver (wifi/lx/brcmfmac/lx_brcmf.c). ISC, as the files it changes.
+The BCM4361 (the Galaxy S9's radio) in Linux 7.0.14's brcmfmac, the two places where the kernel's
+brcmfmac=N stops the driver (wifi/lx/brcmfmac/lx_brcmf.c), and the one where brcmf_attach() is through and the
+station above it (lx_brcmf.c, lx_cfg.c) may begin. ISC, as the files it changes.
 
 Facts from Samsung's bcmdhd for the S9 (GPL-2.0; read for these facts only, no code taken), kernel e5906667068e,
 drivers/net/wireless/broadcom/bcmdhd_101_12: include/bcmdevs_legacy.h (chip 0x4361, PCI device 0x441f),
@@ -7,7 +8,6 @@ dhd_linux.c dhd_validate_chipid() (the chip may say 0x4347 instead), dhd_pcie.c 
 (CR4_4347_RAM_BASE for both) and include/sbchipc.h (0x170000), dhd_custom_cis.c (revisions: B0 3, B1 4, B2 5;
 the S9's firmware is _b0 or _b2).
 
---- a/brcmfmac/chip.c
 --- a/brcmfmac/chip.c
 +++ b/brcmfmac/chip.c
 @@ -741,6 +741,8 @@
@@ -21,17 +21,19 @@ the S9's firmware is _b0 or _b2).
  		return 0x352000;
 --- a/brcmfmac/pcie.c
 +++ b/brcmfmac/pcie.c
-@@ -44,6 +44,9 @@
+@@ -44,6 +44,11 @@
  #include "common.h"
  
  
 +/* (HakiOS) how far the driver goes, step by step (wifi/lx/brcmfmac/lx_brcmf.c): true if it may */
 +bool lx_brcmf_may(unsigned step, const char *what);
++/* (HakiOS) brcmf_attach() is through: the station above it may begin (wifi/lx/brcmfmac/lx_brcmf.c) */
++void lx_brcmf_attached(struct device *dev);
 +
  enum brcmf_pcie_state {
  	BRCMFMAC_PCIE_STATE_DOWN,
  	BRCMFMAC_PCIE_STATE_UP
-@@ -59,6 +62,8 @@
+@@ -59,6 +64,8 @@
  BRCMF_FW_DEF(4358, "brcmfmac4358-pcie");
  BRCMF_FW_DEF(4359, "brcmfmac4359-pcie");
  BRCMF_FW_DEF(4359C, "brcmfmac4359c-pcie");
@@ -40,7 +42,7 @@ the S9's firmware is _b0 or _b2).
  BRCMF_FW_CLM_DEF(4364B2, "brcmfmac4364b2-pcie");
  BRCMF_FW_CLM_DEF(4364B3, "brcmfmac4364b3-pcie");
  BRCMF_FW_DEF(4365B, "brcmfmac4365b-pcie");
-@@ -98,6 +103,11 @@
+@@ -98,6 +105,11 @@
  	BRCMF_FW_ENTRY(BRCM_CC_4358_CHIP_ID, 0xFFFFFFFF, 4358),
  	BRCMF_FW_ENTRY(BRCM_CC_4359_CHIP_ID, 0x000001FF, 4359),
  	BRCMF_FW_ENTRY(BRCM_CC_4359_CHIP_ID, 0xFFFFFE00, 4359C),
@@ -52,7 +54,7 @@ the S9's firmware is _b0 or _b2).
  	BRCMF_FW_ENTRY(BRCM_CC_4364_CHIP_ID, 0x0000000F, 4364B2), /* 3 */
  	BRCMF_FW_ENTRY(BRCM_CC_4364_CHIP_ID, 0xFFFFFFF0, 4364B3), /* 4 */
  	BRCMF_FW_ENTRY(BRCM_CC_4365_CHIP_ID, 0x0000000F, 4365B),
-@@ -2150,6 +2160,8 @@
+@@ -2150,6 +2162,8 @@
  	/* check firmware loading result */
  	if (ret)
  		goto fail;
@@ -61,7 +63,7 @@ the S9's firmware is _b0 or _b2).
  
  	brcmf_pcie_attach(devinfo);
  
-@@ -2189,6 +2201,8 @@
+@@ -2189,6 +2203,8 @@
  	if (ret)
  		goto fail;
  
@@ -70,7 +72,15 @@ the S9's firmware is _b0 or _b2).
  	brcmf_pcie_select_core(devinfo, BCMA_CORE_PCIE2);
  	ret = brcmf_pcie_request_irq(devinfo);
  	if (ret)
-@@ -2736,6 +2750,7 @@
+@@ -2221,6 +2237,7 @@
+ 
+ 	brcmf_pcie_fwcon_timer(devinfo, true);
+ 
++	lx_brcmf_attached(dev);	/* (HakiOS) */
+ 	return;
+ 
+ fail:
+@@ -2736,6 +2753,7 @@
  	BRCMF_PCIE_DEVICE(BRCM_PCIE_43602_2G_DEVICE_ID, WCC),
  	BRCMF_PCIE_DEVICE(BRCM_PCIE_43602_5G_DEVICE_ID, WCC),
  	BRCMF_PCIE_DEVICE(BRCM_PCIE_43602_RAW_DEVICE_ID, WCC),

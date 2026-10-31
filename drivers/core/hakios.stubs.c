@@ -157,8 +157,10 @@ void hakios_mali_init(void) {}
 
 #ifndef HAKIOS_WIFI
 void hakios_wifi_init(void) {}
+#ifndef HAKIOS_BRCMFMAC                         /* (the S9's radio driver has its own: the radio unpowered on the way back) */
 void hakios_wifi_stop(void) {}
 void hakios_wifi_quiesce(void) {}
+#endif
 #endif
 
 #ifndef HAKIOS_WIFI_STA

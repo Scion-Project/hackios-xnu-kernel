@@ -11,6 +11,11 @@ usage: tools/brcmfmac-test.py
      (pcie.c, brcmf_pcie_fwnames) gives, the first line that matches as brcmf_fw_alloc_request() takes it; the RAM
      base chip.c gives them; the PCI ID in the driver's device table.
 
+  3. xnu/files/bsd/sys/hakios.macaddr.h, compiled with the host's cc: the phone's address as Samsung's Android writes it
+     in /efs/wifi/.mac.info (brcmfmac=6), and what is refused (all zeroes, a group's address, anything malformed).
+  4. the patched driver again: lx_brcmf_attached() once brcmf_attach() is through, and brcmf_dmi_probe() called (the
+     phone's settings) when built with CONFIG_DMI, as tools/mk-brcmfmac.sh builds it.
+
 Exit status 0 when everything holds.
 """
 import os
@@ -72,6 +77,68 @@ with tempfile.TemporaryDirectory() as tmp:
             print("     " + line)
         check("lx_pci_word.h: reads and writes of 1, 2 and 4 bytes; the command word's status half", run.returncode == 0)
 
+
+# ---- 3. the phone's address -----------------------------------------------------------------
+MAC_HARNESS = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include "hakios.macaddr.h"
+static int bad;
+static void good(const char *text, const char *want) {
+	uint8_t a[6] = { 0 };
+	char got[32];
+	if (!hakios_macaddr_parse(text, strlen(text), a)) { printf("refused: \"%s\"\n", text); bad = 1; return; }
+	snprintf(got, sizeof(got), "%02x:%02x:%02x:%02x:%02x:%02x", a[0], a[1], a[2], a[3], a[4], a[5]);
+	if (strcmp(got, want) != 0) { printf("\"%s\" is %s, not %s\n", text, got, want); bad = 1; }
+}
+static void refused(const char *text, size_t length) {
+	uint8_t a[6] = { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11 };
+	if (hakios_macaddr_parse(text, length, a) || a[0] != 0x11) { printf("taken: \"%.*s\"\n", (int)length, text); bad = 1; }
+}
+#define REFUSED(t) refused(t, strlen(t))
+int main(void) {
+	good("00:12:34:AB:CD:EF\n", "00:12:34:ab:cd:ef");		/* (Samsung's random one: prefix 00:12:34, capitals) */
+	good("f8:04:2e:01:02:03", "f8:04:2e:01:02:03");
+	good("  0:12:34:5:6:7 \r\n", "00:12:34:05:06:07");
+	good("00-12-34-ab-cd-ef", "00:12:34:ab:cd:ef");
+	{
+		const char file[] = "00:12:34:ab:cd:ef\n\0\0\0garbage";	/* (a NUL ends it) */
+		uint8_t a[6];
+		if (!hakios_macaddr_parse(file, sizeof(file) - 1, a) || a[5] != 0xef) { printf("NUL not taken as the end\n"); bad = 1; }
+	}
+	REFUSED("00:00:00:00:00:00\n");			/* (bcmdhd's "invalid" one) */
+	REFUSED("01:12:34:ab:cd:ef");			/* (a group's) */
+	REFUSED("00:12:34:ab:cd");
+	REFUSED("00:12:34:ab:cd:ef:01");
+	REFUSED("00:12:34:ab:cd:eff");
+	REFUSED("00:12:34:ab:cd:ef x");
+	REFUSED("00::12:34:ab:cd:ef");
+	REFUSED("0012.34ab.cdef");
+	REFUSED("");
+	REFUSED("\n");
+	refused("00:12:34:ab:cd:ef", 15);		/* (cut short by the length given: a separator last) */
+	return bad;
+}
+"""
+
+for name, harness, include, what in (
+        ("macaddr", MAC_HARNESS, "xnu/files/bsd/sys",
+         "hakios.macaddr.h: the phone's .mac.info and wifi_mac read; zeroes, a group's address and malformed text refused"),):
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "t.c")
+        exe = os.path.join(tmp, "t")
+        open(src, "w").write(harness)
+        cc = subprocess.run(["cc", "-std=c11", "-Wall", "-Werror", "-I", os.path.join(ROOT, include), src, "-o", exe],
+                            capture_output=True, text=True)
+        if cc.returncode != 0:
+            check("%s compiles on the host: %s" % (name, cc.stderr.strip()), False)
+            continue
+        run = subprocess.run([exe], capture_output=True, text=True)
+        for line in run.stdout.splitlines():
+            print("     " + line)
+        check(what, run.returncode == 0)
+
 # ---- 2. the patched driver -----------------------------------------------------------------------------------------
 B = os.path.join(ROOT, "xnu-deps/build/brcmfmac/src/brcm80211")
 fetch = subprocess.run([os.path.join(ROOT, "tools/mk-brcmfmac.sh"), "fetch"], capture_output=True, text=True)
@@ -128,6 +195,21 @@ check("pcie.c: the device table has BRCM_PCIE_4361_DEVICE_ID (vendor 0x14e4, cla
       "BRCMF_PCIE_DEVICE(BRCM_PCIE_4361_DEVICE_ID, WCC)" in pcie)
 check("pcie.c: brcmfmac=N stops it before the firmware goes to the chip (3) and before brcmf_attach() (4)",
       pcie.count("lx_brcmf_may(3,") == 1 and pcie.count("lx_brcmf_may(4,") == 1)
+
+# ---- 4. the hooks in the patched driver ------------------------------------------------------------------
+setup = pcie[pcie.rindex("static void brcmf_pcie_setup(struct device *dev, int ret,\n"):]  # (the definition)
+setup = setup[:setup.index("\nfail:")]
+check("pcie.c: lx_brcmf_attached() once, in brcmf_pcie_setup(), after brcmf_attach() has come through",
+      pcie.count("lx_brcmf_attached(dev);") == 1 and "lx_brcmf_attached(dev);" in setup
+      and setup.index("ret = brcmf_attach(") < setup.index("lx_brcmf_attached(dev);"))
+common_h = open(os.path.join(B, "brcmfmac/common.h")).read()
+common_c = open(os.path.join(B, "brcmfmac/common.c")).read()
+mk = open(os.path.join(ROOT, "tools/mk-brcmfmac.sh")).read()
+check("brcmf_get_module_param() calls brcmf_dmi_probe(), declared (not an empty inline) with CONFIG_DMI, which "
+      "mk-brcmfmac.sh sets; lx_board.c defines it",
+      "brcmf_dmi_probe(settings, chip, chiprev);" in common_c
+      and re.search(r"#ifdef CONFIG_DMI\s*\nvoid brcmf_dmi_probe\(", common_h) is not None and "-DCONFIG_DMI" in mk
+      and "\nbrcmf_dmi_probe(struct brcmf_mp_device *settings" in open(os.path.join(ROOT, "wifi/lx/brcmfmac/lx_board.c")).read())
 
 print("brcmfmac-test: %s" % ("all good" if not failed else "%d FAILED" % len(failed)))
 sys.exit(1 if failed else 0)

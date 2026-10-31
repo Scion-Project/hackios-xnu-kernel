@@ -20,6 +20,17 @@ void     hakios_exynos_pcie_config_write(uint32_t offset, uint32_t value);
 /* BAR n (0-5) where stage 1 placed it: its bus address (the CPU's, the window is an identity) and size; false: none */
 bool     hakios_exynos_pcie_bar(unsigned bar, uint64_t *address, uint64_t *size);
 
+/*
+ * The endpoint's interrupt: INTx, which the root complex latches in ELBI's PCIE_IRQ_PULSE (INTA bit 0 ... INTD bit 6) and
+ * passes to the GIC as SPI 253, level high, while a latched bit is enabled in PCIE_IRQ_EN_PULSE (Android's
+ * exynos_pcie_enable_interrupts() and exynos_pcie_irq_handler()). intx(true) enables INTA to INTD and nothing else
+ * (LEVEL and SPECIAL off, as Android), intx(false) none; intx_ack() reads the latch and writes it back (one clears),
+ * and says what was latched. Neither sleeps nor takes a lock.
+ */
+#define HAKIOS_EXYNOS_PCIE_INTX_SPI     253
+void     hakios_exynos_pcie_intx(bool on);
+uint32_t hakios_exynos_pcie_intx_ack(void);
+
 /* the radio's driver, called once by wifi_pcie=6 when the link is handed over (a kernel without one has a stub) */
 void     hakios_brcmfmac_start(void);
 

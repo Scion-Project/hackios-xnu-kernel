@@ -5,10 +5,12 @@
  * linux/pci.h ends here: its configuration space a word at a time (lx_prelude.h turns FreeBSD's pci_read_config()
  * and its kin into the functions below), its BARs, its driver's registration and probe, its interrupt.
  *
- * The interrupt: the root complex has no MSI (use-msi = "false"), and the chip's INTx (SPI 253 of the GIC) is not
- * attached yet. The handler brcmfmac asks for is called instead by a thread of ours every brcmfmac_poll_ms
- * milliseconds (2 if not given), followed by its threaded half when it asks for that: brcmfmac's own handler reads
- * the chip's mailbox register through BAR0 and says whether there is anything, so looking costs one read.
+ * The interrupt: the root complex has no MSI (use-msi = "false"). From brcmfmac=5 it is the chip's INTx, SPI 253 of the
+ * GIC through the root complex's latch (lx_os_irq_line_*() of sys/hakios.lx.h, the kernel's hakios.brcmfmac.c): when it
+ * fires, the handler brcmfmac asks for is called on the kernel's thread for it, then its threaded half if it asks for
+ * that, then the line is unmasked again. Up to brcmfmac=4, or with brcmfmac_poll=1, a thread of ours calls the handler
+ * every brcmfmac_poll_ms milliseconds (2 if not given) instead: brcmfmac's own handler reads the chip's mailbox register
+ * through BAR0 and says whether there is anything, so looking costs one read.
  */
 #include <linux/kernel.h>
 #include <linux/device.h>
@@ -29,9 +31,10 @@ static struct {
 	bool there, probed;
 	unsigned writes;			/* configuration writes said so far */
 
-	/* the interrupt, looked at by a thread */
+	/* the interrupt: INTx, or looked at by a thread */
 	irq_handler_t handler, thread;
 	void *argument;
+	bool line;				/* INTx (brcmfmac=5) */
 	volatile bool polling;			/* the thread is wanted ... */
 	volatile bool polls;			/* ... and runs */
 	void *volatile poll_self;		/* (lx_os_thread_self() of that thread) */
@@ -203,7 +206,7 @@ lx_device_release_driver(struct device *dev)
 	}
 }
 
-/* ---- the interrupt, looked at ------------------------------------------------------------------- */
+/* ---- the interrupt: INTx, or looked at --------------------------------------------------------------- */
 
 int
 _lkpi_pci_enable_msi_range(struct pci_dev *pdev, int minvec, int maxvec)
@@ -237,18 +240,51 @@ poller(void *argument)
 	lx_os_unlock();
 }
 
+/* INTx has fired (the kernel's thread for it; the line masked, the root complex's latch cleared) */
+static void
+line_fired(void *argument)
+{
+	irqreturn_t r = lp.handler(LX_PCI_IRQ, lp.argument);
+
+	lp.looks++;
+	if (r == IRQ_WAKE_THREAD && lp.thread != NULL) {
+		lp.handled++;
+		lp.thread(LX_PCI_IRQ, lp.argument);
+	} else if (r == IRQ_HANDLED) {
+		lp.handled++;
+	}
+	if (lp.line) {
+		lx_os_irq_line_enable();
+	}
+}
+
 int
 lkpi_request_irq(struct device *dev, unsigned int irq, irq_handler_t handler, irq_handler_t thread_handler,
     unsigned long flags, const char *name, void *arg)
 {
-	if (lp.polling || handler == NULL) {
+	int error;
+
+	if (lp.polling || lp.line || handler == NULL) {
 		return (-EBUSY);
 	}
 	lp.handler = handler;
 	lp.thread = thread_handler;
 	lp.argument = arg;
+	if (lx_os_option("brcmfmac_poll") != 0) {
+		lx_tell("lx: pci: brcmfmac_poll=1: the interrupt is looked at by a thread, not taken by INTx\n");
+	} else if (lx_brcmf_reached(5) && lx_brcmf_may(5, "the chip's interrupt by INTx: SPI 253 through the root complex's latch")) {
+		lp.line = true;
+		if ((error = lx_os_irq_line_attach(line_fired, NULL)) != 0) {
+			lp.line = false;
+			lx_tell("lx: pci: INTx cannot be attached (%d): the interrupt is not taken\n", error);
+			return (-EIO);
+		}
+		lx_tell("lx: pci: %s's interrupt handler is called when INTx fires\n", name);
+		lx_os_irq_line_enable();
+		return (0);
+	}
 	lp.polling = true;
-	lx_tell("lx: pci: %s's interrupt handler is called by a thread every brcmfmac_poll_ms (INTx is not attached)\n",
+	lx_tell("lx: pci: %s's interrupt handler is called by a thread every brcmfmac_poll_ms (INTx from brcmfmac=5)\n",
 	    name);
 	if (lx_os_thread("brcmfmac-irq", poller, NULL) != 0) {
 		lp.polling = false;
@@ -261,6 +297,12 @@ lkpi_request_irq(struct device *dev, unsigned int irq, irq_handler_t handler, ir
 void
 lkpi_free_irq(unsigned int irq, void *arg)
 {
+	if (lp.line) {
+		lp.line = false;
+		lx_os_irq_line_detach();
+		lx_tell("lx: pci: INTx let go: %llu handled, %llu with something\n", lp.looks, lp.handled);
+		return;
+	}
 	if (!lp.polling) {
 		return;
 	}

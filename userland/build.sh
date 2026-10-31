@@ -659,6 +659,15 @@ for f in ../fw-wifi/brcmfmac4361*-pcie.*; do
 	mkdir -p root/fw
 	install -m 0644 "$f" root/fw/
 done
+# ... with the phone's own address (brcmfmac=6: its /efs/wifi/.mac.info, as fw-wifi/mac.info) and the network to join
+# (brcmfmac=8: fw-wifi/network, as for the POCO above), both left out with SHARE=1
+if ls ../fw-wifi/brcmfmac4361*-pcie.bin >/dev/null 2>&1; then
+	rm -f root/fw/mac.info
+	if [ -z "$SHARE" ] && [ -f ../fw-wifi/mac.info ]; then install -m 0644 ../fw-wifi/mac.info root/fw/mac.info; fi
+	if [ -z "$SHARE" ] && [ -f ../fw-wifi/network ] && [ ! -f root/fw/network ]; then
+		install -m 0600 ../fw-wifi/network root/fw/network
+	fi
+fi
 # ... and the vibration motor's waveforms, the phone's /vendor/firmware/aw8697_haptic.bin, from ../fw-haptic
 # (drivers/haptic/hakios.haptic.c, haptic=3; 3.6 KB, the vendor's and not in the repository either)
 if [ -f ../fw-haptic/aw8697_haptic.bin ]; then
