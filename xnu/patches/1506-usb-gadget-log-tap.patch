@@ -1,0 +1,75 @@
+diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
+--- a/osfmk/arm64/loader_return.c
++++ b/osfmk/arm64/loader_return.c
+@@ -66,6 +66,7 @@
+ extern void hakios_s2mpb02_torch_quiesce(void);
+ extern void hakios_exynos_pcie_quiesce(void);
+ extern void hakios_ufs_quiesce(void);
++extern void hakios_usb_gadget_quiesce(void);  /* drivers/core/hakios.dwc3.c: the rest of the log out over USB, then the controller stopped */
+ extern void hakios_var_save_on_return(void);   /* drivers/storage/hakios.ufs.c: the data volume into the flash */
+ void loader_checkpoint(uint64_t n);
+ 
+@@ -92,6 +93,43 @@
+ static uint32_t loader_log_lock;
+ 
+ static void loader_log_put_locked(char c);
++
++/*
++ * A second reader of every character the log gets, as it gets it: the USB gadget driver's (drivers/core/hakios.dwc3.c),
++ * which streams the log to a host. Called under the lock, interrupts off: it only copies the character.
++ */
++static void (*volatile loader_log_tap)(char c);
++
++uint32_t loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len));
++
++/*
++ * Install (or with NULL remove) the tap. history, if given, first gets what the log has so far from its start (the part
++ * kept as it was, the first LOADER_LOG_HEAD bytes), under the same lock, so that nothing is missed or sent twice.
++ * Returns the log's length at that moment.
++ */
++uint32_t
++loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len))
++{
++	uint64_t daif;
++	bool locked = false;
++	uint32_t len;
++
++	daif = __builtin_arm_rsr64("DAIF");
++	__builtin_arm_wsr("DAIFSet", DAIFSC_IRQF | DAIFSC_FIQF);
++	for (uint32_t tries = 0; !locked && tries < 10000000; tries++) {
++		locked = os_atomic_cmpxchg(&loader_log_lock, 0, 1, acquire);
++	}
++	len = loader_log_len;
++	if (history != NULL) {
++		history(loader_log, len < LOADER_LOG_HEAD || loader_log_linear || !loader_log_wrapped ? len : LOADER_LOG_HEAD);
++	}
++	loader_log_tap = tap;
++	if (locked) {
++		os_atomic_store(&loader_log_lock, 0, release);
++	}
++	__builtin_arm_wsr64("DAIF", daif);
++	return len;
++}
+ 
+ void
+ loader_log_putc(char c)
+@@ -145,6 +183,11 @@
+ static void
+ loader_log_put_locked(char c)
+ {
++	void (*tap)(char) = loader_log_tap;
++
++	if (tap != NULL) {
++		tap(c);
++	}
+ 	if (loader_log_linear || loader_log_len < LOADER_LOG_HEAD) {
+ 		if (loader_log_len < LOADER_LOG_SIZE) {
+ 			loader_log[loader_log_len++] = c;
+@@ -626,6 +669,7 @@
+ 			loader_log_putc(*c);
+ 		}
+ 	}
++	hakios_usb_gadget_quiesce();   /* last: the panic text above goes out over USB too, before the controller stops */
+ 	loader_jump(0, 0);
+ 	loader_exit_without_loader();
+ }
