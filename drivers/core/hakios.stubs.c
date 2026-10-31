@@ -14,14 +14,17 @@
  * the configuration that would need a stand-in for it.
  */
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/errno.h>
 #include <sys/types.h>
 #include <sys/hakios.audio.h>
 #include <sys/hakios.exynos_abox.h>
+#include <sys/hakios.exynos_pcie.h>
 #include <sys/hakios.input.h>
 #include <sys/hakios.net.h>
+#include <sys/hakios.sta.h>
 #include <sys/hakios.virtio_blk.h>
 
 /* the ends of a run (loader_return.c, the guards), which have no header of their own */
@@ -61,9 +64,12 @@ void hakios_s2mpb02_torch_init(void) {}
 #ifndef HAKIOS_EXYNOS_PCIE
 void hakios_exynos_pcie_init(void) {}
 #endif
-#ifndef HAKIOS_WIFI
+#ifndef HAKIOS_BRCMFMAC
+void hakios_brcmfmac_start(void) {}     /* wifi_pcie=6 in a kernel without the S9's radio driver: the link stays as it is */
+#endif
+#if !defined(HAKIOS_WIFI) && !defined(HAKIOS_BRCMFMAC)
 extern int vprintf(const char *format, va_list ap) __printflike(1, 0);
-/* the station layer's log (WIFI_STA) where the WCN6750's driver, whose log it is, is not built: the console */
+/* the station layer's log (WIFI_STA) where no radio's driver, whose log it is, is built: the console */
 int
 hakios_wifi_tell(const char *format, ...)
 {
@@ -75,6 +81,26 @@ hakios_wifi_tell(const char *format, ...)
 	va_end(ap);
 	return n;
 }
+/* what hakios.lx.c (always built) asks of a radio, in a kernel that has none: nothing, and it says so */
+int
+hakios_wifi_say(const char *format, ...)
+{
+	va_list ap;
+	int n;
+
+	va_start(ap, format);
+	n = vprintf(format, ap);
+	va_end(ap);
+	return n;
+}
+uint32_t hakios_wifi_option(__unused const char *name) { return 0; }
+bool hakios_wifi_dsp_is_up(void) { return false; }
+const uint8_t *hakios_wifi_driver_file(__unused const char *name, __unused uint64_t *size) { return NULL; }
+bool hakios_wifi_radio_map(__unused uint64_t physical, __unused uint64_t size, __unused unsigned long long *address) { return false; }
+bool hakios_wifi_radio_msi(__unused unsigned long long *address, __unused uint32_t *data, __unused uint32_t *first_spi) { return false; }
+bool hakios_wifi_radio_address(__unused uint8_t *address) { return false; }
+bool hakios_wifi_network(__unused uint8_t *name, __unused unsigned *name_length, __unused uint8_t *passphrase,
+    __unused unsigned *passphrase_length) { return false; }
 #endif
 #ifndef HAKIOS_EXYNOS_ABOX
 void hakios_exynos_abox_init(void) {}
@@ -131,6 +157,8 @@ void hakios_wifi_quiesce(void) {}
 #ifndef HAKIOS_WIFI_STA
 errno_t hakios_apple80211_ioctl(__unused u_long command, __unused void *data) { return EOPNOTSUPP; }
 void HakiosWLANStart(__unused const char *interface, __unused const uint8_t *address) {}
+void hakios_sta_attach(__unused const struct hakios_sta_ops *ops) {}   /* (hakios.lx.c: a radio's station, nobody to give it to) */
+void hakios_sta_lost(__unused int error) {}
 #endif
 
 #ifndef HAKIOS_ADSP

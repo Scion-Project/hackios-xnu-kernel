@@ -29,6 +29,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | `hakios.image.c` | a file of one of the RAM disks by path, for the drivers that load firmware before there is a root |
 | `hakios.sparse.c` | /dev/rsp0, a block device over an image that holds only some of its blocks (apfs_sparse=) |
 | `hakios.apfs_check.c` | a walk of the APFS volume on /dev/rvblk0 through VFS, to compare with tools/apfs/apfs.py (with XNU's `apfs`) |
+| `hakios.lx.c` | the kernel's side of a Linux Wi-Fi driver's object (sys/hakios.lx.h): memory, time, threads, the station. What it asks of the radio (hakios_wifi_*() of sys/hakios.input.h) is the radio driver's: WIFI's (the WCN6750) or BRCMFMAC's (the BCM4361); hakios.stubs.c answers for a kernel with neither, and for the station without WIFI_STA. The object itself is linked in only with one of those two |
 
 ## audio
 
@@ -124,8 +125,9 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 
 | Driver | Files | Requires | Boot arguments | frankel | qemu | redwood | starlte | |
 |---|---|---|---|---|---|---|---|
-| **`HAKIOS_WIFI`**<br>Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211 surface iOS's wifid talks to. Needs fw-wifi/ from the phone | `hakios.wifi.c`<br>`hakios.wlfw.c`<br>`hakios.lx.c` | `HAKIOS_QMI`, `HAKIOS_WIFI_STA` | `wifi=`, `wifi_again=`, `wifi_ask=`, `wifi_cal=`, `wifi_dirty=`, `wifi_file=`, `wifi_fine=`, `wifi_keep=` and 14 more |  |  | built |  | |
+| **`HAKIOS_WIFI`**<br>Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211 surface iOS's wifid talks to. Needs fw-wifi/ from the phone | `hakios.wifi.c`<br>`hakios.wlfw.c` | `HAKIOS_QMI`, `HAKIOS_WIFI_STA` | `wifi=`, `wifi_again=`, `wifi_ask=`, `wifi_cal=`, `wifi_dirty=`, `wifi_file=`, `wifi_fine=`, `wifi_keep=` and 14 more |  |  | built |  | |
 | **`HAKIOS_WIFI_STA`**<br>the station and the Apple80211 surface iOS's wifid talks to, over whichever link is below: the WCN6750's (WIFI) or QEMU's virtio network device seen as Wi-Fi (VIRTIO_NET, virtio_net_wifi=1) | `hakios.sta.c`<br>`hakios.apple80211.c`<br>`hakios.wlan.cpp` |  |  |  | built | built |  | |
-| **`HAKIOS_EXYNOS_PCIE`**<br>the Galaxy S9's Wi-Fi, stage 1: the Exynos 9810's PCIe root complex of channel 0 (DesignWare and Samsung's PHY), WLAN_REG_ON and PERST (active low), the link to the BCM4361 and its ID and BARs (wifi_pcie=N, 5 for all); no firmware, no radio driver yet (devices/starlte/WIFI.md) | `hakios.exynos_pcie.c` |  | `wifi_pcie=`, `wifi_pcie_tries=`, `wifi_pcie_ungate=` | built |  | built | built | |
+| **`HAKIOS_EXYNOS_PCIE`**<br>the Galaxy S9's Wi-Fi, stage 1: the Exynos 9810's PCIe root complex of channel 0 (DesignWare and Samsung's PHY), WLAN_REG_ON and PERST (active low), the link to the BCM4361 and its ID and BARs (wifi_pcie=N, 5 ends stage 1, 6 hands the device to BRCMFMAC's driver); no firmware here (devices/starlte/WIFI.md) | `hakios.exynos_pcie.c` |  | `wifi_pcie=`, `wifi_pcie_tries=`, `wifi_pcie_ungate=` | built |  | built | built | |
+| **`HAKIOS_BRCMFMAC`**<br>the Galaxy S9's Wi-Fi, stage 2: Linux's brcmfmac on the BCM4361 (its object, made by tools/mk-brcmfmac.sh, is linked in with this unless WIFI's is), on the device stage 1 hands over (wifi_pcie=6, brcmfmac=N, 4 steps), with WIFI_STA above it. Needs the firmware, NVRAM and CLM of the user's own phone in fw-wifi/ (WIFI.md of starlte) | `hakios.brcmfmac.c` | `HAKIOS_EXYNOS_PCIE` | `brcmfmac=` | built |  | built | built | |
 
 The columns on the right are the devices' defconfigs: "built" means that defconfig builds the driver in.

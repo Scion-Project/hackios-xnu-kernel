@@ -83,6 +83,16 @@ void	 lx_os_irq_disable(unsigned vector);			/* returns when its function is not 
 void	 lx_os_irq_detach_all(void);				/* returns when no function is running */
 unsigned long long lx_os_irq_count(unsigned vector);		/* how many have arrived */
 
+/*
+ * ---- a radio on PCIe (the Galaxy S9's BCM4361, for brcmfmac: drivers/wifi/hakios.brcmfmac.c; the WCN6750's kernel has
+ * none of these, and ath11k's object does not ask for them). One device, already enumerated and decoding.
+ */
+int	 lx_os_pci_device(unsigned *vendor, unsigned *device);	/* 1 if there is one, with its IDs; 0 */
+unsigned lx_os_pci_config_read(unsigned offset);		/* a 32-bit word of its configuration space (offset & ~3) */
+void	 lx_os_pci_config_write(unsigned offset, unsigned value);
+/* where BAR n is (the processor's physical address, which is also the bus's) and how big: 1, or 0 if it has none */
+int	 lx_os_pci_bar(unsigned bar, unsigned long long *address, unsigned long long *size);
+
 /* ---- the station: scanning and joining, for whoever asks the kernel (hakios.sta.h) ---- */
 void	 lx_os_station(const struct hakios_sta_ops *ops);	/* here it is, to be asked; NULL: no longer (returns when no call is under way) */
 void	 lx_os_station_lost(int error);				/* the network joined is gone by itself */

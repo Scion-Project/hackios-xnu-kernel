@@ -2,13 +2,21 @@
 # Build XNU for redwood on Linux. Extra make args are passed through.
 source "$(dirname "${BASH_SOURCE[0]}")/xnu-env.sh"
 cd "$XNU_SRC" || exit 1
-# The Wi-Fi driver's object (tools/mk-ath11k.sh) is linked into the kernel when it is there; make
-# does not see it change, so the linked kernel is thrown away when it has.
+# The Wi-Fi driver's object is linked into the kernel when it is there; make does not see it
+# change, so the linked kernel is thrown away when it has. Which object is the radio driver's:
+# ath11k's (tools/mk-ath11k.sh) for the WCN6750 (CONFIG_HAKIOS_WIFI), else brcmfmac's
+# (tools/mk-brcmfmac.sh) for the Galaxy S9's BCM4361 (CONFIG_HAKIOS_BRCMFMAC); none for a kernel
+# with neither. The object's calls are answered by hakios.lx.c.
 LX=$XNUDEPS/build/ath11k/out/ath11k.o
-# ... only into a kernel that has the Wi-Fi driver (CONFIG_HAKIOS_WIFI): the object's calls are answered by hakios.lx.c
-if [ -f config/MASTER.hakios ] && ! grep -q '^#  HAKIOS_DRIVERS = \[.* hakios_wifi ' config/MASTER.hakios; then LX=/nonexistent; fi
+if [ -f config/MASTER.hakios ] && ! grep -q '^#  HAKIOS_DRIVERS = \[.* hakios_wifi ' config/MASTER.hakios; then
+	LX=/nonexistent
+	if grep -q '^#  HAKIOS_DRIVERS = \[.* hakios_brcmfmac ' config/MASTER.hakios; then
+		LX=$XNUDEPS/build/brcmfmac/out/brcmfmac.o
+	fi
+fi
 STAMP=BUILD/obj/hakios-objects
-mtime() { if [ "$XNU_HOST_OS" = Darwin ]; then stat -f %m "$1"; else stat -c %Y "$1"; fi; }
+# (macOS: its own stat, not tools/macos-bin/stat, which is GNU stat for the scripts written for it and may be absent)
+mtime() { if [ "$XNU_HOST_OS" = Darwin ]; then /usr/bin/stat -f %m "$1"; else stat -c %Y "$1"; fi; }
 if [ -f "$LX" ]; then now="$LX $(mtime "$LX")"; else LX= now=; fi
 # the build tools of SETUP/ are Apple's: on macOS they build as they are, on Linux with a compatibility header
 if [ "$XNU_HOST_OS" = Darwin ]; then HOSTCC=clang; else

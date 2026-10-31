@@ -57,7 +57,7 @@ The 25 drivers there are now, by subsystem:
 | haptic | `HAPTIC` | |
 | audio | `ADSP`, `SPEAKER`, `GUARD`, `SOUND` (requires ADSP, SPEAKER, GUARD), `MIC` (requires ADSP, SOUND), `VIRTIO_SOUND`, `EXYNOS_ABOX` (requires GUARD, EXYNOS_ACPM) | `hakios.audio.c` |
 | power | `BATTERY`, `CPUFREQ`, `THERMAL`, `PMIC`, `BATTGUARD` | |
-| wifi | `WIFI` (requires QMI) | |
+| wifi | `WIFI` (requires QMI, WIFI_STA), `WIFI_STA`, `EXYNOS_PCIE`, `BRCMFMAC` (requires EXYNOS_PCIE) | `hakios.lx.c` |
 | bluetooth | `BT` | |
 | modem | `QMI`, `MODEM` (requires QMI, UFS) | |
 | net | `VIRTIO_NET` | `hakios.net.c` |
