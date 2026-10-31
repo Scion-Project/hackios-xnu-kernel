@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **400 arguments**: 342 read by the kernel, 16 by the loader, 52 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **401 arguments**: 343 read by the kernel, 16 by the loader, 52 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -294,7 +294,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `touchscreen` | K | `hakios.buttons.c`, `hakios.goodix.c` | `CONFIG_TOUCHSCREEN` |  |
 | `virtio_input` | K | `hakios.virtio_input.c` | `CONFIG_VIRTIO_INPUT` |  |
 
-## Storage and APFS (47)
+## Storage and APFS (48)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -338,6 +338,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_native_slots` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_SLOTS` |  |
 | `ufs_native_soc` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_SOC` |  |
 | `ufs_native_spin` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_SPIN` |  |
+| `ufs_native_step` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_STEP` |  |
 | `ufs_native_test` | K | `hakios.ufs.c` | `CONFIG_UFS_NATIVE_TEST` |  |
 | `ufs_native_write` | K | `hakios.ufs.c` | `CONFIG_UFS_NATIVE_WRITE` |  |
 | `ufs_shared_pa` | K | `hakios.ufs.c` |  | the loader (the address of its block-service page) |

@@ -17,7 +17,9 @@
  *                dwords; PRDT entries of 128 bytes or 16 (the protector's descriptor type, as UEFI
  *                left it: learnt from UEFI's own read), at most 4 KB each; a "nexus type" bit per
  *                slot to be set for a SCSI command and cleared for a query or NOP before the
- *                doorbell; UTRLCLR clears with ones; DMA below 4 GB.
+ *                doorbell; UTRLCLR clears with ones; DMA below 4 GB. Taken as Silicium's UEFI left
+ *                it, never reset; its power, reset line, clocks, UniPro and PHY read back first, in
+ *                steps (ufs_native_step=, 1 by default: only look).
  *
  * Two ways of having the controller:
  *
@@ -153,6 +155,7 @@ bool ufshc_list_in(void);
 /* own mode */
 bool ufshc_own_probe(void);
 bool ufshc_own(void);
+bool ufshc_own_stopped(void);
 const struct ufshc_unit *ufshc_unit(uint8_t lun);
 int ufshc_open_window(uint8_t lun, uint64_t first_lba, uint64_t blocks);
 int ufshc_write(uint8_t lun, uint64_t offset, const uint8_t *src, uint64_t len);

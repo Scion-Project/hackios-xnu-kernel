@@ -146,13 +146,74 @@
  *       driver writes neither HCI_CLKSTOP_CTRL nor HCI_FORCE_HCS, it prints what UEFI left
  *     Before its list goes out, UEFI's own descriptors are read: a read UEFI made must be laid out
  *     as these facts allow (offsets in bytes; entries of 128 or 16 bytes whose lengths add up to the
- *     UPIU's expected length, the size then taken for this driver's), or the S9 is not taken.
+ *     UPIU's expected length, the size then taken for this driver's), or the S9 is not taken. Only
+ *     a slot holding a UFS storage command is followed, and only to a command descriptor in DRAM
+ *     below 4 GB: Silicium's UfsDxe uses two slots (UFS_NUTRS 2, its UfsDxe.h) and leaves the rest
+ *     of its page as it found it, which is no descriptor to map and read.
  *     ufs_native=5 shows all of it and changes nothing.
+ *   The blocks beside the controller, which this kernel reads at step 1 and 2 and never writes:
+ *     - UniPro is at 0x11110000 (32 KB): the ufs node's third reg in [BSP]'s device tree (reg =
+ *       <... 0x11110000 0x8000 ...>), mapped as reg_unipro by ufs-exynos.c exynos_ufs_probe
+ *       (platform_get_resource index 2); 0x11130000 is the fourth, the protector (UFSP, 0x100).
+ *       Silicium's PlatformUfsLib BoardInit.c puts UniPro at the controller's base + 0x10000, i.e.
+ *       0x11130000, and its calibration writes the UNIPRO_DBG_APB rows (the L2 timers, 0x7888 ...
+ *       0x78C0) there: this file takes [BSP]'s address, and reads only the results UniPro keeps
+ *       of its last link startup, hibernate and power mode change (0x7854, 0x7868, 0x7878, 0x78EC:
+ *       ufs-exynos.h; dumped the same way by ufs-exynos-dbg.c), with its version (0x0, 0x4)
+ *     - the M-PHY's PMA at 0x11124000 (2 KB, the ufs-phy child), lanes 0x140 apart
+ *       (ufs-cal-9810.c PHY_PMA_TRSV_ADDR): after a power mode change to HS-G3 on two lanes the
+ *       calibration leaves TRSV 0xC8 = 0xBC, 0x120 = 0xC0, 0x128 = 0x00, 0x134 = 0x63 on each lane
+ *       (calib_of_hs_rate_a/_b; PWM leaves 0xC8 = 0x40) and waits for bit 6 of 0x1FC, the CDR's
+ *       lock (post_calib_of_hs_rate_*, ufs_cal_wait_cdr_afc_check). Silicium's UfsCal.c has the same
+ *       tables. Read only if CLKSTOP_CTRL's MPHY_APBCLK_STOP (bit 3) is clear: the S9's kernel
+ *       clears it around every PMA access (ufs-exynos.h phy_pma_readl/writel) and this one does not
+ *     - the PHY's power: PMU UFS_PHY_CONTROL at 0x14060724 (the ufs-phy-sys child), bit 0 set is
+ *       the isolation bypassed (exynos_ufs_ctrl_phy_pwr; Silicium's UfsDxe sets it the same way)
+ *     - IO coherency: SYSREG_FSYS0 0x11010700, bits 8-9 (ufs-io-coherency, mask = bits = 0x300;
+ *       exynos_ufs_init_system; Silicium sets them in BoardInit.c). This driver cleans and
+ *       invalidates its descriptors and buffers either way
+ *     - the device's reset: HCI_GPIO_OUT (vendor 0x70) bit 0, 1 out of reset (exynos_ufs_dev_hw_reset)
+ *     - the clocks: GATE_UFS_EMBD and UFS_EMBD from the CMU ([BSP] device tree clocks), the UniPro
+ *       clock 166 MHz on Silicium (MclkRate; HCI_1US_TO_CNT_VAL 166, vendor 0x0C), and the
+ *       vendor's gating: CLKSTOP_CTRL (0xB0; UniPro PCLK bit 0, MCLK 1, REFCLK 2, MPHY APB 3,
+ *       REFCLKOUT 4) and FORCE_HCS (0xB4, the gating enables; Silicium writes 0x0DE0). UniPro's
+ *       main clock and the reference clock stopped is a refusal; the CMU itself is not read
+ *     - the protector (FMP): bypassed by clearing FAS and DAS, bits 28-31 of a PRDT entry's
+ *       fourth word (include/crypto/fmp.h SET_FAS/SET_DAS for the non-CMDQ table,
+ *       drivers/crypto/fmp/fmp.c fmplib_bypass, used by ufs-exynos-fmp.c for every request without
+ *       a key): this driver always does. Its SMU and descriptor type are the secure world's (SMC
+ *       FMP_SECURITY, SMU_INIT, include/linux/smc.h) and are not touched
+ *   Reused, not reset. UEFI has brought all of it up, and bringing it up again is not this kernel's
+ *   to do: [BSP]'s host reset is HCI_SW_RST, then the vendor's host init, the device's reset line,
+ *   and its link startup runs the calibration's pre-link table (UniPro debug MIBs, PCS and PMA
+ *   writes), DME_LINKSTARTUP, the post-link table, then a power mode change to HS-G3 with its own
+ *   tables and the CDR waits (ufs-exynos.c exynos_ufs_host_reset, link_startup_notify,
+ *   pwr_change_notify; ufs-cal-9810.c) -- dozens of writes to UniPro and the PHY besides the
+ *   controller, timing-dependent, none of which can be read back to prove it right before the
+ *   flash is spoken to; Silicium's UfsDxe did exactly that sequence already, and the loader and
+ *   UEFI go on using the controller after a run, so a reset here would leave UEFI a controller
+ *   it no longer knows. The S9 is taken as UEFI left it, read back at steps 1 and 2 against the
+ *   facts above, and given back as it was.
+ *
+ * ---- own mode in steps (ufs_native_step=) ---------------------------------------------------------
+ *
+ * Each step says what it found before the next is taken; each stops on its own, and a step that
+ * stops gives the controller back as it was found:
+ *   1  look: the registers, the vendor's, the blocks beside (the SoC's look), UEFI's descriptors;
+ *      nothing written (as ufs_native=5)
+ *   2  the link: the host's PA attributes by DME_GET (lanes, gears, power mode, series) and, on the
+ *      S9, UniPro's results and the PHY's calibration read back; nothing written but DME_GET's
+ *      own registers (UICCMD and its arguments, IS's UCCS)
+ *   3  NOP OUT: this kernel's list in, NOP OUT answered by NOP IN, the list given back
+ *   4  READ CAPACITY: the device's power mode, each unit's descriptor, TEST UNIT READY and READ
+ *      CAPACITY(16), the list given back
+ *   5  all: LBA 0 and each unit's GPT read (hakios.ufs.c), /dev/ufs_NAME made, reads served
+ * The S9's default is 1; QEMU's and the POCO's 5.
  *
  * Checked: shared mode run on the POCO (as before this file was made generic). Own mode run in
  * QEMU 11.1 on -device ufs with two ufs-lu units. exynos9810: compiled only, NEVER RUN on the
  * phone; off unless ufs_native=4 ufs_native_soc=exynos9810 is asked for, which nothing does by
- * default (start with ufs_native=5).
+ * default, and then at step 1 unless ufs_native_step= says otherwise.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -221,6 +282,7 @@ extern boolean_t ml_set_interrupts_enabled(boolean_t enable);
 /* ULLS, DFES, UTPES, HCFES, SBFES, CEFES (ShengUfs: link lost and the crypto engine are fatal, a UIC error not) */
 #define IS_FATAL            ((1u << 7) | (1u << 11) | (1u << 12) | (1u << 16) | (1u << 17) | (1u << 18))
 #define UIC_LINK_STARTUP    0x16
+#define UIC_DME_GET         0x01                /* the one other UIC command sent here: a local attribute read */
 
 /* the request descriptor's first word: command type, data direction */
 #define UTRD_CT_MASK        0xf0000000u
@@ -273,11 +335,15 @@ struct ufshc_soc {
 	bool clear_with_ones;                   /* UTRLCLR: a one clears the slot */
 	bool dma32;                             /* the controller reaches the first 4 GB only */
 	uint32_t slot_buffer;                   /* own mode: bytes a slot reads or writes at a time */
+	uint32_t default_step;                  /* own mode: ufs_native_step= when none is given (1 look ... 5 all) */
+	uint64_t dma_lo, dma_hi;                /* where UEFI's descriptors can be (followed only there); 0, 0: anywhere */
+	const char *(*look)(bool link);         /* own mode: the blocks beside the controller, read only; why not */
 	const char *(*adopt)(void);             /* own mode: the vendor's registers looked at and kept; why not */
 	void (*nexus)(uint32_t slot, bool scsi);        /* before every doorbell */
 	void (*give_back)(void);                /* at the end: what adopt kept */
 };
 
+static const char *exynos_look(bool link);
 static const char *exynos_adopt(void);
 static void exynos_nexus(uint32_t slot, bool scsi);
 static void exynos_give_back(void);
@@ -286,16 +352,19 @@ static const struct ufshc_soc hc_socs[] = {
 	{
 		.name = "pci", .may_enable = true, .prd_entry = 16, .prd_max = 256u << 10,
 		.rsp_offset = 512, .rsp_length = 512, .prdt_offset = 1024, .slot_buffer = SLOT_BUFFER_DEFAULT,
+		.default_step = 5,
 	},
 	{
 		.name = "sm7325", .pa = 0x1d84000, .size = UFSHC_SIZE, .prd_entry = 16, .prd_max = 256u << 10,
 		.rsp_offset = 512, .rsp_length = 512, .prdt_offset = 1024, .slot_buffer = SLOT_BUFFER_DEFAULT,
+		.default_step = 5,
 	},
 	{
 		.name = "exynos9810", .pa = 0x11120000, .size = 0x200, .vs_pa = 0x11121100, .vs_size = 0x200,
 		.prdt_bytes = true, .prd_entry = 128, .prd_max = 4096, .rsp_offset = 1024, .rsp_length = 1024,
 		.prdt_offset = 2048, .clear_with_ones = true, .dma32 = true, .slot_buffer = 64u << 10,
-		.adopt = exynos_adopt, .nexus = exynos_nexus, .give_back = exynos_give_back,
+		.default_step = 1, .dma_lo = 0x80000000ULL, .dma_hi = 0x100000000ULL,
+		.look = exynos_look, .adopt = exynos_adopt, .nexus = exynos_nexus, .give_back = exynos_give_back,
 	},
 };
 #define SOC_SHARED          (&hc_socs[1])       /* the one shared mode knows: the POCO's */
@@ -357,6 +426,7 @@ static uint32_t hc_nutrs, hc_ver;
 static bool hc_enabled_here, hc_dirty;
 static uint32_t hc_uefi_ie, hc_uefi_rsr;
 static struct ufshc_unit hc_units[UFSHC_LUNS];
+static uint32_t hc_step = 5, hc_stopped_at;     /* ufs_native_step=: how far own mode goes; where it stopped as asked */
 static uint64_t hc_writes, hc_write_bytes, hc_protocol_errors;
 
 static LCK_GRP_DECLARE(hc_lck_grp, "hakios-ufshc");
@@ -500,8 +570,115 @@ hc_dma_sync(const volatile void *p, size_t bytes)
 #define EXY_CLKSTOP_CTRL        0xb0
 #define EXY_FORCE_HCS           0xb4
 #define EXY_PRDT_SIZE(v)        ((v) & 0x1f)
+#define EXY_1US_TO_CNT_VAL      0x0c
+#define EXY_VENDOR_IS           0x38
+#define EXY_GPIO_OUT            0x70            /* bit 0: the device's RST_n, 1 out of reset */
+#define EXY_V2P1_CTRL           0x8c            /* bit 16: IA_TICK_SEL */
+#define EXY_UFS_ACG_DISABLE     0xfc
+#define EXY_IOP_ACG_DISABLE     0x100
+#define EXY_MPHY_REFCLK_SEL     0x108
+#define EXY_CLKSTOP_UNIPRO_PCLK (1u << 0)       /* CLKSTOP_CTRL: a one stops the clock */
+#define EXY_CLKSTOP_UNIPRO_MCLK (1u << 1)
+#define EXY_CLKSTOP_REFCLK      (1u << 2)
+#define EXY_CLKSTOP_MPHY_APB    (1u << 3)
+
+/* the blocks beside the controller, read and never written here */
+#define EXY_UNIPRO_PA           0x11110000ULL   /* the ufs node's third reg, 32 KB */
+#define EXY_UNIPRO_SIZE         0x8000
+#define EXY_PMA_PA              0x11124000ULL   /* ufs-phy, 2 KB: the M-PHY's PMA */
+#define EXY_PMA_SIZE            0x800
+#define EXY_PMU_PHY_PA          0x14060724ULL   /* ufs-phy-sys: PMU UFS_PHY_CONTROL, bit 0 the isolation bypassed */
+#define EXY_SYSREG_COH_PA       0x11010700ULL   /* ufs-io-coherency: SYSREG_FSYS0, bits 8-9 */
+#define EXY_SYSREG_COH_BITS     0x300u
+#define UNIP_COMP_VERSION       0x0000
+#define UNIP_COMP_INFO          0x0004
+#define UNIP_LINKSTARTUP_CNF    0x7854
+#define UNIP_H8_ENTER_IND       0x7868
+#define UNIP_H8_EXIT_IND        0x7878
+#define UNIP_PWR_IND            0x78ec
+#define PMA_TRSV(reg, lane)     ((reg) + 0x140u * (lane))
+#define PMA_CDR_AFC             0x1fc           /* bit 6: the lane's CDR has locked (the calibration's wait) */
+#define PMA_CDR_AFC_DONE        0x40u
 
 static uint32_t exy_nexus_at_start;
+
+static uint32_t
+exy_peek(uint64_t pa)
+{
+	vm_offset_t va = ml_io_map((vm_offset_t)(pa & ~(uint64_t)PAGE_MASK), PAGE_SIZE);
+
+	return va == 0 ? 0xdeadbeef : *(volatile uint32_t *)(va + (pa & PAGE_MASK));
+}
+
+/*
+ * Step 1 (and every later one): the power, reset, clocks and coherency the controller needs and
+ * UEFI set up, read and compared with what the S9's kernel sets. Step 2 (link): UniPro's own
+ * results of the last link startup and power mode change, and the M-PHY's PMA as the
+ * calibration for HS-G3 on two lanes leaves it. Nothing is written: a block whose clock
+ * CLKSTOP_CTRL says is stopped is not read at all (the S9's kernel ungates the PMA's APB clock
+ * around every access to it, ufs-exynos.h phy_pma_readl; this kernel does not), it is said so.
+ */
+static const char *
+exynos_look(bool link)
+{
+	uint32_t pmu = exy_peek(EXY_PMU_PHY_PA), coh = exy_peek(EXY_SYSREG_COH_PA);
+	uint32_t gpio = vs_read(EXY_GPIO_OUT), stop = vs_read(EXY_CLKSTOP_CTRL), force = vs_read(EXY_FORCE_HCS);
+	uint32_t cnt = vs_read(EXY_1US_TO_CNT_VAL), v2p1 = vs_read(EXY_V2P1_CTRL);
+
+	if (!link) {
+		hc_say("ufs: own: exynos: PMU UFS_PHY_CONTROL %08x (isolation %s), SYSREG_FSYS0 coherency %08x (bits 8-9 %s), "
+		    "GPIO_OUT %08x (the device %s), CLKSTOP_CTRL %08x, FORCE_HCS %08x, UFS_ACG_DISABLE %08x, IOP_ACG_DISABLE %08x, "
+		    "MPHY_REFCLK_SEL %08x, 1US_TO_CNT %u (%u MHz), V2P1_CTRL %08x, vendor IS %08x\n", pmu,
+		    (pmu & 1) ? "bypassed: the PHY is on" : "ON: THE PHY IS OFF", coh, (coh & EXY_SYSREG_COH_BITS) ==
+		    EXY_SYSREG_COH_BITS ? "set: coherent" : "NOT SET", gpio, (gpio & 1) ? "out of reset" : "HELD IN RESET", stop,
+		    force, vs_read(EXY_UFS_ACG_DISABLE), vs_read(EXY_IOP_ACG_DISABLE), vs_read(EXY_MPHY_REFCLK_SEL),
+		    cnt & 0x3ff, cnt & 0x3ff, v2p1, vs_read(EXY_VENDOR_IS));
+		if ((pmu & 1) == 0) {
+			return "the PHY is isolated (PMU UFS_PHY_CONTROL bit 0 clear): UEFI has not powered it";
+		}
+		if ((gpio & 1) == 0) {
+			return "the UFS device is held in reset (HCI_GPIO_OUT bit 0 clear)";
+		}
+		if (stop & (EXY_CLKSTOP_UNIPRO_MCLK | EXY_CLKSTOP_REFCLK)) {
+			return "UniPro's main clock or the reference clock is stopped (CLKSTOP_CTRL)";
+		}
+		return NULL;
+	}
+
+	if (stop & EXY_CLKSTOP_UNIPRO_PCLK) {
+		hc_say("ufs: own: exynos: UniPro at %llx not read: its APB clock is stopped (CLKSTOP_CTRL %08x)\n", EXY_UNIPRO_PA,
+		    stop);
+	} else {
+		vm_offset_t u = ml_io_map((vm_offset_t)EXY_UNIPRO_PA, EXY_UNIPRO_SIZE);
+
+		if (u != 0) {
+#define UNIP(r) (*(volatile uint32_t *)(u + (r)))
+			hc_say("ufs: own: exynos: UniPro at %llx: COMP_VERSION %08x, COMP_INFO %08x; results of the last "
+			    "DME_LINKSTARTUP %x (0: success), hibernate enter %x, exit %x, power mode change %x (1, PWR_LOCAL: "
+			    "success)\n", EXY_UNIPRO_PA, UNIP(UNIP_COMP_VERSION), UNIP(UNIP_COMP_INFO),
+			    UNIP(UNIP_LINKSTARTUP_CNF), UNIP(UNIP_H8_ENTER_IND), UNIP(UNIP_H8_EXIT_IND), UNIP(UNIP_PWR_IND));
+#undef UNIP
+		}
+	}
+	if (stop & EXY_CLKSTOP_MPHY_APB) {
+		hc_say("ufs: own: exynos: the PHY's PMA at %llx not read: its APB clock is stopped (CLKSTOP_CTRL %08x)\n",
+		    EXY_PMA_PA, stop);
+	} else {
+		vm_offset_t m = ml_io_map((vm_offset_t)EXY_PMA_PA, EXY_PMA_SIZE);
+
+		for (uint32_t lane = 0; m != 0 && lane < 2; lane++) {
+#define PMA(r) (*(volatile uint32_t *)(m + PMA_TRSV(r, lane)) & 0xff)
+			uint32_t c8 = PMA(0xc8), r120 = PMA(0x120), r128 = PMA(0x128), r134 = PMA(0x134), afc = PMA(PMA_CDR_AFC);
+#undef PMA
+			bool hs3 = c8 == 0xbc && r120 == 0xc0 && r128 == 0x00 && r134 == 0x63;
+
+			hc_say("ufs: own: exynos: PMA lane %u: TRSV C8 %02x, 120 %02x, 128 %02x, 134 %02x (%s), CDR AFC %02x (%s)\n",
+			    lane, c8, r120, r128, r134, hs3 ? "HS-G3's calibration on two lanes" : c8 == 0x40 ? "PWM's calibration" :
+			    "NOT the calibration of HS-G3 on two lanes", afc, (afc & PMA_CDR_AFC_DONE) ? "locked" : "NOT LOCKED");
+		}
+	}
+	return NULL;
+}
 
 static const char *
 exynos_adopt(void)
@@ -2198,6 +2375,79 @@ hc_poll(uint32_t reg, uint32_t mask, uint32_t want, uint32_t ms)
 	return (hc_read(reg) & mask) == want;
 }
 
+/*
+ * A local UniPro/M-PHY attribute, read with DME_GET (UFSHCI 5.6.4): the only UIC command this
+ * driver sends to a controller it did not enable itself, and it reads. 0: read, the value in *v.
+ */
+static int
+hc_dme_get(uint16_t attr, uint16_t sel, uint32_t *v)
+{
+	uint32_t result;
+
+	if ((hc_read(UFSHC_HCS) & HCS_UCRDY) == 0) {
+		return EBUSY;
+	}
+	hc_write(UFSHC_IS, IS_UCCS);
+	hc_write(UFSHC_UICCMDARG1, (uint32_t)attr << 16 | sel);
+	hc_write(UFSHC_UICCMDARG2, 0);
+	hc_write(UFSHC_UICCMDARG3, 0);
+	hc_write(UFSHC_UICCMD, UIC_DME_GET);
+	if (!hc_poll(UFSHC_IS, IS_UCCS, IS_UCCS, 100)) {
+		return ETIMEDOUT;
+	}
+	result = hc_read(UFSHC_UICCMDARG2) & 0xff;
+	*v = hc_read(UFSHC_UICCMDARG3);
+	hc_write(UFSHC_IS, IS_UCCS);
+	return result == 0 ? 0 : EIO;
+}
+
+/*
+ * Step 2: the link as UEFI left it, from the host's own attributes (PA layer, UniPro 1.6): the
+ * lanes there are, connected and active, the gears, the power mode and the HS series. The S9's
+ * device tree asks for two lanes at HS-G3 (ufs,pmd-attr-lane, ufs,pmd-attr-gear) and Silicium's
+ * UFS driver sets FAST mode, rate B (UfsDxe.h UFS_POWER_MODE, UFS_RATE). Only a link that is up
+ * and has a lane each way is taken on; the rest is said.
+ */
+static const char *
+hc_link_look(void)
+{
+	static const struct {
+		uint16_t attr;
+		const char *name;
+	} pa[] = {
+		{ 0x1520, "PA_AvailTxDataLanes" }, { 0x1540, "PA_AvailRxDataLanes" }, { 0x1561, "PA_ConnectedTxDataLanes" },
+		{ 0x1581, "PA_ConnectedRxDataLanes" }, { 0x1560, "PA_ActiveTxDataLanes" }, { 0x1580, "PA_ActiveRxDataLanes" },
+		{ 0x1568, "PA_TxGear" }, { 0x1583, "PA_RxGear" }, { 0x1571, "PA_PWRMode" }, { 0x156a, "PA_HSSeries" },
+		{ 0x1587, "PA_MaxRxHSGear" },
+	};
+	uint32_t v[sizeof(pa) / sizeof(pa[0])] = { 0 }, hcs = hc_read(UFSHC_HCS), failed = 0;
+
+	for (unsigned i = 0; i < sizeof(pa) / sizeof(pa[0]); i++) {
+		int e = hc_dme_get(pa[i].attr, 0, &v[i]);
+
+		if (e != 0) {
+			failed |= 1u << i;
+		}
+		hc_say("ufs: own: link: %-24s %04x: %s%u\n", pa[i].name, pa[i].attr, e == 0 ? "" : "NOT READ, ", e == 0 ? v[i] :
+		    (uint32_t)e);
+	}
+	hc_say("ufs: own: link: HCS %08x (device %s, UIC %s); %u lanes each way connected (%u, %u), gear %u/%u, power mode "
+	    "%02x (%s), series %s\n", hcs, (hcs & HCS_DP) ? "present" : "ABSENT", (hcs & HCS_UCRDY) ? "ready" : "NOT READY",
+	    v[2] < v[3] ? v[2] : v[3], v[2], v[3], v[6], v[7], v[8], v[8] == 0x11 ? "FAST both ways" : v[8] == 0x22 ?
+	    "SLOW both ways" : v[8] == 0x44 ? "FASTAUTO" : v[8] == 0x55 ? "SLOWAUTO" : "other", v[9] == 2 ? "B" : v[9] == 1 ?
+	    "A" : "?");
+	if ((hcs & HCS_DP) == 0) {
+		return "no device present";
+	}
+	if (failed & (3u << 2)) {
+		return hc_soc->may_enable ? NULL : "the connected lanes could not be read (DME_GET)";
+	}
+	if (v[2] == 0 || v[3] == 0) {
+		return "no lane connected one way or the other: the link is down";
+	}
+	return NULL;
+}
+
 /* QEMU's alone: the controller enabled, the link started, a device present */
 static const char *
 hc_enable_from_reset(void)
@@ -2244,7 +2494,8 @@ hc_look_uefi(uint64_t list_pa, uint32_t nutrs)
 	vm_offset_t list;
 	int verdict = 0, shown = 0;
 
-	if (list_pa == 0 || (list_pa & 0x3ff) || pmap_valid_address(list_pa)) {
+	if (list_pa == 0 || (list_pa & 0x3ff) || pmap_valid_address(list_pa) ||
+	    (soc->dma_hi != 0 && (list_pa < soc->dma_lo || list_pa + 32 * nutrs > soc->dma_hi))) {
 		hc_say("ufs: own: UEFI's list %llx: none, or not where it can be read here\n", list_pa);
 		return 0;
 	}
@@ -2263,7 +2514,14 @@ hc_look_uefi(uint64_t list_pa, uint32_t nutrs)
 		shown++;
 		hc_say("ufs: own: UEFI's slot %u: %08x %08x %08x %08x %08x %08x %08x %08x\n", i, d[0], d[1], d[2], d[3], d[4],
 		    d[5], d[6], d[7]);
-		if (ucd == 0 || (ucd & 0x7f) || pmap_valid_address(ucd)) {
+		/*
+		 * Only a descriptor of UEFI's own is followed: a UFS storage command, its command descriptor
+		 * where the SoC's DMA reaches (the S9's: DRAM below 4 GB). UEFI may use fewer slots than the
+		 * controller has (Silicium's UfsDxe: two), and what lies in the rest of its page is not
+		 * a descriptor: an address there must not be mapped and read.
+		 */
+		if (ucd == 0 || (ucd & 0x7f) || pmap_valid_address(ucd) || (d[0] & UTRD_CT_MASK) != UTRD_CT_UFS ||
+		    (soc->dma_hi != 0 && (ucd < soc->dma_lo || ucd + 2 * PAGE_SIZE > soc->dma_hi))) {
 			continue;
 		}
 		map = ml_io_map_unmappable((vm_offset_t)(ucd & ~(uint64_t)PAGE_MASK), 2 * PAGE_SIZE, VM_WIMG_WCOMB);
@@ -2402,6 +2660,44 @@ hc_find_units(void)
 }
 
 /*
+ * Steps 3 and 4: as far as was asked, and no further. Nothing more is sent, and the controller is
+ * given back as it was found (UEFI's list, its interrupt enable, the vendor's nexus types; on
+ * QEMU, disabled again if it was found so), as at the end of a run.
+ */
+static bool
+hc_stop_here(uint32_t step, const char *next)
+{
+	struct hc_put_back_result r;
+
+	for (uint64_t t = mach_absolute_time(); hc_read(UFSHC_UTRLDBR) != 0 && hc_us_since(t) < 1000000;) {
+		__builtin_arm_yield();
+	}
+	if (hc_enabled_here) {
+		hc_write(UFSHC_UTRLRSR, 0);
+		hc_write(UFSHC_IE, hc_uefi_ie);
+		hc_write(UFSHC_HCE, 0);
+		hc_say("ufs: own: the controller disabled again, as it was found (HCE %08x)\n", hc_read(UFSHC_HCE));
+	} else {
+		hc_put_back(&r);
+		hc_put_back_print("stopping", &r, false);
+	}
+	hc_in = false;
+	hc_usable = false;
+	hc_mode = HC_NONE;
+	hc_stopped_at = step;
+	hc_report("stopped", false);
+	hc_off();
+	hc_say("ufs: own: step %u done, as asked: this kernel's own driver is not used further in this run; %s\n", step, next);
+	return false;
+}
+
+bool
+ufshc_own_stopped(void)
+{
+	return hc_stopped_at != 0;
+}
+
+/*
  * Own mode: find the controller, take it (from UEFI, or on QEMU from reset), put this kernel's
  * list in, wake the device and find its units. ufs_native=5: look, say, change nothing.
  */
@@ -2435,6 +2731,16 @@ ufshc_own_probe(void)
 	}
 	hc_slot_buffer = hc_soc->slot_buffer;
 	hc_boot_args();
+	/* ufs_native_step=N: own mode goes as far as step N: 1 look, 2 the link, 3 NOP OUT, 4 READ CAPACITY, 5 all (the GPTs) */
+	hc_step = hc_soc->default_step;
+	PE_parse_boot_argn("ufs_native_step", &hc_step, sizeof(hc_step));
+	if (mode == 5 || hc_step < 1) {
+		hc_step = 1;
+	} else if (hc_step > 5) {
+		hc_step = 5;
+	}
+	hc_say("ufs: own: %s: step %u of 5 (1 look, 2 the link, 3 NOP OUT, 4 READ CAPACITY, 5 the GPTs and the devices)%s\n",
+	    hc_soc->name, hc_step, hc_step == hc_soc->default_step ? ", this controller's default" : "");
 	if (hc_slot_buffer > hc_soc->prd_max * 64) {
 		hc_slot_buffer = hc_soc->prd_max * 64;
 	}
@@ -2480,6 +2786,8 @@ ufshc_own_probe(void)
 			no = "a request of UEFI's in flight";
 		} else if (is & IS_FATAL) {
 			no = "a fatal status";
+		} else if (hc_soc->look != NULL && (no = hc_soc->look(false)) != NULL) {
+			/* (said) */
 		} else if (hc_soc->adopt != NULL) {
 			no = hc_soc->adopt();
 		}
@@ -2499,8 +2807,25 @@ ufshc_own_probe(void)
 		hc_say("ufs: own: not used: %s\n", no);
 		return false;
 	}
-	if (mode == 5) {
-		hc_say("ufs: own: ufs_native=5: looked, nothing changed%s\n", (hce & 1) ? "" : " (it would be enabled here)");
+	if (hc_step == 1) {
+		hc_stopped_at = 1;
+		hc_say("ufs: own: step 1 done: looked, nothing changed%s; ufs_native_step=2 looks at the link\n", (hce & 1) ? "" :
+		    " (it would be enabled here)");
+		return false;
+	}
+	if (hc_step == 2) {
+		if (hce & 1) {
+			no = hc_link_look();
+			if (no == NULL && hc_soc->look != NULL) {
+				no = hc_soc->look(true);
+			}
+		} else {
+			hc_say("ufs: own: not enabled: no link to look at before step 3 enables it here\n");
+		}
+		hc_stopped_at = 2;
+		hc_say("ufs: own: step 2 done: %s%s; nothing changed but DME_GET's own registers (UICCMD, its arguments, IS's UCCS)%s\n",
+		    no == NULL ? "the link is up" : "THE LINK IS NOT USABLE: ", no == NULL ? "" : no,
+		    no == NULL ? "; ufs_native_step=3 puts this kernel's list in and sends NOP OUT" : "");
 		return false;
 	}
 	if ((hce & 1) == 0) {
@@ -2627,6 +2952,10 @@ ufshc_own_probe(void)
 			hc_off();
 			return false;
 		}
+		hc_say("ufs: own: NOP IN: the device answers through this kernel's list\n");
+	}
+	if (hc_step == 3) {
+		return hc_stop_here(3, "ufs_native_step=4 asks the device's units their capacity");
 	}
 	if (hc_enabled_here) {
 		uint32_t flag = 1;
@@ -2671,6 +3000,9 @@ ufshc_own_probe(void)
 		if (mask == 0) {
 			hc_say("ufs: own: no logical unit to read\n");
 		}
+	}
+	if (hc_step == 4 && !hc_dead) {
+		return hc_stop_here(4, "ufs_native_step=5 reads LBA 0 and each unit's GPT and makes the devices");
 	}
 	return !hc_dead;
 }

@@ -335,6 +335,7 @@ ufs_native_leave	k
 ufs_native_slots	k
 ufs_native_soc	k
 ufs_native_spin	k
+ufs_native_step	k
 ufs_native_test	k
 ufs_native_write	k
 ufs_probe	l
