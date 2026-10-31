@@ -35,6 +35,12 @@
  *   3  the bus reset and set to 400 kHz
  *   4  read the chip's revision, the gauge and the charger once
  *   5  report every 5 seconds (the default)
+ *
+ * Boot-arg max77705_ipclk=MHz: the HSI2C's input clock, if step 1 says it is not the 200 MHz Android sets (the device
+ * tree's default-clk); the bus's timing is worked out from it. (CMGP's mux, +0x1018 bit 0, picks the RCO oscillator at
+ * 0 and CMGP's bus clock at 1; the divider is +0x1814 [3:0].)
+ * The clocks forced on are the four of USI_CMGP03 in CMU_CMGP: GATE_CLK_USI_CMGP03 +0x2014, its IPCLK +0x20A8 and PCLK
+ * +0x20AC, its RSTnSYNC +0x2074; its Q-channel +0x3050 (cal-if/exynos9810/cmucal-sfr.c of the S9's kernel).
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -112,7 +118,8 @@ static struct hakios_hsi2c bus = {
 	.regs_pa = 0x14360000,                  /* hsi2c@14360000: USI03 of CMGP */
 	.usi_mode_pa = 0x14212030,              /* usi@14212030: its mode word */
 	.cmu_pa = 0x14200000, .cmu_size = 0x4000,       /* CMU_CMGP */
-	.gates = { 0x20A8, 0x20AC }, .ngates = 2,
+	/* GATE_CLK_USI_CMGP03 (the divider's source), USI_CMGP03 IPCLK and PCLK, its RSTnSYNC: as the touch's bus */
+	.gates = { 0x2014, 0x20A8, 0x20AC, 0x2074 }, .ngates = 4,
 	.qch = 0x3050, .div = 0x1814, .mux = 0x1018,
 	.pins_pa = 0,                           /* GPM14-0 and GPM15-0: the boot loader talks to the chip, they are set */
 	.ipclk_mhz = 200, .bus_hz = 400000,
@@ -624,7 +631,8 @@ hakios_max77705_init(void)
 		return;
 	}
 	PE_parse_boot_argn("max77705_steps", &steps, sizeof(steps));
-	if (steps == 0) {
+	PE_parse_boot_argn("max77705_ipclk", &bus.ipclk_mhz, sizeof(bus.ipclk_mhz));
+	if (steps == 0 || bus.ipclk_mhz < 26 || bus.ipclk_mhz > 400) {
 		return;
 	}
 	bus_lock = lck_mtx_alloc_init(lck_grp_alloc_init("max77705", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
