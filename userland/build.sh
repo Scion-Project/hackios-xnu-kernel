@@ -651,6 +651,14 @@ if [ -f ../fw-wifi/wpss.mdt ]; then
 	# SHARE=1: leave it out, for an image that is going to somebody else -- it is a passphrase
 	if [ -z "$SHARE" ] && [ -f ../fw-wifi/network ]; then install -m 0600 ../fw-wifi/network root/fw/network; fi
 fi
+# ... and the Galaxy S9's (drivers/wifi/hakios.brcmfmac.c, brcmfmac=2 and up): the BCM4361's firmware, NVRAM and CLM,
+# pulled from the phone's own Android into ../fw-wifi under the names brcmfmac asks for (brcmfmac4361b2-pcie.bin, .txt,
+# .clm_blob; devices/starlte/WIFI.md says which of the phone's files each is). The vendor's: never in the repository
+for f in ../fw-wifi/brcmfmac4361*-pcie.*; do
+	[ -f "$f" ] || continue
+	mkdir -p root/fw
+	install -m 0644 "$f" root/fw/
+done
 # ... and the vibration motor's waveforms, the phone's /vendor/firmware/aw8697_haptic.bin, from ../fw-haptic
 # (drivers/haptic/hakios.haptic.c, haptic=3; 3.6 KB, the vendor's and not in the repository either)
 if [ -f ../fw-haptic/aw8697_haptic.bin ]; then
