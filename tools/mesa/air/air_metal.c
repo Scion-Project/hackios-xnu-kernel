@@ -117,6 +117,11 @@ struct rwa_device {
     */
    unsigned ubo_offset_align, ssbo_offset_align;
 
+   /* The Gallium constant-buffer slot Metal's [[buffer(0)]] lands in: 0, or 1 on
+    * panfrost, which keeps slot 0 for a default uniform block (finalize_for_gallium).
+    */
+   unsigned ubo_base;
+
    /* Every buffer that holds an argument-buffer encoding, so that destroying a texture,
     * a sampler or a buffer can scrub it out of the records that name it. Short by
     * construction: a buffer joins only when something is encoded into it.
@@ -364,9 +369,43 @@ type_size_vec4(const struct glsl_type *type, bool bindless)
    return glsl_count_attribute_slots(type, false);
 }
 
-static void
-finalize_for_gallium(nir_shader *nir, struct pipe_screen *screen)
+/* (finalize_for_gallium) a load from Metal's constant buffer n reads Gallium's n + base */
+static bool
+shift_ubo_index(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
+   if (intr->intrinsic != nir_intrinsic_load_ubo &&
+       intr->intrinsic != nir_intrinsic_get_ubo_size)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_src_rewrite(&intr->src[0], nir_iadd_imm(b, intr->src[0].ssa, *(const unsigned *)data));
+   return true;
+}
+
+static void
+finalize_for_gallium(nir_shader *nir, struct pipe_screen *screen, unsigned ubo_base)
+{
+   /*
+    * PANFROST'S UBO 0. panfrost_shader_compile (pan_shader.c) asserts
+    * info.first_ubo_is_default_ubo and then treats UBO 0 as PUSHABLE: the words a shader
+    * reads from it are copied by the processor into the draw's push constants, and only
+    * from a user_buffer -- panfrost_emit_const_buf asserts "only user buffers use this
+    * path" and otherwise reads through a NULL pointer. GLSL's default uniform block is
+    * that UBO; a Metal constant buffer is not: it is a real buffer, maybe one the GPU
+    * wrote. So every one of Metal's constant buffers moves up one slot, as rusticl moves
+    * OpenCL's (rusticl_lower_inputs), slot 0 is left an empty default block, and
+    * bind_stage binds [[buffer(n)]] at n + ubo_base. Without it every pipeline failed the
+    * assertion on a debug build -- found by running this library on panfrost under
+    * drm-shim as the G72 (tools/mali-drmshim-check.sh) -- and, on the phone's release
+    * build where assertions are compiled out, a shader reading constant buffer 0 would
+    * have had its words "pushed" from no memory at all.
+    */
+   if (ubo_base) {
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, shift_ubo_index,
+               nir_metadata_control_flow, &ubo_base);
+      nir->info.num_ubos += ubo_base;
+      nir->info.first_ubo_is_default_ubo = true;
+   }
+
    /* A fragment shader's [[position]]: the frontend hands it over as a system-value
     * variable, because that is the one form both of the drivers behind this library can
     * be served from (the long version is beside air.position in air_to_nir.c and in
@@ -521,6 +560,7 @@ rwa_device_open(char *why, size_t why_size)
       }
 
       device->screen = drivers[i].create(fd, NULL, &config);
+      device->ubo_base = !strcmp(drivers[i].name, "panfrost") ? 1 : 0;
       if (!device->screen) {
          say(why, why_size, "the kernel's %s opened but %s made no screen for it, so "
                             "this GPU is present and unusable", drivers[i].service,
@@ -3065,7 +3105,7 @@ compute_state_for(struct rwa_compute *compute, const unsigned block[3],
    cs->info.workgroup_size[2] = block[2];
    cs->info.workgroup_size_variable = false;
 
-   finalize_for_gallium(cs, device->screen);
+   finalize_for_gallium(cs, device->screen, device->ubo_base);
 
    void *cso = device->pipe->create_compute_state(device->pipe,
       &(struct pipe_compute_state){
@@ -3681,10 +3721,10 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
          break;
 
       case AIR_RESOURCE_CONSTANT_BUFFER: {
-         if (r->index >= PIPE_MAX_CONSTANT_BUFFERS) {
+         if (r->index + device->ubo_base >= PIPE_MAX_CONSTANT_BUFFERS) {
             say(why, why_size, "%s binds a constant buffer at index %u, past the %u "
                                "Gallium has slots for", name, r->index,
-                (unsigned)PIPE_MAX_CONSTANT_BUFFERS);
+                (unsigned)PIPE_MAX_CONSTANT_BUFFERS - device->ubo_base);
             return -1;
          }
          size_t left = b->size - MIN2(b->size, boffset);
@@ -3718,7 +3758,7 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
             cb.buffer_offset = 0;
             cb.buffer_size = (unsigned)want;
          }
-         pipe->set_constant_buffer(pipe, stage, r->index, false, &cb);
+         pipe->set_constant_buffer(pipe, stage, r->index + device->ubo_base, false, &cb);
          break;
       }
 
@@ -5189,7 +5229,7 @@ make_stage_cso(struct rwa_device *device, nir_shader *nir, char *why, size_t why
       say(why, why_size, "out of memory compiling a shader stage");
       return NULL;
    }
-   finalize_for_gallium(clone, device->screen);
+   finalize_for_gallium(clone, device->screen, device->ubo_base);
 
    struct pipe_shader_state templ = { .type = PIPE_SHADER_IR_NIR, .ir.nir = clone };
    struct pipe_context *pipe = device->pipe;
