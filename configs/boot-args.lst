@@ -62,6 +62,7 @@ applog	k
 applog_name	k
 autounlock	u
 avf_exit	k
+backlight	k
 battery	kl
 battery_shared_pa	k
 battery_stop	k

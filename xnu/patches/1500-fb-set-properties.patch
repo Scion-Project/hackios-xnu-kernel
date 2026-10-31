@@ -1,16 +1,17 @@
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-index 66dc128..f21d64b 100644
+index 66dc128..fc38a08 100644
 --- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-@@ -44,6 +44,7 @@ extern "C" void hakios_vgpu3d_display_surface(uint32_t sid);       /* bsd/dev/ha
+@@ -44,6 +44,8 @@ extern "C" void hakios_vgpu3d_display_surface(uint32_t sid);       /* bsd/dev/ha
  extern "C" bool hakios_vgpu3d_host_owns(uint32_t sid);
  
  extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
-+extern "C" int hakios_panel_brightness(int level);       /* drivers/gpu/hakios.s6e3ha8.c (0: taken), or ENODEV (hakios.stubs.c) */
++extern "C" int hakios_panel_brightness(int level);       /* drivers/gpu/hakios.backlight.cpp: 0 if a panel driver took it, else ENODEV */
++extern "C" void hakios_backlight_publish(IOService * display);  /* the same: AppleARMBacklight, with boot-arg backlight= */
  
  /*
   * Scion shared framebuffer (SCFB), for the Android Virtualization Framework: crosvm has no ramfb,
-@@ -348,6 +349,7 @@ class IOMobileFramebuffer : public IOService
+@@ -348,6 +350,7 @@ class IOMobileFramebuffer : public IOService
  	OSDeclareDefaultStructors(IOMobileFramebuffer);
  
  public:
@@ -18,14 +19,16 @@ index 66dc128..f21d64b 100644
  	IOLock *        fLock;
  	uint8_t *       fBase;                  /* the boot framebuffer: the panel */
  	uint32_t        fPanelWidth, fPanelHeight, fRowBytes;
-@@ -520,6 +522,76 @@ IOMobileFramebuffer::publishModes(void)
+@@ -520,6 +523,78 @@ IOMobileFramebuffer::publishModes(void)
  	OSSafeReleaseNULL(color);
  }
  
 +/*
 + * What iOS sets on the display service -- its brightness, among other things, on a phone whose panel this kernel can
-+ * dim (the Galaxy S9: hakios_panel_brightness(), drivers/gpu/hakios.s6e3ha8.c). Which key iOS 16's CoreBrightness
-+ * uses for an OLED iPhone's display is not known here yet: the first calls are said in the log, key by key, with the
++ * dim: hakios_panel_brightness() (drivers/gpu/hakios.backlight.cpp) hands it to the panel driver that registered there,
++ * the Galaxy S9's (drivers/gpu/hakios.s6e3ha8.c); with none, ENODEV. Which key iOS 16's CoreBrightness uses for an
++ * OLED iPhone's display is not known here yet (boot-arg backlight= publishes AppleARMBacklight as well, to find out
++ * whether it is that service iOS sets instead): the first calls are said in the log, key by key, with the
 + * value of a number, and a key named "brightness" (any case) with a number from 0 to 1 or to 255 is taken as the
 + * brightness. Nothing is kept in the registry, and what is not a brightness is refused as IOService refuses it.
 + */
@@ -95,3 +98,11 @@ index 66dc128..f21d64b 100644
  bool
  IOMobileFramebuffer::start(IOService * provider)
  {
+@@ -627,6 +702,7 @@ IOMobileFramebuffer::start(IOService * provider)
+ 	publishModes();
+ 	setName("disp0");
+ 	registerService();
++	hakios_backlight_publish(this);
+ 	return true;
+ }
+ 
