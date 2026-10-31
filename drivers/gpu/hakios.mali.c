@@ -35,9 +35,15 @@
  *                 PLL_CON0 at +0x140: S [2:0], P [13:8], M [25:16], MUX_SEL bit 4 (the G3D's clock from the PLL, not
  *                 the 26 MHz oscillator), MUX_BUSY bit 7, STABLE bit 29, ENABLE bit 31; 26 MHz x M / (P x 2^S). PLL_CON2
  *                 at +0x148 must hold 0x30000003 while the PLL locks (S-Boot's 0x10000001 keeps it from ever reaching
- *                 STABLE); PLL_LOCKTIME at +0x0, P x 150. The rates this driver sets are the three the S9+ port runs
- *                 (points of the stock GPU table, validated on that phone): 260 MHz (M 160, P 4, S 2: S-Boot's own),
- *                 455 (455, 26, 0), 572 (286, 13, 0).
+ *                 STABLE); PLL_LOCKTIME at +0x0, P x 150. The PLL is a PLL_1018X, and Samsung's CAL gives that kind
+ *                 its limits (pll_spec.c): P 1-63, M 64-1023, S 0-6, 26 MHz / P from 2 to 8 MHz, the VCO (26 MHz x M
+ *                 / P) from 600 to 1200 MHz. The rates this driver sets are three of the stock GPU table's six (the
+ *                 phone's gpu_dvfs_table: 572, 546, 455, 338, 299, 260), the three the S9+ port runs: 260 MHz (M 160,
+ *                 P 4, S 2: S-Boot's own, a VCO of 1040), 455 (M 140, P 4, S 1: 910) and 572 (M 176, P 4, S 1: 1144).
+ *                 The S9+ port's own M/P/S for the two (455, 26, 0 and 286, 13, 0) put the VCO at 455 and 572 MHz,
+ *                 below the PLL's 600, and 455's reference at 1 MHz, below its 2: the same rates, in the PLL's range
+ *                 here. (The kernel's own PLL_G3D table, 860, 320 and 650 MHz, is in the range as well; the APM
+ *                 firmware sets the GPU's rates under Android, and its table is not in the source.)
  *                 The G3D's own mux at +0x100 (bit 4: CMU's clock), and its bus dividers: MUX_CLK_G3D_BUSD +0x1000,
  *                 DIV_CLK_G3D_BUSD +0x1800, DIV_CLK_G3D_BUSP +0x1804 (bit 16 busy)
  *   coherency     none: the GPU does not look into the processors' caches. COHERENCY_ENABLE = 31 (none) after every
@@ -82,7 +88,8 @@
  *     made, and the domain is switched off again if the steps end short of serving and it was this driver that
  *     switched it on (with a soft reset first once the GPU has answered).
  *   - Its page tables assume 35 bits of GPU address (the G52's MMU_FEATURES, 0x2823). Step 4 reads the G72's and refuses
- *     to go on with fewer, or with fewer than 36 bits of physical address: the S9's memory reaches 0x8FFFFFFFF.
+ *     to go on with fewer, or with fewer than 36 bits of physical address: the S9's memory reaches 0x8FFFFFFFF. On a GPU
+ *     of 40 bits or more the walk is given a level 0 above them, as kbase and panfrost walk a G72 (the page tables).
  *   - Step 4 refuses a GPU that is not a G72, or whose shader cores do not fit the 32 bits of affinity the jobs are given.
  *   - COHERENCY_ENABLE = 31 after every reset, the one of a hung job's recovery included (a reset may clear it).
  *   - A reset is panfrost's: the reset interrupt cleared first, a hard reset when the soft one does not finish, and the
@@ -212,11 +219,14 @@ static const struct { uint32_t at, mask, value; const char *name; } g3d_lpm[] = 
 #define PLL_LOCK_FACTOR         150u            /* PLL_LOCKTIME = P x 150 */
 #define PLL_STABLE_US           20000u
 #define MUX_BUSY_US             1000u
-/* the rates (mali_mhz): the S9+ port's three, M, P, S on the 26 MHz oscillator */
+/*
+ * the rates (mali_mhz): the S9+ port's three, M, P, S on the 26 MHz oscillator, each inside PLL_1018X's limits (26 / P
+ * from 2 to 8 MHz, 26 x M / P from 600 to 1200 MHz: Samsung's pll_spec.c)
+ */
 static const struct g3d_rate { uint32_t mhz, m, p, s; } g3d_rates[] = {
-	{ 260, 160, 4, 2 },                     /* S-Boot's own */
-	{ 455, 455, 26, 0 },
-	{ 572, 286, 13, 0 },
+	{ 260, 160, 4, 2 },                     /* S-Boot's own: the VCO at 1040 MHz */
+	{ 455, 140, 4, 1 },                     /* 910 */
+	{ 572, 176, 4, 1 },                     /* 1144 */
 };
 static uint32_t mali_mhz = 260;
 static uint32_t mali_pll = 1;                   /* mali_pll=0: PLL_G3D as the boot left it */
@@ -576,9 +586,18 @@ as0_update(uint64_t transtab, uint32_t transcfg)
 /*
  * The format Linux's panfrost gives a Bifrost GPU: ordinary AArch64 stage-1 tables with 4 KB pages (AS_TRANSCFG mode
  * 6). They translate 35 bits of address (the G52's MMU_FEATURES were 0x2823; step 4 checks the G72 has at least as
- * many), which makes three levels: the top table is indexed by bits 34..30, then 29..21, then 20..12. A page's entry is
- * its address, the access flag, inner shareable, readable and writable (AP 01), memory attribute 0, and the low bits 11
- * ("page").
+ * many), which makes three levels: the top table (pt_top) is indexed by bits 34..30, then 29..21, then 20..12. A page's
+ * entry is its address, the access flag, inner shareable, readable and writable (AP 01), memory attribute 0, and the
+ * low bits 11 ("page").
+ *
+ * Where the GPU's walk starts. On the G52 the GPU itself had 35 bits of address, AS_TRANSCFG's INA_BITS [10:6] said 55 -
+ * 35 = 20, and the walk began at pt_top. A G72 is expected to have 48 (the G71's and G72's MMU_FEATURES read 0x2830
+ * elsewhere), and on it both of Linux's drivers walk four levels from level 0: Samsung's kbase always (its tables start
+ * at MIDGARD_MMU_TOPLEVEL 0, INA_BITS left 0), panfrost with INA_BITS = 55 - 48. Neither has the GPU start at level 1 on
+ * a GPU of 48 bits, so nothing says that a G72 honours INA_BITS = 20 that way. On a GPU of more than 39 bits, then, the
+ * tables get the level 0 that both drivers give it: one more page (pt_root), its entry 0 pointing at pt_top (every GPU
+ * address here is below 2^35, so its other 511 stay empty), AS_TRANSTAB at it, and INA_BITS = 55 - the GPU's bits, as
+ * panfrost writes. pt_transtab is what AS_TRANSTAB holds, either way.
  */
 #define PTE_TABLE           3ull
 #define PTE_PAGE            3ull
@@ -588,8 +607,11 @@ as0_update(uint64_t transtab, uint32_t transcfg)
 #define PTE_ADDRESS         0x0000fffffffff000ull
 #define GPU_VA_BITS         35u
 #define GPU_PA_BITS_NEEDED  36u         /* the S9's memory: 0x80000000-0xFFFFFFFF and 0x880000000-0x8FFFFFFFF */
-#define TRANSCFG_WALK_WB    (6u | (20u << 6) | (2u << 24) | (1u << 30))  /* 55 - 35 address bits; walks write-back */
-#define TRANSCFG_WALK_NC    (6u | (20u << 6) | (1u << 24))              /* ... walks not cached */
+#define TRANSCFG_AARCH64    6u                          /* [3:0]: AArch64 tables, 4 KB pages (2 is identity) */
+#define TRANSCFG_INA(bits)  ((55u - (bits)) << 6)       /* [10:6]: 55 - the bits of input address */
+#define TRANSCFG_WALK_WB    ((2u << 24) | (1u << 30))   /* the walk's reads write-back, read-allocate (kbase's) */
+#define TRANSCFG_WALK_NC    (1u << 24)                  /* ... not cached */
+#define PT_FOUR_LEVELS_BITS 40u                         /* from here on, a GPU's walk is given level 0 as well */
 /*
  * Boot-arg mali_fastmap (1 unless =0): the GPU walks its tables without caching them, so an entry the processor has
  * written (and cleaned to memory) is what the next walk reads -- and a buffer newly entered needs no command to the MMU
@@ -598,10 +620,24 @@ as0_update(uint64_t transtab, uint32_t transcfg)
  * a buffer out still updates.
  */
 static int mali_fastmap = 1;
-#define TRANSCFG_AARCH64_4K (mali_fastmap ? TRANSCFG_WALK_NC : TRANSCFG_WALK_WB)
 
-static uint64_t *pt_top;
-static uint64_t pt_top_phys;
+static uint64_t *pt_top, *pt_root;      /* pt_root: level 0, on a GPU of more than 39 bits (above) */
+static uint64_t pt_top_phys, pt_root_phys, pt_transtab;
+static uint32_t pt_gpu_bits = GPU_VA_BITS;  /* the GPU's own, from step 4 (48 at most is used) */
+
+static inline bool
+pt_four_levels(void)
+{
+	return pt_gpu_bits >= PT_FOUR_LEVELS_BITS;
+}
+
+/* AS_TRANSCFG for the tables: AArch64, 4 KB pages, the input bits the walk starts from, how it reads */
+static inline uint32_t
+pt_transcfg(void)
+{
+	return TRANSCFG_AARCH64 | TRANSCFG_INA(pt_four_levels() ? pt_gpu_bits : GPU_VA_BITS) |
+	       (mali_fastmap ? TRANSCFG_WALK_NC : TRANSCFG_WALK_WB);
+}
 static uint32_t pt_refused;             /* addresses not taken into, or not followed through, the tables */
 
 /*
@@ -683,6 +719,15 @@ map_page(uint64_t gpu, uint64_t phys)
 	if (pt_top == NULL && (pt_top = pt_page(&pt_top_phys)) == NULL) {
 		return false;
 	}
+	if (pt_four_levels() && pt_root == NULL) {
+		/* level 0 above it: entry 0 covers GPU addresses 0 to 2^39, and every one here is below 2^35 */
+		if ((pt_root = pt_page(&pt_root_phys)) == NULL) {
+			return false;
+		}
+		pt_root[0] = pt_top_phys | PTE_TABLE;
+		FlushPoC_DcacheRegion((vm_offset_t)pt_root, sizeof(pt_root[0]));
+	}
+	pt_transtab = pt_root != NULL ? pt_root_phys : pt_top_phys;
 	if ((middle = pt_below(&pt_top[(gpu >> 30) & 31])) == NULL || (bottom = pt_below(&middle[(gpu >> 21) & 511])) == NULL) {
 		return false;
 	}
@@ -1114,6 +1159,10 @@ step_gpu(void)
 		    GPU_PA_BITS_NEEDED);
 		return false;
 	}
+	pt_gpu_bits = va_bits > 48 ? 48 : va_bits;
+	say("mali: 4: the GPU's tables will be walked %s; AS_TRANSCFG %#x\n", pt_four_levels() ?
+	    "from level 0, four levels, as kbase and panfrost have a GPU of this many bits walk them" :
+	    "from level 1, three levels, as on the G52", pt_transcfg());
 	shader_mask = rd(mali, SHADER_PRESENT);
 	shaders_hi = rd(mali, SHADER_PRESENT_HI);
 	tiler = rd(mali, TILER_PRESENT);
@@ -1203,9 +1252,10 @@ step_job_tables(void)
 		say("mali: 8: no memory for page tables\n");
 		return false;
 	}
-	say("mali: 8: the page at GPU address %#llx in the GPU's tables (at %#llx), address space 0 on them; the same job "
-	    "again\n", FIRST_JOB_GPU, pt_top_phys);
-	as0_update(pt_top_phys, TRANSCFG_AARCH64_4K);
+	say("mali: 8: the page at GPU address %#llx in the GPU's tables (AS_TRANSTAB %#llx, %s levels, AS_TRANSCFG %#x), "
+	    "address space 0 on them; the same job again\n", FIRST_JOB_GPU, pt_transtab, pt_four_levels() ? "four" : "three",
+	    pt_transcfg());
+	as0_update(pt_transtab, pt_transcfg());
 	return run_write_job(job_page, FIRST_JOB_GPU, "second job, through the GPU's page tables");
 }
 
@@ -1493,7 +1543,7 @@ hakios_mali_unmap(uint64_t gpu, uint64_t size)
 	lck_mtx_unlock(&mali_lock);
 	lck_mtx_lock(&mali_job_lock);                   /* an entry taken out: the TLB may hold it */
 	lck_mtx_lock(&mali_lock);
-	as0_update(pt_top_phys, TRANSCFG_AARCH64_4K);
+	as0_update(pt_transtab, pt_transcfg());
 	lck_mtx_unlock(&mali_lock);
 	lck_mtx_unlock(&mali_job_lock);
 }
@@ -1512,7 +1562,7 @@ hakios_mali_mapped(void)
 	}
 	lck_mtx_lock(&mali_job_lock);
 	lck_mtx_lock(&mali_lock);
-	as0_update(pt_top_phys, TRANSCFG_AARCH64_4K);
+	as0_update(pt_transtab, pt_transcfg());
 	lck_mtx_unlock(&mali_lock);
 	lck_mtx_unlock(&mali_job_lock);
 }
@@ -1576,7 +1626,7 @@ hakios_mali_submit(uint64_t chain, bool fragment)
 		if (!gpu_cores_on(&which)) {
 			printf("mali: after the reset, %s did not power up again\n", which);
 		}
-		as0_update(pt_top_phys, TRANSCFG_AARCH64_4K);
+		as0_update(pt_transtab, pt_transcfg());
 		wr(mali, MMU_INT_CLEAR, 0xffffffffu);
 	}
 	wr(mali, JOB_INT_CLEAR, (1u << slot) | (1u << (slot + 16)));
@@ -1742,7 +1792,7 @@ mali_thread(__unused void *parameter, __unused wait_result_t result)
 		lck_mtx_lock(&mali_lock);
 		if (pt_top != NULL) {
 			unmap_pages(FIRST_JOB_GPU, PAGE_SIZE);  /* nothing of the GPU's to point at the page once it is freed */
-			as0_update(pt_top_phys, TRANSCFG_AARCH64_4K);
+			as0_update(pt_transtab, pt_transcfg());
 		}
 		lck_mtx_unlock(&mali_lock);
 		lck_mtx_unlock(&mali_job_lock);
@@ -1759,6 +1809,9 @@ mali_thread(__unused void *parameter, __unused wait_result_t result)
 			if (rail_set(b6out_found)) {
 				rail_changed = false;
 			}
+		} else if (rail_changed) {
+			/* (the boot's domain, on, and step 2 stopped at the clock: never a lower voltage under a running GPU) */
+			say("mali: the G3D domain is on: BUCK6 left at 950 mV under it\n");
 		}
 		say("mali: came up to step %u of %u: not there for programs\n", reached, STEPS);
 		return;
@@ -1785,7 +1838,7 @@ mali_thread(__unused void *parameter, __unused wait_result_t result)
 			    last_failure.chain, last_failure.raw, last_failure.status, last_failure.mmu, last_failure.fault,
 			    last_failure.fault_address);
 			printf("mali: the GPU's tables at %#llx (ours at %#llx); for the fault's address: %#llx, %#llx, %#llx\n",
-			    last_failure.transtab, pt_top_phys, last_failure.walk[0], last_failure.walk[1], last_failure.walk[2]);
+			    last_failure.transtab, pt_transtab, last_failure.walk[0], last_failure.walk[1], last_failure.walk[2]);
 			for (uint32_t i = 0; i < gMaliBuffers && i < 32; i++) {
 				printf("mali:   buffer %u at %#llx..%#llx (asked %#x, flags %#x)%s\n", i, gMaliMade[i].address,
 				    gMaliMade[i].address + gMaliMade[i].size, gMaliMade[i].asked, gMaliMade[i].flags,
