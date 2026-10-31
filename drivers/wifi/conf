@@ -21,5 +21,5 @@ driver WIFI_STA
 driver EXYNOS_PCIE
 	file    bsd/dev/hakios.exynos_pcie.c
 	help    the Galaxy S9's Wi-Fi, stage 1: the Exynos 9810's PCIe root complex of channel 0 (DesignWare and Samsung's
-	help    PHY), WLAN_REG_ON and PERST#, the link to the BCM4361 and its ID and BARs (wifi_pcie=N, 5 for all); no
+	help    PHY), WLAN_REG_ON and PERST (active low), the link to the BCM4361 and its ID and BARs (wifi_pcie=N, 5 for all); no
 	help    firmware, no radio driver yet (devices/starlte/WIFI.md)
