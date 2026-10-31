@@ -194,7 +194,7 @@ static uint32_t new_from;               /* the first of the steps that have not 
 static char last_write[96] = "nothing written";
 
 /* As in hakios.adreno.c: every line goes to the log the loader reads from another core as well. */
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -215,9 +215,7 @@ static void
 say_line(const char *line, bool aloud)
 {
 	if (leaving) {
-		for (const char *c = line; *c != 0; c++) {
-			loader_log_putc(*c);
-		}
+		loader_log_line(line);
 		return;
 	}
 	lck_mtx_lock(&say_lock);
@@ -230,9 +228,7 @@ say_line(const char *line, bool aloud)
 			}
 		}
 	} else {
-		for (const char *c = line; *c != 0; c++) {
-			loader_log_putc(*c);
-		}
+		loader_log_line(line);
 		printf("%s", line);
 	}
 	lck_mtx_unlock(&say_lock);

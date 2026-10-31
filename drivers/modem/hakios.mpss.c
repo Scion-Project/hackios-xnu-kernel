@@ -123,7 +123,7 @@ static bool leaving;                    /* on the way back to the loader after a
  * Every line goes to the log the loader reads from another core as well (as in hakios.wifi.c);
  * with modem=1 only the few that say how it went (tell()), the rest to the kernel's own log.
  */
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 
 static LCK_MTX_DECLARE(say_lock, &mpss_lock_group);
 static bool quiet;
@@ -132,16 +132,12 @@ static void
 say_line(const char *line, bool aloud)
 {
 	if (leaving) {
-		for (const char *c = line; *c != 0; c++) {
-			loader_log_putc(*c);
-		}
+		loader_log_line(line);
 		return;
 	}
 	lck_mtx_lock(&say_lock);
 	if (!quiet || aloud) {
-		for (const char *c = line; *c != 0; c++) {
-			loader_log_putc(*c);
-		}
+		loader_log_line(line);
 	}
 	printf("%s", line);
 	lck_mtx_unlock(&say_lock);

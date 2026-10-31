@@ -73,7 +73,7 @@
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern kern_return_t thread_terminate(thread_t thread);
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 
 static LCK_GRP_DECLARE(mic_lock_group, "hakios-mic");
 static LCK_MTX_DECLARE(mic_lock, &mic_lock_group);      /* what is asked for, and given back */
@@ -101,9 +101,7 @@ say(const char *format, ...)
 	va_start(list, format);
 	length = vsnprintf(line, sizeof(line), format, list);
 	va_end(list);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line(line);
 	printf("%s", line);
 	strlcpy(kept[kept_count++ % KEPT_LINES], line, sizeof(kept[0]));
 	return length;
@@ -119,18 +117,15 @@ hakios_mic_quiesce(void)
 	if (kept_count == 0) {
 		return;
 	}
-	for (const char *c = "mic: what happened in this run, again:\n"; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line("mic: what happened in this run, again:\n");
 	for (unsigned i = kept_count > KEPT_LINES ? kept_count - KEPT_LINES : 0; i < kept_count; i++) {
-		loader_log_putc('>');
-		loader_log_putc(' ');
-		for (const char *c = kept[i % KEPT_LINES]; *c != 0; c++) {
-			loader_log_putc(*c);
-		}
-		if (kept[i % KEPT_LINES][strlen(kept[i % KEPT_LINES]) - 1] != '\n') {
-			loader_log_putc('\n');
-		}
+		const char *kept_line = kept[i % KEPT_LINES];
+		char line[sizeof(kept[0]) + 3];
+
+		/* "> ", the line, and its end where the kept copy was cut short */
+		snprintf(line, sizeof(line), "> %s%s", kept_line,
+		    kept_line[strlen(kept_line) - 1] != '\n' ? "\n" : "");
+		loader_log_line(line);
 	}
 }
 

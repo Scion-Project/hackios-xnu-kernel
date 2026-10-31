@@ -52,7 +52,7 @@
 #include <sys/hakios.sta.h>
 #include <sys/systm.h>
 
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 extern const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
 extern kern_return_t thread_terminate(thread_t thread);
 extern void thread_set_thread_name(thread_t thread, const char *name);
@@ -79,9 +79,7 @@ static void
 say_line(const char *line)
 {
 	lck_mtx_lock(&say_lock);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line(line);
 	printf("%s", line);
 	lck_mtx_unlock(&say_lock);
 }

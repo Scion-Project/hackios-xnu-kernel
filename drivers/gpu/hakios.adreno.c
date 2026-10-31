@@ -118,7 +118,7 @@ static bool quiet;                      /* repeating accesses that have been ann
  * while it runs (loader_return.c; xl keeps it with XL_FOLLOW): every line said here goes there
  * as well, before the next register is touched.
  */
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -131,9 +131,7 @@ say(const char *format, ...)
 	va_start(list, format);
 	vsnprintf(line, sizeof(line), format, list);
 	va_end(list);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line(line);
 	return printf("%s", line);
 }
 #define printf say

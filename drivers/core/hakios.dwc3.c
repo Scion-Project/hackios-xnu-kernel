@@ -93,7 +93,6 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 extern uint64_t kvtophys(vm_offset_t va);
 extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);
-extern void loader_log_putc(char c);
 extern void loader_log_line(const char *line);
 extern uint32_t loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len));
 extern void loader_return(void);
@@ -283,9 +282,7 @@ say(const char *format, ...)
 	va_start(list, format);
 	vsnprintf(line, sizeof(line), format, list);
 	va_end(list);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line(line);
 	return printf("%s", line);
 }
 
