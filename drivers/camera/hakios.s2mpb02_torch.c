@@ -6,8 +6,11 @@
  *
  * The way Android lights it (Samsung's leds-s2mpb02.c, its GPIO way): set up once -- FLED_CTRL1 (0x12) bit 3 clear (not
  * the low-voltage mode), FLED_CUR1 (0x14) [3:0] the torch current (20 mA a step), FLED_TIME1 (0x15) [3:0] the torch
- * timer (0xF), FLED_CTRL1 [7:6] = 00 (the LED's on and off from the pins, not from here), FLED_CTRL2 (0x13) [3:0] = 4 --
- * and then: on, the flash pin low and the torch pin high; off, both low. The pins:
+ * timer (0xF), FLED_CTRL1 [7:6] = 00 (the LED's on and off from the pins, not from here), FLED_CTRL2 (0x13) = 0x38 --
+ * and then: on, the flash pin low and the torch pin high; off, both low. FLED_CTRL2 is the value Android leaves on
+ * this phone: s2mpb02_led_setup() sets its [3:0] to 4 and then, with CONFIG_LEDS_IRIS_IRLED_SUPPORT (on in the S9's
+ * defconfig: the iris scanner's IR LED is this chip's second channel), writes the whole register 0x38 ("remote mode
+ * off, power-LED mode on, GPIO polarity"); bit 3, set there and clear in 0x04, is not to be guessed at. The pins:
  *   torch1   gpg2 pin 4 of PERIC0's GPIO (CON 0x104300C0 [19:16], DAT 0x104300C4 bit 4)
  *   flash1   gpg3 pin 5 of PERIC1's GPIO (CON 0x108300C0 [23:20], DAT 0x108300C4 bit 5)
  * The pins are the SoC's, so a restart -- how every run of this port ends -- puts the LED out whatever happened.
@@ -68,6 +71,7 @@ say(const char *format, ...)
 #define FLED_CTRL2      0x13
 #define FLED_CUR1       0x14
 #define FLED_TIME1      0x15
+#define FLED_CTRL2_ANDROID 0x38         /* what Android leaves in FLED_CTRL2 on the S9 (the header) */
 #define TORCH_CODE_MAX  3               /* 60 mA: Android's flashlight, never more */
 #define HOT_C           45
 
@@ -84,7 +88,7 @@ static struct hakios_hsi2c bus = {
 	.usi_mode_pa = 0x1081103C,              /* its mode word */
 	.cmu_pa = 0x10800000, .cmu_size = 0x4000,       /* CMU_PERIC1 */
 	.gates = { 0x2048, 0x20AC, 0x2114, 0x2118 }, .ngates = 4,
-	.qch = 0x3050, .div = 0x1828, .mux = 0x1828,
+	.qch = 0x3050, .div = 0x1828, .mux = 0x0120,       /* DIV_CLK_PERIC1_USI10_USI; MUX_CLKCMU_PERIC1_IP_USER */
 	.pins_pa = 0x10830040,                  /* PERIC1's GPIO, bank gpp6: SCL pin 0, SDA pin 1 */
 	.pins_mask = 0xffu, .pins_want = 0x22u,
 	.ipclk_mhz = 200, .bus_hz = 400000,
@@ -199,7 +203,7 @@ static bool
 configure(void)
 {
 	return put_bits(FLED_CTRL1, 0x08, 0x00) && put_bits(FLED_CUR1, 0x0f, 1) && put_bits(FLED_TIME1, 0x0f, 0x0f) &&
-	       put_bits(FLED_CTRL1, 0xc0, 0x00) && put_bits(FLED_CTRL2, 0x0f, 0x04);
+	       put_bits(FLED_CTRL1, 0xc0, 0x00) && put_bits(FLED_CTRL2, 0xff, FLED_CTRL2_ANDROID);
 }
 
 /* ---- /dev/hakios-torch ---- */
