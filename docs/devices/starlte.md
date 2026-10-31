@@ -23,7 +23,7 @@
 | gpu | partly | Mali-G72 MP18 (mali=N, nine steps; HakiosMali for Mesa's panfrost): written, not yet run on the phone |
 | audio | partly | ABOX, its CPU off: RDMA0 -> SIFS0 -> UAIF1, I2S 48 kHz 2 x 16 bits, a tone, then iOS's sound and volume (abox=N, 8 steps); the two MAX98512s on I2C (max98512=N, 3 steps; AUDIO.md): written, not yet heard |
 | battery | partly | the MAX77705's gauge and charger, read only, and the thermistor (ADC), into iOS's battery (max77705=1): written, not yet seen |
-| wifi | partly | BCM4361 on PCIe: stage 1, the root complex of channel 0, WLAN_REG_ON, the link and the chip's ID and BARs (wifi_pcie=N, 5 steps; no firmware yet, WIFI.md): written, not yet seen |
+| wifi | partly | BCM4361 on PCIe: stage 1, the root complex of channel 0, WLAN_REG_ON, the link and the chip's ID and BARs (wifi_pcie=N, 6 steps); stage 2, Linux's brcmfmac up to the firmware's first command (brcmfmac=N, 4 steps; firmware from the phone; no station yet, WIFI.md): written, not yet seen |
 | cellular | no |  |
 | haptic | partly | the MAX77705's haptic block and a PWM of the SoC, for iOS (max77705_haptic=1): written, not yet felt |
 | torch | partly | the S2MPB02's flash block, lit by a pin (torch=1 a look, 3 for iOS): written, not yet seen |
