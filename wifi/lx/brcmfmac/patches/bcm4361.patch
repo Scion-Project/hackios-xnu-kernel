@@ -1,0 +1,99 @@
+The BCM4361 (the Galaxy S9's radio) in Linux 7.0.14's brcmfmac, and the two places where the kernel's
+brcmfmac=N stops the driver (wifi/lx/brcmfmac/lx_brcmf.c). ISC, as the files it changes.
+
+Facts from Samsung's bcmdhd for the S9 (GPL-2.0; read for these facts only, no code taken), kernel e5906667068e,
+drivers/net/wireless/broadcom/bcmdhd_101_12: include/bcmdevs_legacy.h (chip 0x4361, PCI device 0x441f),
+dhd_linux.c dhd_validate_chipid() (the chip may say 0x4347 instead), dhd_pcie.c dhdpcie_dongle_attach()'s RAM base
+(CR4_4347_RAM_BASE for both) and include/sbchipc.h (0x170000), dhd_custom_cis.c (revisions: B0 3, B1 4, B2 5;
+the S9's firmware is _b0 or _b2).
+
+--- a/brcmfmac/chip.c
+--- a/brcmfmac/chip.c
++++ b/brcmfmac/chip.c
+@@ -741,6 +741,8 @@
+ 	case BRCM_CC_43751_CHIP_ID:
+ 	case BRCM_CC_43752_CHIP_ID:
+ 	case BRCM_CC_4377_CHIP_ID:
++	case BRCM_CC_4347_CHIP_ID:	/* (HakiOS: the BCM4361, as Broadcom's own driver has it) */
++	case BRCM_CC_4361_CHIP_ID:
+ 		return 0x170000;
+ 	case BRCM_CC_4378_CHIP_ID:
+ 		return 0x352000;
+--- a/brcmfmac/pcie.c
++++ b/brcmfmac/pcie.c
+@@ -44,6 +44,9 @@
+ #include "common.h"
+ 
+ 
++/* (HakiOS) how far the driver goes, step by step (wifi/lx/brcmfmac/lx_brcmf.c): true if it may */
++bool lx_brcmf_may(unsigned step, const char *what);
++
+ enum brcmf_pcie_state {
+ 	BRCMFMAC_PCIE_STATE_DOWN,
+ 	BRCMFMAC_PCIE_STATE_UP
+@@ -59,6 +62,8 @@
+ BRCMF_FW_DEF(4358, "brcmfmac4358-pcie");
+ BRCMF_FW_DEF(4359, "brcmfmac4359-pcie");
+ BRCMF_FW_DEF(4359C, "brcmfmac4359c-pcie");
++BRCMF_FW_CLM_DEF(4361B0, "brcmfmac4361b0-pcie");	/* (HakiOS) */
++BRCMF_FW_CLM_DEF(4361B2, "brcmfmac4361b2-pcie");
+ BRCMF_FW_CLM_DEF(4364B2, "brcmfmac4364b2-pcie");
+ BRCMF_FW_CLM_DEF(4364B3, "brcmfmac4364b3-pcie");
+ BRCMF_FW_DEF(4365B, "brcmfmac4365b-pcie");
+@@ -98,6 +103,11 @@
+ 	BRCMF_FW_ENTRY(BRCM_CC_4358_CHIP_ID, 0xFFFFFFFF, 4358),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4359_CHIP_ID, 0x000001FF, 4359),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4359_CHIP_ID, 0xFFFFFE00, 4359C),
++	/* (HakiOS) the BCM4361, which says 0x4347 or 0x4361: revision 3 is B0, 4 B1 (taken as B0), 5 B2 */
++	BRCMF_FW_ENTRY(BRCM_CC_4347_CHIP_ID, 0x00000018, 4361B0),
++	BRCMF_FW_ENTRY(BRCM_CC_4347_CHIP_ID, 0xFFFFFFE0, 4361B2),
++	BRCMF_FW_ENTRY(BRCM_CC_4361_CHIP_ID, 0x00000018, 4361B0),
++	BRCMF_FW_ENTRY(BRCM_CC_4361_CHIP_ID, 0xFFFFFFE0, 4361B2),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4364_CHIP_ID, 0x0000000F, 4364B2), /* 3 */
+ 	BRCMF_FW_ENTRY(BRCM_CC_4364_CHIP_ID, 0xFFFFFFF0, 4364B3), /* 4 */
+ 	BRCMF_FW_ENTRY(BRCM_CC_4365_CHIP_ID, 0x0000000F, 4365B),
+@@ -2150,6 +2160,8 @@
+ 	/* check firmware loading result */
+ 	if (ret)
+ 		goto fail;
++	if (!lx_brcmf_may(3, "the firmware and NVRAM into the chip's RAM, its processor started, its rings"))
++		return;		/* (as it is: nothing more is done, the chip is not touched again) */
+ 
+ 	brcmf_pcie_attach(devinfo);
+ 
+@@ -2189,6 +2201,8 @@
+ 	if (ret)
+ 		goto fail;
+ 
++	if (!lx_brcmf_may(4, "the chip's interrupt, the firmware's interface: commands, events, cfg80211"))
++		return;		/* (as it is: the firmware runs, nothing is sent to it) */
+ 	brcmf_pcie_select_core(devinfo, BCMA_CORE_PCIE2);
+ 	ret = brcmf_pcie_request_irq(devinfo);
+ 	if (ret)
+@@ -2736,6 +2750,7 @@
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43602_2G_DEVICE_ID, WCC),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43602_5G_DEVICE_ID, WCC),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43602_RAW_DEVICE_ID, WCC),
++	BRCMF_PCIE_DEVICE(BRCM_PCIE_4361_DEVICE_ID, WCC),	/* (HakiOS) */
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4364_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4365_DEVICE_ID, BCA),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4365_2G_DEVICE_ID, BCA),
+--- a/include/brcm_hw_ids.h
++++ b/include/brcm_hw_ids.h
+@@ -52,6 +52,8 @@
+ #define BRCM_CC_43664_CHIP_ID		43664
+ #define BRCM_CC_43666_CHIP_ID		43666
+ #define BRCM_CC_4371_CHIP_ID		0x4371
++#define BRCM_CC_4347_CHIP_ID		0x4347	/* the BCM4361 says this or 0x4361 (HakiOS) */
++#define BRCM_CC_4361_CHIP_ID		0x4361
+ #define BRCM_CC_43751_CHIP_ID		43751
+ #define BRCM_CC_43752_CHIP_ID		43752
+ #define BRCM_CC_4377_CHIP_ID		0x4377
+@@ -87,6 +89,7 @@
+ #define BRCM_PCIE_43602_5G_DEVICE_ID	0x43bc
+ #define BRCM_PCIE_43602_RAW_DEVICE_ID	43602
+ #define BRCM_PCIE_4364_DEVICE_ID	0x4464
++#define BRCM_PCIE_4361_DEVICE_ID	0x441f	/* (HakiOS) */
+ #define BRCM_PCIE_4365_DEVICE_ID	0x43ca
+ #define BRCM_PCIE_4365_2G_DEVICE_ID	0x43cb
+ #define BRCM_PCIE_4365_5G_DEVICE_ID	0x43cc

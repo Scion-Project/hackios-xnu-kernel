@@ -21,6 +21,9 @@ In the repository:
 
 - the Wi-Fi driver: Linux's ath11k (BSD-3-Clause-Clear) and FreeBSD's LinuxKPI headers (BSD-2-Clause) are
   fetched by tools/mk-ath11k.sh at pinned releases and built on our layer wifi/lx (MIT); only the layer is here.
+- the Galaxy S9's Wi-Fi driver: Linux's brcmfmac and brcmutil (ISC), of the same pinned release, are fetched by
+  tools/mk-brcmfmac.sh, patched with wifi/lx/brcmfmac/patches/ (ISC, as the files it changes) and built on the same
+  layer (wifi/lx/brcmfmac, MIT); only the layer and the patch are here.
 
 - AdrenoMetal (UniXNU, "NativeMetal contributors"), userland/src/metalvk/NativeBridgeMetalFrontend.* and
   tools/metal/bridge/NativeMetal*: MIT, see LICENSE.AdrenoMetal beside them; the Metal-on-Vulkan plug-in (METAL=vk).

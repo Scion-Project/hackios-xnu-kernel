@@ -15,6 +15,7 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 | libzbitmap | `xnu/files/bsd/miscfs/apfs/libzbitmap/`, `xnu-deps/build/lzbitmap/` | Corellium LLC (port of eafer/libzbitmap) | GPL-2.0+ OR MIT | used under MIT |
 | SoftwareAES (UniXNU) | `xnu/files/iokit/Kernel/MiniIOAESAccelerator.cpp` | ArmVirtPlatform contributors, github.com/UniXNU/SoftwareAES at `4a45326da5c2` | BSD-2-Clause-Patent | the whole file is under it; its notice is in the file's head |
 | LinuxKPI / Linux headers | `wifi/lx/include/linux/`, `wifi/lx/include/net/` | Linux / FreeBSD LinuxKPI | GPL-2.0 (Linux) / BSD-2-Clause (FreeBSD) | small compatibility headers; see each file's notice |
+| brcmfmac patch | `wifi/lx/brcmfmac/patches/` | changes to Linux's brcmfmac (Broadcom) | ISC | the BCM4361's IDs, RAM base and firmware names, and two lines where the kernel's `brcmfmac=N` stops; its context lines are brcmfmac's |
 | Linux DRM shim | `tools/mesa/hakios-drm/`, `xf86drm.h` | Linux / X.Org | MIT | build-time shim for Mesa |
 | AIR / Metal-library tooling | `tools/mesa/air/` | HakiOS (Darwin on redwood contributors) | MIT | our own; LLVM bitcode layout is a published format |
 | gfxstream Vulkan guest patch | `tools/gfxstream/vk/mesa-gfxstream-scion.patch` | changes to Mesa's `src/gfxstream` (Google / AOSP) | MIT | applied by `tools/gfxstream/mk-vk.sh`; `tools/gfxstream/vk/scion/` is our own (MIT) |
@@ -36,6 +37,7 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 | MacOSX13.3 SDK (Kernel.framework DriverKit headers only) | `xnu-deps/setup.sh` | Apple via joseluisq/macosx-sdks | Apple's |
 | lzfse | `xnuloader/mkidentity.sh` (when no decoder present) | Apple, github.com/lzfse/lzfse | BSD-3-Clause |
 | ath11k (Wi-Fi driver) | `tools/mk-ath11k.sh` | Linux | BSD-3-Clause-Clear |
+| brcmfmac and brcmutil (the Galaxy S9's Wi-Fi driver) | `tools/mk-brcmfmac.sh` (the Linux release `tools/mk-ath11k.sh` pins) | Linux (Broadcom) | ISC |
 | Mesa (GL=1 images) | `tools/mk-mesa.sh` | Mesa project | MIT and others |
 | Mesa's gfxstream guest Vulkan driver (`src/gfxstream`, with the Vulkan runtime it builds on) | `tools/gfxstream/mk-vk.sh` | Google / AOSP via the Mesa project | MIT |
 | gfxstream (codegen descriptions; host renderer for the Scion app) | `tools/gfxstream/fetch.sh`, `mk-host-android.sh` | Google | Apache-2.0 (some MIT) |
@@ -50,6 +52,7 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 |---|---|---|---|---|
 | ShengUfs | `drivers/storage/hakios.ufshc.c/.h` | [UniXNU/ShengUfs](https://github.com/UniXNU/ShengUfs) at `f2d6a4a72f5e7be7d2c9b78eba16cf373868fa30`, Copyright (c) 2026, blu-sharky | BSD-2-Clause (files marked BSD-2-Clause-Patent) | compared with this driver item by item (`hakios.ufshc.h`); the behaviour adopted was written again here, no line of it is in this tree. Its notice, below, goes with it all the same |
 | Samsung's Exynos 9810 kernel (the Galaxy S9's) | the S9's UFS facts in `hakios.ufshc.c` | Samsung, Linux | GPL-2.0 | facts only (addresses, register offsets, descriptor layout, quirks), each named with its file there; no code |
+| Samsung's bcmdhd (the S9's Broadcom driver) | the BCM4361's chip and PCI IDs, RAM base and revisions in `wifi/lx/brcmfmac/patches/bcm4361.patch`; the firmware's file names in `devices/starlte/WIFI.md` | Samsung / Broadcom, the S9's kernel at `e5906667068e` (`drivers/net/wireless/broadcom/bcmdhd_101_12`) | GPL-2.0 | facts only, named in the patch's head; no code |
 | galaxy-s9plus-mainline-linux | the same, cross-checked | [SheroAbi/galaxy-s9plus-mainline-linux](https://github.com/SheroAbi/galaxy-s9plus-mainline-linux) at `bcee6014fc2e44a4c4f1c34bca0a880d4b543ec3` (`src/ufs/ufs-exynos9810.c`, `src/mainline-dts/exynos9810-star2lte.dts`) | GPL-2.0 | facts only (the protector's descriptor type and PRDT entry size, 4 KB entries, OCS 7 for device errors, LUN 0's layout), named in `hakios.ufshc.c`; no code |
 
 ShengUfs's notice:
