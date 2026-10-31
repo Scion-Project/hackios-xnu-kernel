@@ -22,6 +22,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | `hakios.vgpu.c` | the virtio GPU (AVF): the 2D display path, the cursor queue and the device's interrupts (patches 1202, 1300-1305) |
 | `hakios.vgpu3d.c` | SCGPU: /dev/vgpu3d, OpenGL ES through the Scion app's own gfxstream (its stream ring and doorbell) |
 | `hakios.vgpu3d_xnu.c` | SCGPU's glue to XNU: memory, mapping and waiting |
+| `hakios.backlight.cpp` | the panel's brightness, whichever phone: panel drivers register (hakios_panel_register), the display service's "brightness" reaches them; boot-arg backlight=1 publishes AppleARMBacklight and says what iOS sets on it, backlight=2 also takes its brightness (with XNU's `iokitcpp`) |
 | `hakios.input.c` | /dev/hakios-touch, the queue of touches and buttons, and where the phone's drivers are started from |
 | `hakios.net.c` | en0, an interface that is Ethernet to the rest of the kernel, for whatever link carries its frames |
 | `hakios.scfb_battery.c` | the phone's battery under AVF, as the Scion app writes it into the shared framebuffer (scfb.addr=) |

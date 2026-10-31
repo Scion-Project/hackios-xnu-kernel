@@ -24,6 +24,11 @@ standard bsd/dev/hakios.vgpu3d.c
 standard bsd/dev/hakios.vgpu3d_xnu.c
 	help    SCGPU's glue to XNU: memory, mapping and waiting
 
+standard iokit/Kernel/hakios.backlight.cpp iokitcpp
+	help    the panel's brightness, whichever phone: panel drivers register (hakios_panel_register), the display service's
+	help    "brightness" reaches them; boot-arg backlight=1 publishes AppleARMBacklight and says what iOS sets on it,
+	help    backlight=2 also takes its brightness
+
 driver S6E3HA8
 	file    bsd/dev/hakios.s6e3ha8.c
 	help    the Galaxy S9's panel brightness through DSIM0's command FIFO: the gamma worked out from the panel's MTP as

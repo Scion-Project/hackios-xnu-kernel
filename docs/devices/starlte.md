@@ -15,7 +15,7 @@
 
 | Part | State | |
 |---|---|---|
-| display | partly | the panel through UEFI's framebuffer (1440 x 2960 at 0xCC000000); brightness by AOR through DSIM0 (panel=1, kern.hakios.brightness): written, not yet seen |
+| display | partly | the panel through UEFI's framebuffer (1440 x 2960 at 0xCC000000); brightness by gamma and AOR through DSIM0 (panel=1, kern.hakios.brightness; iOS's slider through hakios.backlight.cpp, backlight=1 logs what iOS sets): written, not yet seen |
 | cpu | partly | the four A55s (cpus=4), all eight with bootcpu=4 cpus=8 (Carbon starts the M3s): written, not yet seen |
 | touch | partly | Samsung S6SY761 on USI03's HSI2C, ten fingers (s6sy761=1): written, not yet seen on the phone |
 | buttons | partly | power, volume, Bixby as home (exynos_keys=1): written, not yet seen on the phone |

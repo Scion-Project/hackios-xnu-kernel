@@ -44,7 +44,8 @@
  *                not say what they compensate. Left as the boot loader set them: if colours at the ends of the range
  *                look wrong on the phone, they are the next to look at.
  *
- * The fallback, with panel_gamma=0 or when the MTP cannot be read: the AOR alone, as before. B1 from 0x0B76 to 0x000C
+ * The fallback, with panel_gamma=0 or when the MTP cannot be read: the AOR alone, as before. B1 from the dimmest of
+ * Samsung's table for this panel (its level 0: 0x0B76 on S0, 0x0B72 on S1; 0x0B76 when the ID was not read) to 0x000C
  * by the square of the level, gamma as the boot loader left it, so the panel goes from the boot loader's level down
  * (to about 2 % of it).
  *
@@ -89,7 +90,9 @@
  * S9's kernel, github.com/ExyHyperBrick/android_kernel_samsung_exynos9810, lineage-24.0 (GPL: read for these facts, not
  * copied).
  *
- * kern.hakios.brightness: 0-255, written to set it (read: what it was set to, -1 never).
+ * kern.hakios.brightness: 0-255, written to set it (read: what it was set to, -1 never). What iOS sets reaches the
+ * panel through hakios.backlight.cpp, where this driver registers at start: the display service's "brightness", and with
+ * backlight=2 AppleARMBacklight's.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -105,6 +108,7 @@
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void delay(int usec);
 extern void loader_log_putc(char c);
+extern int hakios_panel_register(const char *name, int (*set)(int level));     /* hakios.backlight.cpp */
 
 SYSCTL_DECL(_kern_hakios);
 
@@ -479,7 +483,10 @@ panel_set(int level)
 	} else {
 		uint32_t lit = (uint32_t)(level * level);
 
-		aor = AOR_DIMMEST - (AOR_DIMMEST - AOR_BRIGHTEST) * lit / (255 * 255);
+		/* (the dimmest is Samsung's level 0 of this panel's table once its ID is known: 0x0B72 on S1) */
+		uint32_t dimmest = gamma_panel != NULL ? gamma_panel->aor[0] : AOR_DIMMEST;
+
+		aor = dimmest - (dimmest - AOR_BRIGHTEST) * lit / (255 * 255);
 	}
 	uint8_t aor_packet[] = { REG_AOR, (uint8_t)(aor >> 8), (uint8_t)aor };
 
@@ -517,12 +524,6 @@ panel_sysctl_brightness(__unused struct sysctl_oid *oidp, __unused void *arg1, _
 SYSCTL_PROC(_kern_hakios, OID_AUTO, brightness, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_ANYBODY, NULL, 0,
     panel_sysctl_brightness, "I", "the panel's brightness, 0-255 (-1: never set); writing sets it (Galaxy S9, panel=1)");
 
-/* for the framebuffer, when iOS asks (MiniIOMobileFramebuffer.cpp): 0-255; 0 if the panel took it */
-int
-hakios_panel_brightness(int level)
-{
-	return panel_set(level);
-}
 
 void
 hakios_s6e3ha8_init(void)
@@ -544,6 +545,7 @@ hakios_s6e3ha8_init(void)
 	if (mode >= 1) {
 		panel_gamma_init(mode);
 	}
+	(void)hakios_panel_register("s6e3ha8", panel_set);
 	if (PE_parse_boot_argn("panel_brightness", &level, sizeof(level))) {
 		int error = panel_set((int)level);
 

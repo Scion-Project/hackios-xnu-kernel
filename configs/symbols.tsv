@@ -61,6 +61,7 @@ APPLOG	arg	applog	CPU, memory and boot	k	(patch)
 APPLOG_NAME	arg	applog_name	CPU, memory and boot	k	(patch)	
 AUTOUNLOCK	arg	autounlock	User space	u	inject_sb.c	
 AVF_EXIT	arg	avf_exit	User space	k	1001-avf-psci-system-off.patch	
+BACKLIGHT	arg	backlight	GPU and display	k	hakios.backlight.cpp	
 BATTERY	arg	battery	Audio and battery	kl	hakios.adsp.c,hakios.battery.c,hakios.scfb_battery.c,loader.c	
 BATTMGR	arg	battmgr	Audio and battery	k	hakios.adsp.c	every property once, for the log (which number is which on this phone's firmware)
 BT	arg	bt	User space	k	hakios.bt.c	
