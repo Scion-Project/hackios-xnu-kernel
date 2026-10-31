@@ -8,14 +8,16 @@
  * -global virtio-mmio.force-legacy=false and boot-arg virtio_blk=1, which also turns that bus
  * on). boot-arg virtio_blk=0 leaves every disk alone.
  *
- * This exists for the APFS driver: the iOS system volume is several GB, too much to hold in
+ * This exists for the APFS driver: the Darwin system volume is several GB, too much to hold in
  * guest memory as a RAM disk. With rd=rvblk0 it is the root (IOFindBSDRoot), the host serving
  * it straight off its disk:
  *
  *   -drive file=rootfs.apfs,format=raw,if=none,id=d,readonly=on -device virtio-blk-pci,drive=d
  *
- * Read only unless boot-arg virtio_blk_rw=1 (and the device is not read-only itself): nothing
- * should write to an image by accident.
+ * Read only unless boot-arg virtio_blk_rw=1 or virtio_blk=2 (and the device is not read-only
+ * itself): nothing should write to an image by accident. virtio_blk=2 is for trying a file system
+ * that writes (HFS Plus, the data volume; qemu/run-hfs-test.sh) on a disk image before it is let
+ * near the phone's flash.
  *
  * Data moves straight between the device and the buffer's pages, a descriptor per physically
  * contiguous run; one request per disk is in flight at a time. Completion arrives by
@@ -435,6 +437,9 @@ hakios_virtio_blk_init(void)
 		return;
 	}
 	PE_parse_boot_argn("virtio_blk_rw", &rw, sizeof(rw));
+	if (enabled == 2) {
+		rw = 1;         /* virtio_blk=2: the disks write too */
+	}
 	hakios_pci_dump();
 	for (unsigned nth = 0; blk_count < BLK_MAX_DISKS && (dev = vio_find(VIRTIO_ID_BLOCK, nth)) != NULL; nth++) {
 		struct blk_disk *d = &blk_disks[blk_count];

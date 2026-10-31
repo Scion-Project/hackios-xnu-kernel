@@ -1,5 +1,5 @@
 /*
- * libhakios.dylib: code of ours inside stock iOS programs.
+ * libhakios.dylib: code of ours inside stock Darwin programs.
  *
  * launchd starts the jobs named in INJECT (see build.sh / mkjobs.py) with
  * DYLD_INSERT_LIBRARIES pointing here; dyld honours that because the kernel's AMFI stand-in
@@ -22,7 +22,7 @@
  *                everything that needs a container (the window server, for one) waits with
  *                them. Told that personas are not supported, they do not ask.
  *
- * Addresses of things inside the dyld shared cache are those of iOS 16.5 (20F66) for iPhone10,3;
+ * Addresses of things inside the dyld shared cache are those of Darwin userland 16.5 (20F66) for iPhone10,3;
  * every one is checked against what is expected to be there before it is touched.
  */
 #include <CoreFoundation/CoreFoundation.h>
@@ -707,7 +707,7 @@ brightness_fixes(void)
 
 /* ---- backboardd: the touch screen and the buttons ---------------------------------------------- */
 
-/* IOKit's HID event system, the part that has no public header on iOS (prototypes checked against 20F66) */
+/* IOKit's HID event system, the part that has no public header on Darwin (prototypes checked against 20F66) */
 typedef struct __IOHIDEvent *IOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
 typedef struct __IOHIDServiceClient *IOHIDServiceClientRef;
@@ -1309,6 +1309,13 @@ hakios_init(void)
 			setting[length] = 0;
 			if ((equals = strchr(setting, '=')) != NULL) {
 				*equals = 0;
+				/* a fraction is written 0p25: the boot-arguments lose what follows a "." of a number (0.008 came as 0) */
+				for (char *point = equals + 1; *point != 0; point++) {
+					if (*point == 'p' && point > equals + 1 && point[-1] >= '0' && point[-1] <= '9' && point[1] >= '0' && point[1] <= '9') {
+						*point = '.';
+						break;
+					}
+				}
 				setenv(setting, equals + 1, 1);
 				say("hakios: caenv: %s=%s for the window server\n", setting, equals + 1);
 			}

@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-index 1cb905a..3e34210 100644
+index 52689f6..14f1430 100644
 --- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 @@ -42,6 +42,110 @@ extern struct vc_info vinfo;            /* the boot framebuffer, as the text con
@@ -110,10 +110,10 @@ index 1cb905a..3e34210 100644
 +	__builtin_arm_dsb(0xb);
 +}
 +
- /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */
+ /* IOConnectCallMethod selectors of the framebuffer user client (Darwin userland 16.5) */
  enum {
  	kFBMethodGetLayerDefaultSurface = 3,
-@@ -443,6 +547,7 @@ IOMobileFramebuffer::start(IOService * provider)
+@@ -552,6 +656,7 @@ IOMobileFramebuffer::start(IOService * provider)
  		}
  	}
  	fColumn = IONewZero(uint32_t, fPanelWidth);
@@ -121,7 +121,7 @@ index 1cb905a..3e34210 100644
  	fColumnWeight = IONewZero(uint16_t, fPanelWidth);
  	fDiff = gDiff != 0;
  	fDiffLeft = fDiffTop = ~0u;
-@@ -994,6 +1099,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+@@ -1219,6 +1324,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
  		    swapWord(swap, SWAP_ID), fSwapsShown, swapWord(swap, SWAP_SURFACE(0)), swapWord(swap, SWAP_SURFACE(1)),
  		    swapWord(swap, SWAP_SURFACE(2)), swapWord(swap, SWAP_SURFACE(3)), set, swapWord(swap, SWAP_LAYERS_CLEARED));
  	}
@@ -129,7 +129,7 @@ index 1cb905a..3e34210 100644
  	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
  		uint32_t sid = swapWord(swap, SWAP_SURFACE(layer));
  		int32_t src[4], dst[4];
-@@ -1043,6 +1149,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+@@ -1268,6 +1374,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
  		}
  	}
  	drawn = mach_absolute_time();

@@ -59,7 +59,7 @@ index 0000000..061202f
 +
 +#endif /* _SYS_HAKIOS_VGPU_H_ */
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-index 3e34210..18a9e69 100644
+index 14f1430..b6ab814 100644
 --- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 @@ -75,6 +75,14 @@ struct scfb_header {
@@ -77,7 +77,7 @@ index 3e34210..18a9e69 100644
  static TUNABLE(uint64_t, gSCFBAddr, "scfb.addr", 0);
  static volatile struct scfb_header * gSCFB;
  extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-@@ -501,10 +509,17 @@ IOMobileFramebuffer::start(IOService * provider)
+@@ -607,10 +615,17 @@ IOMobileFramebuffer::start(IOService * provider)
  	if (!IOService::start(provider)) {
  		return false;
  	}
@@ -96,9 +96,9 @@ index 3e34210..18a9e69 100644
 +		gVGPU = true;
 +		IOLog("MiniIOMobileFramebuffer: the panel is virtio-gpu's scanout, %ux%u\n", vgpuWidth, vgpuHeight);
  	}
- 	fLock = IOLockAlloc();
- 	fSwapLock = IOLockAlloc();
-@@ -524,10 +539,10 @@ IOMobileFramebuffer::start(IOService * provider)
+ 	if (gMeasure && kernel_thread_start(measurePanel, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+@@ -633,10 +648,10 @@ IOMobileFramebuffer::start(IOService * provider)
  		thread_set_thread_name(thread, "frames to the panel: a helper");
  		thread_deallocate(thread);
  	}
@@ -113,7 +113,7 @@ index 3e34210..18a9e69 100644
  	fWidth = gFBWidth ? gFBWidth : fPanelWidth;
  	fHeight = gFBHeight ? gFBHeight : fPanelHeight;
  	if (gFBScale != 0 && gFBScale != kFBDefaultScale) {
-@@ -1150,6 +1165,9 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+@@ -1375,6 +1390,9 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
  	}
  	drawn = mach_absolute_time();
  	scfbPublish(fPanelWidth, fPanelHeight);

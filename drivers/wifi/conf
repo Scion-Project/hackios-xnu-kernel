@@ -14,13 +14,13 @@ driver WIFI
 	requires QMI WIFI_STA
 	help    Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k
 	help    (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211
-	help    surface iOS's wifid talks to. Needs fw-wifi/ from the phone
+	help    surface Darwin's wifid talks to. Needs fw-wifi/ from the phone
 
 driver WIFI_STA
 	file    bsd/dev/hakios.sta.c
 	file    bsd/dev/hakios.apple80211.c
 	file    iokit/Kernel/hakios.wlan.cpp iokitcpp
-	help    the station and the Apple80211 surface iOS's wifid talks to, over whichever link is below: the WCN6750's
+	help    the station and the Apple80211 surface Darwin's wifid talks to, over whichever link is below: the WCN6750's
 	help    (WIFI) or QEMU's virtio network device seen as Wi-Fi (VIRTIO_NET, virtio_net_wifi=1)
 
 driver EXYNOS_PCIE
@@ -35,6 +35,6 @@ driver BRCMFMAC
 	help    the Galaxy S9's Wi-Fi, stage 2: Linux's brcmfmac on the BCM4361 (its object, made by tools/mk-brcmfmac.sh,
 	help    is linked in with this unless WIFI's is), on the device stage 1 hands over (wifi_pcie=6, brcmfmac=N, 8 steps:
 	help    4 the firmware's interface, 5 INTx, 6 the phone's address, 7 the station, 8 joining), with WIFI_STA above it
-	help    (without it there is no station to give iOS),
+	help    (without it there is no station to give Darwin),
 	help    and the radio unpowered on the way back to the loader. Needs the firmware, NVRAM and CLM of the user's own phone
 	help    in fw-wifi/ (WIFI.md of starlte)

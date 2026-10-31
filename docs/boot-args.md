@@ -2,13 +2,13 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **423 arguments**: 365 read by the kernel, 16 by the loader, 52 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **432 arguments**: 371 read by the kernel, 16 by the loader, 55 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
 Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl kern.bootargs`).
 
-## GPU and display (84)
+## GPU and display (90)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -27,9 +27,12 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `backlight` | K | `hakios.backlight.cpp` | `CONFIG_BACKLIGHT` |  |
 | `display_probe` | K | `hakios.adreno.c` | `CONFIG_DISPLAY_PROBE` |  |
 | `fb_beat` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_BEAT` |  |
+| `fb_ca_hz` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_CA_HZ` |  |
 | `fb_diff` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_DIFF` |  |
 | `fb_filter` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_FILTER` |  |
 | `fb_hz` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_HZ` |  |
+| `fb_measure` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_MEASURE` |  |
+| `fb_pri` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_PRI` |  |
 | `fb_queue` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_QUEUE` |  |
 | `fb_threads` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_THREADS` |  |
 | `fbheight` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FBHEIGHT` |  |
@@ -48,12 +51,14 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `glpace` | U | `eagl.c` | `CONFIG_GLPACE` |  |
 | `glplain` | U | `eagl.c` | `CONFIG_GLPLAIN` |  |
 | `glprecision` | U | `eagl.c` | `CONFIG_GLPRECISION` |  |
+| `glprof` | U | `eagl.c` | `CONFIG_GLPROF` |  |
 | `glshaders` | U | `eagl.c` | `CONFIG_GLSHADERS` |  |
 | `glshow` | U | `eagl.c` | `CONFIG_GLSHOW` |  |
 | `glshow_part` | U | `eagl.c` | `CONFIG_GLSHOW_PART` |  |
 | `glshow_zoom` | U | `eagl.c` | `CONFIG_GLSHOW_ZOOM` |  |
 | `glskip` | U | `eagl.c` | `CONFIG_GLSKIP` |  |
 | `glslow` | U | `eagl.c` | `CONFIG_GLSLOW` |  |
+| `glstill` | U | `eagl.c` | `CONFIG_GLSTILL` |  |
 | `glsync` | U | `eagl.c` | `CONFIG_GLSYNC` |  |
 | `gltrace` | U | `eagl.c` | `CONFIG_GLTRACE` |  |
 | `gltrace_at` | U | `eagl.c` | `CONFIG_GLTRACE_AT` |  |
@@ -92,6 +97,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `rec_start` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_START` |  |
 | `rec_step` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_STEP` |  |
 | `surf_clear` | K | `MiniIOSurface.cpp` | `CONFIG_SURF_CLEAR` |  |
+| `surf_wrap` | K | `MiniIOSurface.cpp` | `CONFIG_SURF_WRAP` |  |
 | `surftrace` | K | `MiniIOSurface.cpp` | `CONFIG_SURFTRACE` |  |
 | `surftrace_of` | K | `MiniIOSurface.cpp` | `CONFIG_SURFTRACE_OF` |  |
 | `touch_lat` | KU | `MiniIOMobileFramebuffer.cpp`, `eagl.c`, `hakios.goodix.c`, `hakios.gpu.cpp`, `hakios.input.c`, `inject.c`, `inject_sb.c` | `CONFIG_TOUCH_LAT` |  |
@@ -277,13 +283,15 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_shutter` | K | `hakios.camera.c` | `CONFIG_CAM_SHUTTER` |  |
 | `cam_vblank` | K | `hakios.camera.c` | `CONFIG_CAM_VBLANK` |  |
 
-## Touch and buttons (13)
+## Touch and buttons (15)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `buttons` | K | `hakios.buttons.c` | `CONFIG_BUTTONS` |  |
 | `buttons_steps` | K | `hakios.buttons.c` | `CONFIG_BUTTONS_STEPS` |  |
 | `exynos_keys` | K | `hakios.exynos_keys.c` | `CONFIG_EXYNOS_KEYS` |  |
+| `press_power` | K | `hakios.buttons.c` | `CONFIG_PRESS_POWER` |  |
+| `press_power_ms` | K | `hakios.buttons.c` | `CONFIG_PRESS_POWER_MS` |  |
 | `s6sy761` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761` |  |
 | `s6sy761_ipclk` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_IPCLK` |  |
 | `s6sy761_ldo` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_LDO` |  |
@@ -463,7 +471,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (48)
+## User space (49)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -476,7 +484,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `bt_keep` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_KEEP` |  |
 | `bt_uart_mhz` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_UART_MHZ` |  |
 | `ca_vbl` | U | `inject.c` | `CONFIG_CA_VBL` |  |
-| `caenv` | U | `inject.c` | `CONFIG_CAENV` |  |
+| `caenv` | U | `inject.c`, `inject_sb.c` | `CONFIG_CAENV` |  |
 | `camtl` | U | `inject.c` | `CONFIG_CAMTL` |  |
 | `cc_fade` | U | `inject_sb.c` | `CONFIG_CC_FADE` |  |
 | `console_quiet` | K | `1003-avf-console-quiet.patch` | `CONFIG_CONSOLE_QUIET` |  |
@@ -508,6 +516,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `switcher_wallpaper` | U | `inject_sb.c` | `CONFIG_SWITCHER_WALLPAPER` |  |
 | `system_apfs` | U | `init.c` | `CONFIG_SYSTEM_APFS` |  |
 | `touch_fault` | U | `inject.c` | `CONFIG_TOUCH_FAULT` |  |
+| `var_hfs` | U | `init.c` | `CONFIG_VAR_HFS` |  |
 | `var_seed` | U | `init.c` | `CONFIG_VAR_SEED` |  |
 | `var_store` | U | `init.c` | `CONFIG_VAR_STORE` |  |
 | `vgpu_height` | K | `hakios.vgpu.c` | `CONFIG_VGPU_HEIGHT` |  |

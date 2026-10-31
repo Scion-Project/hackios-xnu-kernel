@@ -3,7 +3,7 @@
  *
  * Any transport of sys/hakios.virtio.h: "-device virtio-net-device" on QEMU virt's virtio-mmio
  * bus (-global virtio-mmio.force-legacy=false, boot-arg virtio_net=1, which turns that bus on;
- * qemu/run-ios.sh does both with QEMU_NET=1), or a virtio-pci network device (QEMU's
+ * qemu/run-darwin.sh does both with QEMU_NET=1), or a virtio-pci network device (QEMU's
  * virtio-net-pci, crosvm's), used unless boot-arg virtio_net=0.
  *
  * Nothing of what the device offers is taken (no checksums or segmentation left to it, no
