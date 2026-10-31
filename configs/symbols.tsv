@@ -286,6 +286,14 @@ SYSTRACE_NAME	arg	systrace_name	CPU, memory and boot	k	(patch)
 THERMAL_LOG	arg	thermal_log	Chip, thermal and PMIC	k	hakios.thermal.c	a summary line this often (0: only on a rise; 60)
 THERMAL_TM0	arg	thermal_tm0	Chip, thermal and PMIC	k	hakios.thermal.c	
 THERMAL_TM1	arg	thermal_tm1	Chip, thermal and PMIC	k	hakios.thermal.c	
+TMU	arg	tmu	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	the steps: 1 reads, 2 publishes, 3 acts (0, or none: nothing)
+TMU_BATT_STOP	arg	tmu_batt_stop	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	step 3's limit for the battery (0: not watched; 40 to 80, the BSP's temp_highlimit; 60)
+TMU_ENABLE	arg	tmu_enable	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	start a block the boot left stopped (CORE_EN only; never the hardware trip)
+TMU_LOG	arg	tmu_log	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	a summary this often (0: only on a rise; 60)
+TMU_OFF	arg	tmu_off	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	step 3 powers the phone off (PS_HOLD) when no charger is reported, instead of the loader's restart
+TMU_POLL	arg	tmu_poll	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	how often to read (200 to 60000; 1000, the BIG zone's polling-delay)
+TMU_STOP	arg	tmu_stop	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	step 3's limit for the SoC's zones (40 to 115; 110)
+TMU_UNGATE	arg	tmu_ungate	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	open the TMU's PCLK gate if the boot left it forced shut
 TORCH	arg	torch	Haptics and torch	kl	hakios.s2mpb02_torch.c,hakios.sccam_torch.c,hakios.torch.c,loader.c	a look, reading only: the bus as found, the chip's ID, the flash block's registers, the two pins
 TORCH_MAX_S	arg	torch_max_s	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.torch.c	
 TORCH_SECS	arg	torch_secs	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.torch.c	
