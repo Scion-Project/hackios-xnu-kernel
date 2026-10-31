@@ -58,6 +58,10 @@ extern void hakios_haptic_quiesce(void);
 extern void hakios_torch_quiesce(void);
 extern void hakios_camera_quiesce(void);
 extern void hakios_mic_quiesce(void);
+extern void hakios_max98512_quiesce(void);
+extern void hakios_exynos_abox_quiesce(void);
+extern void hakios_s2mpb02_torch_quiesce(void);
+extern void hakios_exynos_pcie_quiesce(void);
 extern void hakios_ufs_quiesce(void);
 extern void hakios_var_save_on_return(void);   /* drivers/storage/hakios.ufs.c: the data volume into the flash */
 void loader_checkpoint(uint64_t n);
@@ -381,6 +385,10 @@ loader_return(void)
 	hakios_torch_quiesce();        /* the flashlight off, if it was lit */
 	hakios_camera_quiesce();       /* the camera powered down, if it was powered up */
 	hakios_mic_quiesce();          /* (what the microphones' path did, said again: it happens in the log's middle) */
+	hakios_max98512_quiesce();     /* the S9's speaker amplifiers shut down, while UAIF1's clocks still run */
+	hakios_exynos_abox_quiesce();  /* then ABOX's RDMA0 and UAIF1: no more reading of memory the loader reuses */
+	hakios_s2mpb02_torch_quiesce(); /* the S9's flashlight off */
+	hakios_exynos_pcie_quiesce();  /* the S9's Wi-Fi chip held in reset, unpowered: no DMA into the loader's memory */
 	/*
 	 * A panic's text is first collected in the panic buffer and only later
 	 * flushed to the console; if the console itself is what failed, that

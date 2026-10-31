@@ -1321,6 +1321,31 @@ out:
 	thread_terminate(current_thread());
 }
 
+/*
+ * On the way back to the loader (loader_return(), a panic's way out too: one processor left, no lock taken, the feeder
+ * stopped wherever it was): RDMA0 off and UAIF1 off, if they run (the amplifiers have been shut down just before, by
+ * hakios_max98512_quiesce()). Left running, RDMA0 goes on reading the ring, memory the loader reuses for the log, and
+ * UAIF1 sends whatever is there to the speakers past the guard. The ring itself is not freed.
+ */
+void
+hakios_exynos_abox_quiesce(void)
+{
+	uint64_t took = 0;
+	bool stopped = true;
+
+	if (abox.va == 0 || (!rdma_on && !uaif_on)) {
+		return;
+	}
+	if (rdma_on) {
+		wr(&abox, R0(RDMA_CTRL0), rd(&abox, R0(RDMA_CTRL0)) & ~RDMA_ENABLE);
+		stopped = wait_bits(&abox, R0(RDMA_CTRL0), RDMA_ENABLE, 0, DMA_STOP_US, &took);
+	}
+	spin_us(FIFO_FLUSH_US);
+	wr(&abox, ABOX_UAIF_CTRL0(1), rd(&abox, ABOX_UAIF_CTRL0(1)) & ~UAIF_SPK_ENABLE);
+	say("abox: at the run's end: RDMA0 %s (%llu us), UAIF1's SPK_ENABLE off (CTRL0 %#x)\n", stopped ? "stopped" :
+	    "has NOT said it stopped", took, rd(&abox, ABOX_UAIF_CTRL0(1)));
+}
+
 void
 hakios_exynos_abox_init(void)
 {
