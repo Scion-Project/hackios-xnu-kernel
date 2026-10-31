@@ -20,7 +20,7 @@
 | touch | partly | Samsung S6SY761 on USI03's HSI2C, ten fingers (s6sy761=1): written, not yet seen on the phone |
 | buttons | partly | power, volume, Bixby as home (exynos_keys=1): written, not yet seen on the phone |
 | storage | partly | UFS read through the loader and Silicium's UEFI (ufs=2); or by the kernel's own UFS driver, read only, as UEFI left the controller (ufs_native=4 ufs_native_soc=exynos9810, ufs_native_step=1..5): written, not yet seen on the phone |
-| gpu | partly | Mali-G72 MP18 (mali=N, nine steps; HakiosMali for Mesa's panfrost): written, not yet run on the phone |
+| gpu | partly | Mali-G72 MP18 (mali=N, nine steps; HakiosMali for Mesa's panfrost: OpenGL ES, and Metal through it, GPU.md): written, not yet run on the phone |
 | audio | partly | ABOX, its CPU off: RDMA0 -> SIFS0 -> UAIF1, I2S 48 kHz 2 x 16 bits, a tone, then iOS's sound and volume (abox=N, 8 steps); the two MAX98512s on I2C (max98512=N, 3 steps; AUDIO.md): written, not yet heard |
 | battery | partly | the MAX77705's gauge and charger, read only, and the thermistor (ADC), into iOS's battery (max77705=1): written, not yet seen |
 | wifi | partly | BCM4361 on PCIe: stage 1, the root complex of channel 0, WLAN_REG_ON, the link and the chip's ID and BARs (wifi_pcie=N, 6 steps); stage 2, Linux's brcmfmac, INTx, the phone's address, the station and joining WPA2 (brcmfmac=N, 8 steps; firmware from the phone; WIFI.md): written, not yet seen |

@@ -18,8 +18,9 @@ server's compositor, CoreImage, the camera's viewfinder) running on the Adreno t
 **A second route, for a guest with no GPU of its own: Metal on Vulkan** (the last section, "Metal on Vulkan"). The Pixel's
 guest under AVF reaches its GPU only through gfxstream, which speaks OpenGL ES and Vulkan, not the Adreno's kernel
 interface, so A and C do not apply there. metal2vulkan's runtime gives the whole Metal API on any Vulkan 1.2 driver; with
-AdrenoMetal's frontend it is a second build of part B (`METAL=vk`), on gfxstream's guest Vulkan driver on the Pixel and on
-Mesa's panvk on the Galaxy S9 later. It runs on three Vulkan drivers of a Mac; on the guest it waits for that driver.
+AdrenoMetal's frontend it is a second build of part B (`METAL=vk`), on gfxstream's guest Vulkan driver on the Pixel. (Not on
+the Galaxy S9's Mali-G72: the pinned Mesa's panvk is Vulkan 1.0 there, below the runtime's floor; the S9 takes parts A to C
+through panfrost instead, at the end of this file.) It runs on three Vulkan drivers of a Mac; on the guest it waits for that driver.
 
 ## The order, and how each step is checked
 
@@ -472,3 +473,12 @@ None of it has run on iOS: there is no Vulkan driver in the guest yet.
 
 On the Galaxy S9 the same build would point at Mesa's panvk (`METAL_ICD`); the runtime's floor (Vulkan 1.2, timeline semaphores)
 is the question to ask of panvk on the Mali G72.
+
+**The answer, from the source (31 October 2026): not at the pin.** Mesa 25.0.7 builds panvk for v6 (`foreach arch : [6, 7,
+10]`) but refuses a v6 GPU unless `PAN_I_WANT_A_BROKEN_VULKAN_DRIVER` is set ("panvk is not well-tested on v6"), and then
+gives Vulkan 1.0 to everything below v10 (`panvk_physical_device.c`, `get_vk_version`). Mesa's main branch gives v6 and v7
+Vulkan 1.3 with timeline semaphores, behind the same variable. And panvk on iOS would ask of `tools/mesa/hakios-drm` what
+freedreno and panfrost never did: device enumeration (`drmGetDevices2`), `drmSyncobjSignal`, sync objects as file
+descriptors. So the S9's Metal takes the first route instead, parts A to C over Mesa's Gallium: `libhakiosair` opens
+HakiosMali through panfrost when there is no HakiosGPU, and the AIR frontend's NIR goes to panfrost's Bifrost compiler
+rather than ir3. `devices/starlte/GPU.md` in the S9's repository has the comparison and the runs (`RC_JOBS=rc.jobs.malimetal`).

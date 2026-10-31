@@ -43,8 +43,14 @@
 #include "util/blend.h"
 #include "target-helpers/inline_sw_helper.h"
 #include "null/null_sw_winsys.h"
+#if defined(GALLIUM_FREEDRENO) || defined(GALLIUM_PANFROST)
+#define RWA_GPU
 #ifdef GALLIUM_FREEDRENO
 #include "freedreno/drm/freedreno_drm_public.h"
+#endif
+#ifdef GALLIUM_PANFROST
+#include "panfrost/drm/panfrost_drm_public.h"
+#endif
 /* for rwa_texture_from_surface: a resource over memory somebody else allocated is a
  * winsys_handle, and the one modifier an IOSurface of this port's kernel can carry is
  * linear (MINISURF has no tiling and no compression at all). */
@@ -442,49 +448,83 @@ rwa_device_open(char *why, size_t why_size)
    bool software = debug_get_bool_option("RWA_SOFTWARE", false);
    device->software = software;
 
-#ifdef GALLIUM_FREEDRENO
+#ifdef RWA_GPU
    if (!software) {
-      int fd = drmOpenWithType("msm", NULL, DRM_NODE_RENDER);
-      if (fd < 0) {
-         /* The ordinary case on this port, and not an error anybody should be
-          * surprised by: without gpu=1 the kernel starts no HakiosGPU service, so
-          * there is no msm device for the shim to open (tools/mesa/hakios-drm).
-          */
-         say(why, why_size, "there is no GPU here: no msm device to open, which is what "
-                            "a kernel booted without gpu=1 looks like");
-         goto fail;
-      }
-
-      /* The driver option cache has to be real, not a zeroed struct: fd_screen_create
+      /* Which GPU: the kernel's service says, by the name of the Linux driver the shim
+       * (tools/mesa/hakios-drm) opens -- msm for HakiosGPU (the POCO's Adreno, freedreno)
+       * or panfrost for HakiosMali (the Galaxy S9's Mali-G72, panfrost). A phone has one;
+       * the first that opens is it. The same table as osmesa_create_gpu_screen()'s
+       * (tools/mesa/freedreno-darwin.patch, tools/mesa/panfrost-darwin.patch), which is the
+       * one CoreAnimation goes through.
+       *
+       * The driver option cache has to be real, not a zeroed struct: fd_screen_create
        * passes it straight to driParseConfigFiles, which dereferences it. A zeroed one
        * died at address 0x10 on the phone -- the first thing air_run ever did on a
-       * machine that has a GPU, and invisible on any machine that has not. This is the
-       * sequence osmesa_create_gpu_screen() uses in tools/mesa/freedreno-darwin.patch,
-       * which is the one CoreAnimation goes through on this device daily.
-       *
-       * static, because fd_screen keeps the cache it was given rather than copying it.
-       * One screen per process is what a Metal device amounts to; a second device would
-       * share these, which is why the parse below is done once.
+       * machine that has a GPU, and invisible on any machine that has not. static,
+       * because fd_screen keeps the cache it was given rather than copying it. One screen
+       * per process is what a Metal device amounts to; a second device would share these,
+       * which is why the parse below is done once.
        */
+#ifdef GALLIUM_FREEDRENO
       static const driOptionDescription freedreno_options[] = {
 #include "freedreno/driinfo_freedreno.h"
       };
+#endif
+#ifdef GALLIUM_PANFROST
+      static const driOptionDescription panfrost_options[] = {
+#include "panfrost/driinfo_panfrost.h"
+      };
+#endif
+      static const struct {
+         const char *name, *service, *started_by;
+         const driOptionDescription *options;
+         unsigned count;
+         struct pipe_screen *(*create)(int fd, struct renderonly *ro,
+                                       const struct pipe_screen_config *config);
+      } drivers[] = {
+#ifdef GALLIUM_FREEDRENO
+         { "msm", "HakiosGPU", "gpu=1", freedreno_options, ARRAY_SIZE(freedreno_options),
+           fd_drm_screen_create_renderonly },
+#endif
+#ifdef GALLIUM_PANFROST
+         { "panfrost", "HakiosMali", "mali=9", panfrost_options, ARRAY_SIZE(panfrost_options),
+           panfrost_drm_screen_create_renderonly },
+#endif
+      };
       static driOptionCache info, cache;
       static struct pipe_screen_config config;
-      static bool options_parsed = false;
+      static int parsed = -1;
+      int fd = -1;
+      unsigned i;
 
-      if (!options_parsed) {
-         driParseOptionInfo(&info, freedreno_options, ARRAY_SIZE(freedreno_options));
-         driParseConfigFiles(&cache, &info, 0, "msm", NULL, NULL, NULL, 0, NULL, 0);
+      for (i = 0; i < ARRAY_SIZE(drivers); i++) {
+         fd = drmOpenWithType(drivers[i].name, NULL, DRM_NODE_RENDER);
+         if (fd >= 0)
+            break;
+      }
+      if (fd < 0) {
+         /* The ordinary case on this port, and not an error anybody should be
+          * surprised by: without gpu=1 (the Adreno) or mali=9 (the Mali) the kernel
+          * starts no GPU service, so there is nothing for the shim to open.
+          */
+         say(why, why_size, "there is no GPU here: no HakiosGPU or HakiosMali to open, "
+                            "which is what a kernel booted without gpu=1 (the Adreno) or "
+                            "mali=9 (the Mali) looks like");
+         goto fail;
+      }
+      if (parsed != (int)i) {
+         driParseOptionInfo(&info, drivers[i].options, drivers[i].count);
+         driParseConfigFiles(&cache, &info, 0, drivers[i].name, NULL, NULL, NULL, 0, NULL, 0);
          config.options = &cache;
          config.options_info = &info;
-         options_parsed = true;
+         parsed = (int)i;
       }
 
-      device->screen = fd_drm_screen_create_renderonly(fd, NULL, &config);
+      device->screen = drivers[i].create(fd, NULL, &config);
       if (!device->screen) {
-         say(why, why_size, "the kernel's msm device opened but freedreno made no screen "
-                            "for it, so this GPU is present and unusable");
+         say(why, why_size, "the kernel's %s opened but %s made no screen for it, so "
+                            "this GPU is present and unusable", drivers[i].service,
+             drivers[i].name);
          goto fail;
       }
    }

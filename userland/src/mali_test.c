@@ -107,8 +107,11 @@ main(int argc, char **argv)
 	if (kr == KERN_SUCCESS) {
 		kr = IOConnectMapMemory64(gpu, bo.handle, mach_task_self(), &base, &mapped, kIOMapAnywhere);
 	}
-	printf("mali_test: 3: buffer %u, %u bytes, at %#llx in the GPU's space; mapped here at %#llx (%llu bytes): %#x\n",
-	    bo.handle, bo.size, (unsigned long long)bo.offset, (unsigned long long)base, (unsigned long long)mapped, kr);
+	printf("mali_test: 3: buffer %u, %u bytes, at %#llx in the GPU's space (%s); mapped here at %#llx (%llu bytes): %#x\n",
+	    bo.handle, bo.size, (unsigned long long)bo.offset,
+	    bo.offset >= 0x2000000ull && bo.offset + bo.size <= 0x100000000ull ? "between 32 MB and 4 GB, as panfrost expects" :
+	    "OUTSIDE 32 MB to 4 GB, where panfrost's blend shaders would break", (unsigned long long)base,
+	    (unsigned long long)mapped, kr);
 	if (kr != KERN_SUCCESS || mapped < 0x1000) {
 		return 1;
 	}

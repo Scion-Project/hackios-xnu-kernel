@@ -20,7 +20,8 @@
  *   1. the environment's HAKIOS_VK_ICD, if set;
  *   2. else the first line of HakiosMetal.icd beside the bundle (in the directory that holds HakiosMetal.bundle);
  *   3. else /redwood/lib/libhakios.vk.dylib: gfxstream's guest Vulkan driver for the Pixel (AVF), being built on gpu/gfxstream-vulkan.
- *      On the Galaxy S9 it would be Mesa's panvk, named by the file.
+ *      Not on the Galaxy S9: Mesa 25.0.7's panvk gives the Mali-G72 (v6) Vulkan 1.0 at most, below the floor named next
+ *      (docs/metal-plan.md); the S9's Metal goes through Mesa's panfrost instead (src/hakiosmetal_air.m).
  * It has to export vk_icdGetInstanceProcAddr or vkGetInstanceProcAddr, and give a Vulkan 1.2 device with timeline semaphores (the
  * runtime's floor). Without a driver at that path there is no device: init returns nil, which Metal takes as no plug-in, and every
  * program keeps the paths it has without Metal (the window server its OpenGL ES).

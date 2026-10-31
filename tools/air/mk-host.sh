@@ -15,9 +15,9 @@
 #   src/compiler/air/air2nir                           the frontend alone
 #   src/gallium/drivers/freedreno/ir3_compiler         AIR -> NIR -> Adreno
 #   src/gallium/drivers/freedreno/air_run              AIR -> NIR -> drawn, pixel read back
-#   src/gallium/drivers/freedreno/libhakiosair.so     the same path as the library the Metal
+#   src/gallium/targets/hakiosair/libhakiosair.so      the same path as the library the Metal
 #                                                      driver links (tools/mesa/air/air_metal.h)
-#   src/gallium/drivers/freedreno/air_metal_test       that library driven through its own header
+#   src/gallium/targets/hakiosair/air_metal_test       that library driven through its own header
 set -e
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 VERSION=25.0.7
@@ -105,10 +105,10 @@ export PATH=$B/venv/bin:$PATH
 ninja -C build src/compiler/air/air2nir \
 	src/gallium/drivers/freedreno/ir3_compiler \
 	src/gallium/drivers/freedreno/air_run \
-	src/gallium/drivers/freedreno/air_metal_test > ninja.log
+	src/gallium/targets/hakiosair/air_metal_test > ninja.log
 
 echo "mk-host.sh: $B/build/src/compiler/air/air2nir"
 echo "mk-host.sh: $B/build/src/gallium/drivers/freedreno/ir3_compiler"
 echo "mk-host.sh: $B/build/src/gallium/drivers/freedreno/air_run"
 # air_metal_test links the library, so asking for the test builds it too
-echo "mk-host.sh: $B/build/src/gallium/drivers/freedreno/air_metal_test"
+echo "mk-host.sh: $B/build/src/gallium/targets/hakiosair/air_metal_test"

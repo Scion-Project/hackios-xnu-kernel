@@ -30,6 +30,7 @@ gpu      bsd/dev/hakios.s6e3ha8_gamma.h
 gpu      iokit/Kernel/hakios.backlight.cpp
 gpu      iokit/Kernel/hakios.gpu.cpp
 gpu      bsd/dev/hakios.mali.c
+gpu      bsd/dev/hakios.mali_va.h
 gpu      iokit/Kernel/hakios.mali.cpp
 
 camera   bsd/dev/hakios.camera.c
