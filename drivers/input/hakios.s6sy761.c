@@ -43,8 +43,9 @@
  * power-on reset. The supplies are the S2MPS18's LDO35 (tsp_io, 1.8 V) and LDO43 (tsp_avdd, 3.0 V) on the S9 as on
  * the S9+ (the phone's device tree); their control registers 0x6C and 0x74, whose bits 7:6 are the on mode (0xC0).
  * Only those bits of only those two registers are written, through the always-on processor (drivers/core/
- * hakios.exynos_acpm.c), each read back: off for 2 s, on, then the chip is asked every 500 ms for 12 s; three cycles
- * at most. Boot-arg s6sy761_ldo=0: never.
+ * hakios.exynos_acpm.c), each read back, in Android's order (sec_ts.c sec_ts_power(): LDO43 off, 4 ms, LDO35 off;
+ * LDO35 on, 1 ms, LDO43 on): off for 2 s, on, then the chip is asked every 500 ms for 12 s; three cycles at most.
+ * Boot-arg s6sy761_ldo=0: never.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
@@ -260,6 +261,8 @@ irq_low(void)
 #define LDO43_CTRL              0x74    /* tsp_avdd */
 #define LDO_ON_MODE             0xc0
 #define LDO_OFF_MS              2000
+#define LDO_AVDD_TO_DVDD_MS     4       /* sec_ts_power(): off, AVDD, then 4 ms, then DVDD */
+#define LDO_DVDD_TO_AVDD_MS     1       /* ... on, DVDD, then 1 ms, then AVDD */
 
 static bool
 ldo_set(uint8_t reg, bool on)
@@ -294,10 +297,20 @@ power_cycle(void)
 	(void)hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, LDO35_CTRL, &l35);
 	(void)hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, LDO43_CTRL, &l43);
 	say("s6sy761: its supplies: LDO35 %02x, LDO43 %02x; off for %u ms, then on\n", l35, l43, LDO_OFF_MS);
-	ok = ldo_set(LDO35_CTRL, false) && ldo_set(LDO43_CTRL, false);
+	/*
+	 * Android's order (sec_ts_power): off, the analog supply first, 4 ms, then the I/O supply; on, the I/O supply
+	 * first, 1 ms, then the analog one. The I/O supply is switched off only once the analog one is: never the
+	 * chip's analog side powered with its I/O side not.
+	 */
+	ok = ldo_set(LDO43_CTRL, false);
+	if (ok) {
+		delay_for_interval(LDO_AVDD_TO_DVDD_MS, NSEC_PER_MSEC);
+		ok = ldo_set(LDO35_CTRL, false);
+	}
 	delay_for_interval(LDO_OFF_MS, NSEC_PER_MSEC);
 	/* on again whatever happened above: never leave the touch unpowered */
 	ok = ldo_set(LDO35_CTRL, true) && ok;
+	delay_for_interval(LDO_DVDD_TO_AVDD_MS, NSEC_PER_MSEC);
 	ok = ldo_set(LDO43_CTRL, true) && ok;
 	return ok;
 }
