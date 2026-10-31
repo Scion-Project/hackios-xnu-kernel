@@ -49,6 +49,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | Driver | Files | Requires | Boot arguments | frankel | qemu | redwood | starlte | |
 |---|---|---|---|---|---|---|---|
 | **`HAKIOS_BT`**<br>the Bluetooth half of the WCN6750: step one, a read-only look at its three pins (bt=1) | `hakios.bt.c` |  | `bt=`, `bt_again=` |  |  | built |  | |
+| **`HAKIOS_BCM4361_BT`**<br>the Galaxy S9's Bluetooth, stage 1: the BCM4361's Bluetooth half on UART_BT, powered by BT_EN on the PCAL6524 expander, HCI over H4, and Broadcom's patch from the phone (bt=N there, 6 steps: 1 a look, 2 the expander, 3 the UART in loopback, 4 the chip powered, 5 HCI_Reset and its version, 6 the patch and the version again). No host stack. Needs the phone's bcm4361B2 .hcd in fw-bt/ for step 6 (BLUETOOTH.md of starlte) | `hakios.bcm4361_bt.c` | `HAKIOS_EXYNOS_HSI2C` | `bt=`, `bt_expander_reset=`, `bt_hcd=`, `bt_keep=`, `bt_uart_mhz=` |  |  | built | built | |
 
 ## camera
 

@@ -668,6 +668,14 @@ if ls ../fw-wifi/brcmfmac4361*-pcie.bin >/dev/null 2>&1; then
 		install -m 0600 ../fw-wifi/network root/fw/network
 	fi
 fi
+# ... and the Galaxy S9's Bluetooth patch (drivers/bluetooth/hakios.bcm4361_bt.c, bt=6): the phone's own
+# /vendor/firmware/bcm4361B2_murata.hcd or _semco.hcd, whichever module the phone has, pulled into ../fw-bt as
+# bcm4361B2.hcd (devices/starlte/BLUETOOTH.md; 106 KB). The vendor's: never in the repository
+for f in ../fw-bt/*.hcd; do
+	[ -f "$f" ] || continue
+	mkdir -p root/fw
+	install -m 0644 "$f" root/fw/
+done
 # ... and the vibration motor's waveforms, the phone's /vendor/firmware/aw8697_haptic.bin, from ../fw-haptic
 # (drivers/haptic/hakios.haptic.c, haptic=3; 3.6 KB, the vendor's and not in the repository either)
 if [ -f ../fw-haptic/aw8697_haptic.bin ]; then

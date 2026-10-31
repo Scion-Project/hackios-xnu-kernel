@@ -47,6 +47,7 @@ void hakios_s6sy761_init(void);        /* boot-arg s6sy761=1: the Galaxy S9's to
 void hakios_s6e3ha8_init(void);        /* boot-arg panel=1: the Galaxy S9's panel brightness (kern.hakios.brightness) */
 void hakios_s2mpb02_torch_init(void);  /* boot-arg torch=N on the Galaxy S9: its flashlight (/dev/hakios-torch) */
 void hakios_exynos_pcie_init(void);    /* boot-arg wifi_pcie=N on the Galaxy S9: PCIe to the BCM4361, stage 1 */
+void hakios_bcm4361_bt_init(void);     /* boot-arg bt=N on the Galaxy S9: the BCM4361's Bluetooth on UART_BT, stage 1 */
 void hakios_s2mpb02_torch_quiesce(void); /* loader_return(): the S9's flashlight off, if it is lit */
 void hakios_exynos_pcie_quiesce(void); /* loader_return(): the S9's Wi-Fi chip in reset and unpowered, if it was powered */
 int hakios_panel_brightness(int level);        /* 0-255; 0 where a panel driver is built in, started and took it */

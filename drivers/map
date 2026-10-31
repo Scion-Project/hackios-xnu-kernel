@@ -84,6 +84,8 @@ power   bsd/dev/hakios.thermal.c
 power   bsd/dev/hakios.pmic.c
 power   bsd/dev/hakios.battguard.c
 bluetooth bsd/dev/hakios.bt.c
+bluetooth bsd/dev/hakios.bcm4361_bt.c
+bluetooth bsd/dev/hakios.bcm_hci.h
 
 # The AVF guest's (Scion: avf/README.md): the PCI bus and the virtio transport every virtio driver goes through, the
 # console, the virtio GPU and its 3D path (SCGPU), and the Scion app's sound, flashlight and battery
