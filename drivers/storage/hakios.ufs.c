@@ -39,7 +39,10 @@
  * signature, revision, size and CRC, the entries' CRC, the usable range, every partition inside
  * it, none overlapping another, no name twice) and makes the same /dev/ufs_NAME and /dev/rufs_NAME
  * of every partition. The table is kept in a struct loader_block of this kernel's own, so that
- * everything below reads it as it reads the loader's. ufs_native=5 only looks (hakios.ufshc.c).
+ * everything below reads it as it reads the loader's. ufs_native=5 only looks (hakios.ufshc.c);
+ * ufs_native_step=1..4 stops the driver at a step of its bring-up (look, the link, NOP OUT, READ
+ * CAPACITY) with nothing read here, 5 (QEMU's and the POCO's default; the S9's is 1) goes on to
+ * LBA 0 and the GPTs.
  *
  * Writes in own mode go to one partition only, the one ufs_native_write=NAME names, through its
  * character device /dev/rufs_NAME, in whole blocks, and only if NAME is not one that must never be
@@ -1965,7 +1968,9 @@ ufs_own_init(uint32_t mode)
 	uint32_t test = 0, made, units = 0;
 
 	if (!ufshc_own_probe()) {
-		if (mode == 4) {
+		if (ufshc_own_stopped()) {
+			printf("ufs: own: stopped at the step ufs_native_step= asked for: no storage from it in this run\n");
+		} else if (mode == 4) {
 			printf("ufs: own: this kernel's own UFS driver is not used: no storage\n");
 		}
 		return;

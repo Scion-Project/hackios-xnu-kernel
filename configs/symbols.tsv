@@ -314,6 +314,7 @@ UFS_NATIVE_LEAVE	arg	ufs_native_leave	Storage and APFS	k	hakios.ufshc.c
 UFS_NATIVE_SLOTS	arg	ufs_native_slots	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_SOC	arg	ufs_native_soc	Storage and APFS	k	hakios.ufshc.c	the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810
 UFS_NATIVE_SPIN	arg	ufs_native_spin	Storage and APFS	k	hakios.ufshc.c	
+UFS_NATIVE_STEP	arg	ufs_native_step	Storage and APFS	k	hakios.ufshc.c	own mode goes as far as step N: 1 look, 2 the link, 3 NOP OUT, 4 READ CAPACITY, 5 all (the GPTs)
 UFS_NATIVE_TEST	arg	ufs_native_test	Storage and APFS	k	hakios.ufs.c	own mode's test at start: the refusals, and writes put back (2: one block left written)
 UFS_NATIVE_WRITE	arg	ufs_native_write	Storage and APFS	k	hakios.ufs.c	own mode: the one partition that takes writes, through /dev/rufs_NAME (never EFS, BOOT, PARAM ...)
 UFS_PROBE	arg	ufs_probe	Loader	l	loader.c	
