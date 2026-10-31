@@ -79,6 +79,7 @@
 #include <sys/systm.h>
 
 #include "hakios.exynos_tmu.h"
+#include "hakios.thermal_provider.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_line(const char *line);
@@ -147,20 +148,14 @@ SYSCTL_INT(_kern_hakios_temp, OID_AUTO, reads, CTLFLAG_RD | CTLFLAG_LOCKED, &tem
 SYSCTL_INT(_kern_hakios_temp, OID_AUTO, battery_c, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_battery_c, 0,
     "the battery's temperature as the battery driver says it (-273: not known)");
 
-#ifndef HAKIOS_THERMAL
-/* the POCO's names (drivers/power/hakios.thermal.c), for whatever reads them there; that driver is never in this kernel */
-SYSCTL_INT(_kern_hakios, OID_AUTO, thermal_max_mc, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_max_mc, 0,
-    "the hottest temperature sensor of the SoC, in millidegrees (-273000: none read)");
-SYSCTL_STRING(_kern_hakios, OID_AUTO, thermal_hottest, CTLFLAG_RD | CTLFLAG_LOCKED, temp_hottest, 0, "the name of that sensor");
-SYSCTL_STRING(_kern_hakios, OID_AUTO, thermal_sensors, CTLFLAG_RD | CTLFLAG_LOCKED, temp_sensors, 0, "every sensor and its temperature");
-SYSCTL_INT(_kern_hakios, OID_AUTO, thermal_reads, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_reads, 0, "how many times the sensors were read");
-
-int
-hakios_thermal_max_mc(void)
-{
-	return temp_max_mc;
-}
-#endif
+/* the POCO's names, kern.hakios.thermal_* and hakios_thermal_max_mc() (hakios.thermal_provider.c), read these at step 2 */
+static const struct hakios_thermal_provider provider = {
+	.name = "exynos_tmu",
+	.max_mc = &temp_max_mc,
+	.hottest = temp_hottest,
+	.sensors = temp_sensors,
+	.reads = &temp_reads,
+};
 
 static inline uint32_t
 rd(vm_offset_t base, uint32_t off)
@@ -497,6 +492,10 @@ exynos_tmu_init(void)
 	}
 	if (steps >= 2) {
 		say("tmu: 2: publishing kern.hakios.temp.* and kern.hakios.thermal_*\n");
+		if (hakios_thermal_register(&provider) != 0) {
+			say("tmu: 2: kern.hakios.thermal_* are %s's already (both drivers started); kern.hakios.temp.* only\n",
+			    hakios_thermal_provider_name());
+		}
 	}
 	call = thread_call_allocate(tick, NULL);
 	tick(NULL, NULL);

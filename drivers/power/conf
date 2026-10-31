@@ -12,6 +12,10 @@ driver CPUFREQ
 	file    bsd/dev/hakios.cpufreq.c
 	help    the clock of the cores the kernel runs on (cpufreq=1), and the memory bus's votes (ddr=)
 
+standard bsd/dev/hakios.thermal_provider.c
+	help    the SoC's temperature, whichever phone: the driver that reads the sensors registers (hakios_thermal_register),
+	help    and kern.hakios.thermal_* and hakios_thermal_max_mc() read it; THERMAL and EXYNOS_TMU both register
+
 driver THERMAL
 	file    bsd/dev/hakios.thermal.c
 	help    the SoC's temperature sensors (thermal=1): kern.hakios.thermal_*, and the run handed back to the
