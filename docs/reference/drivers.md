@@ -25,6 +25,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | `hakios.backlight.cpp` | the panel's brightness, whichever phone: panel drivers register (hakios_panel_register), the display service's "brightness" reaches them; boot-arg backlight=1 publishes AppleARMBacklight and says what iOS sets on it, backlight=2 also takes its brightness (with XNU's `iokitcpp`) |
 | `hakios.input.c` | /dev/hakios-touch, the queue of touches and buttons, and where the phone's drivers are started from |
 | `hakios.net.c` | en0, an interface that is Ethernet to the rest of the kernel, for whatever link carries its frames |
+| `hakios.thermal_provider.c` | the SoC's temperature, whichever phone: the driver that reads the sensors registers (hakios_thermal_register), and kern.hakios.thermal_* and hakios_thermal_max_mc() read it; THERMAL and EXYNOS_TMU both register |
 | `hakios.scfb_battery.c` | the phone's battery under AVF, as the Scion app writes it into the shared framebuffer (scfb.addr=) |
 | `hakios.image.c` | a file of one of the RAM disks by path, for the drivers that load firmware before there is a root |
 | `hakios.sparse.c` | /dev/rsp0, a block device over an image that holds only some of its blocks (apfs_sparse=) |

@@ -57,6 +57,8 @@
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 
+#include "hakios.thermal_provider.h"
+
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_putc(char c);
 extern void loader_return(void);
@@ -138,24 +140,19 @@ static uint64_t last_log, reads;
 static int strikes, last_step;
 static bool stopping;
 
-static int thermal_max_mc = -273000;
+/* kern.hakios.thermal_* and hakios_thermal_max_mc() (hakios.thermal_provider.c) read these once registered */
+static int thermal_max_mc = HAKIOS_THERMAL_NOT_READ_MC;
 static char thermal_hottest[16] = "";
 static char thermal_list[NSENSORS * 16 + 8];
 static int thermal_reads_value;
 
-SYSCTL_INT(_kern_hakios, OID_AUTO, thermal_max_mc, CTLFLAG_RD | CTLFLAG_LOCKED, &thermal_max_mc, 0,
-    "the hottest valid temperature sensor of the SoC, in millidegrees (-273000: none read)");
-SYSCTL_STRING(_kern_hakios, OID_AUTO, thermal_hottest, CTLFLAG_RD | CTLFLAG_LOCKED, thermal_hottest, 0, "the name of that sensor");
-SYSCTL_STRING(_kern_hakios, OID_AUTO, thermal_sensors, CTLFLAG_RD | CTLFLAG_LOCKED, thermal_list, 0,
-    "every sensor and its temperature in degrees: \"cpu-0-0=41.2 gpuss-0=38.0 ...\"");
-SYSCTL_INT(_kern_hakios, OID_AUTO, thermal_reads, CTLFLAG_RD | CTLFLAG_LOCKED, &thermal_reads_value, 0, "how many times the sensors were read");
-
-/* For other drivers (a GPU or modem that wants to back off): the hottest temperature, in millidegrees; -273000: not read. */
-int
-hakios_thermal_max_mc(void)
-{
-	return thermal_max_mc;
-}
+static const struct hakios_thermal_provider provider = {
+	.name = "thermal",
+	.max_mc = &thermal_max_mc,
+	.hottest = thermal_hottest,
+	.sensors = thermal_list,
+	.reads = &thermal_reads_value,
+};
 
 static thread_call_t call;
 
@@ -277,6 +274,7 @@ thermal_init(void)
 	}
 	say("thermal: %u sensors in two blocks (%#x, %#x), every %u ms; stop at %u C%s\n", NSENSORS, tm_pa[0], tm_pa[1], poll_ms,
 	    stop_celsius, stop_celsius ? "" : " (off)");
+	(void)hakios_thermal_register(&provider);      /* the only one on this phone: nothing to say */
 	call = thread_call_allocate(tick, NULL);
 	tick(NULL, NULL);
 }
