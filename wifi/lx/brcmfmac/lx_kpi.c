@@ -363,24 +363,7 @@ linuxkpi_request_firmware_nowait(struct module *module, bool uevent, const char 
 	return (0);
 }
 
-/* ---- cfg80211's wiphy and the network device, as memory: what registers them is not built yet ----- */
-
-struct wiphy *
-linuxkpi_wiphy_new(const struct cfg80211_ops *ops, size_t priv_length)
-{
-	struct wiphy *wiphy = kzalloc(sizeof(*wiphy) + priv_length, GFP_KERNEL);
-
-	if (wiphy != NULL) {
-		mutex_init(&wiphy->mtx);
-	}
-	return (wiphy);
-}
-
-void
-linuxkpi_wiphy_free(struct wiphy *wiphy)
-{
-	kfree(wiphy);
-}
+/* ---- the network device, as memory (lx_cfg.c registers it; the wiphy is lx_cfg.c's too) ---------------------- */
 
 struct net_device *
 linuxkpi_alloc_netdev(size_t priv_length, const char *name, uint32_t flags, void (*setup)(struct net_device *))
@@ -459,24 +442,7 @@ timer_shutdown_sync(struct timer_list *timer)
 	return (timer_delete_sync(timer));
 }
 
-/* ---- cfg80211, as far as brcmfmac's cfg80211.c reaches before anything above takes it ------------------ */
-
-/*
- * The wiphy registered: nothing takes it yet (lx_80211.c is the POCO's, for mac80211; the S9's station is a later
- * step of stage 2). What the firmware says it can do is put in the log.
- */
-int
-linuxkpi_80211_wiphy_register(struct wiphy *wiphy)
-{
-	for (int b = 0; b < NUM_NL80211_BANDS; b++) {
-		if (wiphy->bands[b] != NULL) {
-			lx_tell("lx: cfg80211: band %d: %d channels, %d rates\n", b, wiphy->bands[b]->n_channels,
-			    wiphy->bands[b]->n_bitrates);
-		}
-	}
-	lx_tell("lx: cfg80211: the wiphy is registered; no station takes it yet\n");
-	return (0);
-}
+/* ---- cfg80211's channel arithmetic (the rest of cfg80211 is lx_cfg.c) ----------------------------------------- */
 
 /* IEEE 802.11-2020, 27.3.23.2 and Annex E: channel numbers to centre frequencies, MHz */
 uint32_t

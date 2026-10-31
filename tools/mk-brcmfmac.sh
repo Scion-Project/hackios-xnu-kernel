@@ -9,9 +9,9 @@
 #   FreeBSD's LinuxKPI    its headers, as mk-ath11k.sh lays them out and patches them;
 #   wifi/lx               ours: src/lx_base.c (locks, sleeping, work, memory, firmware) and
 #                         brcmfmac/*.c, what this driver needs besides: a struct pci_dev on the
-#                         kernel's PCIe root complex (lx_os_pci_*() of sys/hakios.lx.h), the bit of
-#                         cfg80211 the files built so far ask for, and lx_start(); CONFIG_DMI makes
-#                         brcmf_dmi_probe() lx_board.c's (the phone's settings).
+#                         kernel's PCIe root complex (lx_os_pci_*() of sys/hakios.lx.h), cfg80211's
+#                         callbacks and the station above them (lx_cfg.c, with src/lx_wpa.c), and
+#                         lx_start(); CONFIG_DMI makes brcmf_dmi_probe() lx_cfg.c's (the phone's settings).
 #
 # Not all of the driver is built yet: DRIVER below lists the files that are. What they call in
 # the files that are not becomes a function that says its name in the log and answers 0
@@ -108,7 +108,7 @@ DRIVER="brcmfmac/pcie brcmfmac/chip brcmfmac/firmware brcmfmac/common brcmfmac/c
 	brcmfmac/commonring brcmfmac/flowring brcmfmac/msgbuf brcmfmac/fwil brcmfmac/fweh brcmfmac/feature
 	brcmfmac/fwvid brcmfmac/xtlv brcmfmac/wcc/core brcmfmac/cyw/core brcmfmac/bca/core brcmfmac/cfg80211
 	brcmfmac/p2p brcmfmac/btcoex brcmfmac/vendor brcmfmac/pno brcmutil/utils brcmutil/d11"
-OURS=$W/src/lx_base.c
+OURS="$W/src/lx_base.c $W/src/lx_wpa.c"	# (lx_wpa.c: the four-way handshake, the POCO's, for lx_cfg.c's station)
 for f in "$W"/brcmfmac/*.c; do [ ! -f "$f" ] || OURS="$OURS $f"; done
 CC="clang -target arm64-apple-ios16.5"
 LD=$ROOT/xnu-deps/host/bin/ld64
