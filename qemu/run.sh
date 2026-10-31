@@ -4,7 +4,7 @@
 # env: QEMU_TB_MB           megabytes for QEMU's cache of translated code (default 384; QEMU's own
 #                           default of 1 GB mostly costs host memory)
 #      QEMU_SMP             processor cores of the machine (default 1); the kernel uses as many of them as
-#                           its boot-arg cpus=N says (CMDLINE="cpus=4" for run-ios.sh), one without it
+#                           its boot-arg cpus=N says (CMDLINE="cpus=4" for run-darwin.sh), one without it
 #      QEMU_GIC=2           a GICv2 (GIC-400, as on the Exynos 9810) instead of a GICv3; at most 8 cores
 #      QEMU_ESP=1           no loader device: the payload is the file \EFI\hakios\payload.bin on the ESP, which the loader
 #                           reads itself (UEFI-native boot; what a boot menu or a USB stick does)

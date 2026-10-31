@@ -1,5 +1,5 @@
 # A whitelist: the working tree also holds gigabytes of downloads, build output, logs, third-party
-# clones and files of iOS, none of which belongs in the repository. Nothing is tracked unless it
+# clones and files of Darwin, none of which belongs in the repository. Nothing is tracked unless it
 # is named here.
 /*
 !/.gitignore
@@ -7,6 +7,7 @@
 !/VERSION
 !/README.md
 !/CONTRIBUTING.md
+!/CHANGELOG.md
 !/ci/
 !/configs/
 !/README.uk.md
@@ -73,6 +74,10 @@ __pycache__/
 !/xnu-deps/setup.sh
 !/xnu-deps/gen-iig-stubs.py
 !/xnu-deps/hostinc/
+# ... but not Apple's Mach-O headers in it: setup.sh copies them from the kernel tree
+/xnu-deps/hostinc/mach-o/loader.h
+/xnu-deps/hostinc/mach-o/nlist.h
+/xnu-deps/hostinc/mach-o/fat.h
 !/xnu-deps/iig-impl/
 !/xnu-deps/host/
 /xnu-deps/host/*

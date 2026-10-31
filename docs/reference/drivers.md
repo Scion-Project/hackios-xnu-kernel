@@ -9,7 +9,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 
 | File | What |
 |---|---|
-| `hakios.audio.c` | /dev/hakios-audio, the sound iOS plays, to whatever plays it; and where the camera, flashlight, motor and speaker drivers are started from |
+| `hakios.audio.c` | /dev/hakios-audio, the sound Darwin plays, to whatever plays it; and where the camera, flashlight, motor and speaker drivers are started from |
 | `hakios.scsnd.c` | SCSND: what iOS plays, to the Scion app's audio ring in the shared framebuffer (patch 1401) |
 | `hakios.sccam_torch.c` | the phone's flashlight under AVF, through the Scion app's camera block (patch 1402) |
 | `hakios.version.c` | kern.hakios.version, and the version in the boot log |
@@ -90,7 +90,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 |---|---|---|---|---|---|---|---|
 | **`HAKIOS_VIRTIO_INPUT`**<br>QEMU's virtio tablet and keyboard as the touch screen and the buttons (virtio_input=1). QEMU only | `hakios.virtio_input.c` |  | `virtio_input=` |  | built | built |  | |
 | **`HAKIOS_GOODIX`**<br>the touch screen: a Goodix GT9916 ("Berlin-D") or a FocalTech FT3680 on SPI (touchscreen=1). The bus, pins and supplies are the POCO X5 Pro's; another phone with one of these controllers changes those | `hakios.goodix.c` |  | `touch_flip=`, `touch_poll_us=`, `touch_rate=`, `touch_spi_hz=`, `touchscreen=` |  |  | built |  | |
-| **`HAKIOS_BUTTONS`**<br>the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1) | `hakios.buttons.c` |  | `buttons=`, `buttons_steps=`, `touchscreen=` |  |  | built |  | |
+| **`HAKIOS_BUTTONS`**<br>the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1) | `hakios.buttons.c` |  | `buttons=`, `buttons_steps=`, `press_power=`, `press_power_ms=`, `touchscreen=` |  |  | built |  | |
 | **`HAKIOS_EXYNOS_KEYS`**<br>the Galaxy S9's power, volume and Bixby keys, pins of the Exynos 9810's ALIVE GPIO block (exynos_keys=1). Bixby is the home button | `hakios.exynos_keys.c` |  | `exynos_keys=` |  |  | built | built | |
 | **`HAKIOS_S6SY761`**<br>the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz) | `hakios.s6sy761.c` | `HAKIOS_EXYNOS_HSI2C`, `HAKIOS_EXYNOS_ACPM` | `s6sy761=`, `s6sy761_ipclk=`, `s6sy761_ldo=`, `s6sy761_steps=` |  |  | built | built | |
 
@@ -111,7 +111,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 
 | Driver | Files | Requires | Boot arguments | frankel | qemu | redwood | starlte | |
 |---|---|---|---|---|---|---|---|
-| **`HAKIOS_BATTERY`**<br>the battery: kern.hakios.battery_*, and HakiosBattery, the IOPMPowerSource iOS reads the charge from (the state comes from the audio DSP's battery manager, with adsp=1) | `hakios.battery.c`<br>`hakios.battery.cpp` |  | `battery_shared_pa=` |  |  | built | built | |
+| **`HAKIOS_BATTERY`**<br>the battery: kern.hakios.battery_*, and HakiosBattery, the IOPMPowerSource Darwin reads the charge from (the state comes from the audio DSP's battery manager, with adsp=1) | `hakios.battery.c`<br>`hakios.battery.cpp` |  | `battery_shared_pa=` |  |  | built | built | |
 | **`HAKIOS_CPUFREQ`**<br>the clock of the cores the kernel runs on (cpufreq=1), and the memory bus's votes (ddr=) | `hakios.cpufreq.c` |  | `cpufreq=`, `cpuload=`, `ddr=`, `ddr_rest=`, `ddr_vote=`, `membench=` |  |  | built |  | |
 | **`HAKIOS_THERMAL`**<br>the SoC's temperature sensors (thermal=1): kern.hakios.thermal_*, and the run handed back to the loader when the phone gets too hot (thermal_stop=) | `hakios.thermal.c` |  | `thermal=`, `thermal_log=`, `thermal_poll=`, `thermal_stop=`, `thermal_tm0=`, `thermal_tm1=` |  |  | built |  | |
 | **`HAKIOS_PMIC`**<br>the blocks of the power-management chips the SPMI arbiter shows, and the PMIC's clock (pmic=1); read only | `hakios.pmic.c` |  | `pmic=`, `pmic_list=` |  |  | built |  | |
@@ -130,9 +130,9 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 
 | Driver | Files | Requires | Boot arguments | frankel | qemu | redwood | starlte | |
 |---|---|---|---|---|---|---|---|
-| **`HAKIOS_WIFI`**<br>Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211 surface iOS's wifid talks to. Needs fw-wifi/ from the phone | `hakios.wifi.c`<br>`hakios.wlfw.c` | `HAKIOS_QMI`, `HAKIOS_WIFI_STA` | `wifi=`, `wifi_again=`, `wifi_ask=`, `wifi_cal=`, `wifi_dirty=`, `wifi_file=`, `wifi_fine=`, `wifi_keep=` and 14 more |  |  | built |  | |
-| **`HAKIOS_WIFI_STA`**<br>the station and the Apple80211 surface iOS's wifid talks to, over whichever link is below: the WCN6750's (WIFI) or QEMU's virtio network device seen as Wi-Fi (VIRTIO_NET, virtio_net_wifi=1) | `hakios.sta.c`<br>`hakios.apple80211.c`<br>`hakios.wlan.cpp` |  |  |  | built | built | built | |
+| **`HAKIOS_WIFI`**<br>Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211 surface Darwin's wifid talks to. Needs fw-wifi/ from the phone | `hakios.wifi.c`<br>`hakios.wlfw.c` | `HAKIOS_QMI`, `HAKIOS_WIFI_STA` | `wifi=`, `wifi_again=`, `wifi_ask=`, `wifi_cal=`, `wifi_dirty=`, `wifi_file=`, `wifi_fine=`, `wifi_keep=` and 14 more |  |  | built |  | |
+| **`HAKIOS_WIFI_STA`**<br>the station and the Apple80211 surface Darwin's wifid talks to, over whichever link is below: the WCN6750's (WIFI) or QEMU's virtio network device seen as Wi-Fi (VIRTIO_NET, virtio_net_wifi=1) | `hakios.sta.c`<br>`hakios.apple80211.c`<br>`hakios.wlan.cpp` |  |  |  | built | built | built | |
 | **`HAKIOS_EXYNOS_PCIE`**<br>the Galaxy S9's Wi-Fi, stage 1: the Exynos 9810's PCIe root complex of channel 0 (DesignWare and Samsung's PHY), WLAN_REG_ON and PERST (active low), the link to the BCM4361 and its ID and BARs (wifi_pcie=N, 5 ends stage 1, 6 hands the device to BRCMFMAC's driver); no firmware here (devices/starlte/WIFI.md) | `hakios.exynos_pcie.c` |  | `wifi_pcie=`, `wifi_pcie_tries=`, `wifi_pcie_ungate=` | built |  | built | built | |
-| **`HAKIOS_BRCMFMAC`**<br>the Galaxy S9's Wi-Fi, stage 2: Linux's brcmfmac on the BCM4361 (its object, made by tools/mk-brcmfmac.sh, is linked in with this unless WIFI's is), on the device stage 1 hands over (wifi_pcie=6, brcmfmac=N, 8 steps: 4 the firmware's interface, 5 INTx, 6 the phone's address, 7 the station, 8 joining), with WIFI_STA above it (without it there is no station to give iOS), and the radio unpowered on the way back to the loader. Needs the firmware, NVRAM and CLM of the user's own phone in fw-wifi/ (WIFI.md of starlte) | `hakios.brcmfmac.c` | `HAKIOS_EXYNOS_PCIE` | `brcmfmac=`, `wifi_mac=` | built |  | built | built | |
+| **`HAKIOS_BRCMFMAC`**<br>the Galaxy S9's Wi-Fi, stage 2: Linux's brcmfmac on the BCM4361 (its object, made by tools/mk-brcmfmac.sh, is linked in with this unless WIFI's is), on the device stage 1 hands over (wifi_pcie=6, brcmfmac=N, 8 steps: 4 the firmware's interface, 5 INTx, 6 the phone's address, 7 the station, 8 joining), with WIFI_STA above it (without it there is no station to give Darwin), and the radio unpowered on the way back to the loader. Needs the firmware, NVRAM and CLM of the user's own phone in fw-wifi/ (WIFI.md of starlte) | `hakios.brcmfmac.c` | `HAKIOS_EXYNOS_PCIE` | `brcmfmac=`, `wifi_mac=` | built |  | built | built | |
 
 The columns on the right are the devices' defconfigs: "built" means that defconfig builds the driver in.

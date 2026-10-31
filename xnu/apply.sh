@@ -1,5 +1,5 @@
 #!/bin/bash
-# Get Apple's XNU sources (the release that iOS 16.5 was built from) and put the HakiOS
+# Get Apple's XNU sources (the release that Darwin userland 16.5 was built from) and put the HakiOS
 # work on top of them: hakios.patch changes Apple's files, files/ holds the new ones.
 # usage: xnu/apply.sh [DIR]              (default: $XNU_SRC, else xnu-src/xnu-8796.121.2 next to this directory)
 # env:   XNU_URL   where to fetch from (default: Apple's repository on GitHub; an existing clone
@@ -28,6 +28,8 @@ git checkout -q -b hakios "$TAG"
 echo 'BUILD/' >> .git/info/exclude
 git apply --whitespace=nowarn "$HERE/hakios.patch"
 cp -a "$HERE/files/." .
+# HFS Plus (the data volume): Apple's release, fetched like XNU, and this port's changes over it
+"$HERE/hfs/hfs.sh" put "$DIR"
 # the drivers are kept by subsystem (drivers/<subsystem>/), not at their place in Apple's tree: drivers/map says where
 # each one goes, one line per file: "<subsystem> <path in the tree>"
 NDRIVERS=0

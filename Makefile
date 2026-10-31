@@ -2,12 +2,12 @@
 # below it; run the script itself for its options.
 #
 #   make                 help
-#   make unpack IPSW=F   the OS files out of your own iOS 16.5 IPSW into sysimage/ (sysimage/unpack.sh)
+#   make unpack IPSW=F   the OS files out of your own Darwin userland 16.5 IPSW into sysimage/ (sysimage/unpack.sh)
 #   make images          userland/root.apfs and userland/system.apfs (userland/build.sh)
 #   make kernel          the kernel from source (xnu/apply.sh, xnu-deps/setup.sh, xnu-build.sh)
 #   make loader          the boot loader, with identity.h made from your IPSW (xnuloader/build.sh)
 #   make firmware        the phone's firmware off the phone over adb (devices/$(DEVICE)/pull-firmware.sh)
-#   make qemu            a 20-minute session in QEMU (needs the iOS images)
+#   make qemu            a 20-minute session in QEMU (needs the Darwin images)
 #   make qemu-open       boot the open kernel in QEMU with NO Apple software
 #                        (kernel + the hello RAM disk + a placeholder loader)
 #   make phone           a session on the phone, then back to Android (tools/modem-cycle.sh)
@@ -16,6 +16,9 @@
 #   make doctor          check this machine and a phone on adb for what HakiOS needs (tools/doctor.sh)
 #   make esp             an EFI system partition tree in build/esp: the loader and a payload it reads itself,
 #                        to copy to a FAT32 volume (UEFI-native boot, no fastboot; docs/uefi-boot.md)
+#   make u-boot          HakiOS's U-Boot for $(DEVICE) (uefi/u-boot/apply.sh, uefi/u-boot/build.sh; docs/u-boot.md)
+#   make u-boot-img      hakios-u-boot.img: U-Boot as a boot image for fastboot boot, starting the loader from RAM
+#   make qemu-u-boot     make qemu-open's payload booted the phone's way: U-Boot, the hakios command, bootefi
 #
 # Configuration, the way Linux's make does it (configs/, tools/hakios-config.py; docs/configs.md):
 #   make redwood_defconfig   .config from configs/defconfig + redwood_defconfig (devices/redwood/configs/), which is
@@ -49,8 +52,10 @@ endif
 IMAGE_OPTS ?= REST=1
 ESP_DIR ?= build/esp
 PAYLOAD ?= qemu/payload.bin
+# make u-boot-img: the payload put in the image's ramdisk with the loader (none: U-Boot waits for them over fastboot)
+UBOOT_PAYLOAD ?=
 
-.PHONY: devices help unpack images kernel loader loader-open hello qemu qemu-open phone prebuilt clean all doctor defconfig config savedefconfig esp
+.PHONY: devices help unpack images kernel loader loader-open hello qemu qemu-open qemu-u-boot u-boot u-boot-img phone prebuilt clean all doctor defconfig config savedefconfig esp
 
 help:
 	@awk '{ if (!/^#/) exit; sub(/^# ?/, ""); print }' Makefile
@@ -79,16 +84,16 @@ firmware:
 
 qemu:
 	mkdir -p logs
-	qemu/run-ios.sh $(SECS) -display gtk | tee logs/qemu.log
+	qemu/run-darwin.sh $(SECS) -display gtk | tee logs/qemu.log
 
-# The Apple-free path: no IPSW, no iOS user space. The loader is built with a placeholder identity
+# The Apple-free path: no IPSW, no Darwin user space. The loader is built with a placeholder identity
 # (xnuloader/mkidentity.sh --placeholder), and the kernel boots the raw-syscall `hello` RAM disk.
 # This is the configuration an outside contributor can build and run with nothing of Apple's.
 loader-open:
 	PLACEHOLDER=1 xnuloader/mkidentity.sh
 	xnuloader/build.sh
 
-# `hello` on its own: a static, raw-syscall program (no iOS SDK, no Apple libraries).
+# `hello` on its own: a static, raw-syscall program (no Darwin SDK, no Apple libraries).
 hello:
 	. ./xnu-env.sh && xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding \
 		-fno-stack-protector -fno-builtin -Wl,-e,_start -Wl,-pagezero_size,0x100000000 \
@@ -100,6 +105,23 @@ qemu-open: kernel loader-open hello
 		kernel=hakios-kernel \
 		ramdisk=userland/hello --cmdline "$(ARGS_OPEN)"
 	qemu/run.sh $(SECS) | tee logs/qemu-open.log
+
+# HakiOS's U-Boot (docs/u-boot.md): the phone's ABL starts it from RAM (fastboot boot), and it starts the loader from
+# memory; nothing is flashed. u-boot/ is made once by uefi/u-boot/apply.sh, with every device's U-Boot files.
+u-boot:
+	[ -d u-boot ] || uefi/u-boot/apply.sh
+	uefi/u-boot/build.sh $(DEVICE)
+
+u-boot-img:
+	tools/mkubootimg.py -d $(DEVICE) $(if $(wildcard $(UBOOT_PAYLOAD)),-p $(UBOOT_PAYLOAD))
+
+qemu-u-boot: kernel loader-open hello
+	[ -f u-boot/build-qemu/u-boot.bin ] || { [ -d u-boot ] || uefi/u-boot/apply.sh; uefi/u-boot/build.sh qemu; }
+	mkdir -p logs
+	xnuloader/mkpayload.py -o qemu/payload.bin \
+		kernel=hakios-kernel \
+		ramdisk=userland/hello --cmdline "$(ARGS_OPEN)"
+	qemu/run-u-boot.sh $(SECS) | tee logs/qemu-u-boot.log
 
 phone:
 	[ ! -f .config ] || tools/hakios-config.py check

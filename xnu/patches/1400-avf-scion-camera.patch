@@ -1,9 +1,9 @@
 diff --git a/bsd/dev/hakios.camera.c b/bsd/dev/hakios.camera.c
-index 0e3c470..05273e3 100644
+index 466708c..9670ed0 100644
 --- a/bsd/dev/hakios.camera.c
 +++ b/bsd/dev/hakios.camera.c
-@@ -3770,6 +3770,424 @@ fake_session(void)
- 	    "another sensor asked for" : "nobody reads", ios_frames_done, ios_given);
+@@ -3790,6 +3790,424 @@ fake_session(void)
+ 	    "another sensor asked for" : "nobody reads", darwin_frames_done, darwin_given);
  }
  
 +/*
@@ -251,61 +251,61 @@ index 0e3c470..05273e3 100644
 +	return sl->seq == seq;
 +}
 +
-+/* a session of the app's frames: ios_session()'s, with the app's camera for the sensor */
++/* a session of the app's frames: darwin_session()'s, with the app's camera for the sensor */
 +static void
 +host_session(void)
 +{
 +	volatile struct sccam_header *h = sccam;
 +	uint32_t lines, gain, frame_lines;
-+	uint64_t last_seq = 0, last_frame = ios_ms(), torn = 0, refused = 0, black = 0, host_frames = 0;
++	uint64_t last_seq = 0, last_frame = darwin_ms(), torn = 0, refused = 0, black = 0, host_frames = 0;
 +	bool turned = (host_turn & (hw_index == 2 ? 2u : 1u)) != 0, said_host = false, said_wait = false;
 +
-+	ios_frames_done = ios_given = ios_writes_late = 0;
++	darwin_frames_done = darwin_given = darwin_writes_late = 0;
 +	host_level_light = 0;
 +	if (!ring_alloc(RAW10_STRIDE(host_mode.width) * host_mode.height)) {
 +		return;
 +	}
-+	lck_mtx_lock(&ios_lock);
++	lck_mtx_lock(&darwin_lock);
 +	for (int i = 0; i < RING; i++) {
 +		place[i].state = PLACE_FREE;
 +		place[i].sequence = 0;
 +	}
-+	lines = ios_ask.lines;
-+	gain = ios_ask.gain;
-+	frame_lines = ios_ask.frame_lines;
-+	ios_ask.pending = false;
++	lines = darwin_ask.lines;
++	gain = darwin_ask.gain;
++	frame_lines = darwin_ask.frame_lines;
++	darwin_ask.pending = false;
 +	exposure_limits(&lines, &gain, &frame_lines);
-+	ios_now.lines = lines;
-+	ios_now.gain = gain;
-+	ios_now.frame_lines = frame_lines;
-+	ios_streaming = true;
-+	ios_last_read = ios_ms();
-+	lck_mtx_unlock(&ios_lock);
++	darwin_now.lines = lines;
++	darwin_now.gain = gain;
++	darwin_now.frame_lines = frame_lines;
++	darwin_streaming = true;
++	darwin_last_read = darwin_ms();
++	lck_mtx_unlock(&darwin_lock);
 +	host_request(true, hw_index);
 +	say("camera: the frames for iOS: the app's %s camera, %ux%u (as RAW10 %ux%u)\n", hw_index == 2 ? "front" : "back", host_width,
 +	    host_height, host_mode.width, host_mode.height);
-+	while (ios_open && ios_switch_to == 0) {
++	while (darwin_open && darwin_switch_to == 0) {
 +		int p = -1;
 +		uint64_t now, ns;
 +
 +		wait_ms(4);
-+		now = ios_ms();
-+		lck_mtx_lock(&ios_lock);
-+		if (now - ios_last_read > IDLE_MS) {
-+			lck_mtx_unlock(&ios_lock);
++		now = darwin_ms();
++		lck_mtx_lock(&darwin_lock);
++		if (now - darwin_last_read > IDLE_MS) {
++			lck_mtx_unlock(&darwin_lock);
 +			break;
 +		}
-+		if (ios_ask.pending) {
-+			lines = ios_ask.lines;
-+			gain = ios_ask.gain;
-+			frame_lines = ios_ask.frame_lines;
-+			ios_ask.pending = false;
++		if (darwin_ask.pending) {
++			lines = darwin_ask.lines;
++			gain = darwin_ask.gain;
++			frame_lines = darwin_ask.frame_lines;
++			darwin_ask.pending = false;
 +			exposure_limits(&lines, &gain, &frame_lines);
-+			ios_now.lines = lines;
-+			ios_now.gain = gain;
-+			ios_now.frame_lines = frame_lines;
++			darwin_now.lines = lines;
++			darwin_now.gain = gain;
++			darwin_now.frame_lines = frame_lines;
 +		}
-+		lck_mtx_unlock(&ios_lock);
++		lck_mtx_unlock(&darwin_lock);
 +		absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
 +		h->guest_ns = ns;
 +		host_barrier();
@@ -328,7 +328,7 @@ index 0e3c470..05273e3 100644
 +			say("camera: no frames from the app for 3 s (flags %#x, state %u, error %u): black ones meanwhile\n",
 +			    h->host_flags, h->host_state, h->host_error);
 +		}
-+		lck_mtx_lock(&ios_lock);
++		lck_mtx_lock(&darwin_lock);
 +		for (int i = 0; i < RING; i++) {
 +			if (place[i].state != PLACE_READING && (p < 0 || place[i].sequence < place[p].sequence)) {
 +				p = i;
@@ -337,12 +337,12 @@ index 0e3c470..05273e3 100644
 +		if (p >= 0) {
 +			place[p].state = PLACE_WRITING;
 +		}
-+		lck_mtx_unlock(&ios_lock);
++		lck_mtx_unlock(&darwin_lock);
 +		if (p < 0) {
-+			ios_writes_late++;
++			darwin_writes_late++;
 +			continue;
 +		}
-+		host_levels((uint64_t)ios_now.lines * ios_now.gain / GAIN_UNITY);
++		host_levels((uint64_t)darwin_now.lines * darwin_now.gain / GAIN_UNITY);
 +		bool ok = false;
 +
 +		if (fresh) {
@@ -366,9 +366,9 @@ index 0e3c470..05273e3 100644
 +				torn++;
 +			}
 +			if (!ok) {
-+				lck_mtx_lock(&ios_lock);
++				lck_mtx_lock(&darwin_lock);
 +				place[p].state = PLACE_FREE;
-+				lck_mtx_unlock(&ios_lock);
++				lck_mtx_unlock(&darwin_lock);
 +				continue;
 +			}
 +		} else {
@@ -376,28 +376,28 @@ index 0e3c470..05273e3 100644
 +			black++;
 +		}
 +		last_frame = now;
-+		lck_mtx_lock(&ios_lock);
++		lck_mtx_lock(&darwin_lock);
 +		place[p].state = PLACE_READY;
-+		place[p].sequence = ++ios_frames_done;
++		place[p].sequence = ++darwin_frames_done;
 +		place[p].time = mach_absolute_time();
-+		place[p].exposure_lines = ios_now.lines;
-+		place[p].gain = ios_now.gain;
-+		place[p].frame_lines = ios_now.frame_lines;
-+		lck_mtx_unlock(&ios_lock);
-+		wakeup(&ios_frames_done);
++		place[p].exposure_lines = darwin_now.lines;
++		place[p].gain = darwin_now.gain;
++		place[p].frame_lines = darwin_now.frame_lines;
++		lck_mtx_unlock(&darwin_lock);
++		wakeup(&darwin_frames_done);
 +	}
 +	host_request(false, hw_index);
-+	lck_mtx_lock(&ios_lock);
-+	ios_streaming = false;
++	lck_mtx_lock(&darwin_lock);
++	darwin_streaming = false;
 +	for (int i = 0; i < RING; i++) {
 +		place[i].state = PLACE_FREE;
 +	}
-+	lck_mtx_unlock(&ios_lock);
-+	wakeup(&ios_frames_done);
++	lck_mtx_unlock(&darwin_lock);
++	wakeup(&darwin_frames_done);
 +	ring_free();
 +	say("camera: the frames for iOS stopped (%s): %llu done (%llu of the app's, %llu black), %llu given, %llu torn, %llu refused\n",
-+	    !ios_open ? "closed" : ios_switch_to != 0 ? "another sensor asked for" : "nobody reads", ios_frames_done, host_frames, black,
-+	    ios_given, torn, refused);
++	    !darwin_open ? "closed" : darwin_switch_to != 0 ? "another sensor asked for" : "nobody reads", darwin_frames_done, host_frames, black,
++	    darwin_given, torn, refused);
 +}
 +
 +/* the sensor `index' for host_session(): its descriptor (gain steps), the pictures' size as its mode */
@@ -412,33 +412,33 @@ index 0e3c470..05273e3 100644
 +	host_mode.frame_length = 2 * host_height + 64;
 +	host_mode.fps_milli = 30000;
 +	host_mode.data_type = RAW10_DT;
-+	ios_mode_n = 0;
-+	ios_mode = &host_mode;
-+	ios_line_ns = (uint32_t)(1000000000000ull / ((uint64_t)host_mode.fps_milli * host_mode.frame_length));
-+	ios_source = SOURCE_SENSOR;
-+	ios_ask.lines = host_mode.frame_length - EXPOSURE_MARGIN;
-+	ios_ask.gain = 8 * GAIN_UNITY;
-+	ios_ask.frame_lines = 0;
++	darwin_mode_n = 0;
++	darwin_mode = &host_mode;
++	darwin_line_ns = (uint32_t)(1000000000000ull / ((uint64_t)host_mode.fps_milli * host_mode.frame_length));
++	darwin_source = SOURCE_SENSOR;
++	darwin_ask.lines = host_mode.frame_length - EXPOSURE_MARGIN;
++	darwin_ask.gain = 8 * GAIN_UNITY;
++	darwin_ask.frame_lines = 0;
 +	say("camera: /dev/hakios-camera: the app's %s camera (as the %s), %ux%u, whenever it is read\n", index == 2 ? "front" : "back",
 +	    hw->name, host_mode.width, host_mode.height);
 +	return true;
 +}
 +
  static const char *
- ios_res(void)
+ darwin_res(void)
  {
-@@ -3851,7 +4269,7 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
- 	f.height = ios_mode->height;
- 	f.stride = RAW10_STRIDE(ios_mode->width);
+@@ -3880,7 +4298,7 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+ 	f.height = darwin_mode->height;
+ 	f.stride = RAW10_STRIDE(darwin_mode->width);
  	f.format = 1;
--	f.bayer = ios_source == SOURCE_CSID_TPG ? 0 : ios_source == SOURCE_SENSOR_PATTERN ? hw->pattern_bayer : hw->bayer;
-+	f.bayer = host || ios_source == SOURCE_CSID_TPG ? 0 : ios_source == SOURCE_SENSOR_PATTERN ? hw->pattern_bayer : hw->bayer;
+-	f.bayer = darwin_source == SOURCE_CSID_TPG ? 0 : darwin_source == SOURCE_SENSOR_PATTERN ? hw->pattern_bayer : hw->bayer;
++	f.bayer = host || darwin_source == SOURCE_CSID_TPG ? 0 : darwin_source == SOURCE_SENSOR_PATTERN ? hw->pattern_bayer : hw->bayer;
  	f.black = 64;
  	f.sequence = place[b].sequence;
  	f.time = place[b].time;
-@@ -4009,6 +4427,9 @@ camdev_make(void)
+@@ -4048,6 +4466,9 @@ camdev_make(void)
  static bool
- ios_select(unsigned index, uint32_t mode_n)
+ darwin_select(unsigned index, uint32_t mode_n)
  {
 +	if (host) {
 +		return host_select(index);
@@ -446,35 +446,35 @@ index 0e3c470..05273e3 100644
  	select_sensor(index);
  	if (!fake) {
  		find_pins();
-@@ -4097,7 +4518,9 @@ serve_ios(void)
- 		lck_mtx_lock(&ios_lock);
- 		ios_wanted = false;
- 		lck_mtx_unlock(&ios_lock);
+@@ -4140,7 +4561,9 @@ serve_darwin(void)
+ 		lck_mtx_lock(&darwin_lock);
+ 		darwin_wanted = false;
+ 		lck_mtx_unlock(&darwin_lock);
 -		if (fake) {
 +		if (host) {
 +			host_session();
 +		} else if (fake) {
  			fake_session();
  		} else {
- 			ios_session();
-@@ -4171,9 +4594,13 @@ camera_thread(__unused void *parameter, __unused wait_result_t result)
+ 			darwin_session();
+@@ -4214,9 +4637,13 @@ camera_thread(__unused void *parameter, __unused wait_result_t result)
  			}
  		}
  	}
 -	if (fake) {
--		say("camera: cam=5 cam_fake=1: the %s camera's frames for iOS are a chart made here; nothing of the phone is touched\n",
+-		say("camera: cam=5 cam_fake=1: the %s camera's frames for Darwin are a chart made here; nothing of the phone is touched\n",
 -		    hw->name);
 +	if (fake || host) {
 +		if (host) {
-+			say("camera: sccam: the frames for iOS are the app's camera's (the phone the VM runs on); no camera hardware is touched\n");
++			say("camera: sccam: the frames for Darwin are the app's camera's (the phone the VM runs on); no camera hardware is touched\n");
 +		} else {
-+			say("camera: cam=5 cam_fake=1: the %s camera's frames for iOS are a chart made here; nothing of the phone is touched\n",
++			say("camera: cam=5 cam_fake=1: the %s camera's frames for Darwin are a chart made here; nothing of the phone is touched\n",
 +			    hw->name);
 +		}
- 		serve_ios();
+ 		serve_darwin();
  		say("camera: done\n");
  		thread_terminate(current_thread());
-@@ -4220,14 +4647,18 @@ hakios_camera_init(void)
+@@ -4263,14 +4690,18 @@ hakios_camera_init(void)
  {
  	thread_t thread;
  
