@@ -111,7 +111,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | **`HAKIOS_THERMAL`**<br>the SoC's temperature sensors (thermal=1): kern.hakios.thermal_*, and the run handed back to the loader when the phone gets too hot (thermal_stop=) | `hakios.thermal.c` |  | `thermal=`, `thermal_log=`, `thermal_poll=`, `thermal_stop=`, `thermal_tm0=`, `thermal_tm1=` |  |  | built |  | |
 | **`HAKIOS_PMIC`**<br>the blocks of the power-management chips the SPMI arbiter shows, and the PMIC's clock (pmic=1); read only | `hakios.pmic.c` |  | `pmic=`, `pmic_list=` |  |  | built |  | |
 | **`HAKIOS_BATTGUARD`**<br>the run handed back to the loader before the battery is flat (battery_stop=<percent>) | `hakios.battguard.c` |  | `battery_stop=`, `battery_stop_poll=` |  |  | built |  | |
-| **`HAKIOS_MAX77705`**<br>the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's HSI2C and handed to HakiosBattery, the power source iOS reads (max77705=1; max77705_steps=N); and its haptic block, the vibration motor for iOS through /dev/hakios-haptic (max77705_haptic=1) | `hakios.max77705.c` | `HAKIOS_EXYNOS_HSI2C`, `HAKIOS_BATTERY` | `max77705=`, `max77705_haptic=`, `max77705_steps=` |  |  | built | built | |
+| **`HAKIOS_MAX77705`**<br>the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's HSI2C and handed to HakiosBattery, the power source iOS reads (max77705=1; max77705_steps=N, max77705_ipclk=MHz); and its haptic block, the vibration motor for iOS through /dev/hakios-haptic (max77705_haptic=1) | `hakios.max77705.c` | `HAKIOS_EXYNOS_HSI2C`, `HAKIOS_BATTERY` | `max77705=`, `max77705_haptic=`, `max77705_ipclk=`, `max77705_steps=` |  |  | built | built | |
 
 ## storage
 
