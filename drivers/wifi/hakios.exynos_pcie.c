@@ -32,6 +32,8 @@
  *   wifi_pcie=5   ... the endpoint through the iATU: its vendor and device (Broadcom 0x14e4, BCM4361 0x441f, or 0x4361 /
  *                 0x4420 / 0x4421), class, capabilities, the size of every BAR, which are then placed in the memory
  *                 window. Memory decoding and bus mastering stay off. This is where stage 1 ends
+ *   wifi_pcie=6   ... memory decoding on (the command register's bit 1), and the endpoint handed to the radio's driver
+ *                 (sys/hakios.exynos_pcie.h; hakios.brcmfmac.c, brcmfmac=N), which sets bus mastering itself
  * Each step says what it is about to do before it does it. A link that does not come up is put back: PERST# low, the
  * LTSSM off, WLAN_REG_ON low. A link that does stays up until the run ends, for stage 2; the restart that ends every run
  * of this port takes the pins and the PHY down. Nothing here writes a PMIC: the radio's supplies are the battery's and
@@ -57,6 +59,7 @@
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
+#include <sys/hakios.exynos_pcie.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
 
@@ -527,10 +530,16 @@ cfg_wr(uint32_t off, uint32_t v)
 	wr(cfg, off, v);
 }
 
-/* step 5: bus 1, device 0, function 0 */
-static void
+/* where step 5 placed the endpoint's BARs (address 0: not placed), and whether step 6 has handed it over */
+static uint64_t bar_address[6], bar_size[6];
+static volatile bool handed_over;
+
+/* step 5: bus 1, device 0, function 0; true if it is an endpoint with a BAR placed */
+static bool
 enumerate(void)
 {
+	bool placed = false;
+
 	uint32_t id, class, hdr, sub, next = MEM_PA;
 
 	say("exynos_pcie: 5: the iATU: region 1 to type 0 configuration of 1:00.0 at %#lx, region 0 to memory at %#lx\n",
@@ -543,7 +552,7 @@ enumerate(void)
 	id = cfg_rd(0x00);
 	if ((id & 0xffff) == 0xffff || id == 0) {
 		say("exynos_pcie: 5: nothing answers at 1:00.0 (%08x)\n", id);
-		return;
+		return false;
 	}
 	class = cfg_rd(0x08);
 	hdr = cfg_rd(0x0C);
@@ -568,7 +577,7 @@ enumerate(void)
 	}
 	if (((hdr >> 16) & 0x7f) != 0) {
 		say("exynos_pcie: 5: not an endpoint's header: BARs left alone\n");
-		return;
+		return false;
 	}
 	/* the BARs: sized with decoding off (it is, after reset), then placed in the window, aligned to their size */
 	for (unsigned b = 0; b < 6; b++) {
@@ -609,6 +618,9 @@ enumerate(void)
 			}
 			say("exynos_pcie: 5: BAR%u: %s%s memory, %#llx bytes (%llu KB), placed at %#x (read back %08x)\n", b,
 			    is64 ? "64-bit" : "32-bit", (was & 8) ? " prefetchable" : "", size, size >> 10, next, cfg_rd(off));
+			bar_address[b] = next;
+			bar_size[b] = size;
+			placed = true;
 			next += (uint32_t)size;
 		}
 		if (is64) {
@@ -617,6 +629,51 @@ enumerate(void)
 	}
 	say("exynos_pcie: 5: stage 1 done: the link is up and the endpoint known. Decoding and bus mastering stay off; "
 	    "no firmware (stage 2)\n");
+	return placed;
+}
+
+/* ---- for the radio's driver (sys/hakios.exynos_pcie.h) ---------------------------------------------------------- */
+
+bool
+hakios_exynos_pcie_ready(void)
+{
+	return handed_over;
+}
+
+uint32_t
+hakios_exynos_pcie_config_read(uint32_t offset)
+{
+	return handed_over && offset < CFG_SIZE ? cfg_rd(offset & ~3u) : 0xffffffffu;
+}
+
+void
+hakios_exynos_pcie_config_write(uint32_t offset, uint32_t value)
+{
+	if (handed_over && offset < CFG_SIZE) {
+		cfg_wr(offset & ~3u, value);
+	}
+}
+
+bool
+hakios_exynos_pcie_bar(unsigned bar, uint64_t *address, uint64_t *size)
+{
+	if (!handed_over || bar >= 6 || bar_address[bar] == 0) {
+		return false;
+	}
+	*address = bar_address[bar];
+	*size = bar_size[bar];
+	return true;
+}
+
+/* step 6: the endpoint's memory decoding on, and the endpoint to the radio's driver */
+static void
+hand_over(void)
+{
+	say("exynos_pcie: 6: 1:00.0's memory decoding on (command bit 1; bus mastering is the radio driver's to set)\n");
+	cfg_wr(0x04, (cfg_rd(0x04) & 0xffffu) | 0x2u);
+	say("exynos_pcie: 6: command/status now %08x; the endpoint handed to the radio's driver (brcmfmac=N)\n", cfg_rd(0x04));
+	handed_over = true;
+	hakios_brcmfmac_start();
 }
 
 static void
@@ -628,7 +685,7 @@ wifi_pcie_thread(void *arg, __unused wait_result_t wr_)
 	PE_parse_boot_argn("wifi_pcie_tries", &tries, sizeof(tries));
 	PE_parse_boot_argn("wifi_pcie_ungate", &ungate, sizeof(ungate));
 	tries = tries == 0 ? 1 : tries > 10 ? 10 : tries;
-	say("exynos_pcie: wifi_pcie=%u: PCIe channel 0 to the BCM4361, step by step (5 is all of stage 1)\n", steps);
+	say("exynos_pcie: wifi_pcie=%u: PCIe channel 0 to the BCM4361, step by step (5: stage 1; 6: to the driver)\n", steps);
 	if (!map_all()) {
 		say("exynos_pcie: the registers cannot be mapped\n");
 		goto out;
@@ -692,7 +749,10 @@ wifi_pcie_thread(void *arg, __unused wait_result_t wr_)
 		say("exynos_pcie: 4: done; the link stays up until the run ends\n");
 		goto out;
 	}
-	enumerate();
+	if (!enumerate() || steps < 6) {
+		goto out;
+	}
+	hand_over();
 	goto out;
 off:
 	say("exynos_pcie: put back: PERST# low, the LTSSM off, WLAN_REG_ON low\n");

@@ -43,7 +43,7 @@ STRING = re.compile(r'PE_parse_boot_arg_str\(\s*"([A-Za-z0-9_.\-]+)"')     # an 
 TUNABLE = re.compile(r'\bTUNABLE\w*\(\s*[^,()]+,\s*[^,()]+,\s*"([A-Za-z0-9_.\-]+)"')
 # Three drivers read their options through a small function that is given the name as a string, and the name is the
 # literal at the call: option("modem_again") in hakios.mpss.c and hakios.adsp.c (a static function in each), and for
-# Wi-Fi hakios_wifi_option("wifi_keep") with lx_os_option("wifi_irq") of the Linux layer in wifi/lx/src, which calls it.
+# Wi-Fi hakios_wifi_option("wifi_keep") with lx_os_option("wifi_irq") of the Linux layer in wifi/lx/src and wifi/lx/brcmfmac, which calls it.
 # A scan for PE_parse_boot_argn("...") alone misses all of them (about forty names), so these are scanned too.
 WRAPPED = re.compile(r'\b(?:hakios_wifi_option|lx_os_option)\(\s*"([a-z][a-z0-9_]*)"')
 OPTION_DEF = re.compile(r'^option\(const char \*name\)', re.M)
@@ -60,7 +60,7 @@ USER = re.compile(r'strstr\(\s*(?:arguments|args|argument)\s*,\s*"([a-z][a-z0-9_
 GROUPS = [
     ("GPU and display", r"hakios\.(adreno|gpu|s6e3ha8|mali|backlight)\.|MiniIO(Surface|MobileFramebuffer)|gl_osmesa|eagl\.c"),
     ("Security stand-ins", r"kern_minimac|miniamfi"),
-    ("Wi-Fi", r"hakios\.(wifi|wlfw|lx|sta|apple80211|exynos_pcie)\.|^lx_[a-z0-9]+\.c$"),     # wifi/lx/src/lx_*.c: the Linux layer
+    ("Wi-Fi", r"hakios\.(wifi|wlfw|lx|sta|apple80211|exynos_pcie|brcmfmac)\.|^lx_[a-z0-9]+\.c$"),     # wifi/lx/*/lx_*.c: the Linux layer
     ("Cellular", r"hakios\.(mpss|ipa|cell|nas|qmi)\."),
     ("Audio and battery", r"hakios\.(adsp|audio|sound|speaker|mic|virtio_sound|battery|battguard|max77705|exynos_abox|max98512|guard)\."),
     ("Cameras", r"hakios\.camera\."),
@@ -120,7 +120,7 @@ def scan(root, keep=None):
             text = "\n".join(l[1:] for l in text.splitlines() if l.startswith("+") and not l.startswith("+++"))
             base = "(patch)"
         # the kernel's side: where the drivers are kept (xnu/files/ until they moved to drivers/<subsystem>/) and the Linux layer
-        if f.startswith(("xnu/", "drivers/", "wifi/lx/src/")):
+        if f.startswith(("xnu/", "drivers/", "wifi/lx/src/", "wifi/lx/brcmfmac/")):
             for m in KERNEL.finditer(text):
                 found[m.group(1)]["kernel"].add(base)
             for m in STRING.finditer(text):

@@ -71,6 +71,7 @@ battery_stop	k
 battery_stop_poll	k
 battmgr	k
 bootcpu	kl
+brcmfmac	k
 bt	k
 bt_again	k
 buttons	k

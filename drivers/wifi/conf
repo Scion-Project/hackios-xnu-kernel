@@ -2,10 +2,15 @@
 # CONFIG_HAKIOS_<NAME>=y in a defconfig builds a driver into the kernel; "standard" files are always built.
 # tools/hakios-config.py reads this file; docs/drivers-config.md says what each word means and how it reaches XNU.
 
+standard bsd/dev/hakios.lx.c
+	help    the kernel's side of a Linux Wi-Fi driver's object (sys/hakios.lx.h): memory, time, threads, the station.
+	help    What it asks of the radio (hakios_wifi_*() of sys/hakios.input.h) is the radio driver's: WIFI's (the WCN6750)
+	help    or BRCMFMAC's (the BCM4361); hakios.stubs.c answers for a kernel with neither, and for the station without
+	help    WIFI_STA. The object itself is linked in only with one of those two
+
 driver WIFI
 	file    bsd/dev/hakios.wifi.c
 	file    bsd/dev/hakios.wlfw.c
-	file    bsd/dev/hakios.lx.c
 	requires QMI WIFI_STA
 	help    Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k
 	help    (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211
@@ -21,5 +26,12 @@ driver WIFI_STA
 driver EXYNOS_PCIE
 	file    bsd/dev/hakios.exynos_pcie.c
 	help    the Galaxy S9's Wi-Fi, stage 1: the Exynos 9810's PCIe root complex of channel 0 (DesignWare and Samsung's
-	help    PHY), WLAN_REG_ON and PERST (active low), the link to the BCM4361 and its ID and BARs (wifi_pcie=N, 5 for all); no
-	help    firmware, no radio driver yet (devices/starlte/WIFI.md)
+	help    PHY), WLAN_REG_ON and PERST (active low), the link to the BCM4361 and its ID and BARs (wifi_pcie=N, 5 ends
+	help    stage 1, 6 hands the device to BRCMFMAC's driver); no firmware here (devices/starlte/WIFI.md)
+
+driver BRCMFMAC
+	file    bsd/dev/hakios.brcmfmac.c
+	requires EXYNOS_PCIE
+	help    the Galaxy S9's Wi-Fi, stage 2: Linux's brcmfmac on the BCM4361 (its object, made by tools/mk-brcmfmac.sh,
+	help    is linked in with this unless WIFI's is), on the device stage 1 hands over (wifi_pcie=6, brcmfmac=N, 4 steps),
+	help    with WIFI_STA above it. Needs the firmware, NVRAM and CLM of the user's own phone in fw-wifi/ (WIFI.md of starlte)
