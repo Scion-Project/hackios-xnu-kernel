@@ -63,7 +63,7 @@
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern kern_return_t thread_terminate(thread_t thread);
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 
 static uint32_t level;
 static bool broken, leaving;
@@ -83,9 +83,7 @@ say(const char *format, ...)
 	va_start(list, format);
 	length = vsnprintf(line, sizeof(line), format, list);
 	va_end(list);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line(line);
 	if (!leaving && ml_get_interrupts_enabled()) {
 		printf("%s", line);
 	}

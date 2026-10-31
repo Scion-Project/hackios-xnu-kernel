@@ -29,7 +29,7 @@
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 extern void loader_return(void);
 extern void hakios_var_save_on_return(void);
 extern void hakios_adreno_stop(void);
@@ -48,9 +48,7 @@ say(const char *format, ...)
 	va_start(list, format);
 	vsnprintf(line, sizeof(line), format, list);
 	va_end(list);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line(line);
 	return printf("%s", line);
 }
 

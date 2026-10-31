@@ -456,7 +456,7 @@ SYSCTL_QUAD(_kern_hakios, OID_AUTO, ufs_native_write_bytes, CTLFLAG_RD | CTLFLAG
  * run's log does not come back to the loader (the buffer wraps), so they are said again at the
  * end, into the loader's log directly (hakios_ufs_quiesce; printf is not for that moment).
  */
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 #define KEPT_LINES          64
 #define LINE                320
 static char hc_kept[KEPT_LINES][LINE];
@@ -495,9 +495,7 @@ hc_say_late(const char *format, ...)
 		line[sizeof(line) - 2] = '\n';
 	}
 	va_end(list);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line(line);
 }
 
 static inline uint32_t

@@ -168,7 +168,7 @@ extern uint32_t gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShow
 extern struct mali_made { uint64_t address, size; uint32_t asked, flags; } gMaliMade[32];
 
 /* (every line of the steps to the loader's log as well, as the other drivers do: see hakios.buttons.c) */
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -181,9 +181,7 @@ say(const char *format, ...)
 	va_start(list, format);
 	vsnprintf(line, sizeof(line), format, list);
 	va_end(list);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line(line);
 	return printf("%s", line);
 }
 

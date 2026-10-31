@@ -59,7 +59,7 @@ extern kern_return_t thread_terminate(thread_t thread);
  * reach that log only at the end of a run (with the kernel's message buffer), and "xl log"
  * during a run is to show a press when it happens.
  */
-extern void loader_log_putc(char c);
+extern void loader_log_line(const char *line);
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -72,9 +72,7 @@ say(const char *format, ...)
 	va_start(list, format);
 	vsnprintf(line, sizeof(line), format, list);
 	va_end(list);
-	for (const char *c = line; *c != 0; c++) {
-		loader_log_putc(*c);
-	}
+	loader_log_line(line);
 	return printf("%s", line);
 }
 #define printf say
