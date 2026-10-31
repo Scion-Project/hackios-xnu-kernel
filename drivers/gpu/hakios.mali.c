@@ -1500,7 +1500,15 @@ hakios_mali_parameter(uint32_t which, uint64_t *value)
 			}
 		}
 		return true;
-	case 40:                                /* AFBC_FEATURES: none said (Mesa then draws without AFBC) */
+	case 40:
+		/*
+		 * AFBC_FEATURES: 0. Mesa reads 0 as AFBC SUPPORTED, not as none (Mesa 25.0.7 pan_props.c,
+		 * panfrost_query_afbc(): architecture 5 or later and the register 0), as Linux panfrost answers
+		 * on a GPU without the register. So panfrost renders into AFBC textures here (a G72 has AFBC;
+		 * seen under drm-shim as the G72, tools/mali-drmshim-check.sh: the triangle's render target is
+		 * written AFBC). PAN_MESA_DEBUG=noafbc in a program's environment turns it off, for telling
+		 * an AFBC fault from any other on the phone.
+		 */
 		*value = 0;
 		return true;
 	default:

@@ -46,7 +46,8 @@ static const struct service {
 	{ "msm", "HakiosGPU", 1, 7, "Adreno on Darwin" },
 	/*
 	 * 1.2: buffers that grow on a fault and buffers that are not run (1.1; the kernel takes the
-	 * flags and makes every buffer whole), and the AFBC features (1.2; the kernel answers none).
+	 * flags and makes every buffer whole), and the AFBC features (1.2; the kernel answers 0, which
+	 * Mesa takes as AFBC supported: see hakios_mali_parameter()).
 	 * Not 1.3: Mesa would then ask for the frequency of the GPU's timestamps, as a parameter it
 	 * must have, and the kernel does not answer that one.
 	 */
