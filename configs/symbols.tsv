@@ -1,10 +1,12 @@
 ABOX	arg	abox	Audio and battery	k	hakios.exynos_abox.c	the first N of ABOX's eight steps (1 only looks, 7 plays a tone, 8 serves iOS); 0 or none: left alone
 ABOX_BCLK_ON	arg	abox_bclk_on	Audio and battery	k	hakios.exynos_abox.c	ABOX never gates UAIF1's BCLK (QCHANNEL_DISABLE bit 3), as Samsung does for UAIF0 while it plays
+ABOX_BURST	arg	abox_burst	Audio and battery	k	hakios.exynos_abox.c	RDMA0's CTRL0 BURST_LEN [22:19], 1 to 15 (8, set only when it reads 0; given, set anyway; 0: left)
 ABOX_DVFS	arg	abox_dvfs	Audio and battery	k	hakios.exynos_abox.c	ACPM's AUD DVFS domain (index 9) set to this before step 3 (none: left as found, only read)
 ABOX_GAIN	arg	abox_gain	Audio and battery	k	hakios.exynos_abox.c	eighths of a dB of gain before the speakers' guard, 0 to 96 (0)
 ABOX_RDMA_CTRL0	arg	abox_rdma_ctrl0	Audio and battery	k	hakios.exynos_abox.c	bits of RDMA0's CTRL0 besides ENABLE, to try a format there (none: as it reads after reset)
 ABOX_RDMA_CTRL1	arg	abox_rdma_ctrl1	Audio and battery	k	hakios.exynos_abox.c	RDMA0's CTRL1 (none: as it reads after reset)
 ABOX_ROUTE	arg	abox_route	Audio and battery	k	hakios.exynos_abox.c	UAIF1 from SIFS1 (SPUS OUT0 straight, SPUS_CTRL1 [18:16] = 0, ROUTE_CTRL0 [7:4] = 2) instead of the mixer
+ABOX_SBANK	arg	abox_sbank	Audio and battery	k	hakios.exynos_abox.c	
 ABOX_SECS	arg	abox_secs	Audio and battery	k	hakios.exynos_abox.c	how long step 7 plays its tone, 1 to 10 seconds (3)
 ABOX_VOL	arg	abox_vol	Audio and battery	k	hakios.exynos_abox.c	RDMA0's VOL_FACTOR [23:0] (none: 0x800000 if it reads 0, else left)
 ADRENO	arg	adreno	GPU and display	k	hakios.adreno.c	

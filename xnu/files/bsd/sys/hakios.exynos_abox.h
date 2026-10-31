@@ -202,6 +202,25 @@ void hakios_exynos_abox_init(void);    /* boot-arg abox=N on the Galaxy S9: the 
 #define ABOX_SPUS_CTRL2         0x0208          /* MIXP_FLUSH bit 0: written 1 before the mixer comes up and after it goes */
 #define ABOX_SPUS_CTRL3         0x020C          /* SIFS1_FLUSH 0, SIFS2_FLUSH 1, SIFM_FLUSH 2 */
 #define ABOX_SPUS_SIFS_CNT0     0x0280          /* SIFS0/1 counts: only for SIFS looped to NSRC (capture) */
+/*
+ * SPUS's sample banks: the piece of ABOX's own buffer memory each RDMA (and the ASRCs, the mixer) fills ahead of SPUS.
+ * FACT that they are there on the 9810 and reset to 0: abox.c's abox_reg_defaults_9810 lists 0x0220-0x023C, 0x0240 and
+ * 0x0260 with 0, and neither abox_readable_reg() nor abox_writeable_reg() takes them, so the 9810's AP never reads or
+ * writes them (calliope does, or nobody). FACT of the fields, from Samsung's next ABOX driver (the Galaxy S10's kernel,
+ * github.com/ivanmeler/android_kernel_samsung_beyondlte, sound/soc/samsung/abox/abox_soc.h, whose "ABOX version below
+ * 2.0.0" branch is the 9810's: its Kconfig gives SOC_EXYNOS9810 ABOX version 0x10100): SPUS_SBANK_RDMAn at 0x0220 + 4n,
+ * SBANK_ASRC at 0x0240, SBANK_MIXP at 0x0260; SIZE [29:20] in 16-byte units, STR [13:4]. There the AP sets an RDMA's SIZE
+ * itself before each stream (abox_cmpnt_v20.c abox_cmpnt_adjust_sbank(): 128 bytes for periods of 10 ms or less, else
+ * 512), keeping STR. INFERRED: a SIZE of 0 gives the RDMA nowhere to put what it reads, so in bypass the driver sets
+ * RDMA0's (abox_sbank=, 512 bytes, as Samsung does for our 10.7 ms periods) when it reads 0.
+ */
+#define ABOX_SPUS_SBANK_RDMA(n) (0x0220 + 4 * (n))
+#define ABOX_SPUS_SBANK_ASRC0   0x0240
+#define ABOX_SPUS_SBANK_MIXP    0x0260
+#define SBANK_SIZE_SHIFT        20
+#define SBANK_SIZE_MASK         (0x3FFu << SBANK_SIZE_SHIFT)
+#define SBANK_STR_MASK          (0x3FFu << 4)
+#define SBANK_BYTES(v)          ((((v) & SBANK_SIZE_MASK) >> SBANK_SIZE_SHIFT) * 16u)
 #define ABOX_UAIF_CTRL0(n)      (0x0500 + 0x10 * (n))  /* resets to 0x01000010 */
 #define ABOX_UAIF_CTRL1(n)      (0x0504 + 0x10 * (n))  /* resets to 0 */
 #define ABOX_UAIF_STATUS(n)     (0x050C + 0x10 * (n))  /* ERROR_OF_SPK bit 0, ERROR_OF_MIC bit 1 */
@@ -230,11 +249,16 @@ void hakios_exynos_abox_init(void);    /* boot-arg abox=N on the Galaxy S9: the 
  *     VOL_FACTOR 0x18 [23:0] a volume (DMA_VOL_FACTOR_MAX_STEPS 0xFFFFFF); RDMA3's resets to 0
  *     VOL_CHANGE 0x1C, SBACK_LIMIT 0x20   named, no field
  *     STATUS 0x30     PROGRESS bit 31; RBUF_OFFSET [28:16] in 16-byte units; RBUF_CNT [12:0] in bytes: the position the
- *                     AP reports is offset + count, the offset taken as the start of the period being read
+ *                     AP reports is offset + count, the offset taken as the start of the period being read (the S10's
+ *                     header gives [27:16] and [11:0] for ABOX below 2.0.1: the same for any ring under 64 KB and
+ *                     periods under 4 KB, as here)
  *     the RDMA raises "buffer empty" to ABOX's GIC (IPC id RDMA0_BUF_EMPTY 0xB), the period's end as the AP takes it
  *     the firmware is told, for a stream: PCM_SET_BUFFER (the buffer's address as ABOX sees it, the period's bytes, the
  *     number of periods), PCM_PLTDAI_HW_PARAMS (rate, bit depth, channels), PCM_PLTDAI_TRIGGER (1/0), and answers
  *     with the position as an address (PCM_PLTDAI_POINTER)
+ *   FACT from the S10's ABOX driver (abox_soc.h, as above; the field has no version condition there): CTRL0 BURST_LEN
+ *   [22:19], which the AP sets before each stream (abox_rdma.c hw_params: 8, or 1 with a sample bank under 128 bytes).
+ *   The 9810's AP does not write it; the driver sets 8 when it reads 0 (abox_burst=).
  *   INFERRED (from the names and those messages; see the driver's head): BUF_STR the first byte, BUF_END one past the
  *   last, BUF_OFFSET the period's bytes, STR_POINT where to start (= BUF_STR); the format (rate, width, channels) in bits
  *   of CTRL0 or CTRL1 that nothing names. A run of the firmware (a firmware mode) would settle all of it: after its
@@ -252,6 +276,8 @@ void hakios_exynos_abox_init(void);    /* boot-arg abox=N on the Galaxy S9: the 
 #define RDMA_SBACK_LIMIT        0x20
 #define RDMA_STATUS             0x30
 #define RDMA_ENABLE             (1u << 0)
+#define RDMA_BURST_SHIFT        19
+#define RDMA_BURST_MASK         (0xFu << RDMA_BURST_SHIFT)
 #define RDMA_VOL_MASK           0xFFFFFFu
 #define RDMA_PROGRESS           (1u << 31)
 #define RDMA_RBUF_OFFSET(s)     ((((s) >> 16) & 0x1FFFu) << 4)
