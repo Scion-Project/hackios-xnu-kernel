@@ -68,6 +68,7 @@ BATTERY	arg	battery	Audio and battery	kl	hakios.adsp.c,hakios.battery.c,hakios.s
 BATTMGR	arg	battmgr	Audio and battery	k	hakios.adsp.c	every property once, for the log (which number is which on this phone's firmware)
 BRCMFMAC	arg	brcmfmac	Wi-Fi	k	hakios.brcmfmac.c,lx_brcmf.c	brcmfmac's probe: its PCI device table, BAR0 and BAR1 mapped, bus mastering on, the chip's ID
 BRCMFMAC_DEBUG	arg	brcmfmac_debug	Wi-Fi	k	lx_brcmf.c	
+BRCMFMAC_POLL	arg	brcmfmac_poll	Wi-Fi	k	lx_pci.c	
 BRCMFMAC_POLL_MS	arg	brcmfmac_poll_ms	Wi-Fi	k	lx_pci.c	
 BT	arg	bt	User space	k	hakios.bt.c	
 BT_AGAIN	arg	bt_again	User space	k	hakios.bt.c	the second look this many seconds later (0: no second look; 30)
@@ -354,7 +355,7 @@ WIFI_LISTEN	arg	wifi_listen	Wi-Fi	k	hakios.wifi.c	how long step 14 waits for the
 WIFI_LOUD	arg	wifi_loud	Wi-Fi	k	hakios.wifi.c	
 WIFI_LX	arg	wifi_lx	Wi-Fi	k	hakios.wifi.c,lx_bus.c	
 WIFI_LX_STEP	arg	wifi_lx_step	Wi-Fi	k	lx_base.c	
-WIFI_MAC	arg	wifi_mac	Wi-Fi	k	hakios.wifi.c	the radio's own address for the driver (hakios_wifi_radio_address() below; xl takes it from a file that is not in the repository)
+WIFI_MAC	arg	wifi_mac	Wi-Fi	k	hakios.brcmfmac.c,hakios.wifi.c	the radio's own address for the driver (hakios_wifi_radio_address() below; xl takes it from a file that is not in the repository)
 WIFI_MISSION	arg	wifi_mission	Wi-Fi	k	hakios.wlfw.c	
 WIFI_NEW	arg	wifi_new	Wi-Fi	k	hakios.wifi.c	steps K and later have not been seen to work (default: the last one)
 WIFI_PAUSE	arg	wifi_pause	Wi-Fi	k	hakios.wifi.c	

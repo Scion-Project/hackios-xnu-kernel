@@ -13,7 +13,7 @@
  *   config    0x127FE000  8 KB: the iATU's window for type 0 configuration requests (the first 4 KB)
  *   memory    0x11800000  16 MB less 64 KB: the window the endpoint's BARs are placed in (identity, bus = CPU address)
  *   PMU       0x14060000  +0x71C bit 0: the PHY out of isolation (PCIE_PHY_CONTROL of channel 0)
- *   SPI 253   the RC's interrupt (INTx, level high): not used here
+ *   SPI 253   the RC's interrupt (INTx, level high): the radio's driver's (hakios_exynos_pcie_intx(), brcmfmac=5)
  *   WLAN_REG_ON   gpg0-5 of PERIC0's GPIO (0x10430080): the radio's power, high = on (Samsung's dhd_custom_exynos.c)
  *   PERST#        gpf2-2 of FSYS1's GPIO (0x11430020): the endpoint's reset, high = out of reset
  *   CLKREQ#       gpf2-0 (function 2, pulled up)
@@ -35,8 +35,11 @@
  *   wifi_pcie=6   ... memory decoding on (the command register's bit 1), and the endpoint handed to the radio's driver
  *                 (sys/hakios.exynos_pcie.h; hakios.brcmfmac.c, brcmfmac=N), which sets bus mastering itself
  * Each step says what it is about to do before it does it. A link that does not come up is put back: PERST# low, the
- * LTSSM off, WLAN_REG_ON low. A link that does stays up until the run ends, for stage 2; the restart that ends every run
- * of this port takes the pins and the PHY down. Nothing here writes a PMIC: the radio's supplies are the battery's and
+ * LTSSM off, WLAN_REG_ON low. A link that does stays up until the run ends, for stage 2; on the way back to the loader
+ * (hakios_exynos_pcie_quiesce(): loader_return(), and the radio driver's hakios_wifi_stop() after it has taken the driver
+ * down) the root complex's INTx enables are cleared and the chip is held in reset and unpowered. The endpoint's
+ * configuration space is not touched then: after brcmfmac's removal (which resets the chip through its watchdog) or a
+ * panic the link may be down, and a request that never completes could keep the log from the loader. Nothing here writes a PMIC: the radio's supplies are the battery's and
  * always-on rails that Android does not switch either (the wlan node has no regulator).
  * Not done here, because stage 1 moves no data: the PCIe SysMMU (0x11420000, Android uses it), the I/O coherency bit of
  * SYSREG_FSYS1 (+0x700), MSI, the IA sequencer that retrains the CDR on an exit from L1.2 (and L1 substates themselves).
@@ -108,7 +111,15 @@ say(const char *format, ...)
 #define PMU_WAKEUP_MASK         0x610   /* bit 5: channel 0's wake-up masked (read only here) */
 
 /* ELBI (pci-exynos.h) */
-#define ELBI_IRQ_PULSE          0x000
+#define ELBI_IRQ_PULSE          0x000   /* the latch: INTA bit 0, INTB 2, INTC 4, INTD 6 (asserts); one clears */
+#define ELBI_IRQ_LEVEL          0x004
+#define ELBI_IRQ_SPECIAL        0x008
+#define ELBI_IRQ_EN_PULSE       0x00C
+#define ELBI_IRQ_EN_LEVEL       0x010
+#define ELBI_IRQ_EN_SPECIAL     0x014
+#define ELBI_IRQ_TOE_EN_PULSE2  0x034
+#define ELBI_IRQ_TOE_EN_LEVEL   0x038
+#define ELBI_INTX_ASSERTS       0x55u   /* IRQ_INTA_ASSERT | _INTB_ | _INTC_ | _INTD_ (pci-exynos.h) */
 #define ELBI_SW_WAKE            0x018   /* bit 1 clear: the bus number enabled */
 #define ELBI_APP_LTSSM_ENABLE   0x02C
 #define ELBI_RDLH_LINKUP        0x074   /* [4:0] the LTSSM's state: 0x0D-0x14 is a link (0x11 L0) */
@@ -666,6 +677,41 @@ hakios_exynos_pcie_bar(unsigned bar, uint64_t *address, uint64_t *size)
 	return true;
 }
 
+/*
+ * INTx (sys/hakios.exynos_pcie.h): what Android's exynos_pcie_enable_interrupts() writes, INTA to INTD enabled in
+ * IRQ_EN_PULSE and the TOE, LEVEL and SPECIAL sources off; the latch cleared first, so that nothing old fires.
+ */
+void
+hakios_exynos_pcie_intx(bool on)
+{
+	if (!handed_over) {
+		return;
+	}
+	wr(elbi, ELBI_IRQ_EN_PULSE, 0);
+	wr(elbi, ELBI_IRQ_PULSE, rd(elbi, ELBI_IRQ_PULSE));
+	if (on) {
+		wr(elbi, ELBI_IRQ_TOE_EN_PULSE2, 0);
+		wr(elbi, ELBI_IRQ_TOE_EN_LEVEL, 0);
+		wr(elbi, ELBI_IRQ_EN_LEVEL, 0);
+		wr(elbi, ELBI_IRQ_EN_SPECIAL, 0);
+		wr(elbi, ELBI_IRQ_EN_PULSE, ELBI_INTX_ASSERTS);
+	}
+}
+
+/* exynos_pcie_irq_handler()'s first two lines: what is latched, written back to clear it */
+uint32_t
+hakios_exynos_pcie_intx_ack(void)
+{
+	uint32_t latched;
+
+	if (!handed_over) {
+		return 0;
+	}
+	latched = rd(elbi, ELBI_IRQ_PULSE);
+	wr(elbi, ELBI_IRQ_PULSE, latched);
+	return latched;
+}
+
 /* step 6: the endpoint's memory decoding on, and the endpoint to the radio's driver */
 static void
 hand_over(void)
@@ -773,12 +819,19 @@ out:
  * in reset and its power off, PERST# low then WLAN_REG_ON low, as the stopping path above does -- if this run powered it.
  * From step 2 on the steps leave it powered "until the run ends", and with its firmware up (brcmfmac=3 and on) it is a bus
  * master with rings in the kernel's memory, which the loader reuses for the log while the BCM4361 would still write there.
+ * The radio's driver calls this too, from hakios_wifi_stop(), once it has taken brcmfmac down in order; the second call
+ * does nothing.
  */
 void
 hakios_exynos_pcie_quiesce(void)
 {
 	if (!reg_on || peric0 == 0 || fsys1 == 0) {
 		return;
+	}
+	if (handed_over) {
+		/* INTx off (brcmfmac=5): nothing latched, nothing to raise SPI 253 */
+		wr(elbi, ELBI_IRQ_EN_PULSE, 0);
+		wr(elbi, ELBI_IRQ_PULSE, rd(elbi, ELBI_IRQ_PULSE));
 	}
 	pin_out(fsys1, BANK_GPF2, PIN_PERST, 0);
 	pin_out(peric0, BANK_GPG0, PIN_WLAN_EN, 0);

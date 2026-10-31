@@ -33,5 +33,8 @@ driver BRCMFMAC
 	file    bsd/dev/hakios.brcmfmac.c
 	requires EXYNOS_PCIE
 	help    the Galaxy S9's Wi-Fi, stage 2: Linux's brcmfmac on the BCM4361 (its object, made by tools/mk-brcmfmac.sh,
-	help    is linked in with this unless WIFI's is), on the device stage 1 hands over (wifi_pcie=6, brcmfmac=N, 4 steps),
-	help    with WIFI_STA above it. Needs the firmware, NVRAM and CLM of the user's own phone in fw-wifi/ (WIFI.md of starlte)
+	help    is linked in with this unless WIFI's is), on the device stage 1 hands over (wifi_pcie=6, brcmfmac=N, 8 steps:
+	help    4 the firmware's interface, 5 INTx, 6 the phone's address, 7 the station, 8 joining), with WIFI_STA above it
+	help    (without it there is no station to give iOS),
+	help    and the radio unpowered on the way back to the loader. Needs the firmware, NVRAM and CLM of the user's own phone
+	help    in fw-wifi/ (WIFI.md of starlte)
