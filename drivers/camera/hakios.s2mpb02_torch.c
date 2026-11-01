@@ -341,7 +341,7 @@ out:
 void
 hakios_s2mpb02_torch_init(void)
 {
-	uint32_t steps = 0;
+	uint32_t steps = 0, camera = 0;
 	thread_t thread;
 
 	if (!PE_parse_boot_argn("torch", &steps, sizeof(steps)) || steps == 0) {
@@ -349,6 +349,10 @@ hakios_s2mpb02_torch_init(void)
 	}
 	if (pe_arm_get_soc_base_phys() != 0x10000000) {
 		return;                 /* not the Exynos 9810's (the POCO's torch=N is its own driver's) */
+	}
+	if (PE_parse_boot_argn("cam_s9", &camera, sizeof(camera)) && camera != 0) {
+		say("s2mpb02: not with cam_s9=%u: the camera's driver (hakios.exynos_camera.c) has this bus in this run\n", camera);
+		return;
 	}
 	torch_lock = lck_mtx_alloc_init(lck_grp_alloc_init("s2mpb02", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
 	if (kernel_thread_start(torch_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {

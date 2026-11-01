@@ -63,7 +63,7 @@ GROUPS = [
     ("Wi-Fi", r"hakios\.(wifi|wlfw|lx|sta|apple80211|exynos_pcie|brcmfmac)\.|^lx_[a-z0-9]+\.c$"),     # wifi/lx/*/lx_*.c: the Linux layer
     ("Cellular", r"hakios\.(mpss|ipa|cell|nas|qmi)\."),
     ("Audio and battery", r"hakios\.(adsp|audio|sound|speaker|mic|virtio_sound|battery|battguard|max77705|exynos_abox|max98512|guard)\."),
-    ("Cameras", r"hakios\.camera\."),
+    ("Cameras", r"hakios\.(camera|exynos_camera)\."),
     ("Touch and buttons", r"hakios\.(goodix|input|buttons|exynos_keys|s6sy761|exynos_hsi2c|virtio_input)\."),
     ("Storage and APFS", r"hakios\.(ufs|ufshc|virtio_blk|sparse|apfs_check)\.|apfs_vfsops\."),
     ("Network", r"hakios\.(net|virtio_net)\."),

@@ -67,6 +67,10 @@ void hakios_s6sy761_init(void) {}
 #ifndef HAKIOS_MAX77705
 void hakios_max77705_init(void) {}
 #endif
+#ifndef HAKIOS_EXYNOS_CAMERA
+void hakios_exynos_camera_init(void) {}
+void hakios_exynos_camera_quiesce(void) {}
+#endif
 #ifndef HAKIOS_S2MPB02_TORCH
 void hakios_s2mpb02_torch_init(void) {}
 void hakios_s2mpb02_torch_quiesce(void) {}

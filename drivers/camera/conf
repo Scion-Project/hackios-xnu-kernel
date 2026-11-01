@@ -17,5 +17,11 @@ driver S2MPB02_TORCH
 	help    the Galaxy S9's flashlight: the S2MPB02's flash block on PERIC1's HSI2C, lit by a pin (torch=N there, the same
 	help    steps as the POCO's: 1 a look, 2 once, 3 for iOS through /dev/hakios-torch)
 
+driver EXYNOS_CAMERA
+	file    bsd/dev/hakios.exynos_camera.c
+	requires EXYNOS_HSI2C
+	help    the Galaxy S9's front camera, stage 1 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK,
+	help    its model ID over I2C (1 a look, 2 powered up, read and powered down; devices/starlte/CAMERA.md has the plan)
+
 standard bsd/dev/hakios.sccam_torch.c
 	help    the phone's flashlight under AVF, through the Scion app's camera block (patch 1402)
