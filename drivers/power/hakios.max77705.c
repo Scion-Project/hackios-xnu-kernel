@@ -461,6 +461,8 @@ haptic_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 	return error;
 }
 
+static bool haptic_node_made;
+
 static int
 haptic_open(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
 {
@@ -543,11 +545,11 @@ haptic_start(void)
 	if (!motor_bits(MAINCTRL1, 0x80, 0x80) || !motor_bits(MCONFIG, 0xC2, 0x82)) {
 		return;
 	}
-	major = cdevsw_add(-1, &haptic_cdevsw);
-	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-haptic") == NULL) {
-		say("max77705: haptic: /dev/hakios-haptic cannot be made\n");
+	if (!haptic_node_made) {
+		say("max77705: haptic: /dev/hakios-haptic was not made at start\n");
 		return;
 	}
+	(void)major;
 	say("max77705: haptic: the motor for iOS (/dev/hakios-haptic): PWM %u ticks of %u Hz a period, up to %u ms a run\n",
 	    pwm_count, tick_hz, HAPTIC_MAX_MS);
 	if (kernel_thread_start(haptic_thread, NULL, &thread) == KERN_SUCCESS) {
@@ -666,6 +668,19 @@ hakios_max77705_init(void)
 		return;
 	}
 	bus_lock = lck_mtx_alloc_init(lck_grp_alloc_init("max77705", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
+	{
+		/* /dev/hakios-haptic made now, before user space starts: the audio server opens it once, at its first sound,
+		 * and keeps "not there" for good if it was not there yet (seen on the phone: the motor came up later, in the
+		 * battery's thread). Writes before the motor is ready are only listened to. */
+		uint32_t haptic = 0;
+
+		if (PE_parse_boot_argn("max77705_haptic", &haptic, sizeof(haptic)) && haptic != 0) {
+			int major = cdevsw_add(-1, &haptic_cdevsw);
+
+			haptic_node_made = major >= 0 &&
+			    devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-haptic") != NULL;
+		}
+	}
 	if (kernel_thread_start(battery_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}

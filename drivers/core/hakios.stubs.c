@@ -39,6 +39,14 @@ void hakios_var_save_on_return(void);
 void hakios_mic_quiesce(void);
 void HakiosWLANStart(const char *interface, const uint8_t *address);
 
+#ifndef HAKIOS_EXYNOS_ACPM
+void hakios_exynos_dvfs_start(void);
+void
+hakios_exynos_dvfs_start(void)
+{
+}
+#endif
+
 #ifndef HAKIOS_VIRTIO_INPUT
 void hakios_virtio_input_init(void) {}
 #endif
