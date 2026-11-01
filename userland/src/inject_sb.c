@@ -29,7 +29,8 @@
  *       com.hakios.layers      write down the layers SpringBoard has on the screen: see layers()
  *       com.hakios.switcher    open the switcher of running applications: see switcher()
  *     In any other program given this library (INJECT in build.sh) only the last of them is
- *     answered, with that program's layers.
+ *     answered, with that program's layers: its windows' and those of its CoreAnimation contexts
+ *     that have no window (chronod's, where the home screen's widgets are drawn: rc.jobs.widgets).
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <time.h>
@@ -1152,6 +1153,80 @@ web_views(id view, int depth)
 	}
 }
 
+/*
+ * The CoreAnimation contexts of this process that no window above has shown, each with its layer tree.
+ * A program that is not a UIKit application has no UIWindow at all, and its layers still reach the
+ * screen through a context of its own, hosted by another process (a CALayerHost in SpringBoard's tree,
+ * "HOST of context 0x..."). chronod is one: the home screen's widgets are drawn in its context
+ * (backboardd's touch statistics name "chronod.N contextID ..." as a destination), so what a blank
+ * widget holds -- no layer, an empty one, a picture -- is only seen from inside chronod.
+ * +[CAContext allContexts] and -[CAContext layer] are asked only where they answer.
+ */
+static void
+contexts(const unsigned *shown, long count)
+{
+	Class context_class = objc_getClass("CAContext");
+	id all = context_class != NULL && class_getClassMethod(context_class, sel_registerName("allContexts")) != NULL ?
+	    SEND(id, context_class, "allContexts") : NULL;
+	long total = all != NULL ? SEND(long, all, "count") : -1;
+
+	say("hakios: layers%s: %ld CoreAnimation contexts in all\n", layers_of, total);
+	for (long i = 0; i < total; i++) {
+		id context = SEND1(id, all, "objectAtIndex:", long, i);
+		unsigned id_of = class_respondsToSelector(object_getClass(context), sel_registerName("contextId")) ?
+		    SEND(unsigned, context, "contextId") : 0;
+		id layer = class_respondsToSelector(object_getClass(context), sel_registerName("layer")) ? SEND(id, context, "layer") : NULL;
+		bool seen = false;
+
+		for (long k = 0; k < count && !seen; k++) {
+			seen = shown[k] == id_of && id_of != 0;
+		}
+		if (seen) {
+			continue;               /* its window's tree is above */
+		}
+		say("hakios: layers%s: context %#x (%ssecure, %u commits), no window: %s\n", layers_of, id_of,
+		    class_respondsToSelector(object_getClass(context), sel_registerName("isSecure")) && SEND(BOOL, context, "isSecure") ?
+		    "" : "not ", class_respondsToSelector(object_getClass(context), sel_registerName("commitId")) ?
+		    (unsigned)SEND(unsigned long long, context, "commitId") : 0, layer != NULL ? "its layers" : "NO LAYER");
+		if (layer != NULL) {
+			layer_line(layer, "", 1);
+		}
+	}
+}
+
+/*
+ * Which of the libraries that draw a SwiftUI view are in this process, and whether Metal gives it a
+ * device. RenderBox draws with Metal where there is a device; with none (every process here but
+ * metal_test, without boot-arg metal=2) it has to take another way or draw nothing, and this says
+ * which situation a process is in. Metal is asked only when it is already loaded: this must not be
+ * what brings it in.
+ */
+static void
+renderers(void)
+{
+	static const char *const names[] = { "/RenderBox", "/SwiftUI", "/ChronoKit", "/ChronoCore", "/WidgetKit", "/Metal" };
+	char found[200] = "";
+	size_t n = 0;
+	void *metal;
+
+	for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+		const char *path = _dyld_get_image_name(i), *base = path != NULL ? strrchr(path, '/') : NULL;
+
+		for (size_t k = 0; base != NULL && k < sizeof(names) / sizeof(names[0]) && n < sizeof(found); k++) {
+			if (strcmp(base, names[k]) == 0) {
+				n += (size_t)snprintf(found + n, sizeof(found) - n, " %s", base + 1);
+			}
+		}
+	}
+	say("hakios: layers%s: drawing libraries loaded:%s\n", layers_of, n ? found : " none of them");
+	if ((metal = dlopen("/System/Library/Frameworks/Metal.framework/Metal", RTLD_NOLOAD | RTLD_LAZY)) != NULL) {
+		id (*create)(void) = (id (*)(void))dlsym(metal, "MTLCreateSystemDefaultDevice");
+		id device = create != NULL ? create() : NULL;
+
+		say("hakios: layers%s: MTLCreateSystemDefaultDevice() = %s\n", layers_of, device ? object_getClassName(device) : "nil");
+	}
+}
+
 static void
 layers(void)
 {
@@ -1162,7 +1237,11 @@ layers(void)
 	id authentication = application && class_respondsToSelector(object_getClass(application),
 	    sel_registerName("authenticationController")) ? SEND(id, application, "authenticationController") : NULL;
 
+	unsigned shown[64];
+	long shown_count = 0;
+
 	say("hakios: layers%s: %ld windows\n", layers_of, windows ? SEND(long, windows, "count") : 0L);
+	renderers();
 	if (authentication != NULL) {
 		say("hakios: layers: the user is %sauthenticated, %s passcode, the display %sin secure mode\n",
 		    SEND(BOOL, authentication, "isAuthenticated") ? "" : "NOT ", SEND(BOOL, authentication, "hasPasscodeSet") ? "a" : "no",
@@ -1177,8 +1256,12 @@ layers(void)
 		    layers_of, object_getClassName(w), SEND(double, w, "windowLevel"), context ? SEND(unsigned, context, "contextId") : 0,
 		    context && SEND(BOOL, context, "isSecure") ? "" : "not ", context ? (unsigned)SEND(unsigned long long, context, "commitId") : 0,
 		    scene ? text_of(SEND(id, scene, "_persistenceIdentifier")) : "none", scene ? SEND(long, scene, "activationState") : -1L);
+		if (context != NULL && shown_count < (long)(sizeof(shown) / sizeof(shown[0]))) {
+			shown[shown_count++] = SEND(unsigned, context, "contextId");
+		}
 		layer_line(SEND(id, w, "layer"), "", 1);
 	}
+	contexts(shown, shown_count);
 	if (application != NULL) {
 		say("hakios: layers%s: the application's state %ld (0 active, 1 inactive, 2 in the background)\n", layers_of,
 		    SEND(long, application, "applicationState"));
