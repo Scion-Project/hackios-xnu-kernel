@@ -1,0 +1,29 @@
+diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
+--- a/osfmk/arm64/psci_smp.c
++++ b/osfmk/arm64/psci_smp.c
+@@ -64,6 +64,12 @@
+ extern void loader_log_line(const char *line);
+ extern int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
+ extern unsigned long gVirtBase, gPhysBase;
++/*
++ * HakiOS (patch 1508): asked before every CPU_ON; anything but 0 and that core is not started. The Galaxy S9's big
++ * cores need six PMU fields set first (drivers/core/hakios.exynos_m3.c, m3_prep=); elsewhere, and with that driver
++ * left out, it is a stub that says go ahead (hakios.stubs.c).
++ */
++extern int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);
+ 
+ /* The firmware is called with HVC, not SMC. (start.s reads this too, at its physical address.) */
+ uint32_t psci_smp_hvc;
+@@ -221,6 +227,12 @@
+ 	uint32_t seen = 0;
+ 	int64_t status;
+ 
++	if (hakios_psci_cpu_on_prepare(cpu, phys_id) != 0) {
++		psci_smp_step("psci: cpu %d (MPIDR 0x%x) is not started: its preparation says no\n", cpu, phys_id);
++		printf("psci: cpu %d (MPIDR 0x%x) was not started: its preparation says no\n", cpu, phys_id);
++		return KERN_FAILURE;
++	}
++
+ 	/*
+ 	 * What that core reads with its MMU off: the code and the page tables of start.s, and what
+ 	 * the reset vector finds its way by (ResetHandlerData, CpuDataEntries, the boot arguments,

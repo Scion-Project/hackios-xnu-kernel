@@ -39,6 +39,13 @@ driver EXYNOS_ACPM
 	help    the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the
 	help    clocks' DVFS rates (sys/hakios.exynos_acpm.h), for the Galaxy S9's GPU; nothing of its own on the command line
 
+driver EXYNOS_M3
+	file    bsd/dev/hakios.exynos_m3.c
+	requires EXYNOS_ACPM
+	help    the Galaxy S9's big cores (four Exynos M3s): the six CLUSTER1 fields of the PMU that Samsung's kernel writes
+	help    before it starts any other core, and the cluster's state logged before CPU_ON (m3_prep=N, the first N of 3
+	help    steps: read, write, start the M3s; patch 1508 asks it before every CPU_ON)
+
 driver USB_GADGET
 	file    bsd/dev/hakios.dwc3.c
 	default n
