@@ -257,6 +257,7 @@ panel_gamma	k
 panel_gamma_log	k
 pmic	k
 pmic_list	k
+poster_retry	u
 press_power	k
 press_power_ms	k
 privs	k

@@ -236,6 +236,7 @@ PANEL_BRIGHTNESS	arg	panel_brightness	GPU and display	k	hakios.s6e3ha8.c	a brigh
 PANEL_GAMMA	arg	panel_gamma	GPU and display	k	hakios.s6e3ha8.c	gamma and AOR sent (the default)
 PANEL_GAMMA_LOG	arg	panel_gamma_log	GPU and display	k	hakios.s6e3ha8.c	all 74 rows in the log, as Android's kernel prints them at start ("gamma[nits] : ...") to set beside Android's log of the same phone
 PMIC_LIST	arg	pmic_list	Chip, thermal and PMIC	k	hakios.pmic.c	only the clock, not the inventory of every block
+POSTER_RETRY	arg	poster_retry	User space	u	poster_retry.c	
 PRESS_POWER	arg	press_power	Touch and buttons	k	hakios.buttons.c	a short press of the power key that many seconds after boot, and another ten seconds later, given to Darwin as the key's own are (hakios_touch_post):
 PRESS_POWER_MS	arg	press_power_ms	Touch and buttons	k	hakios.buttons.c	
 PRIVS	arg	privs	Security stand-ins	k	kern_minimac.c	
