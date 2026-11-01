@@ -112,6 +112,7 @@ ddr_vote	k
 display_probe	k
 early_log	k
 epoch	k
+esslog	k
 exynos_keys	k
 fb_beat	k
 fb_ca_hz	k
@@ -192,6 +193,7 @@ max77705	k
 max77705_haptic	k
 max77705_ipclk	k
 max77705_steps	k
+max77705_usbsw	k
 max98512	k
 max98512_gain	k
 md0	k

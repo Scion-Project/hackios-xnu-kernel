@@ -68,7 +68,7 @@ extern void delay(int usec);
 #define ID_CHANNELS     0x08
 #define ID_NCHANNELS    0x0C
 #define ID_AP_MAX       0x18
-#define ID_BUILD        0x60
+#define ID_BUILD        0x6C            /* seen on the phone, 1 November: three words more before build_info than the BSP's header has (0x007f0000 0x10 0x40), then "92dbdb1" */
 
 #define CH_SIZE         0x48
 #define CH_ID           0x00
@@ -207,6 +207,11 @@ acpm_setup(int (*say)(const char *, ...))
 	}
 	if (!printable(INITDATA + ID_BUILD, 25)) {
 		say("acpm: no firmware's table at SRAM +%#x (its version string is not text): not used\n", INITDATA);
+		for (uint32_t o = 0; o < 0x80; o += 0x20) {
+			say("acpm: SRAM +%#x: %08x %08x %08x %08x %08x %08x %08x %08x\n", INITDATA + o, srd(INITDATA + o),
+			    srd(INITDATA + o + 4), srd(INITDATA + o + 8), srd(INITDATA + o + 12), srd(INITDATA + o + 16),
+			    srd(INITDATA + o + 20), srd(INITDATA + o + 24), srd(INITDATA + o + 28));
+		}
 		return false;
 	}
 	copy_string(INITDATA + ID_BUILD, version, sizeof(version));

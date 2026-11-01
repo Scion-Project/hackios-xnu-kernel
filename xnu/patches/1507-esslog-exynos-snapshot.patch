@@ -1,0 +1,99 @@
+diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
+--- a/osfmk/arm64/loader_return.c	2026-11-01 19:38:28
++++ b/osfmk/arm64/loader_return.c	2026-11-01 19:38:28
+@@ -21,6 +21,7 @@
+ #include <kern/thread_call.h>
+ #include <kern/clock.h>
+ #include <arm/cpu_internal.h>
++#include <arm/machine_routines.h>
+ #include <arm64/psci_smp.h>
+ #include <arm64/proc_reg.h>
+ #include <pexpert/pexpert.h>
+@@ -179,7 +180,31 @@
+ 	__builtin_arm_wsr64("DAIF", daif);
+ }
+ 
++/*
++ * esslog (Galaxy S9): every character of the log also into Samsung's exynos-snapshot kernel log buffer
++ * (log_kernel, PA 0xFDA10000, 2 MB; header at ess_setup 0xFDA00000, last write position at +0x200), so that
++ * after a restart TWRP's kernel offers this run's whole log as /proc/last_kmsg (drivers/trace/exynos-ss.c,
++ * drivers/staging/samsung/sec_debug_last_kmsg.c). boot-arg esslog=1.
++ */
++#define ESSLOG_HDR_PA   0xFDA00000ULL
++#define ESSLOG_BUF_PA   0xFDA10000ULL
++#define ESSLOG_SIZE     (2u * 1024 * 1024)
++#define ESSLOG_MAGIC    0x0000000a6c6c7546ULL
++static volatile uint8_t *esslog_hdr, *esslog_buf;
++static uint32_t esslog_at;
+ static void
++esslog_put(char c)
++{
++	esslog_buf[esslog_at++] = (uint8_t)c;
++	if (esslog_at >= ESSLOG_SIZE - 8) {
++		*(volatile uint64_t *)(esslog_buf + ESSLOG_SIZE - 8) = ESSLOG_MAGIC;
++		esslog_at = 0;
++	}
++	if (c == '\n') {
++		*(volatile uint32_t *)(esslog_hdr + 0x200) = (uint32_t)(ESSLOG_BUF_PA + esslog_at);
++	}
++}
++static void
+ loader_log_put_locked(char c)
+ {
+ 	void (*tap)(char) = loader_log_tap;
+@@ -187,6 +212,9 @@
+ 	if (tap != NULL) {
+ 		tap(c);
+ 	}
++	if (esslog_buf != NULL) {
++		esslog_put(c);
++	}
+ 	if (loader_log_linear || loader_log_len < LOADER_LOG_HEAD) {
+ 		if (loader_log_len < LOADER_LOG_SIZE) {
+ 			loader_log[loader_log_len++] = c;
+@@ -885,3 +913,45 @@
+ 	hv_wdt_pet(NULL, NULL);
+ }
+ STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, hv_wdt_pet_init);
++
++void hakios_esslog_start(void);
++void
++hakios_esslog_start(void)
++{
++	uint32_t on = 0, len;
++	uint64_t daif;
++	bool locked = false;
++	volatile uint8_t *hdr, *buf;
++
++	if (!PE_parse_boot_argn("esslog", &on, sizeof(on)) || on == 0) {
++		return;
++	}
++	hdr = (volatile uint8_t *)ml_io_map(ESSLOG_HDR_PA, 0x1000);
++	buf = (volatile uint8_t *)ml_io_map_wcomb(ESSLOG_BUF_PA, ESSLOG_SIZE);
++	if (hdr == NULL || buf == NULL) {
++		printf("esslog: could not map\n");
++		return;
++	}
++	*(volatile uint64_t *)(buf + ESSLOG_SIZE - 8) = 0;
++	daif = __builtin_arm_rsr64("DAIF");
++	__builtin_arm_wsr("DAIFSet", DAIFSC_IRQF | DAIFSC_FIQF);
++	for (uint32_t tries = 0; !locked && tries < 10000000; tries++) {
++		locked = os_atomic_cmpxchg(&loader_log_lock, 0, 1, acquire);
++	}
++	len = loader_log_len < LOADER_LOG_HEAD || loader_log_linear || !loader_log_wrapped ? loader_log_len : LOADER_LOG_HEAD;
++	if (len > ESSLOG_SIZE - 64) {
++		len = ESSLOG_SIZE - 64;
++	}
++	for (uint32_t i = 0; i < len; i++) {
++		buf[i] = (uint8_t)loader_log[i];
++	}
++	esslog_at = len;
++	esslog_hdr = hdr;
++	*(volatile uint32_t *)(hdr + 0x200) = (uint32_t)(ESSLOG_BUF_PA + esslog_at);
++	esslog_buf = buf;
++	if (locked) {
++		os_atomic_store(&loader_log_lock, 0, release);
++	}
++	__builtin_arm_wsr64("DAIF", daif);
++	printf("esslog: the log goes to exynos-snapshot's log_kernel too (%u bytes so far): /proc/last_kmsg in TWRP\n", len);
++}

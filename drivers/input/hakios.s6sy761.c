@@ -94,7 +94,7 @@ static struct hakios_hsi2c bus = {
 	.qch = 0x3038, .div = 0x1810, .mux = 0x0120,
 	.pins_pa = 0x10430020,                  /* PERIC0 GPIO, bank gpp1: SCL pin 4, SDA pin 5 */
 	.pins_mask = 0xffu << 16, .pins_want = 0x22u << 16,
-	.ipclk_mhz = 200, .bus_hz = 400000,
+	.ipclk_mhz = 400, .bus_hz = 400000,       /* seen on the phone, 1 November: CMU divider 0 on the 400 MHz branch */
 };
 
 /* ---- the chip ---- */
