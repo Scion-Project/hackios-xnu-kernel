@@ -207,6 +207,14 @@ acpm_setup(int (*say)(const char *, ...))
 	}
 	if (!printable(INITDATA + ID_BUILD, 25)) {
 		say("acpm: no firmware's table at SRAM +%#x (its version string is not text): not used\n", INITDATA);
+		for (uint32_t o = 0; o < 0x80; o += 0x20) {
+			say("acpm: SRAM +%#x: %08x %08x %08x %08x %08x %08x %08x %08x\n", INITDATA + o, srd(INITDATA + o),
+			    srd(INITDATA + o + 4), srd(INITDATA + o + 8), srd(INITDATA + o + 12), srd(INITDATA + o + 16),
+			    srd(INITDATA + o + 20), srd(INITDATA + o + 24), srd(INITDATA + o + 28));
+		}
+		for (uint32_t o = 0x3000; o < 0x30000; o += 0x3000) {
+			say("acpm: SRAM +%#x: %08x %08x %08x %08x\n", o, srd(o), srd(o + 4), srd(o + 8), srd(o + 12));
+		}
 		return false;
 	}
 	copy_string(INITDATA + ID_BUILD, version, sizeof(version));

@@ -871,16 +871,17 @@ static int
 dma_alloc(void)
 {
 	vm_offset_t va = 0;
-	ppnum_t below_4g = (ppnum_t)((4ULL << 30) >> PAGE_SHIFT) - 1;
+	/* any address: the 9810's DWC3 takes 64-bit TRB and event-buffer pointers, and this kernel's RAM is above 4 GB
+	 * (0x880000000 on, seen 1 November) */
 
-	if (kmem_alloc_contig(kernel_map, &va, round_page(DMA_SIZE), PAGE_MASK, below_4g, 0,
+	if (kmem_alloc_contig(kernel_map, &va, round_page(DMA_SIZE), PAGE_MASK, 0, 0,
 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
 		return ENOMEM;
 	}
 	FlushPoC_DcacheRegion(va, round_page(DMA_SIZE));
 	dma_pa = kvtophys(va);
 	dma = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)dma_pa, round_page(DMA_SIZE), VM_WIMG_WCOMB);
-	if (dma == NULL || dma_pa + DMA_SIZE > (4ULL << 30)) {
+	if (dma == NULL) {
 		return ENOMEM;
 	}
 	for (uint32_t i = 0; i < DMA_SIZE; i += 4) {
@@ -1017,7 +1018,7 @@ bring_up(void)
 		return false;
 	}
 
-	say("usb: 3: memory for the controller (32 KB below 4 GB, uncached)\n");
+	say("usb: 3: memory for the controller (32 KB, uncached)\n");
 	if (dma_alloc() != 0) {
 		say("usb: 3: no memory for the controller; off\n");
 		return false;

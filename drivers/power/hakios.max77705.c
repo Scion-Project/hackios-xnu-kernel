@@ -568,6 +568,23 @@ battery_thread(void *arg, __unused wait_result_t result)
 	}
 	say("max77705: step 2: the clocks of CMGP's USI03 on, USI03 to I2C; the ADC's clocks on, the ADC reset\n");
 	hakios_hsi2c_power(&bus);
+	{
+		/* the bus's pins: GPM14-0 (SCL) and GPM15-0 (SDA) of CMGP's pin controller (0x14220000; banks at +0x180/+0x1A0,
+		 * CON +0, DAT +4, PUD +8): function 2, no pull (the device tree's hsi2c40-bus) */
+		vm_offset_t g = ml_io_map(0x14220000, 0x1000);
+
+		if (g != 0) {
+			for (uint32_t b = 0x180; b <= 0x1A0; b += 0x20) {
+				volatile uint32_t *con = (volatile uint32_t *)(g + b), *pud = (volatile uint32_t *)(g + b + 8);
+				uint32_t c0 = *con, p0 = *pud;
+
+				*con = (c0 & ~0xfu) | 2;
+				*pud = p0 & ~0xfu;
+				say("max77705: pins: bank +%#x CON %x -> %x, PUD %x -> %x, DAT %x\n", b, c0, *con, p0, *pud,
+				    *(volatile uint32_t *)(g + b + 4));
+			}
+		}
+	}
 	adc_init();
 	if (++step >= steps) {
 		goto out;
@@ -588,6 +605,21 @@ battery_thread(void *arg, __unused wait_result_t result)
 		say("max77705: the gauge or the charger did not answer (%x)\n", bus.last_error);
 	} else {
 		say_state("now", &b);
+	}
+	{
+		/*
+		 * max77705_usbsw=1: the USB-C switch's D+/D- to the AP's USB (Samsung's com_to_usb_ap: the MUIC at 0x25, opcode
+		 * COMMAND_CONTROL1_WRITE 0x06 with COM_USB 0x09, written to OPCODE_WRITE 0x21, then OPCODE_WRITE_END 0x41 = 0).
+		 */
+		uint32_t usbsw = 0;
+
+		if (PE_parse_boot_argn("max77705_usbsw", &usbsw, sizeof(usbsw)) && usbsw != 0) {
+			uint8_t w1[3] = { 0x21, 0x06, 0x09 }, w2[2] = { 0x41, 0x00 };
+			uint32_t e1 = hakios_hsi2c_message(&bus, 0x25, false, w1, 3, true);
+			uint32_t e2 = e1 ? e1 : hakios_hsi2c_message(&bus, 0x25, false, w2, 2, true);
+
+			say("max77705: usb switch: CONTROL1 = 0x09 (D+/D- to the AP's USB): %s (%x)\n", e2 ? "FAILED" : "written", e2);
+		}
 	}
 	if (++step >= steps) {
 		goto out;

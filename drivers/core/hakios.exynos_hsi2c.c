@@ -135,6 +135,8 @@ hakios_hsi2c_power(struct hakios_hsi2c *bus)
 		if ((con & bus->pins_mask) != bus->pins_want) {
 			*(volatile uint32_t *)bus->pins = (con & ~bus->pins_mask) | bus->pins_want;
 		}
+		/* no pull on the two pins (PUD at +8, the same 4-bit fields as CON): the device tree's pin-pud = <0> */
+		*(volatile uint32_t *)(bus->pins + 8) &= ~bus->pins_mask;
 	}
 }
 
@@ -230,6 +232,15 @@ hakios_hsi2c_message(struct hakios_hsi2c *bus, uint8_t addr, bool reading, uint8
 	if ((status & INT_ERRORS) || late) {
 		bus->errors++;
 		bus->last_error = (status & INT_ERRORS) ? (status & INT_ERRORS) : 1;
+		if (bus->errors <= 3) {
+			printf("%s: hsi2c failed (addr %02x %s len %u done %u late %d): CTL %08x FIFO_CTL %08x INT_EN %08x INT_STAT %08x "
+			    "FIFO_STAT %08x CONF %08x AUTO_CONF %08x TIMEOUT %08x TRANS_STATUS %08x FS1 %08x FS2 %08x FS3 %08x "
+			    "ADDR %08x USI_CON %08x USI_OPT %08x; pins CON %08x DAT %08x\n", bus->name, addr, reading ? "read" : "write",
+			    len, done, late, rd(r, CTL), rd(r, FIFO_CTL), rd(r, INT_EN), rd(r, INT_STAT), rd(r, FIFO_STAT), rd(r, CONF),
+			    rd(r, AUTO_CONF), rd(r, TIMEOUT), rd(r, TRANS_STATUS), rd(r, TIMING_FS1), rd(r, TIMING_FS2),
+			    rd(r, TIMING_FS3), rd(r, ADDR), rd(r, USI_CON), rd(r, 0xC8),
+			    bus->pins ? *(volatile uint32_t *)bus->pins : 0, bus->pins ? *(volatile uint32_t *)(bus->pins + 4) : 0);
+		}
 		hakios_hsi2c_reset(bus);
 		return bus->last_error;
 	}

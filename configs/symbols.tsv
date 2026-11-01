@@ -178,6 +178,7 @@ MAX77705	arg	max77705	Audio and battery	k	hakios.max77705.c
 MAX77705_HAPTIC	arg	max77705_haptic	Audio and battery	k	hakios.max77705.c	
 MAX77705_IPCLK	arg	max77705_ipclk	Audio and battery	k	hakios.max77705.c	
 MAX77705_STEPS	arg	max77705_steps	Audio and battery	k	hakios.max77705.c	
+MAX77705_USBSW	arg	max77705_usbsw	Audio and battery	k	hakios.max77705.c	
 MAX98512	arg	max98512	Audio and battery	k	hakios.max98512.c	a look: the bus brought up (its clocks, the USI, the pins), both chips' revisions and registers
 MAX98512_GAIN	arg	max98512_gain	Audio and battery	k	hakios.max98512.c	the bottom speaker's gain at start, 1 to 5 (+3 to +15 dB; 1); the top one's is always 1
 MD0	arg	md0	User space	k	1101-virtio-disk-as-md0.patch	
