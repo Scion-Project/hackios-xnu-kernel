@@ -216,11 +216,13 @@ static const struct cdevsw touch_cdevsw = {
 	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = 0
 };
 
-extern void hakios_esslog_start(void);   /* osfmk/arm64/loader_return.c, patch 1507 */
+extern void hakios_esslog_start(void);
+extern void hakios_exynos_dvfs_start(void);   /* drivers/core/hakios.exynos_acpm.c */   /* osfmk/arm64/loader_return.c, patch 1507 */
 void
 hakios_input_init(void)
 {
 	hakios_esslog_start();
+	hakios_exynos_dvfs_start();
 	int major = cdevsw_add(-1, &touch_cdevsw);
 
 	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-touch") == NULL) {

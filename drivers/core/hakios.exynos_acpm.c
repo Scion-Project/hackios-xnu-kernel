@@ -44,6 +44,7 @@
  * s9p-acpm, what was measured on that phone: the faulting pages, 32-bit accesses, the queues' direction, the stale
  * answers, the timeout). All GPL: read for these facts, not one line copied.
  */
+#include <pexpert/pexpert.h>
 #include <kern/clock.h>
 #include <kern/locks.h>
 #include <libkern/libkern.h>
@@ -441,4 +442,43 @@ hakios_acpm_dvfs_set(uint32_t index, uint32_t khz)
 	uint32_t cmd[4] = { index, khz, 0, 0 };
 
 	return hakios_acpm_request(HAKIOS_ACPM_CH_DVFS, cmd);
+}
+
+/*
+ * The Galaxy S9's CPU clocks through ACPM's DVFS (Samsung's cal_dfs_set_rate -> exynos_acpm_set_rate: domain index,
+ * kHz, FREQ_REQ). acpm_dvfs_exynos9810.h: dvfs_cpucl0 (the A55s) is index 2, dvfs_cpucl1 (the M3s) index 3.
+ * boot-args cpufreq_lit=kHz, cpufreq_big=kHz; nothing without them.
+ */
+extern void loader_log_line(const char *line);
+void hakios_exynos_dvfs_start(void);
+void
+hakios_exynos_dvfs_start(void)
+{
+	static const struct { const char *arg, *name; uint32_t index; } doms[] = {
+		{ "cpufreq_lit", "the A55s (cpucl0)", 2 }, { "cpufreq_big", "the M3s (cpucl1)", 3 },
+	};
+
+	for (uint32_t i = 0; i < sizeof(doms) / sizeof(doms[0]); i++) {
+		uint32_t want = 0, before = 0, after = 0;
+		int e1, e2, e3;
+
+		if (!PE_parse_boot_argn(doms[i].arg, &want, sizeof(want)) || want == 0) {
+			continue;
+		}
+		if (!hakios_acpm_init(printf)) {
+			printf("dvfs: no ACPM: %s left as they are\n", doms[i].name);
+			return;
+		}
+		e1 = hakios_acpm_dvfs_get(doms[i].index, &before);
+		e2 = hakios_acpm_dvfs_set(doms[i].index, want);
+		e3 = hakios_acpm_dvfs_get(doms[i].index, &after);
+		{
+			char line[160];
+
+			snprintf(line, sizeof(line), "dvfs: %s: %u kHz (%d) -> asked %u kHz (%d) -> now %u kHz (%d)\n", doms[i].name,
+			    before, e1, want, e2, after, e3);
+			printf("%s", line);
+			loader_log_line(line);
+		}
+	}
 }

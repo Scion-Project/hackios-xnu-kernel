@@ -225,7 +225,8 @@ read_events(void)
 	uint8_t one[EVENT_SIZE], rest[EVENT_SIZE * EVENTS_MOST];
 	uint32_t left;
 
-	if (chip_read(CMD_ONE_EVENT, one, sizeof(one)) != 0 || one[0] == 0) {
+	/* one retry: a lost read can be a finger's "up" (seen on the phone: ~3 failed transfers a minute) */
+	if ((chip_read(CMD_ONE_EVENT, one, sizeof(one)) != 0 && chip_read(CMD_ONE_EVENT, one, sizeof(one)) != 0) || one[0] == 0) {
 		return;
 	}
 	handle_event(one);
@@ -239,7 +240,7 @@ read_events(void)
 		(void)chip_write(CMD_CLEAR_EVENTS, NULL, 0);
 		return;
 	}
-	if (chip_read(CMD_ALL_EVENTS, rest, left * EVENT_SIZE) != 0) {
+	if (chip_read(CMD_ALL_EVENTS, rest, left * EVENT_SIZE) != 0 && chip_read(CMD_ALL_EVENTS, rest, left * EVENT_SIZE) != 0) {
 		return;
 	}
 	for (uint32_t i = 0; i < left; i++) {
