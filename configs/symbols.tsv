@@ -88,6 +88,8 @@ CAM_GAIN	arg	cam_gain	Cameras	k	hakios.camera.c
 CAM_KEEP_MB	arg	cam_keep_mb	Cameras	k	hakios.camera.c	
 CAM_MODE	arg	cam_mode	Cameras	k	hakios.camera.c	
 CAM_PATTERN	arg	cam_pattern	Cameras	k	hakios.camera.c	
+CAM_S9	arg	cam_s9	Cameras	k	hakios.exynos_camera.c,hakios.s2mpb02_torch.c	a look, reading only (but for the S2MPB02's bus, set up as the flashlight's driver sets it up): the pins
+CAM_S9_IPCLK	arg	cam_s9_ipclk	Cameras	k	hakios.exynos_camera.c	
 CAM_SENSOR	arg	cam_sensor	Cameras	k	hakios.camera.c	
 CAM_SETTLE	arg	cam_settle	Cameras	k	hakios.camera.c	
 CAM_SHUTTER	arg	cam_shutter	Cameras	k	hakios.camera.c	
