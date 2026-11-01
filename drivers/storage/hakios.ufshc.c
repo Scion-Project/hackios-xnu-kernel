@@ -400,6 +400,7 @@ static vm_offset_t hc;                          /* the registers */
 static vm_offset_t hc_vs;                       /* the vendor's */
 static const struct ufshc_soc *hc_soc = SOC_SHARED;
 static struct ufshc_soc hc_soc_own;             /* own mode: the SoC's, with what UEFI's own read showed */
+static bool hc_qemu_ufs;                        /* the controller is QEMU's -device ufs (1b36:0013): see hc_scsi_result */
 static int hc_mode;
 static struct ufshc_loader hc_loader;
 static uint32_t hc_list_lo, hc_list_hi;         /* this kernel's list's address */
@@ -1407,13 +1408,14 @@ hc_scsi_result(struct hc_slot *s, uint8_t lun, const char *what, bool quiet)
 		 * QEMU's UFS model (hw/ufs/lu.c ufs_build_scsi_response_upiu, through 10.1 at least) swaps the data
 		 * segment length to big-endian twice, so it arrives little-endian: 2 reads as 0x0200, 2 + 18 bytes
 		 * of sense as 0x1400. Linux's ufshcd never reads this field (it takes the sense length from the
-		 * segment itself), so nothing else notices. A length that only fits swapped is taken swapped, and
-		 * said once; one that fits neither way is still refused.
+		 * segment itself), so nothing else notices; QEMU upstream fixed it in ed621cc8. Only on QEMU's
+		 * controller (1b36:0013) is a length that only fits swapped taken swapped, and said once: on a phone it
+		 * is a protocol error like any other.
 		 */
 		uint32_t swapped = (seg >> 8 | seg << 8) & 0xffff;
 		static bool said_swapped;
 
-		if (swapped > hc_soc->rsp_length - 32) {
+		if (!hc_qemu_ufs || swapped > hc_soc->rsp_length - 32) {
 			return hc_protocol(s, what, "data segment length");
 		}
 		if (!said_swapped) {
@@ -2364,6 +2366,7 @@ hc_pci_find(void)
 		if ((d->class_rev >> 8) != 0x010901 && !(d->vendor == 0x1b36 && d->device == 0x0013)) {
 			continue;
 		}
+		hc_qemu_ufs = (d->vendor == 0x1b36 && d->device == 0x0013);
 		bar0 = hakios_pci_cfg_read32(d, 0x10);
 		bar1 = hakios_pci_cfg_read32(d, 0x14);
 		cmd = hakios_pci_cfg_read16(d, 0x04);
