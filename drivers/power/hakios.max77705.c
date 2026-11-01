@@ -120,7 +120,7 @@ static struct hakios_hsi2c bus = {
 	.gates = { 0x2014, 0x20A8, 0x20AC, 0x2074 }, .ngates = 4,
 	.qch = 0x3050, .div = 0x1814, .mux = 0x1018,
 	.pins_pa = 0,                           /* GPM14-0 and GPM15-0: the boot loader talks to the chip, they are set */
-	.ipclk_mhz = 200, .bus_hz = 400000,
+	.ipclk_mhz = 400, .bus_hz = 400000,       /* seen on the phone, 1 November: CMU divider 0 on the 400 MHz branch */
 };
 
 /* The bus is the battery's and the motor's (max77705_haptic=1): one transfer at a time, whoever asks. */

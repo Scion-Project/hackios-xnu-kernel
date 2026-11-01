@@ -112,6 +112,7 @@ ddr_vote	k
 display_probe	k
 early_log	k
 epoch	k
+esslog	k
 exynos_keys	k
 fb_beat	k
 fb_ca_hz	k
