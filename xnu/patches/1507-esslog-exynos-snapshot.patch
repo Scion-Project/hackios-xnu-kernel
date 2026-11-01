@@ -1,15 +1,15 @@
 diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
---- a/osfmk/arm64/loader_return.c	2026-11-01 19:38:28
-+++ b/osfmk/arm64/loader_return.c	2026-11-01 19:38:28
-@@ -21,6 +21,7 @@
- #include <kern/thread_call.h>
+--- a/osfmk/arm64/loader_return.c
++++ b/osfmk/arm64/loader_return.c
+@@ -22,6 +22,7 @@
  #include <kern/clock.h>
  #include <arm/cpu_internal.h>
+ #include <arm/machine_routines.h>
 +#include <arm/machine_routines.h>
  #include <arm64/psci_smp.h>
  #include <arm64/proc_reg.h>
  #include <pexpert/pexpert.h>
-@@ -179,7 +180,31 @@
+@@ -180,7 +181,31 @@
  	__builtin_arm_wsr64("DAIF", daif);
  }
  
@@ -41,7 +41,7 @@ diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
  loader_log_put_locked(char c)
  {
  	void (*tap)(char) = loader_log_tap;
-@@ -187,6 +212,9 @@
+@@ -188,6 +213,9 @@
  	if (tap != NULL) {
  		tap(c);
  	}
@@ -51,7 +51,7 @@ diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
  	if (loader_log_linear || loader_log_len < LOADER_LOG_HEAD) {
  		if (loader_log_len < LOADER_LOG_SIZE) {
  			loader_log[loader_log_len++] = c;
-@@ -885,3 +913,45 @@
+@@ -886,3 +914,45 @@
  	hv_wdt_pet(NULL, NULL);
  }
  STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, hv_wdt_pet_init);
