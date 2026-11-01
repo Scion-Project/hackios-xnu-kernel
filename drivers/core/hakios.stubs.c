@@ -123,6 +123,11 @@ void hakios_s6e3ha8_init(void) {}
 #ifndef HAKIOS_USB_GADGET
 void hakios_usb_gadget_quiesce(void) {}
 #endif
+#ifndef HAKIOS_EXYNOS_M3
+int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);
+/* before CPU_ON (psci_smp.c, patch 1508): go ahead, nothing to prepare */
+int hakios_psci_cpu_on_prepare(__unused int cpu, __unused uint32_t mpidr) { return 0; }
+#endif
 #ifndef HAKIOS_EXYNOS_USB
 struct hakios_usb_glue;
 const struct hakios_usb_glue *hakios_usb_glue_exynos9810(void);

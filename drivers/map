@@ -79,6 +79,7 @@ core     bsd/dev/hakios.platform.c
 core     bsd/dev/hakios.stubs.c
 core     bsd/dev/hakios.exynos_hsi2c.c
 core     bsd/dev/hakios.exynos_acpm.c
+core     bsd/dev/hakios.exynos_m3.c
 core     bsd/dev/hakios.dwc3.c
 core     bsd/dev/hakios.usb_acm.h
 core     bsd/dev/hakios.usb_glue.h

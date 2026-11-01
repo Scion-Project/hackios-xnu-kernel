@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **434 arguments**: 373 read by the kernel, 16 by the loader, 55 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **435 arguments**: 374 read by the kernel, 16 by the loader, 55 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -472,7 +472,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (50)
+## User space (51)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -500,6 +500,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `gpu3d` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D` |  |
 | `gpu3d_size` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D_SIZE` |  |
 | `ioaes` | K | `MiniIOAESAccelerator.cpp` | `CONFIG_IOAES` |  |
+| `m3_prep` | K | `hakios.exynos_m3.c` | `CONFIG_M3_PREP` |  |
 | `md0` | K | `1101-virtio-disk-as-md0.patch` | `CONFIG_MD0` |  |
 | `metal_profile` | U | `hakiosmetal_air.m` | `CONFIG_METAL_PROFILE` |  |
 | `root_apfs` | U | `init.c` | `CONFIG_ROOT_APFS` |  |
