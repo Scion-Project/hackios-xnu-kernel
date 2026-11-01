@@ -1,0 +1,55 @@
+# Commands run by the launchd job com.hakios.demo (RC_JOBS=rc.jobs.widgets).
+#
+# WHAT THIS BOOT IS FOR: why the home screen's widgets (Weather, Calendar) are blank white boxes on
+# the Galaxy S9. The widgets are drawn in chronod's own CoreAnimation context, which SpringBoard hosts
+# (backboardd's touch statistics name "chronod.N contextID ..." as a destination), so the question
+# is answered from both sides: SpringBoard's layers say where the widget's host layer is and which
+# context it shows, chronod's say what that context holds.
+#
+# Build the root with chronod given the layer dump and its own log on the console:
+#
+#   INJECT="/redwood/lib/libhakios.dylib backboardd containermanagerd containermanagerd_system
+#   /redwood/lib/libhakios.sb.dylib SpringBoard chronod
+#   /redwood/lib/libhakios.media.dylib mediaserverd
+#   /redwood/lib/libhakios.app.dylib Sileo WeatherWidget CalendarWidgetExtension
+#   /redwood/lib/libhakios.tweaks.dylib Preferences" \
+#   OSLOG="com.apple.backboardd com.apple.chronod" RC_JOBS=rc.jobs.widgets ... build.sh
+#
+# (libhakios.app.dylib in the two extensions gives them a standard error -- the console -- and the
+# stack of a signal that kills them; kern.exec_inject holds 512 bytes, and this list is 307.)
+#
+# The widgets' extensions are started in the middle of SpringBoard's start-up rush, and on two
+# Cortex-A55s (cpus=2) launchd kills about half of them at its 5 s check-in deadline
+# (XPC_EXIT_REASON_EXTENSION_CHECK_IN_TIMEOUT; runs/usb-1101.log, 1 November). So the layers are
+# asked for twice: in the rush, and four minutes later, when chronod has had time to ask again.
+/redwood/bin/rwtouch wait 25 swipe 0.5 0.985 0.5 0.3 200 wait 40
+/redwood/bin/rwtouch notify com.hakios.layers wait 20
+/redwood/bin/rwtouch wait 240 notify com.hakios.layers wait 20
+#
+# WHAT TO READ (grep -a; a boot log has NUL bytes in it):
+#
+#   grep -a 'XPC_EXIT_REASON_EXTENSION_CHECK_IN_TIMEOUT\|checked in as alive' LOG
+#       which widget extensions were killed at 5 s and which checked in, and when
+#   grep -a 'hakios: layers of chronod' LOG
+#       chronod's contexts. "drawing libraries loaded" and "MTLCreateSystemDefaultDevice() = nil" say
+#       which way RenderBox has to draw. Then, under "context 0x... no window: its layers", one tree
+#       per widget: layers with "contents ..." are drawn pictures (text, symbols); a tree of bare
+#       layers with no contents and no colour is a widget whose view has not been drawn; NO tree at all
+#       for a widget means chronod has nothing to show for it (no timeline came)
+#   grep -a 'HOST of context' LOG
+#       in SpringBoard's tree: the CALayerHost of each widget and the context it shows, which must be
+#       one of chronod's above
+#   grep -a 'chronod\[' LOG
+#       chronod's own log (OSLOG): its requests for timelines, their timeouts, and anything it says
+#       about rendering an entry or RenderBox
+#   grep -a 'hakios: WeatherWidget\|hakios: CalendarWidgetExt' LOG
+#       a signal or a Swift runtime error inside an extension
+#
+# HOW TO READ THE ANSWER:
+#   - chronod has no tree for a widget, or its log says the timeline request timed out or the
+#     extension went away: the widget is blank because no timeline came, not because of drawing. The
+#     cure is time (poster_retry=2 restarts chronod once the rush is over; more cores)
+#   - chronod has the widget's tree but the layers that should carry text or images have no contents:
+#     the view is there and was not drawn; read chronod's log for RenderBox and Metal
+#   - chronod's layers have contents and the screen is still white: the picture is lost between the
+#     two processes (the CALayerHost, or the window server); compare the SpringBoard HOST line
