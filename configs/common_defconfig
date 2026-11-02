@@ -225,7 +225,7 @@ CONFIG_HAKIOS_BRCMFMAC=y
 # the phone's storage: 1 a survey, read only; 2 the loader's block service, through which the kernel reads it (the ...
 CONFIG_UFS=2
 
-# let the kernel write, to the partition `darwin` and nowhere else (writes to the phone's storage: it is the one ... [requires CONFIG_UFS=2]
+# let the kernel write, to the partition `darwin` (the Galaxy S9: `USERDATA`, all of it) and nowhere else (writes to ... [requires CONFIG_UFS=2]
 # CONFIG_UFS_WRITE is not set
 
 # keep /private/var across reboots, in the partition `darwin` [requires CONFIG_UFS_WRITE]

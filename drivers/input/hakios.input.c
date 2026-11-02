@@ -70,6 +70,7 @@ static uint32_t touch_head, touch_tail;        /* read from head, add at tail */
 #define EXIT_HOLD_MS    1500
 
 extern void loader_return(void);
+extern void hakios_var_save_on_return(void);    /* drivers/storage/hakios.ufs.c: the data volume synced into the flash */
 
 static thread_call_t exit_call;
 static uint32_t fingers_down;           /* one bit for each finger a driver says is down */
@@ -78,6 +79,7 @@ static void
 exit_hold_elapsed(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 {
 	printf("\n--- %d fingers held on the screen for %d ms: back to the loader ---\n", EXIT_FINGERS, EXIT_HOLD_MS);
+	hakios_var_save_on_return();    /* as when the run's time is up: the data volume's last writes first */
 	hakios_adreno_stop();
 	loader_return();
 }

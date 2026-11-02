@@ -16,7 +16,23 @@ is in free space does not matter to HFS Plus, and twelve gigabytes of zeros need
 included: which those are is read from the volume's own allocation bitmap.
 
 Case-sensitive (HFSX), as Darwin's own data volume is, and journaled.
+
+The Galaxy S9 has no darwin: Android's USERDATA, given up, is the data volume, all of it, from its first block
+(drivers/storage/hakios.ufs.c and xnuloader/loader.c: data_part; init: var_hfs=ufs_USERDATA_data). TWRP has no
+fastboot sparse images to flash, so for it:
+
+usage: mkdatavol.py --userdata BLOCKS OUTDIR [MKFS]   (BLOCKS: USERDATA's size in blocks of 4096, as TWRP's
+                                                      blockdev --getsize64 /dev/block/by-name/USERDATA / 4096 says)
+
+makes a volume of exactly BLOCKS blocks and writes the blocks it uses, which come in two stretches: the head (the
+volume header, the allocation bitmap, the extents and catalog trees, the journal) as OUTDIR/userdata-head.img.gz,
+and the end (the alternate volume header) as OUTDIR/userdata-tail.img, with OUTDIR/userdata.txt saying where each
+goes and the head's SHA-256 to read back. Nothing else of USERDATA is written: what was in free space does not
+matter to HFS Plus. MKFS may be mkfs.hfsplus (Linux, on a file) or macOS's newfs_hfs (on the file attached with
+hdiutil as a raw disk, no root needed).
 """
+import gzip
+import hashlib
 import os
 import struct
 import subprocess
@@ -55,7 +71,63 @@ def used_blocks(img):
     return total, lambda b: bitmap[b >> 3] & (0x80 >> (b & 7))
 
 
+def mkfs_file(mkfs, path):
+    """An HFSX volume, journaled, its root root's and 0755, the whole of the file PATH."""
+    flags = ['-s', '-J', '-b', str(BS), '-U', '0', '-G', '0', '-M', '755', '-v', 'Data']
+    if os.path.basename(mkfs) != 'newfs_hfs':
+        subprocess.run([mkfs] + flags + [path], check=True)
+        return
+    # macOS: newfs_hfs takes a disk, so the file is attached as one (a raw image, not mounted)
+    out = subprocess.run(['hdiutil', 'attach', '-nomount', '-imagekey', 'diskimage-class=CRawDiskImage', path],
+                         check=True, capture_output=True, text=True).stdout.split()
+    disk = out[0]
+    try:
+        subprocess.run([mkfs] + flags + ['/dev/r' + disk[len('/dev/'):]], check=True)
+    finally:
+        subprocess.run(['hdiutil', 'detach', disk], check=True, capture_output=True)
+
+
+def userdata(blocks, outdir, mkfs):
+    """The S9's USERDATA: the volume's two used stretches, for dd from TWRP."""
+    if blocks < 262144:
+        sys.exit('mkdatavol.py: USERDATA has to be at least 1 GiB (262144 blocks): the kernel and the loader refuse less')
+    os.makedirs(outdir, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=outdir) as tmp:
+        path = os.path.join(tmp, 'data.hfs')
+        with open(path, 'wb') as f:
+            f.truncate(blocks * BS)                     # sparse: only what mkfs writes takes room
+        mkfs_file(mkfs, path)
+        with open(path, 'rb') as img:
+            total, used = used_blocks(img)
+            if total != blocks:
+                sys.exit(f'mkdatavol.py: the volume has {total} blocks, USERDATA has {blocks}')
+            # the head: up to the last used block of the first half; the tail: from the first used block of the second
+            head = max(b for b in range(0, total // 2) if used(b)) + 1
+            tail = min(b for b in range(total // 2, total) if used(b))
+            if any(used(b) for b in range(head, tail)):
+                sys.exit('mkdatavol.py: the volume uses blocks between its head and its end: not two stretches')
+            img.seek(0)
+            data = img.read(head * BS)
+            with gzip.open(os.path.join(outdir, 'userdata-head.img.gz'), 'wb', 9) as f:
+                f.write(data)
+            img.seek(tail * BS)
+            with open(os.path.join(outdir, 'userdata-tail.img'), 'wb') as f:
+                f.write(img.read((total - tail) * BS))
+    digest = hashlib.sha256(data).hexdigest()
+    note = (f'USERDATA: {blocks} blocks of {BS} ({blocks * BS} bytes), an HFSX volume, journaled, the whole of it\n'
+            f'head: blocks 0..{head - 1} from userdata-head.img.gz ({head * BS} bytes), sha256 {digest}\n'
+            f'tail: blocks {tail}..{total - 1} from userdata-tail.img (seek={tail})\n')
+    with open(os.path.join(outdir, 'userdata.txt'), 'w') as f:
+        f.write(note)
+    print(note, end='')
+
+
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == '--userdata':
+        if len(sys.argv) not in (4, 5):
+            sys.exit(__doc__)
+        userdata(int(sys.argv[2]), sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else 'mkfs.hfsplus')
+        return
     if len(sys.argv) not in (2, 3):
         sys.exit(__doc__)
     out = sys.argv[1]

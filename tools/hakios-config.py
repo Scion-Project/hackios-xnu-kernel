@@ -54,8 +54,8 @@ SYMBOLS = [
     ("CPUFREQ", "bool", "cpufreq", "set the boot core to its top speed", None, None),
     ("UFS", "int", "ufs", "the phone's storage: 1 a survey, read only; 2 the loader's block service, through which the kernel "
                           "reads it (the modem's file systems, /private/var)", None, None),
-    ("UFS_WRITE", "bool", "ufs_write", "let the kernel write, to the partition `darwin` and nowhere else (writes to the phone's "
-                                       "storage: it is the one switch for it)", None, "UFS=2"),
+    ("UFS_WRITE", "bool", "ufs_write", "let the kernel write, to the partition `darwin` (the Galaxy S9: `USERDATA`, all of it) "
+                                       "and nowhere else (writes to the phone's storage: it is the one switch for it)", None, "UFS=2"),
     ("VAR_STORE", "bool", "var_store", "keep /private/var across reboots, in the partition `darwin`", None, "UFS_WRITE"),
     ("TOUCHSCREEN", "bool", "touchscreen", "the touch screen, and the power and volume buttons", None, None),
     ("GPU", "bool", "gpu", "rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone)", "fw-gpu", None),
