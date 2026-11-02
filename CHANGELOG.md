@@ -18,6 +18,7 @@ changes to it; the scripts named fetch the release and put the changes on.
 
 ## 2026-11-02
 
+- Galaxy S9: a run's end restarts into TWRP again: the loader writes INFORM2/3 right before it restarts the phone with the PMU's software reset (SWRESET) instead of UEFI's ResetSystem, feeds the watchdog while it shows the kernel's log on the screen (it bit there before, and its reset clears INFORM3: the phone came back into BOOT), and keeps the kernel's log in the RAM log through the last write; the USB console's `return` runs off the busy thread-call group and forces the return after 15 s
 - Galaxy S9: six cores, the four Exynos M3s next to A55s 2 and 3 (`cpus=6 bootcpu=2 m3_prep=3 pan=0`): the big cluster's PMU fields written before CPU_ON (`m3_prep`), PAN off on a system with ARMv8.0 cores (`pan`), and user space told only the ARMv8.0 features every core has (`isa_floor`, on with `m3_prep=3`)
 - Galaxy S9: touch polled at priority 92 (`s6sy761_pri`), so that a finger's moves no longer come in bursts under load; `s6sy761_trace=N` times the first N events
 - Galaxy S9: the front camera, stage 1: its supplies and model ID (`cam_s9=N`, off by default)
