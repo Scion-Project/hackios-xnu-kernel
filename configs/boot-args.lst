@@ -200,6 +200,7 @@ hv_wdt_pet	k
 immediate_NMI	k
 ioaes	k
 isa_floor	k
+loader_platform	l
 loader_return_after	kl
 m3_diag	k
 m3_flush	k
