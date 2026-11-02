@@ -129,7 +129,8 @@
  *     - UTRLCLR clears a slot with a one (BROKEN_REQ_LIST_CLR: [BSP] ufshcd_utrl_clear, [ML])
  *     - DMA below 4 GB: [BSP] exynos_ufs_dma_mask = DMA_BIT_MASK(32). [ML] runs with 64 bits (its
  *       dma_bits, "32 was a ruled-out experiment") once its entries were 4 KB; this driver keeps
- *       the BSP's 32 until the phone says otherwise
+ *       the BSP's 32 until the phone says otherwise. None of XNU's RAM is below 4 GB on the phone, so
+ *       own mode's memory is 4 MB of the device tree's gap outside it (UFSHC_S9_MEM_PA, 0xDA000000)
  *     - an error of the device may come back as OCS 7 (UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR, [ML]):
  *       a unit's TEST UNIT READY is tried again on it while the units are looked for
  *     - interrupt aggregation not to be used (UFSHCI_QUIRK_SKIP_INTR_AGGR): not used here anyway
@@ -330,6 +331,20 @@ extern boolean_t ml_set_interrupts_enabled(boolean_t enable);
 
 /* ---- the SoCs ---- */
 
+/*
+ * The S9's own-mode memory (the list, the command descriptors, the slots' buffers): none of XNU's RAM is below
+ * 4 GB on the phone (the loader gives XNU the bank from 0x880000000), and the controller is kept to 32-bit
+ * addresses (the BSP's DMA mask). So it is physical memory of the lower bank that XNU does not manage, in the
+ * device tree's gap between the display's scan-out buffers and secure_camera (0xE1900000) -- the table of that
+ * gap is in drivers/camera/hakios.exynos_camera.c (MEM_PA) and xnuloader/loader.c (payload_home): the moved
+ * payload and the panic log 0xD0000000-0xD3FFFFFF, the display's scaler buffers 0xD4000000-0xD71DFFFF, the
+ * camera's 0xD8000000-0xD87FFFFF; free from 0xD9000000 to 0xE18FFFFF. 4 MB from 0xDA000000 here. Mapped once,
+ * write-combined, through IOKit (hakios.ufshc_mem.cpp), never ml_io_map() (io_submap is 8 MB).
+ */
+#define UFSHC_S9_MEM_PA     0xDA000000ULL
+#define UFSHC_S9_MEM_BYTES  (4ULL << 20)
+extern vm_offset_t hakios_ufshc_map(uint64_t pa, uint64_t bytes);      /* hakios.ufshc_mem.cpp */
+
 struct ufshc_soc {
 	const char *name;
 	uint64_t pa, size;                      /* the UFSHCI registers; 0: the first UFSHCI on the PCI bus */
@@ -343,6 +358,7 @@ struct ufshc_soc {
 	uint32_t slot_buffer;                   /* own mode: bytes a slot reads or writes at a time */
 	uint32_t default_step;                  /* own mode: ufs_native_step= when none is given (1 look ... 5 all) */
 	uint64_t dma_lo, dma_hi;                /* where UEFI's descriptors can be (followed only there); 0, 0: anywhere */
+	uint64_t carve_pa, carve_size;          /* own mode's memory: physical memory XNU does not manage; 0: XNU's own */
 	const char *(*look)(bool link);         /* own mode: the blocks beside the controller, read only; why not */
 	const char *(*adopt)(void);             /* own mode: the vendor's registers looked at and kept; why not */
 	void (*nexus)(uint32_t slot, bool scsi);        /* before every doorbell */
@@ -370,6 +386,7 @@ static const struct ufshc_soc hc_socs[] = {
 		.prdt_bytes = true, .prd_entry = 128, .prd_max = 4096, .rsp_offset = 1024, .rsp_length = 1024,
 		.prdt_offset = 2048, .clear_with_ones = true, .dma32 = true, .slot_buffer = 64u << 10,
 		.default_step = 1, .dma_lo = 0x80000000ULL, .dma_hi = 0x100000000ULL,
+		.carve_pa = UFSHC_S9_MEM_PA, .carve_size = UFSHC_S9_MEM_BYTES,
 		.look = exynos_look, .adopt = exynos_adopt, .nexus = exynos_nexus, .give_back = exynos_give_back,
 	},
 };
@@ -2858,6 +2875,35 @@ hc_dma_alloc(vm_size_t size, uint64_t *pa, bool dma32)
 	ppnum_t max = dma32 ? (ppnum_t)((4ULL << 30) >> PAGE_SHIFT) - 1 : 0;
 
 	size = round_page(size);
+	if (hc_soc->carve_size != 0) {
+		/* the SoC's memory outside XNU's RAM (the S9's: see UFSHC_S9_MEM_PA), handed out in order, never given back */
+		static vm_offset_t carve_va;
+		static uint64_t carve_used;
+		uint64_t lo = hc_soc->carve_pa, n = hc_soc->carve_size;
+
+		if (carve_va == 0) {
+			if (pmap_valid_address(lo) || pmap_valid_address(lo + n - 1) || (dma32 && lo + n > (4ULL << 30))) {
+				hc_say("ufs: own: memory %llx-%llx: XNU's RAM, or not below 4 GB: not used\n", lo, lo + n - 1);
+				return 0;
+			}
+			carve_va = hakios_ufshc_map(lo, n);
+			if (carve_va == 0) {
+				hc_say("ufs: own: memory %llx-%llx: could not be mapped\n", lo, lo + n - 1);
+				return 0;
+			}
+			hc_say("ufs: own: memory: %llu KB at %llx, physical memory outside XNU's RAM, mapped write-combined\n",
+			    n >> 10, lo);
+		}
+		if (carve_used + size > n) {
+			return 0;
+		}
+		va = carve_va + (vm_offset_t)carve_used;
+		*pa = lo + carve_used;
+		carve_used += size;
+		bzero((void *)va, size);
+		__asm__ volatile ("dsb sy" ::: "memory");
+		return va;
+	}
 	if (kmem_alloc_contig(kernel_map, &va, size, PAGE_MASK, max, 0, KMA_KOBJECT | KMA_ZERO | KMA_DATA,
 	    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
 		return 0;

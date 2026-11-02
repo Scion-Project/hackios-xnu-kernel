@@ -14,6 +14,7 @@ standard bsd/dev/hakios.apfs_check.c apfs
 driver UFS
 	file    bsd/dev/hakios.ufs.c
 	file    bsd/dev/hakios.ufshc.c
+	file    iokit/Kernel/hakios.ufshc_mem.cpp iokitcpp
 	help    the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller
 	help    driven from the kernel (ufs_native=): beside UEFI's (1, the POCO), or its own for the run (4; QEMU's -device
 	help    ufs, the S9's with ufs_native_soc=exynos9810 as UEFI left it, never reset, untried), in steps (ufs_native_step=1
