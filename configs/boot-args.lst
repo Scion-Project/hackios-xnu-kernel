@@ -94,6 +94,8 @@ cam_gain	k
 cam_keep_mb	k
 cam_mode	k
 cam_pattern	k
+cam_s9	k
+cam_s9_ipclk	k
 cam_sensor	k
 cam_settle	k
 cam_shutter	k

@@ -49,6 +49,8 @@ void hakios_s2mpb02_torch_init(void);  /* boot-arg torch=N on the Galaxy S9: its
 void hakios_exynos_pcie_init(void);    /* boot-arg wifi_pcie=N on the Galaxy S9: PCIe to the BCM4361, stage 1 */
 void hakios_bcm4361_bt_init(void);     /* boot-arg bt=N on the Galaxy S9: the BCM4361's Bluetooth on UART_BT, stage 1 */
 void hakios_s2mpb02_torch_quiesce(void); /* loader_return(): the S9's flashlight off, if it is lit */
+void hakios_exynos_camera_init(void);   /* boot-arg cam_s9=N on the Galaxy S9: its front camera, stage 1 */
+void hakios_exynos_camera_quiesce(void); /* loader_return(): the S9's front camera powered down, if it was powered */
 void hakios_exynos_pcie_quiesce(void); /* loader_return(): the S9's Wi-Fi chip in reset and unpowered, if it was powered */
 int hakios_panel_brightness(int level);        /* 0-255; 0 where a panel driver is built in, started and took it */
 void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage, read only, through the loader (ufs_shared_pa=) */
