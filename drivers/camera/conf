@@ -20,6 +20,7 @@ driver S2MPB02_TORCH
 driver EXYNOS_CAMERA
 	file    bsd/dev/hakios.exynos_camera.c
 	requires EXYNOS_HSI2C
+	default n
 	help    the Galaxy S9's front camera, stage 1 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK,
 	help    its model ID over I2C (1 a look, 2 powered up, read and powered down; devices/starlte/CAMERA.md has the plan)
 
