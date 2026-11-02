@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""A picture of the phone's screen over the USB console (drivers/core/hakios.dwc3.c, usb_gadget=5).
+"""A picture of the phone's screen, or of its front camera, over the USB console (drivers/core/hakios.dwc3.c, usb_gadget=5).
 
-usage: tools/usb-shot.py [-p PORT] [-n N] [-o FILE.png] [--log FILE] [--timeout S] [--raw FILE]
+usage: tools/usb-shot.py [-p PORT] [-n N] [-o FILE.png] [--log FILE] [--timeout S] [--raw FILE] [--cam [--tp]]
 
 Sends "shot N" to the kernel's line console and reads the answer from the same serial port: the log up to the
 command, then a framed picture,
@@ -15,13 +15,22 @@ and writes it as a PNG (zlib only, no PIL). N (1-16, default 4) keeps every Nth 
   -o FILE      the PNG (default shot-<date>-<time>.png)
   --log FILE   append the log text read before and after the picture to FILE (to stand in for a log reader)
   --raw FILE   also write the raw pixels as they came
-  --timeout S  give up after S seconds without the picture (default 20)
+  --timeout S  give up after S seconds without the picture (default 20; 40 with --cam)
+  --cam        the Galaxy S9's front camera instead of the screen ("camshot N": boot-arg cam_s9=6,
+               drivers/camera/hakios.exynos_camera.c). The kernel powers the camera up, takes one RAW10 frame,
+               powers it down and debayers it: each 2 x 2 cell one pixel, 816x612 at N=1 (the default with --cam),
+               every Nth cell for N > 1. A first look: a grey-world balance, no colour correction, the picture as
+               the sensor sees it (mirrored). The camera's log lines come first and are printed here
+  --tp         with --cam: CSIS1's test pattern instead of the sensor (the DMA and the debayer without the sensor)
+  --repeat S   ask again S seconds after each picture, into the same -o file, until ^C: with --cam, a slow preview
+               (each camshot powers the camera up and down again; an image viewer that reloads the file shows it)
 
 Only one program may read the port at a time: a second reader (cat, screen, ~/s9/usblog.sh) takes half of the
 bytes and the picture comes out broken. Stop it first; --log keeps its file going while this runs. The kernel holds
 its log back while the picture goes out, so the picture is never mixed with log text.
 
-Exit status: 0 a PNG written, 1 the kernel said the shot failed (no framebuffer...), 2 nothing usable came back.
+Exit status: 0 a PNG written, 1 the kernel said the shot failed (no framebuffer...; for --cam the
+"usb: camshot failed: ..." line, with CSIS1's and the WDMA's status registers, is printed), 2 nothing usable came back.
 """
 import argparse
 import glob
@@ -54,11 +63,12 @@ def png(path, width, height, rgb):
     for y in range(height):
         raw.append(0)
         raw += rgb[y * stride:(y + 1) * stride]
-    with open(path, "wb") as f:
+    with open(path + ".tmp", "wb") as f:
         f.write(b"\x89PNG\r\n\x1a\n")
         f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)))
         f.write(chunk(b"IDAT", zlib.compress(bytes(raw), 6)))
         f.write(chunk(b"IEND", b""))
+    os.replace(path + ".tmp", path)            # whole, for a viewer that reloads it (--repeat)
 
 
 class Port:
@@ -94,85 +104,114 @@ class Port:
         return True
 
 
+def one(port, args, word, out, log):
+    """one picture asked for and written; the exit status"""
+    port.write(b"\r")                       # anything half typed ends here (an empty line is ignored)
+    port.write(b"%s %d%s\r" % (word, args.n, b" tp" if args.tp else b""))
+    deadline = time.time() + args.timeout
+    header = None
+    # the log until the header line; a "usb: shot failed" line is the kernel's no
+    while header is None:
+        while b"\n" in port.buf:
+            line, _, rest = port.buf.partition(b"\n")
+            text = bytes(line).rstrip(b"\r")
+            if text.startswith(b"SHOT "):
+                header = text
+                port.buf = bytearray(rest)
+                break
+            port.buf = bytearray(rest)
+            if log:
+                log.write(text + b"\n")
+            if b"usb: " + word + b" failed" in text:
+                print(text.decode("ascii", "replace"), file=sys.stderr)
+                return 1
+            if b"usb: " + word in text or b"usb> " + word in text or (args.cam and b"exynos-camera:" in text):
+                print(text.decode("ascii", "replace"), file=sys.stderr)
+        if header is None and not port.fill(deadline):
+            print("usb-shot: no SHOT header in %.0f s (is another program reading %s?)" % (args.timeout, path),
+                  file=sys.stderr)
+            return 2
+    fields = header.split()
+    if len(fields) != 6 or fields[4] != b"rgb888":
+        print("usb-shot: a header not understood: %r" % header, file=sys.stderr)
+        return 2
+    width, height, stride, size = int(fields[1]), int(fields[2]), int(fields[3]), int(fields[5])
+    if stride != width * 3 or size != stride * height:
+        print("usb-shot: sizes that do not add up: %r" % header, file=sys.stderr)
+        return 2
+    started = time.time()
+    while len(port.buf) < size + 4:
+        if not port.fill(deadline + size / 1e6):
+            print("usb-shot: %d of %d bytes came" % (len(port.buf), size), file=sys.stderr)
+            return 2
+    pixels = bytes(port.buf[:size])
+    trailer = bytes(port.buf[size:size + 4])
+    took = time.time() - started
+    if trailer != b"END\n":
+        print("usb-shot: no END after the pixels (%r): the picture may be shifted (another reader?)" % trailer,
+              file=sys.stderr)
+    png(out, width, height, pixels)
+    if args.raw:
+        with open(args.raw, "wb") as f:
+            f.write(pixels)
+    # the log held back during the picture, and the kernel's "shot sent" line
+    end = time.time() + 1.0
+    while time.time() < end:
+        port.fill(end)
+    tail = bytes(port.buf[size + 4:])
+    port.buf = bytearray()
+    if log:
+        log.write(tail.replace(b"\r", b""))
+    for line in tail.split(b"\n"):
+        if b"usb: shot" in line or b"usb: camshot" in line:
+            print(line.rstrip(b"\r").decode("ascii", "replace"), file=sys.stderr)
+    print("usb-shot: %s: %dx%d (%d bytes in %.2f s)" % (out, width, height, size, took), flush=True)
+    return 0 if trailer == b"END\n" else 2
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("-p", "--port")
-    ap.add_argument("-n", type=int, default=4)
+    ap.add_argument("-n", type=int)
     ap.add_argument("-o", "--out")
     ap.add_argument("--log")
     ap.add_argument("--raw")
-    ap.add_argument("--timeout", type=float, default=20.0)
+    ap.add_argument("--timeout", type=float)
+    ap.add_argument("--cam", action="store_true", help="the S9's front camera (camshot), not the screen")
+    ap.add_argument("--tp", action="store_true", help="with --cam: CSIS1's test pattern instead of the sensor")
+    ap.add_argument("--repeat", type=float, metavar="S", help="ask again every S seconds, into the same file, until ^C")
     args = ap.parse_args()
+    if args.tp and not args.cam:
+        ap.error("--tp goes with --cam")
+    if args.n is None:
+        args.n = 1 if args.cam else 4
+    if args.timeout is None:
+        args.timeout = 40.0 if args.cam else 20.0
+    word = b"camshot" if args.cam else b"shot"
     if not 1 <= args.n <= 16:
         ap.error("N is from 1 to 16")
     path = args.port or find_port()
     if path is None:
         print("usb-shot: no /dev/cu.usbmodem* or /dev/ttyACM*: is the phone up with usb_gadget=5?", file=sys.stderr)
         return 2
-    out = args.out or time.strftime("shot-%Y%m%d-%H%M%S.png")
+    out = args.out or time.strftime(("cam-" if args.cam else "shot-") + "%Y%m%d-%H%M%S.png")
     log = open(args.log, "ab") if args.log else None
     port = Port(path)
+    count = 0
     try:
-        port.write(b"\r")                       # anything half typed ends here (an empty line is ignored)
-        port.write(b"shot %d\r" % args.n)
-        deadline = time.time() + args.timeout
-        header = None
-        # the log until the header line; a "usb: shot failed" line is the kernel's no
-        while header is None:
-            while b"\n" in port.buf:
-                line, _, rest = port.buf.partition(b"\n")
-                text = bytes(line).rstrip(b"\r")
-                if text.startswith(b"SHOT "):
-                    header = text
-                    port.buf = bytearray(rest)
-                    break
-                port.buf = bytearray(rest)
-                if log:
-                    log.write(text + b"\n")
-                if b"usb: shot failed" in text:
-                    print(text.decode("ascii", "replace"), file=sys.stderr)
-                    return 1
-                if b"usb: shot" in text or b"usb> shot" in text:
-                    print(text.decode("ascii", "replace"), file=sys.stderr)
-            if header is None and not port.fill(deadline):
-                print("usb-shot: no SHOT header in %.0f s (is another program reading %s?)" % (args.timeout, path),
-                      file=sys.stderr)
+        if not args.repeat:
+            return one(port, args, word, out, log)
+        # --repeat: a picture every S seconds into the same file (an image viewer that reloads it shows a slow preview)
+        count = 0
+        while True:
+            status = one(port, args, word, out, log)
+            count += 1
+            if status == 2:
                 return 2
-        fields = header.split()
-        if len(fields) != 6 or fields[4] != b"rgb888":
-            print("usb-shot: a header not understood: %r" % header, file=sys.stderr)
-            return 2
-        width, height, stride, size = int(fields[1]), int(fields[2]), int(fields[3]), int(fields[5])
-        if stride != width * 3 or size != stride * height:
-            print("usb-shot: sizes that do not add up: %r" % header, file=sys.stderr)
-            return 2
-        started = time.time()
-        while len(port.buf) < size + 4:
-            if not port.fill(deadline + size / 1e6):
-                print("usb-shot: %d of %d bytes came" % (len(port.buf), size), file=sys.stderr)
-                return 2
-        pixels = bytes(port.buf[:size])
-        trailer = bytes(port.buf[size:size + 4])
-        took = time.time() - started
-        if trailer != b"END\n":
-            print("usb-shot: no END after the pixels (%r): the picture may be shifted (another reader?)" % trailer,
-                  file=sys.stderr)
-        png(out, width, height, pixels)
-        if args.raw:
-            with open(args.raw, "wb") as f:
-                f.write(pixels)
-        # the log held back during the picture, and the kernel's "shot sent" line
-        end = time.time() + 1.0
-        while time.time() < end:
-            port.fill(end)
-        tail = bytes(port.buf[size + 4:])
-        if log:
-            log.write(tail.replace(b"\r", b""))
-        for line in tail.split(b"\n"):
-            if b"usb: shot" in line:
-                print(line.rstrip(b"\r").decode("ascii", "replace"), file=sys.stderr)
-        print("usb-shot: %s: %dx%d (%d bytes in %.2f s)" % (out, width, height, size, took))
-        return 0 if trailer == b"END\n" else 2
+            time.sleep(args.repeat)
+    except KeyboardInterrupt:
+        print("usb-shot: stopped after %d" % count, file=sys.stderr)
+        return 0
     finally:
         port.close()
         if log:

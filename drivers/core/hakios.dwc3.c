@@ -48,6 +48,12 @@
  *                     The log is held back meanwhile (what came before the command is sent first, what comes during
  *                     it after END), so the picture is never mixed with it. tools/usb-shot.py asks for one and writes
  *                     a PNG. The panel is read while the display may be drawing it: a shot can catch half a frame
+ *   camshot [N] [tp]  a picture from the Galaxy S9's front camera (hakios.exynos_camera.c, boot-arg cam_s9=6): the
+ *                     camera's thread powers it up, takes one RAW10 frame through CSIS1's WDMA, powers it down,
+ *                     debayers it (each 2 x 2 cell one pixel, 816 x 612, then every Nth: 1-16, 1 when not given) and
+ *                     hands it here; it goes out framed as a shot's does, after the camera's log lines. "tp": CSIS1's
+ *                     test pattern instead of the sensor. A capture that fails says "usb: camshot failed: ..." with
+ *                     the link's and the WDMA's status registers instead. tools/usb-shot.py --cam
  *   return            end the run: the data volume saved, the drivers given back, the loader restarts the phone
  * Not a shell: user space is not reached from here.
  *
@@ -273,12 +279,13 @@ static int usb_speed_v;
 static char usb_state[24] = "off";
 
 /* a picture of the panel on its way out (the console's shot): the phase, and where in it */
-enum { SHOT_OFF, SHOT_LOG, SHOT_HEAD, SHOT_PIXELS, SHOT_END };
+enum { SHOT_OFF, SHOT_LOG, SHOT_HEAD, SHOT_PIXELS, SHOT_END, SHOT_PREP };
 static struct {
-	int phase;
+	int phase;                      /* SHOT_PREP: taken, being set up (nothing is sent meanwhile) */
 	uint32_t mark;                  /* the log up to here goes out before the picture */
 	uint32_t n, w, h, x, y, rowbytes, sent;
 	uintptr_t base;
+	bool rgb;                       /* base is w x h RGB888 as it goes out (a camshot), not the panel's BGRA */
 	uint64_t start;
 } shot;
 static uint64_t n_shots;
@@ -692,6 +699,21 @@ shot_fill(void)
 		return (uint32_t)snprintf((char *)(uintptr_t)out, 96, "SHOT %u %u %u rgb888 %u\n", shot.w, shot.h, shot.w * 3,
 		           shot.w * shot.h * 3);
 	}
+	if (shot.phase == SHOT_PIXELS && shot.rgb) {
+		uint32_t total = shot.w * shot.h * 3, take = total - shot.sent;
+
+		take = take > IN_CHUNK ? IN_CHUNK : take;
+		memcpy((void *)(uintptr_t)out, (const void *)(shot.base + shot.sent), take);
+		shot.sent += take;
+		if (shot.sent < total) {
+			return take;
+		}
+		shot.y = shot.h;
+		shot.phase = SHOT_END;
+		if (take != 0) {
+			return take;
+		}
+	}
 	if (shot.phase == SHOT_PIXELS) {
 		while (shot.y < shot.h && n + 3 <= IN_CHUNK) {
 			const volatile uint32_t *row = (const volatile uint32_t *)(shot.base +
@@ -726,8 +748,8 @@ shot_fill(void)
 		uint64_t ns;
 
 		absolutetime_to_nanoseconds(mach_absolute_time() - shot.start, &ns);
-		con("usb: shot %llu sent: %ux%u, %u bytes of pixels in %llu ms\n", n_shots, shot.w, shot.h, shot.sent,
-		    ns / NSEC_PER_MSEC);
+		con("usb: %s %llu sent: %ux%u, %u bytes of pixels in %llu ms\n", shot.rgb ? "camshot" : "shot", n_shots, shot.w,
+		    shot.h, shot.sent, ns / NSEC_PER_MSEC);
 	}
 	return 4;
 }
@@ -748,14 +770,15 @@ shot_begin(const char *arg)
 		con("usb: shot failed: N is a number from 1 to 16 (shot 4: a quarter of the panel's width and height)\n");
 		return;
 	}
-	if (shot.phase != SHOT_OFF) {
-		con("usb: shot failed: one is on its way already\n");
-		return;
-	}
 	if (vinfo.v_baseaddr == 0 || vinfo.v_depth != 32 || vinfo.v_width < n || vinfo.v_height < n) {
 		con("usb: shot failed: no 32-bit panel framebuffer (%ux%u, depth %u)\n", vinfo.v_width, vinfo.v_height, vinfo.v_depth);
 		return;
 	}
+	if (!os_atomic_cmpxchg(&shot.phase, SHOT_OFF, SHOT_PREP, acq_rel)) {
+		con("usb: shot failed: one is on its way already\n");
+		return;
+	}
+	shot.rgb = false;
 	shot.n = n;
 	shot.w = vinfo.v_width / n;
 	shot.h = vinfo.v_height / n;
@@ -765,18 +788,92 @@ shot_begin(const char *arg)
 	con("usb: shot: the panel (%ux%u, %u bytes a row), every %uth pixel: %ux%u RGB, %u bytes, after this line\n",
 	    vinfo.v_width, vinfo.v_height, vinfo.v_rowbytes, n, shot.w, shot.h, shot.w * shot.h * 3);
 	shot.mark = os_atomic_load(&ring_head, acquire);
-	shot.phase = SHOT_LOG;
+	os_atomic_store(&shot.phase, SHOT_LOG, release);
+}
+
+int hakios_usb_picture(uintptr_t rgb, uint32_t width, uint32_t height, const char *what);
+
+/*
+ * A picture someone else made, w x h RGB888 at rgb (the camera's camshot, from its own thread): sent as a shot is, after
+ * what the log has said so far. The memory must stay as it is until "camshot ... sent" (the camera takes no new picture
+ * before the console asks for one, and the console asks none while this one is on its way). 0: on its way.
+ */
+int
+hakios_usb_picture(uintptr_t rgb, uint32_t width, uint32_t height, const char *what)
+{
+	if (steps < 5 || acm.config == 0 || rgb == 0 || width == 0 || height == 0) {
+		return -1;
+	}
+	if (!os_atomic_cmpxchg(&shot.phase, SHOT_OFF, SHOT_PREP, acq_rel)) {
+		return -1;
+	}
+	shot.rgb = true;
+	shot.n = 1;
+	shot.w = width;
+	shot.h = height;
+	shot.rowbytes = width * 3;
+	shot.base = rgb;
+	shot.sent = 0;
+	con("usb: camshot: %s, %ux%u RGB, %u bytes, after this line\n", what, width, height, width * height * 3);
+	shot.mark = os_atomic_load(&ring_head, acquire);
+	os_atomic_store(&shot.phase, SHOT_LOG, release);
+	return 0;
+}
+
+const char *hakios_exynos_camera_shot(uint32_t n, int pattern);         /* hakios.exynos_camera.c (or the stub) */
+
+/* the console's "camshot [N] [tp]": asked of the camera's thread, which sends the picture when it has one */
+static void
+camshot_begin(const char *arg)
+{
+	uint32_t n = 0;
+	int pattern = 0;
+	const char *no;
+
+	for (; *arg >= '0' && *arg <= '9' && n < 1000; arg++) {
+		n = n * 10 + (uint32_t)(*arg - '0');
+	}
+	while (*arg == ' ') {
+		arg++;
+	}
+	if (strcmp(arg, "tp") == 0) {
+		pattern = 1;
+		arg += 2;
+	}
+	if (n == 0) {
+		n = 1;
+	}
+	if (n > 16 || *arg != 0) {
+		con("usb: camshot failed: camshot [N] [tp]: N from 1 to 16 (1: 816 x 612), tp the test pattern\n");
+		return;
+	}
+	if (os_atomic_load(&shot.phase, acquire) != SHOT_OFF) {
+		con("usb: camshot failed: a picture is on its way already\n");
+		return;
+	}
+	no = hakios_exynos_camera_shot(n, pattern);
+	if (no != NULL) {
+		con("usb: camshot failed: %s\n", no);
+		return;
+	}
+	con("usb: camshot: asked of the camera (%s, N = %u); its log, then the picture\n",
+	    pattern ? "the test pattern" : "the sensor", n);
 }
 
 static void
 pump_in(void)
 {
 	uint32_t n = 0, lost;
+	int phase;
 
 	if (steps < 5 || acm.config == 0 || pep[PEP_IN].active || (acm.halted & 2)) {
 		return;
 	}
-	if (shot.phase != SHOT_OFF) {
+	phase = os_atomic_load(&shot.phase, acquire);    /* the camera's thread sets a camshot up (hakios_usb_picture) */
+	if (phase == SHOT_PREP) {
+		return;                 /* a picture being set up: the log waits for it */
+	}
+	if (phase != SHOT_OFF) {
 		n = shot_fill();
 		if (n != 0) {
 			(void)start_xfer(PEP_IN, dma_pa + IN_OFF, n, TRBCTL_NORMAL);
@@ -933,7 +1030,8 @@ console(char *line)
 	con("usb> %s%s%s\n", line, *arg ? " " : "", arg);
 	if (strcmp(line, "help") == 0) {
 		con("usb: help, stat, uptime, sysctl NAME, log (the kernel's log again from its start), shot [N] (the panel's picture, "
-		    "binary: tools/usb-shot.py), return (end the run)\n");
+		    "binary: tools/usb-shot.py), camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
+		    "return (end the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
 		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
 		    "%llu shots\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out, ring_dropped,
@@ -977,6 +1075,8 @@ console(char *line)
 		con("usb: (end of what the kernel keeps; the rest was sent as it came)\n");
 	} else if (strcmp(line, "shot") == 0) {
 		shot_begin(arg);
+	} else if (strcmp(line, "camshot") == 0) {
+		camshot_begin(arg);
 	} else if (strcmp(line, "return") == 0) {
 		con("usb: ending the run: the loader will restart the phone\n");
 		want_return = true;     /* done by tick() once this event is handled and the controller let go */
