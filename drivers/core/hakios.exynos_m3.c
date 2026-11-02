@@ -51,6 +51,7 @@
  * "M3 cluster: vendor PMU defaults before PSCI CPU_ON", and docs/06-known-issues.md): what S-Boot leaves and what
  * happens without the writes. All GPL: read for these facts, not one line copied.
  */
+extern void hakios_esslog_start(void);
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -258,6 +259,7 @@ hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr)
 		    "m3_prep=3 starts the M3s (steps 1 and 2 are for cpus=2 bootcpu=2)" : "the six fields did not take");
 		return -1;
 	}
+	hakios_esslog_start();          /* (esslog=1) the log kept for TWRP from here: a fault on the new core is caught */
 	say("m3: 3: CPU_ON for cpu %d (MPIDR 0x%x) next\n", cpu, mpidr);
 	return 0;
 }

@@ -179,8 +179,12 @@ hakios_kver	k
 haptic	k
 haptic_effect	k
 hv_wdt_pet	k
+immediate_NMI	k
 ioaes	k
 loader_return_after	kl
+m3_diag	k
+m3_flush	k
+m3_ids	k
 m3_prep	k
 machine_name	k
 mali	k
@@ -252,6 +256,7 @@ modem_wait	k
 modem_wda_off	k
 net_names	k
 net_trace	k
+pan	k
 panel	k
 panel_brightness	k
 panel_gamma	k

@@ -1,0 +1,634 @@
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -341,6 +341,36 @@
+ /* Bring-up checkpoints, see osfmk/arm64/loader_return.c */
+ extern void loader_checkpoint(uint64_t n);
+ extern void loader_early_log_init(void);
++
++/*
++ * HakiOS (patch 1509): PAN (ARMv8.1) on or off for the whole system. The Galaxy S9's Exynos M3s implement ARMv8.0: they
++ * have no PAN, and every MSR/MRS of PSTATE.PAN is UNDEFINED on them -- arm_init_cpu()'s first instruction, and every
++ * copyin/copyout and context switch after it. Off when the boot processor has no PAN, or with boot-arg pan=0. Off
++ * means: SCTLR_EL1.SPAN set on every core that has PAN (so that taking an exception does not set PSTATE.PAN), PAN
++ * cleared, and no PAN instruction executed anywhere (copyio.c, pcb.c, pmap.c, platform_tests.c). Decided once, on the
++ * boot processor, before any other core starts: a thread that moves between an A55 and an M3 sees the same rule.
++ */
++uint32_t hakios_pan_off;
++
++static bool
++hakios_cpu_has_pan(void)
++{
++	return ((__builtin_arm_rsr64("S3_0_C0_C7_1") >> 20) & 0xf) != 0;      /* ID_AA64MMFR1_EL1.PAN */
++}
++
++static void
++hakios_pan_apply(void)
++{
++	if (!hakios_pan_off) {
++		__builtin_arm_wsr("pan", 1);
++		return;
++	}
++	if (hakios_cpu_has_pan()) {
++		__builtin_arm_wsr64("SCTLR_EL1", __builtin_arm_rsr64("SCTLR_EL1") | (1ULL << 23));    /* SPAN */
++		__builtin_arm_isb(15);          /* ISB SY */
++		__builtin_arm_wsr("pan", 0);
++	}
++}
+ extern void loader_log_cpu_facts(void);
+ 
+ void
+@@ -540,7 +570,14 @@
+ 	PE_parse_boot_argn("immediate_NMI", &force_immediate_debug_halt, sizeof(force_immediate_debug_halt));
+ 
+ #if __ARM_PAN_AVAILABLE__
+-	__builtin_arm_wsr("pan", 1);
++	{
++		uint32_t pan = 1;
++
++		if (!hakios_cpu_has_pan() || (PE_parse_boot_argn("pan", &pan, sizeof(pan)) && pan == 0)) {
++			hakios_pan_off = 1;
++		}
++	}
++	hakios_pan_apply();
+ #endif  /* __ARM_PAN_AVAILABLE__ */
+ 
+ 	arm_vm_init(xmaxmem, args);
+@@ -696,7 +733,7 @@
+ 	cpu_data_t      *cpu_data_ptr)
+ {
+ #if __ARM_PAN_AVAILABLE__
+-	__builtin_arm_wsr("pan", 1);
++	hakios_pan_apply();
+ #endif
+ 
+ #ifdef __arm64__
+@@ -709,6 +746,7 @@
+ 
+ 	machine_set_current_thread(cpu_data_ptr->cpu_active_thread);
+ #if defined(GENERIC_PSCI_SMP)
++	psci_smp_diag_vectors();        /* m3_diag=1: the kernel's vectors only now that it has its thread (patch 1509) */
+ 	psci_smp_cpu_reached(PSCI_SMP_CPU_IN_KERNEL);
+ #endif
+ 
+@@ -831,7 +869,7 @@
+ 	cpu_data_t      *cpu_data_ptr)
+ {
+ #if __ARM_PAN_AVAILABLE__
+-	__builtin_arm_wsr("pan", 1);
++	hakios_pan_apply();
+ #endif
+ 
+ 	machine_set_current_thread(cpu_data_ptr->cpu_active_thread);
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -13852,7 +13852,10 @@
+ 
+ 		/* Disable PAN; pmap shouldn't be the kernel pmap. */
+ #if __ARM_PAN_AVAILABLE__
+-		__builtin_arm_wsr("pan", 0);
++		extern uint32_t hakios_pan_off;
++		if (!hakios_pan_off) {
++			__builtin_arm_wsr("pan", 0);
++		}
+ #endif /* __ARM_PAN_AVAILABLE__ */
+ 	}
+ 
+@@ -13871,7 +13874,10 @@
+ 
+ 	if (pmap != NULL) {
+ #if __ARM_PAN_AVAILABLE__
+-		__builtin_arm_wsr("pan", 1);
++		extern uint32_t hakios_pan_off;
++		if (!hakios_pan_off) {
++			__builtin_arm_wsr("pan", 1);
++		}
+ #endif /* __ARM_PAN_AVAILABLE__ */
+ 
+ 		pmap_switch(old_pmap);
+diff --git a/osfmk/arm64/copyio.c b/osfmk/arm64/copyio.c
+--- a/osfmk/arm64/copyio.c
++++ b/osfmk/arm64/copyio.c
+@@ -82,12 +82,18 @@
+ 	COPYIO_ATOMIC                   = 0x0010,
+ });
+ 
++#if __ARM_PAN_AVAILABLE__
++extern uint32_t hakios_pan_off;         /* osfmk/arm/arm_init.c (patch 1509): no PAN instruction at all */
++#endif
++
+ static inline void
+ user_access_enable(void)
+ {
+ #if __ARM_PAN_AVAILABLE__
+-	assert(__builtin_arm_rsr("pan") != 0);
+-	__builtin_arm_wsr("pan", 0);
++	if (!hakios_pan_off) {
++		assert(__builtin_arm_rsr("pan") != 0);
++		__builtin_arm_wsr("pan", 0);
++	}
+ #endif  /* __ARM_PAN_AVAILABLE__ */
+ 
+ }
+@@ -96,7 +102,9 @@
+ user_access_disable(void)
+ {
+ #if __ARM_PAN_AVAILABLE__
+-	__builtin_arm_wsr("pan", 1);
++	if (!hakios_pan_off) {
++		__builtin_arm_wsr("pan", 1);
++	}
+ #endif  /* __ARM_PAN_AVAILABLE__ */
+ 
+ }
+diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
+--- a/osfmk/arm64/loader_return.c
++++ b/osfmk/arm64/loader_return.c
+@@ -924,11 +924,11 @@
+ 	bool locked = false;
+ 	volatile uint8_t *hdr, *buf;
+ 
+-	if (!PE_parse_boot_argn("esslog", &on, sizeof(on)) || on == 0) {
++	if (esslog_buf != NULL || !PE_parse_boot_argn("esslog", &on, sizeof(on)) || on == 0) {
+ 		return;
+ 	}
+ 	hdr = (volatile uint8_t *)ml_io_map(ESSLOG_HDR_PA, 0x1000);
+-	buf = (volatile uint8_t *)ml_io_map_wcomb(ESSLOG_BUF_PA, ESSLOG_SIZE);
++	buf = (volatile uint8_t *)ml_io_map(ESSLOG_BUF_PA, ESSLOG_SIZE);     /* uncached: a hard hang must not lose what sat in a write-combining buffer */
+ 	if (hdr == NULL || buf == NULL) {
+ 		printf("esslog: could not map\n");
+ 		return;
+diff --git a/osfmk/arm64/pcb.c b/osfmk/arm64/pcb.c
+--- a/osfmk/arm64/pcb.c
++++ b/osfmk/arm64/pcb.c
+@@ -155,6 +155,10 @@
+ 
+ 	machine_thread_switch_cpu_data(old, new);
+ }
++
++#if __ARM_PAN_AVAILABLE__
++extern uint32_t hakios_pan_off;         /* osfmk/arm/arm_init.c (patch 1509) */
++#endif
+ 
+ /*
+  * Routine: machine_switch_context
+@@ -168,7 +172,7 @@
+ 	thread_t retval;
+ 
+ #if __ARM_PAN_AVAILABLE__
+-	if (__improbable(__builtin_arm_rsr("pan") == 0)) {
++	if (__improbable(!hakios_pan_off && __builtin_arm_rsr("pan") == 0)) {
+ 		panic("context switch with PAN disabled");
+ 	}
+ #endif
+@@ -511,7 +515,7 @@
+ 	vm_offset_t  stack;
+ 
+ #if __ARM_PAN_AVAILABLE__
+-	if (__improbable(__builtin_arm_rsr("pan") == 0)) {
++	if (__improbable(!hakios_pan_off && __builtin_arm_rsr("pan") == 0)) {
+ 		panic("stack handoff with PAN disabled");
+ 	}
+ #endif
+diff --git a/osfmk/arm64/platform_tests.c b/osfmk/arm64/platform_tests.c
+--- a/osfmk/arm64/platform_tests.c
++++ b/osfmk/arm64/platform_tests.c
+@@ -1346,6 +1346,12 @@
+ {
+ 	bool values_match = false;
+ 	vm_offset_t priv_addr = 0;
++	extern uint32_t hakios_pan_off;
++
++	if (hakios_pan_off) {
++		T_LOG("PAN is off (patch 1509: pan=0, or a core without it): not tested.");
++		return KERN_SUCCESS;
++	}
+ 
+ 	T_LOG("Testing PAN.");
+ 
+diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
+--- a/osfmk/arm64/psci_smp.c
++++ b/osfmk/arm64/psci_smp.c
+@@ -80,11 +80,25 @@
+  * cache line to itself so that looking at memory does not disturb anything else.
+  */
+ struct psci_smp_start_fault {
+-	uint64_t valid, mpidr, esr, elr, far, lr, sp, unused;
++	uint64_t valid, mpidr, esr, elr, far, lr, sp, spsr;
++	uint64_t tpidr, ttbr0, ttbr1, tcr, sctlr, vbar, x21, source;   /* patch 1509 */
+ } psci_smp_start_fault __attribute__((aligned(64)));
+-_Static_assert(sizeof(struct psci_smp_start_fault) == 64, "one cache line");
++_Static_assert(sizeof(struct psci_smp_start_fault) == 128, "two cache lines, as start.s writes them");
+ 
++/*
++ * HakiOS (patch 1509), boot-arg m3_diag=1: a core being started keeps the physical early vectors until it has its
++ * thread (start.s, psci_smp_diag_vectors()), and an exception sleh takes on it before it has joined the scheduler is
++ * recorded too (psci_smp_diag_sleh()). Either way the core parks (WFE, interrupts off) and the boot processor says
++ * everything about it in the log, then goes on without it. start.s reads this with its MMU off.
++ */
++uint32_t psci_smp_diag;
++extern vm_offset_t vm_kernel_slide;
++extern uint64_t cpu_ttep;
++extern void ExceptionVectorsBase;
++extern uint32_t hakios_pan_off;         /* osfmk/arm/arm_init.c, patch 1509 */
++
+ static uint32_t psci_smp_cpu_stage[MAX_CPUS];   /* PSCI_SMP_CPU_*, by cpu number */
++uint32_t hakios_m3_park;                        /* start.s: a big core parks after writing its IDs (m3_ids=1) */
+ static uint32_t psci_smp_started;               /* a bit per core that CPU_ON was granted for */
+ 
+ static int      psci_smp_stop_owner = -1;       /* the processor that began the return to the boot loader */
+@@ -184,7 +198,182 @@
+ 	}
+ }
+ 
++/* ---- patch 1509: m3_diag=1, m3_flush=1 ---- */
++
++static void psci_smp_step(const char *fmt, ...) __printflike(1, 2);
++static uint64_t psci_smp_us(uint64_t abs);
++
++static const char *
++psci_smp_ec_name(uint32_t ec)
++{
++	switch (ec) {
++	case 0x00: return "unknown instruction: UNDEFINED here (an ARMv8.1+ instruction on an ARMv8.0 core?)";
++	case 0x01: return "WFI/WFE trapped";
++	case 0x07: return "FP/SIMD access trapped (CPACR)";
++	case 0x0e: return "illegal execution state";
++	case 0x16: return "HVC";
++	case 0x17: return "SMC";
++	case 0x18: return "MSR/MRS/system instruction trapped";
++	case 0x20: return "instruction abort from EL0";
++	case 0x21: return "instruction abort at EL1";
++	case 0x22: return "PC alignment";
++	case 0x24: return "data abort from EL0";
++	case 0x25: return "data abort at EL1";
++	case 0x26: return "SP alignment";
++	case 0x2f: return "SError";
++	case 0x3c: return "BRK";
++	default:   return "?";
++	}
++}
++
++/* An address the faulting core gave: physical (start.s, MMU off or through the V=P map) or a kernel one; as unslid. */
++static uint64_t
++psci_smp_unslid(uint64_t a)
++{
++	if (a >= gPhysBase && a < gPhysBase + 0x40000000ULL) {
++		a += gVirtBase - gPhysBase;
++	}
++	return a >= VM_MIN_KERNEL_AND_KEXT_ADDRESS ? a - vm_kernel_slide : 0;
++}
++
++/* The boot processor, just before CPU_ON: the flags start.s reads with its MMU off, and m3_flush=1. */
++static void
++psci_smp_diag_before(int cpu, uint32_t phys_id)
++{
++	static bool asked;
++	uint32_t v = 0;
++
++	if (!asked) {
++		asked = true;
++		if (PE_parse_boot_argn("m3_diag", &v, sizeof(v)) && v != 0) {
++			psci_smp_diag = 1;
++		}
++		psci_smp_step("psci: m3_diag=%u; PAN %s (boot core ID_AA64MMFR1 0x%llx; pan=0 turns it off on every core)\n",
++		    psci_smp_diag, hakios_pan_off ? "OFF" : "on", __builtin_arm_rsr64("S3_0_C0_C7_1"));
++	}
++	bzero(&psci_smp_start_fault, sizeof(psci_smp_start_fault));
++	FlushPoC_DcacheRegion((vm_offset_t)&psci_smp_start_fault, sizeof(psci_smp_start_fault));
++	FlushPoC_DcacheRegion((vm_offset_t)&psci_smp_diag, sizeof(psci_smp_diag));
++	FlushPoC_DcacheRegion((vm_offset_t)&hakios_pan_off, sizeof(hakios_pan_off));
++	/*
++	 * m3_flush=1 (a test of cluster coherency): everything this core's caches hold, written back to memory and
++	 * dropped, by set/way at every level CLIDR names, just before the new core is started: if the big cluster
++	 * did not see the little one's caches, page tables and data would then be right in memory all the same.
++	 */
++	v = 0;
++	if (PE_parse_boot_argn("m3_flush", &v, sizeof(v)) && v != 0) {
++		uint64_t t = mach_absolute_time();
++
++		FlushPoC_Dcache();
++		__builtin_arm_dsb(DSB_SY);
++		psci_smp_step("psci: m3_flush: cpu %d (MPIDR 0x%x): the boot core's whole data cache cleaned to PoC in %llu us\n",
++		    cpu, phys_id, psci_smp_us(mach_absolute_time() - t));
++	}
++}
++
++/* The boot processor, after a core being started left its record (m3_diag=1). */
++static void
++psci_smp_diag_report(int cpu, cpu_data_t *cdp, uint32_t stage)
++{
++	struct psci_smp_start_fault *f = &psci_smp_start_fault;
++	uint32_t ec = (uint32_t)(f->esr >> 26) & 0x3f, iss = (uint32_t)f->esr & 0x1ffffff;
++	uint64_t elr_u = psci_smp_unslid(f->elr), insn_va = 0;
++	uint32_t insn = 0;
++
++	psci_smp_step("psci: m3_diag: cpu %d (MPIDR 0x%llx) took its first exception %s (stage %u), and is parked\n",
++	    cpu, f->mpidr, f->source == 1 ? "in the early vectors (before it had its thread)" : "in sleh (it had its thread)",
++	    stage);
++	psci_smp_step("psci: m3_diag:   ESR 0x%llx: EC 0x%x %s; ISS 0x%x; FAR 0x%llx\n", f->esr, ec, psci_smp_ec_name(ec), iss,
++	    f->far);
++	if (ec == 0x24 || ec == 0x25 || ec == 0x20 || ec == 0x21) {
++		psci_smp_step("psci: m3_diag:   abort: FSC 0x%x (0x04-0x07 translation L0-L3, 0x09-0x0b access flag, 0x0d-0x0f "
++		    "permission, 0x10 external, 0x21 alignment) WnR %u S1PTW %u\n", iss & 0x3f, (iss >> 6) & 1, (iss >> 7) & 1);
++	}
++	if (ec == 0x18) {
++		psci_smp_step("psci: m3_diag:   trapped: %s S%u_%u_C%u_C%u_%u (x%u)\n", (iss & 1) ? "MRS" : "MSR", (iss >> 20) & 3,
++		    (iss >> 14) & 7, (iss >> 10) & 0xf, (iss >> 1) & 0xf, (iss >> 17) & 7, (iss >> 5) & 0x1f);
++	}
++	/* the instruction itself, read through the kernel's own mapping of its text */
++	if (elr_u != 0) {
++		insn_va = elr_u + vm_kernel_slide;
++		insn = *(volatile uint32_t *)insn_va;
++	}
++	psci_smp_step("psci: m3_diag:   ELR 0x%llx (unslid 0x%llx) insn 0x%08x%s\n", f->elr, elr_u, insn,
++	    (insn & 0xfffff0ffu) == 0xd500409fu ? " = MSR PAN, #imm (ARMv8.1 PAN: pan=0)" :
++	    (insn & 0xffffffe0u) == 0xd5384260u ? " = MRS Xt, PAN (pan=0)" :
++	    (insn & 0xffffffe0u) == 0xd5184260u ? " = MSR PAN, Xt (pan=0)" :
++	    (insn & 0x3fa07c00u) == 0x08a07c00u || (insn & 0x3f200c00u) == 0x38200000u ? " = an LSE atomic (ARMv8.1)" : "");
++	psci_smp_step("psci: m3_diag:   LR 0x%llx (unslid 0x%llx) SP 0x%llx SPSR 0x%llx\n", f->lr, psci_smp_unslid(f->lr), f->sp,
++	    f->spsr);
++	psci_smp_step("psci: m3_diag:   TPIDR_EL1 0x%llx TTBR0 0x%llx TTBR1 0x%llx\n", f->tpidr, f->ttbr0, f->ttbr1);
++	psci_smp_step("psci: m3_diag:   TCR 0x%llx SCTLR 0x%llx VBAR 0x%llx x21 0x%llx\n", f->tcr, f->sctlr, f->vbar, f->x21);
++	psci_smp_step("psci: m3_diag:   the boot core's TCR 0x%llx SCTLR 0x%llx TTBR1 0x%llx; cpu_ttep 0x%llx\n",
++	    __builtin_arm_rsr64("TCR_EL1"), __builtin_arm_rsr64("SCTLR_EL1"), __builtin_arm_rsr64("TTBR1_EL1"), cpu_ttep);
++	psci_smp_step("psci: m3_diag:   its cpu data at %p (PA 0x%llx): number %d phys_id 0x%x flags 0x%x cluster %u\n", cdp,
++	    (uint64_t)ml_static_vtop((vm_offset_t)cdp), cdp->cpu_number, cdp->cpu_phys_id, cdp->cpu_flags, cdp->cpu_cluster_id);
++	psci_smp_step("psci: m3_diag:   active thread %p (TPIDR_EL1 %s) intstack_top 0x%lx excepstack_top 0x%lx\n",
++	    cdp->cpu_active_thread, f->tpidr == (uint64_t)cdp->cpu_active_thread ? "matches" :
++	    f->tpidr == 0 ? "still 0" : "DIFFERS", (unsigned long)cdp->intstack_top, (unsigned long)cdp->excepstack_top);
++}
++
+ /*
++ * The core being started, in arm_init_cpu() once its thread is in TPIDR_EL1: the kernel's vectors from now on, the ones
++ * common_start would have given it (m3_diag=1 only; start.s left it the physical early ones).
++ */
++void
++psci_smp_diag_vectors(void)
++{
++	if (psci_smp_diag != 0) {
++		__builtin_arm_wsr64("VBAR_EL1", (uint64_t)&ExceptionVectorsBase);
++		__builtin_arm_isb(ISB_SY);
++	}
++}
++
++/*
++ * Called first thing by sleh_synchronous() when m3_diag=1: if this is a core being started that has not joined the
++ * scheduler yet, record the exception and park here for good. Anything else returns at once.
++ */
++void
++psci_smp_diag_sleh(uint32_t esr, uint64_t far, uint64_t elr, uint64_t spsr, uint64_t lr, uint64_t sp)
++{
++	struct psci_smp_start_fault *f = &psci_smp_start_fault;
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++	int cpu = ml_get_cpu_number(ml_phys_id_from_mpidr(mpidr));
++	uint32_t stage;
++
++	if (cpu < 0 || cpu >= MAX_CPUS || cpu == master_cpu) {
++		return;
++	}
++	stage = os_atomic_load(&psci_smp_cpu_stage[cpu], acquire);
++	if (stage == 0 || stage >= PSCI_SMP_CPU_RUNNING) {
++		return;
++	}
++	__builtin_arm_wsr("DAIFSet", DAIFSC_ALL);
++	f->mpidr = mpidr;
++	f->esr = esr;
++	f->elr = elr;
++	f->far = far;
++	f->lr = lr;
++	f->sp = sp;
++	f->spsr = spsr;
++	f->tpidr = __builtin_arm_rsr64("TPIDR_EL1");
++	f->ttbr0 = __builtin_arm_rsr64("TTBR0_EL1");
++	f->ttbr1 = __builtin_arm_rsr64("TTBR1_EL1");
++	f->tcr = __builtin_arm_rsr64("TCR_EL1");
++	f->sctlr = __builtin_arm_rsr64("SCTLR_EL1");
++	f->vbar = __builtin_arm_rsr64("VBAR_EL1");
++	f->x21 = 0;
++	f->source = 2;
++	__builtin_arm_dmb(DMB_SY);
++	f->valid = 1;
++	FlushPoC_DcacheRegion((vm_offset_t)f, sizeof(*f));
++	__builtin_arm_dsb(DSB_SY);
++	for (;;) {
++		__builtin_arm_wfe();
++	}
++}
++
++/*
+  * Start a registered processor: the platform's half of cpu_start(). Waits until the core has
+  * joined the scheduler, and says what became of it if it has not: on a phone the log is all
+  * there is to go by.
+@@ -257,7 +446,29 @@
+ 	t1 = mach_absolute_time();
+ 	psci_smp_step("psci: cpu %d (MPIDR 0x%x): the kernel's segments cleaned in %llu us; CPU_ON with entry 0x%llx (%s)\n",
+ 	    cpu, phys_id, psci_smp_us(t1 - t0), entry, psci_smp_hvc ? "HVC" : "SMC");
++	{
++		uint32_t ids = 0;
++
++		if (PE_parse_boot_argn("m3_ids", &ids, sizeof(ids)) && ids != 0 && (phys_id & 0xff00) == 0x100) {
++			hakios_m3_park = 1;
++			FlushPoC_DcacheRegion((vm_offset_t)&hakios_m3_park, sizeof(hakios_m3_park));
++		}
++	}
++	psci_smp_diag_before(cpu, phys_id);
+ 	status = psci_call(PSCI_CPU_ON, phys_id, entry, 0);
++	if (hakios_m3_park) {
++		volatile uint64_t *slot = (volatile uint64_t *)ml_io_map(0xFDA10000 + 32 * ((phys_id >> 8) & 0xf), 0x1000);
++
++		for (int i = 0; i < 5; i++) {
++			delay_for_interval(20, NSEC_PER_MSEC);
++			if (slot != NULL) {
++				psci_smp_step("psci: m3_ids: cpu %d: MMFR0 0x%016llx MIDR 0x%llx MPIDR 0x%llx PFR0 0x%016llx\n", cpu, slot[0],
++				    slot[1], slot[2], slot[3]);
++			}
++		}
++		psci_smp_step("psci: m3_ids: done; the big core is parked (not started)\n");
++		return KERN_FAILURE;
++	}
+ 	psci_smp_step("psci: cpu %d: the firmware answered %lld (%s) in %llu us\n", cpu, status, psci_error(status),
+ 	    psci_smp_us(mach_absolute_time() - t1));
+ 	if (status != 0) {
+@@ -271,6 +482,12 @@
+ 	clock_interval_to_deadline(PSCI_SMP_START_SECONDS, NSEC_PER_SEC, &deadline);
+ 	do {
+ 		stage = os_atomic_load(&psci_smp_cpu_stage[cpu], acquire);
++		if (psci_smp_diag != 0) {
++			FlushPoC_DcacheRegion((vm_offset_t)&psci_smp_start_fault, sizeof(psci_smp_start_fault));
++			if (psci_smp_start_fault.valid != 0) {
++				break;
++			}
++		}
+ 		if (stage != seen) {
+ 			seen = stage;
+ 			psci_smp_step("psci: cpu %d: stage %u after %llu us\n", cpu, stage, psci_smp_us(mach_absolute_time() - t1));
+@@ -287,6 +504,12 @@
+ 		now = mach_absolute_time();
+ 	} while (now < deadline);
+ 
++	if (psci_smp_start_fault.valid != 0 && psci_smp_diag != 0) {
++		psci_smp_diag_report(cpu, cdp, stage);
++		os_atomic_andnot(&psci_smp_started, 1u << cpu, relaxed);        /* parked: not to be stopped, nor waited for */
++		os_atomic_store(&psci_smp_cpu_stage[cpu], 0, release);
++		return KERN_FAILURE;
++	}
+ 	if (psci_smp_start_fault.valid != 0) {
+ 		struct psci_smp_start_fault *f = &psci_smp_start_fault;
+ 		uint64_t to_virtual = gVirtBase - gPhysBase;
+diff --git a/osfmk/arm64/psci_smp.h b/osfmk/arm64/psci_smp.h
+--- a/osfmk/arm64/psci_smp.h
++++ b/osfmk/arm64/psci_smp.h
+@@ -24,6 +24,11 @@
+ /* PSCI SYSTEM_OFF (reset = false) or SYSTEM_RESET; returns only if the firmware refuses */
+ extern int64_t          psci_system_off(int reset);
+ 
++/* patch 1509: m3_diag=1, the first exception of a core being started recorded and that core parked */
++extern uint32_t         psci_smp_diag;
++extern void             psci_smp_diag_vectors(void);
++extern void             psci_smp_diag_sleh(uint32_t esr, uint64_t far, uint64_t elr, uint64_t spsr, uint64_t lr, uint64_t sp);
++
+ extern void             psci_smp_stop_others(void);
+ extern void             psci_smp_stop_here(void);
+ 
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -74,6 +74,9 @@
+ 
+ 
+ #include <arm64/platform_error_handler.h>
++#if defined(GENERIC_PSCI_SMP)
++#include <arm64/psci_smp.h>
++#endif
+ 
+ #if KASAN_TBI
+ #include <san/kasan.h>
+@@ -611,6 +614,14 @@
+ 	uintptr_t saved_expected_fault_addr = 0;
+ #endif /* CONFIG_XNUPOST */
+ 
++#if defined(GENERIC_PSCI_SMP)
++	/* HakiOS (patch 1509): m3_diag=1, a core being started records its first exception here and parks */
++	if (__improbable(psci_smp_diag != 0)) {
++		psci_smp_diag_sleh(esr, far, get_saved_state_pc(state), get_saved_state_cpsr(state), get_saved_state_lr(state),
++		    get_saved_state_sp(state));
++	}
++#endif
++
+ 	ASSERT_CONTEXT_SANITY(context);
+ 
+ 	task_vtimer_check(thread);
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -165,6 +165,32 @@
+ 	adrp	x19, EXT(ResetHandlerData)@page			// Get address of the reset handler data
+ 	add		x19, x19, EXT(ResetHandlerData)@pageoff
+ 	mrs		x15, MPIDR_EL1						// Load MPIDR to get CPU number
++	// HakiOS diagnostic (S9 M3 bring-up): this core's ID registers, MMU off, to the start of exynos-snapshot's
++	// log_kernel (0xFDA10000) at 32 * Affinity1: MMFR0, MIDR, MPIDR, PFR0 -- read back from TWRP's /proc/last_kmsg
++	movz	x2, #0xFDA1, lsl #16
++	ubfx	x3, x15, #8, #4
++	add		x2, x2, x3, lsl #5
++	mrs		x3, ID_AA64MMFR0_EL1
++	str		x3, [x2]
++	mrs		x3, MIDR_EL1
++	str		x3, [x2, #8]
++	str		x15, [x2, #16]
++	mrs		x3, ID_AA64PFR0_EL1
++	str		x3, [x2, #24]
++	dsb		sy
++	// a big core (MT clear, Affinity1 1) parks here when asked (boot-arg m3_ids=1): its IDs read by the boot core
++	adrp	x2, EXT(hakios_m3_park)@page
++	add		x2, x2, EXT(hakios_m3_park)@pageoff
++	ldr		w2, [x2]
++	cbz		w2, Lm3_nopark
++	tbnz	x15, #24, Lm3_nopark
++	ubfx	x3, x15, #8, #4
++	cmp		x3, #1
++	b.ne	Lm3_nopark
++Lm3_park:
++	wfe
++	b		Lm3_park
++Lm3_nopark:
+ #if HAS_CLUSTER || defined(GENERIC_PSCI_SMP)
+ 	// (generic boards: some number their cores in Affinity1 and leave Affinity0 at zero;
+ 	// a cpu data's phys id is both fields, as the device tree's "reg" has them)
+@@ -402,7 +428,8 @@
+ 
+ 	.align	3
+ Lsecondary_early_exception:
+-	// struct psci_smp_start_fault: { valid, MPIDR, ESR, ELR, FAR, LR, SP }
++	// struct psci_smp_start_fault (psci_smp.c, patch 1509: two cache lines): { valid, MPIDR, ESR, ELR,
++	// FAR, LR, SP, SPSR, TPIDR_EL1, TTBR0, TTBR1, TCR, SCTLR, VBAR, x21 (start.s: the cpu data's PA), source }
+ 	adrp	x9, EXT(psci_smp_start_fault)@page
+ 	add		x9, x9, EXT(psci_smp_start_fault)@pageoff
+ 	mrs		x10, MPIDR_EL1
+@@ -416,10 +443,41 @@
+ 	str		lr, [x9, #40]
+ 	mov		x10, sp
+ 	str		x10, [x9, #48]
++	mrs		x10, SPSR_EL1
++	str		x10, [x9, #56]
++	mrs		x10, TPIDR_EL1
++	str		x10, [x9, #64]
++	mrs		x10, TTBR0_EL1
++	str		x10, [x9, #72]
++	mrs		x10, TTBR1_EL1
++	str		x10, [x9, #80]
++	mrs		x10, TCR_EL1
++	str		x10, [x9, #88]
++	mrs		x10, SCTLR_EL1
++	str		x10, [x9, #96]
++	mrs		x10, VBAR_EL1
++	str		x10, [x9, #104]
++	str		x21, [x9, #112]
++	mov		x10, #1								// source 1: the early vectors
++	str		x10, [x9, #120]
++	add		x10, x9, #64
++	dc		civac, x10							// the second line first: valid is in the first
++	dsb		sy
+ 	mov		x10, #1
+ 	str		x10, [x9]
+-	dc		cvac, x9
++	dc		civac, x9
+ 	dsb		sy
++	// m3_diag=1: park here (an M3 does not come back from CPU_OFF, and Carbon leaves VBAR_EL2 unset on a
++	// secondary core, so neither HVC nor CPU_OFF is safe on the core being diagnosed)
++	adrp	x10, EXT(psci_smp_diag)@page
++	add		x10, x10, EXT(psci_smp_diag)@pageoff
++	ldr		w10, [x10]
++	cbz		w10, Lsecondary_early_off
++	msr		DAIFSet, #(DAIFSC_ALL)
++Lsecondary_early_park:
++	wfe
++	b		Lsecondary_early_park
++Lsecondary_early_off:
+ 	// PSCI CPU_OFF, by the firmware's calling convention (psci_smp_hvc)
+ 	adrp	x9, EXT(psci_smp_hvc)@page
+ 	add		x9, x9, EXT(psci_smp_hvc)@pageoff
+@@ -935,7 +993,22 @@
+ 	add		x0, x0, x22									// Convert exception vector address to KVA
+ 	sub		x0, x0, x23
+ 1:
++#if defined(GENERIC_PSCI_SMP)
++	// HakiOS (patch 1509): with m3_diag=1 a core being started keeps the physical early vectors
++	// (LowSecondaryExceptionVectorBase, reached through the V=P map once the MMU is on) until
++	// arm_init_cpu() has its thread in TPIDR_EL1 (psci_smp_diag_vectors()). Its first exception is then
++	// recorded in full and the core parks, instead of entering sleh with no thread and recursing.
++	cbz		x21, Lvbar_kernel
++	adrp	x9, EXT(psci_smp_diag)@page
++	add		x9, x9, EXT(psci_smp_diag)@pageoff
++	ldr		w9, [x9]
++	cbnz	w9, Lvbar_done
++Lvbar_kernel:
++#endif
+ 	MSR_VBAR_EL1_X0
++#if defined(GENERIC_PSCI_SMP)
++Lvbar_done:
++#endif
+ 
+ #if HAS_APPLE_PAC
+ 	PAC_INIT_KEY_STATE tmp=x0, tmp2=x1
