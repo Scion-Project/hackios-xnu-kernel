@@ -236,7 +236,6 @@ static TUNABLE(uint32_t, gFpsLog, "fps_log", 0);
 extern "C" {
 int hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t rowbytes);
 int hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t * phys);
-vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
 int hakios_scanout_attach(int mode, const uint64_t * phys, unsigned count, uint32_t width, uint32_t height,
     uint32_t rowbytes, unsigned shown);
 int hakios_scanout_flip(unsigned index);
@@ -405,7 +404,7 @@ public:
 	unsigned        fScanCount, fScanFront, fScanPending, fScanTarget;
 	uint8_t *       fScanBase[SCAN_BUFFERS];
 	uint64_t        fScanPhys[SCAN_BUFFERS];
-	IOBufferMemoryDescriptor * fScanMemory[SCAN_BUFFERS];
+	IOMemoryDescriptor * fScanMemory[SCAN_BUFFERS];  /* (IOKit's buffers, or the DPU driver's memory described) */
 	IOMemoryMap *   fScanMap[SCAN_BUFFERS];
 	uint8_t *       fBootBase;              /* the boot framebuffer, as it was before fBase pointed elsewhere */
 	uint32_t        fScanWidth, fScanHeight, fScanRowBytes;
@@ -1305,13 +1304,27 @@ IOMobileFramebuffer::scanSetup(void)
 	carve = hakios_scanout_memory(size, own, carved) == 0;
 	for (i = first; i < SCAN_BUFFERS; i++) {
 		if (carve) {
+			/*
+			 * Not ml_io_map_wcomb: io_map takes its addresses from io_submap, 8 MB on arm64 for every ml_io_map of
+			 * the kernel's, and allocates with KMA_NOFAIL: a buffer of 11 MB panicked the kernel (60fps-a2,
+			 * "kmem_alloc(..., 11239424, 0x100021): failed with 3"). A physical descriptor mapped by IOKit takes
+			 * its addresses from the kernel's map and says NULL when it cannot.
+			 */
 			fScanPhys[i] = carved[i - first];
-			fScanBase[i] = (uint8_t *) ml_io_map_wcomb((vm_offset_t) fScanPhys[i], (vm_size_t) size);
-			if (fScanBase[i] == NULL) {
+			fScanMemory[i] = IOMemoryDescriptor::withPhysicalAddress((IOPhysicalAddress) fScanPhys[i],
+			    (IOByteCount) size, kIODirectionInOut);
+			if (fScanMemory[i] == NULL) {
+				scanSay("MiniIOMobileFramebuffer: %s: buffer %u at %#llx (%llu bytes): no descriptor\n", name, i,
+				    fScanPhys[i], size);
+				break;
+			}
+			fScanMap[i] = fScanMemory[i]->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapWriteCombineCache);
+			if (fScanMap[i] == NULL) {
 				scanSay("MiniIOMobileFramebuffer: %s: buffer %u at %#llx (%llu bytes) cannot be mapped\n", name, i,
 				    fScanPhys[i], size);
 				break;
 			}
+			fScanBase[i] = (uint8_t *) fScanMap[i]->getVirtualAddress();
 			continue;
 		}
 		fScanMemory[i] = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
