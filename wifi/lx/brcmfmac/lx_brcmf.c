@@ -6,8 +6,9 @@
  *      (brcmf_core_init(): its PCI driver registered, the device probed): BAR0 and BAR1 mapped, bus mastering on,
  *      the chip's ID, revision and cores read through BAR0's window, the driver's private state made. The firmware
  *      is asked for and never given (lx_kpi.c): the driver waits for it, and nothing else happens
- *   2  ... the firmware, NVRAM and CLM asked for by brcmfmac's names (brcm/brcmfmac4361b2-pcie.bin, .txt,
- *      .clm_blob), found or not, the NVRAM parsed; nothing goes to the chip
+ *   2  ... which module the chip is, from its OTP (lx_brcmf_identify(): two of its registers written as bcmdhd writes
+ *      them, then read), and the firmware, NVRAM and CLM asked for by brcmfmac's names (brcm/brcmfmac4361b2-pcie.bin,
+ *      .txt, .clm_blob), found or not, the NVRAM parsed; nothing more goes to the chip
  *   3  ... the chip's processor held, the firmware and NVRAM written into its RAM through BAR1, the processor let go
  *      and waited for (up to 5 s) to say where its shared area is; the rings set up in memory the chip is to read
  *      and write, and their addresses given to it. Nothing has gone over them yet
@@ -84,6 +85,56 @@ lx_brcmf_attached(struct device *dev)
 	} else {
 		lx_brcmf_may(7, "the station: the interface up, en0 on it, the kernel's to ask");
 	}
+}
+
+/*
+ * Which module the chip is (Murata or SEMCO, and its revision), read from its OTP the way Samsung's bcmdhd reads it
+ * before it chooses the NVRAM (xnu/files/bsd/sys/hakios.bcm4361_cis.h has the facts and the addresses): two of the chip's
+ * registers written and read back (OTP Control 1, the PMU's minimum resources: what bcmdhd writes there, to have the
+ * OTP readable), then the 22 words of its CIS, given to the kernel (lx_os_radio_identity(), hakios.brcmfmac.c), which
+ * reads them and from then on asks for this module's NVRAM (and Bluetooth's patch). Called by brcmfmac's probe once the
+ * chip is attached and before the firmware is asked for (bcm4361.patch); from brcmfmac=2 on, when the files are asked
+ * for at all.
+ */
+u32 lx_brcmf_bp_read32(void *ctx, u32 addr);
+void lx_brcmf_bp_write32(void *ctx, u32 addr, u32 value);
+
+void
+lx_brcmf_identify(void *ctx, u32 chip, u32 chiprev)
+{
+	static const struct {
+		u32 address, value;
+		const char *what;
+	} on[] = {
+		{ 0x18010324, 0x00fa0000, "OTP Control 1" },
+		{ 0x18012618, 0x0e4fffff, "the PMU's minimum resources" },
+	};
+	unsigned char cis[22 * 4];
+	unsigned i;
+
+	if (!lx_brcmf_reached(2)) {
+		lx_tell("lx: brcmfmac=%u: the module's identity in OTP is read from brcmfmac=2 on\n", b.steps);
+		return;
+	}
+	lx_tell("lx: brcmfmac 2: the module's identity from the chip's OTP (chip %x revision %u), as bcmdhd reads it\n",
+	    chip, chiprev);
+	for (i = 0; i < sizeof(on) / sizeof(on[0]); i++) {
+		u32 before = lx_brcmf_bp_read32(ctx, on[i].address), after;
+
+		lx_tell("lx: %s (%#x) reads %#x; writing %#x\n", on[i].what, on[i].address, before, on[i].value);
+		lx_brcmf_bp_write32(ctx, on[i].address, on[i].value);
+		after = lx_brcmf_bp_read32(ctx, on[i].address);
+		lx_tell("lx: %s now reads %#x\n", on[i].what, after);
+	}
+	for (i = 0; i < sizeof(cis) / 4; i++) {
+		u32 word = lx_brcmf_bp_read32(ctx, 0x18011110 + 4 * i);
+
+		cis[4 * i] = word & 0xff;
+		cis[4 * i + 1] = (word >> 8) & 0xff;
+		cis[4 * i + 2] = (word >> 16) & 0xff;
+		cis[4 * i + 3] = word >> 24;
+	}
+	lx_os_radio_identity(cis, sizeof(cis), chip, chiprev);
 }
 
 int

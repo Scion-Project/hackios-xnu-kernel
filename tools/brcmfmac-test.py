@@ -11,7 +11,8 @@ usage: tools/brcmfmac-test.py
      (pcie.c, brcmf_pcie_fwnames) gives, the first line that matches as brcmf_fw_alloc_request() takes it; the RAM
      base chip.c gives them; the PCI ID in the driver's device table.
 
-  3. xnu/files/bsd/sys/hakios.macaddr.h, compiled with the host's cc: the phone's address as Samsung's Android writes it
+  3. xnu/files/bsd/sys/hakios.bcm4361_cis.h, compiled with the host's cc: the module's ID in the chip's OTP (bcmdhd's CIS
+     tuples) read, and the NVRAM it chooses; then xnu/files/bsd/sys/hakios.macaddr.h, compiled with the host's cc: the phone's address as Samsung's Android writes it
      in /efs/wifi/.mac.info (brcmfmac=6), and what is refused (all zeroes, a group's address, anything malformed).
   4. wifi/lx/brcmfmac/lx_rsn.h, compiled with the host's cc: an access point's RSN element read, and ours for the
      association request made (brcmfmac=8): CCMP, PSK, the group's CCMP or TKIP; WPA3, enterprise networks, protected
@@ -203,9 +204,53 @@ int main(void) {
 }
 """
 
+CIS_HARNESS = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include "hakios.bcm4361_cis.h"
+static int bad;
+#define EQS(a, b) do { if (strcmp((a), (b)) != 0) { printf("line %d: \"%s\", not \"%s\"\n", __LINE__, (a), (b)); bad = 1; } } while (0)
+#define EQ(a, b) do { if ((a) != (b)) { printf("line %d: %d, not %d\n", __LINE__, (int)(a), (int)(b)); bad = 1; } } while (0)
+static void module(uint8_t rev, uint8_t maker, const char *tag, const char *maker_name, const char *nvram, int known) {
+	/* the start tuple (80, length 2), a board type (1b), the VID (81: tag and two bytes), the rest of OTP unwritten */
+	uint8_t cis[88];
+	struct bcm4361_module m;
+	memset(cis, 0xff, sizeof(cis));
+	memcpy(cis, (uint8_t[]){ 0x80, 0x02, 0x00, 0x00, 0x00, 0x03, 0x1b, 0x08, 0x07, 0x00, 0x03, 0x81, rev, maker }, 14);
+	if (!bcm4361_cis_parse(cis, sizeof(cis), &m)) { printf("%02x %02x: not read\n", rev, maker); bad = 1; return; }
+	EQ(m.vid_length, 2); EQ(m.vid[0], rev); EQ(m.vid[1], maker); EQ(m.boardtype, 0x08);
+	bcm4361_module_files(&m, tag);
+	EQS(m.maker, maker_name); EQS(m.nvram, nvram); EQ(m.known, known);
+}
+int main(void) {
+	struct bcm4361_module m;
+	uint8_t blank[88], wrong[88], cut[6] = { 0x80, 0x02, 0x00, 0x00, 0x00, 0x09 };
+	module(0x91, 0x33, "b2", "semco", "nvram.txt_r02a_b2", 1);	/* SEMCO E32A, the S9's */
+	module(0xa1, 0x33, "b2", "semco", "nvram.txt_r02b_b2", 1);
+	module(0x50, 0x22, "b2", "murata", "nvram.txt_murata_r020_b2", 1);
+	module(0x61, 0x22, "b2", "murata", "nvram.txt_murata_r031_b2", 1);
+	module(0x71, 0x22, "b2", "murata", "nvram.txt_murata_r041_b2", 0);	/* not in bcmdhd's table: the vendor's one */
+	module(0xb1, 0x33, "b2", "semco", "nvram.txt_r02b_b2", 0);
+	module(0x31, 0x22, "b0", "murata", "nvram.txt_murata_r030_b0", 1);	/* (r31 -> r30) */
+	module(0x91, 0x33, "b0", "semco", "", 0);				/* a B2 module's ID with a B0 chip: none */
+	module(0x91, 0x44, "b2", "", "", 0);					/* a maker not known */
+	memset(blank, 0xff, sizeof(blank));
+	EQ(bcm4361_cis_parse(blank, sizeof(blank), &m), 0);			/* OTP not written */
+	memset(wrong, 0, sizeof(wrong));
+	EQ(bcm4361_cis_parse(wrong, sizeof(wrong), &m), 0);
+	EQ(bcm4361_cis_parse(cut, sizeof(cut), &m), 0);			/* a tuple running past the end */
+	bcm4361_module_files(&m, "b2"); EQS(m.nvram, "");
+	return bad;
+}
+"""
+
 for name, harness, include, what in (
         ("macaddr", MAC_HARNESS, "xnu/files/bsd/sys",
          "hakios.macaddr.h: the phone's .mac.info and wifi_mac read; zeroes, a group's address and malformed text refused"),
+        ("cis", CIS_HARNESS, "xnu/files/bsd/sys",
+         "hakios.bcm4361_cis.h: the module's ID in the chip's OTP read, and the NVRAM bcmdhd would take for it (SEMCO "
+         "r02a/r02b, Murata r020..r031; a Murata ID bcmdhd's table lacks gets the vendor's murata_r041); blank OTP refused"),
         ("rsn", RSN_HARNESS, "wifi/lx/brcmfmac",
          "lx_rsn.h: WPA2 CCMP, mixed (the group's TKIP) and WPA2/WPA3 transition taken, with our RSN element; WPA3, "
          "enterprise, MFP required, TKIP only, WEP and broken elements refused")):
@@ -277,6 +322,13 @@ check("brcm_hw_ids.h: BRCM_PCIE_4361_DEVICE_ID is 0x441f, BRCM_CC_4347/4361_CHIP
       and defines.get("BRCM_CC_4361_CHIP_ID") == 0x4361)
 check("pcie.c: the device table has BRCM_PCIE_4361_DEVICE_ID (vendor 0x14e4, class 0x0280xx)",
       "BRCMF_PCIE_DEVICE(BRCM_PCIE_4361_DEVICE_ID, WCC)" in pcie)
+probe = pcie[pcie.index("\nbrcmf_pcie_probe(struct pci_dev *pdev"):]
+probe = probe[:probe.index("\nfail")]
+check("pcie.c: lx_brcmf_identify() once, in the probe, after the chip is attached and before the firmware is asked for; "
+      "lx_brcmf_bp_read32/_write32 are the buscore accessors",
+      pcie.count("lx_brcmf_identify(devinfo") == 1 and "lx_brcmf_identify(devinfo" in probe
+      and probe.index("brcmf_chip_attach(") < probe.index("lx_brcmf_identify(") < probe.index("brcmf_pcie_prepare_fw_request(")
+      and "return brcmf_pcie_buscore_read32(ctx, addr);" in pcie and "brcmf_pcie_buscore_write32(ctx, addr, value);" in pcie)
 check("pcie.c: brcmfmac=N stops it before the firmware goes to the chip (3) and before brcmf_attach() (4)",
       pcie.count("lx_brcmf_may(3,") == 1 and pcie.count("lx_brcmf_may(4,") == 1)
 

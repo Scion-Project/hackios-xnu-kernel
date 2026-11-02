@@ -47,6 +47,7 @@ void hakios_s6sy761_init(void);        /* boot-arg s6sy761=1: the Galaxy S9's to
 void hakios_s6e3ha8_init(void);        /* boot-arg panel=1: the Galaxy S9's panel brightness (kern.hakios.brightness) */
 void hakios_s2mpb02_torch_init(void);  /* boot-arg torch=N on the Galaxy S9: its flashlight (/dev/hakios-torch) */
 void hakios_exynos_pcie_init(void);    /* boot-arg wifi_pcie=N on the Galaxy S9: PCIe to the BCM4361, stage 1 */
+const char *hakios_bcm4361_module(void); /* the S9's radio module, "murata" or "semco", once Wi-Fi read its OTP; or NULL */
 void hakios_bcm4361_bt_init(void);     /* boot-arg bt=N on the Galaxy S9: the BCM4361's Bluetooth on UART_BT, stage 1 */
 void hakios_s2mpb02_torch_quiesce(void); /* loader_return(): the S9's flashlight off, if it is lit */
 void hakios_exynos_camera_init(void);   /* boot-arg cam_s9=N on the Galaxy S9: its front camera, stage 1 */
@@ -57,6 +58,9 @@ void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage
 void hakios_ufs_report(const char *when); /* where reading the storage has spent its time so far */
 bool hakios_ufs_dev(dev_t dev);           /* one of the storage's devices */
 int hakios_ufs_read_partition(const char *name, uint64_t offset, uint8_t *dst, uint64_t len, uint64_t *bytes); /* for drivers */
+/* a file of one of the phone's ext4 partitions, read only, kept for the run (drivers/storage/hakios.ext4.c): 0 or an errno */
+int hakios_partition_file(const char *partition, const char *mount, const char *path, uint64_t max, const uint8_t **data,
+    uint64_t *size);
 /* a file of one of the RAM disks (drivers/storage/hakios.image.c): fw/<name> is the firmware userland/build.sh put there */
 const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
 void hakios_battery_init(void);        /* boot-arg battery=1: Qualcomm UEFI charger state shared by xnuloader */

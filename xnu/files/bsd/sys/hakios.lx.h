@@ -58,6 +58,8 @@ int	 lx_os_firmware(const char *name, const void **data, unsigned long *size);
 int	 lx_os_rproc_boot(void);
 /* the radio's own address (six bytes), if the machine has one for it: 1, or 0 and nothing written */
 int	 lx_os_radio_address(unsigned char *address);
+/* the BCM4361's CIS from its OTP (length bytes, chip ID, revision): which module it is, for the files it is given */
+void	 lx_os_radio_identity(const unsigned char *cis, unsigned long length, unsigned chip, unsigned revision);
 /*
  * The network the radio is to join, if the machine was given one: its name and its passphrase,
  * into buffers whose sizes come in and whose contents' lengths go out. 1, or 0.

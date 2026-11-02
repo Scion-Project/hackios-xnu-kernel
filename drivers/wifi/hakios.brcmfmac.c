@@ -11,7 +11,9 @@
  *   brcmfmac=1   brcmfmac's probe: its PCI device table, BAR0 and BAR1 mapped, bus mastering on, the chip's ID,
  *                revision and cores read through BAR0's window; the firmware is not asked for
  *   brcmfmac=2   ... the firmware, NVRAM and CLM asked for (fw/brcmfmac4361b2-pcie.bin, .txt, .clm_blob of the small
- *                image, from the user's own phone, never in a repository) and checked; not loaded
+ *                image, or under bcmdhd's names from devices/starlte/firmware/wifi there or from the phone's own VENDOR
+ *                partition at run time, ufs=2: hakios_wifi_driver_file() below), the NVRAM the module's, read from the
+ *                chip's OTP first (lx_os_radio_identity()); checked, not loaded
  *   brcmfmac=3   ... the firmware and NVRAM written to the chip's RAM (through BAR1), its processor started, its
  *                shared area read, the rings set up in memory the chip is to read and write
  *   brcmfmac=4   ... the firmware's interface: the first command over the rings (the first time the chip reads and
@@ -27,6 +29,13 @@
  *   brcmfmac=8   ... joining: an open network, or WPA2 with a passphrase (the four-way handshake by the object's
  *                lx_wpa.c, the keys given to the firmware), then frames; and the network of fw/network of the small
  *                image (its name on the first line, its passphrase on the second), if there is one, joined at once
+ * The files and the network (all optional; the firmware, NVRAM and CLM are found in fw/ or the phone's VENDOR):
+ *   wifi_vendor=0        never read the radio's files from the phone's VENDOR partition (default: read them there, ufs=2)
+ *   wifi_vendor_part=<name>  the partition the radio's files are read from (default VENDOR)
+ *   wifi_fw=<name>       the station firmware's bcmdhd name, in fw/ or VENDOR (default bcmdhd_sta.bin_b2 for B2)
+ *   wifi_nvram=<name>    the NVRAM's name there (default: the module's, from the chip's OTP; else a guess, logged)
+ *   wifi_ssid=<name>     brcmfmac=8 without fw/network: the network's name, a byte as %XX (a space is %20)
+ *   wifi_psk=<text>      its passphrase, the same way (8 to 63 bytes); never logged, but the command line is the image's
  * The way back to the loader (hakios_wifi_stop(), hakios_wifi_quiesce()): the driver taken down in order when it got as far
  * as its interface (lx_stop()), then the radio held in reset and unpowered (hakios_exynos_pcie_quiesce()).
  *
@@ -45,6 +54,7 @@
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
 #include <sys/errno.h>
+#include <sys/hakios.bcm4361_cis.h>
 #include <sys/hakios.exynos_pcie.h>
 #include <sys/hakios.input.h>
 #include <sys/hakios.lx.h>
@@ -135,21 +145,164 @@ hakios_wifi_dsp_is_up(void)
 }
 
 /*
- * brcmfmac asks for "brcm/brcmfmac4361b2-pcie.bin" and the like (and first for a board's own name of each, which is
- * not there); they are looked for by the last part of the name in fw/ of the small image (userland/build.sh puts
- * fw-wifi/ there). The user's phone has them under bcmdhd's names (devices/starlte/WIFI.md says which is which).
+ * Which module this phone's chip is: brcmfmac's probe reads the CIS the module's maker wrote into the chip's OTP, the way
+ * bcmdhd does (wifi/lx/brcmfmac/lx_brcmf.c, lx_brcmf_identify()), and gives it here before it asks for any file. What it
+ * says (xnu/files/bsd/sys/hakios.bcm4361_cis.h: Murata or SEMCO, and the NVRAM bcmdhd would take) chooses the NVRAM
+ * below, and Bluetooth's patch (hakios_bcm4361_module(), for drivers/bluetooth/hakios.bcm4361_bt.c).
  */
+static struct bcm4361_module module;
+static bool module_read;
+
+void
+lx_os_radio_identity(const unsigned char *cis, unsigned long length, unsigned chip, unsigned revision)
+{
+	const char *tag = revision >= 5 ? "b2" : "b0";
+	char bytes[3 * 16 + 1] = "";
+	int found = bcm4361_cis_parse(cis, (size_t)length, &module);
+
+	for (unsigned i = 0; i < 16 && i < length; i++) {
+		snprintf(bytes + 3 * i, sizeof(bytes) - 3 * i, " %02x", cis[i]);
+	}
+	say("brcmfmac: 2: the chip's CIS (OTP), its first bytes:%s\n", bytes);
+	if (!found) {
+		say("brcmfmac: 2: NO MODULE ID IN THE CIS (%s): the NVRAM and Bluetooth's patch are guessed\n",
+		    length > 0 && cis[0] != 0x80 ? "it does not begin with the start tag 80" : "no tuple 81");
+		return;
+	}
+	bcm4361_module_files(&module, tag);
+	module_read = true;
+	say("brcmfmac: 2: chip %x revision %u (%s); the module's ID %02x %02x (%s), board type %d: %s%s%s\n", chip, revision,
+	    tag, module.vid[0], module.vid_length > 1 ? module.vid[1] : 0, module.maker[0] ? module.maker : "a maker not known",
+	    module.boardtype, module.nvram[0] ? module.nvram : "no NVRAM of the vendor's for it",
+	    module.nvram[0] && !module.known ? " (THE MAKER'S ONLY ONE: its ID is not in bcmdhd's table)" : "",
+	    module.nvram[0] && module.known ? " (as bcmdhd chooses)" : "");
+}
+
+/* "murata" or "semco" once Wi-Fi has read the chip's OTP in this run (brcmfmac=2 and up); NULL before, or without it */
+const char *
+hakios_bcm4361_module(void)
+{
+	return module_read && module.maker[0] != 0 ? module.maker : NULL;
+}
+
+/*
+ * brcmfmac asks for "brcm/brcmfmac4361b2-pcie.bin" and the like (and first for a board's own name of each, which is
+ * not there). Each is looked for, in order:
+ *   1. under that name in fw/ of the small image (a developer's own, fw-wifi/ of userland/build.sh);
+ *   2. under the name Samsung's bcmdhd gives it, in fw/ of the small image (devices/starlte/firmware/wifi/, which
+ *      userland/build.sh DEVICE=starlte puts there);
+ *   3. under that name in the phone's own VENDOR partition, read at run time (drivers/storage/hakios.ext4.c, with
+ *      ufs=2): LineageOS keeps them in /vendor/firmware, Samsung's Android in /vendor/etc/wifi; both are looked in.
+ *      wifi_vendor=0 leaves VENDOR alone.
+ *
+ *   brcmfmac4361<rev>-pcie.bin       bcmdhd_sta.bin_<rev>             (the station firmware; boot-arg wifi_fw=<name>)
+ *   brcmfmac4361<rev>-pcie.txt       nvram.txt_..._<rev>              (boot-arg wifi_nvram=<name>; else the module's, from
+ *                                                                      the chip's OTP, above; else a guess, logged as one)
+ *   brcmfmac4361<rev>-pcie.clm_blob  bcmdhd_clm.blob                  (the regulatory data)
+ */
+#define WIFI_FILE_MAX   (4u << 20)
+
+static const uint8_t *
+radio_file(const char *name, uint64_t *size, const char **from)
+{
+	static const char *const dirs[] = { "/firmware/", "/etc/wifi/" };
+	char partition[24] = "VENDOR", path[96];
+	const uint8_t *data = hakios_image_file("fw", name, size, NULL);
+	uint32_t enabled = 1;
+
+	if (data != NULL) {
+		*from = "fw/ of the small image";
+		return data;
+	}
+	PE_parse_boot_argn("wifi_vendor", &enabled, sizeof(enabled));
+	if (enabled == 0) {
+		return NULL;
+	}
+	PE_parse_boot_arg_str("wifi_vendor_part", partition, sizeof(partition));
+	for (unsigned d = 0; d < sizeof(dirs) / sizeof(dirs[0]) && data == NULL; d++) {
+		snprintf(path, sizeof(path), "%s%s", dirs[d], name);
+		if (hakios_partition_file(partition, "/vendor", path, WIFI_FILE_MAX, &data, size) != 0) {
+			data = NULL;
+		}
+	}
+	*from = "the phone's VENDOR";
+	return data;
+}
+
+static const uint8_t *
+bcmdhd_wifi_file(const char *last, uint64_t *size, char *used, size_t room, const char **from)
+{
+	static const char *const nvrams_b2[] = { "nvram.txt_r02a_b2", "nvram.txt_r02b_b2", "nvram.txt_murata_r041_b2", "nvram.txt_b2" };
+	static const char *const nvrams_b0[] = { "nvram.txt_b0", "nvram.txt_r01i_b0" };
+	char rev[3] = "";
+	const char *suffix;
+	const uint8_t *data;
+
+	/* only brcmfmac's own names for this chip: brcmfmac4361b2-pcie.bin and so on (a board's own name is not mapped) */
+	if (strncmp(last, "brcmfmac4361", 12) != 0 || last[12] == 0 || last[13] == 0 || strncmp(last + 14, "-pcie.", 6) != 0) {
+		return NULL;
+	}
+	rev[0] = last[12];
+	rev[1] = last[13];
+	suffix = last + 20;
+	if (strcmp(suffix, "bin") == 0) {
+		snprintf(used, room, "bcmdhd_sta.bin_%s", rev);
+		PE_parse_boot_arg_str("wifi_fw", used, (int)room);
+		return radio_file(used, size, from);
+	}
+	if (strcmp(suffix, "clm_blob") == 0) {
+		snprintf(used, room, "bcmdhd_clm.blob");
+		return radio_file(used, size, from);
+	}
+	if (strcmp(suffix, "txt") == 0) {
+		const char *const *list = strcmp(rev, "b2") == 0 ? nvrams_b2 : nvrams_b0;
+		unsigned count = strcmp(rev, "b2") == 0 ? sizeof(nvrams_b2) / sizeof(nvrams_b2[0]) : sizeof(nvrams_b0) / sizeof(nvrams_b0[0]);
+
+		if (PE_parse_boot_arg_str("wifi_nvram", used, (int)room) && used[0] != 0) {
+			say("brcmfmac: the NVRAM is %s (boot-arg wifi_nvram)\n", used);
+			return radio_file(used, size, from);
+		}
+		if (module_read && module.nvram[0] != 0) {
+			snprintf(used, room, "%s", module.nvram);
+			if ((data = radio_file(used, size, from)) != NULL) {
+				say("brcmfmac: the NVRAM is %s: the module's (%s, from the chip's OTP)\n", used, module.maker);
+				return data;
+			}
+			say("brcmfmac: the module's NVRAM %s IS NOT THERE: one is guessed\n", used);
+		}
+		for (unsigned i = 0; i < count; i++) {
+			snprintf(used, room, "%s", list[i]);
+			if ((data = radio_file(used, size, from)) != NULL) {
+				say("brcmfmac: the NVRAM is %s: A GUESS, the first of the S9's there (the chip's OTP did not say which "
+				    "module it is); wifi_nvram=<name> chooses another\n", used);
+				return data;
+			}
+		}
+	}
+	return NULL;
+}
+
 __attribute__((weak)) const uint8_t *
 hakios_wifi_driver_file(const char *name, uint64_t *size)
 {
-	const char *last = strrchr(name, '/');
+	const char *last = strrchr(name, '/'), *from = "";
+	char used[64] = "";
 	const uint8_t *data;
 
 	last = last == NULL ? name : last + 1;
 	data = hakios_image_file("fw", last, size, NULL);  /* (hakios.image.c) */
-	say("brcmfmac: the driver asks for %s: %s", name, data == NULL ? "not in fw/ of the small image\n" : "");
 	if (data != NULL) {
-		say("fw/%s, %llu bytes\n", last, *size);
+		say("brcmfmac: the driver asks for %s: fw/%s of the small image, %llu bytes\n", name, last, *size);
+		return data;
+	}
+	data = bcmdhd_wifi_file(last, size, used, sizeof(used), &from);
+	if (data != NULL) {
+		say("brcmfmac: the driver asks for %s: %s, from %s, %llu bytes\n", name, used, from, *size);
+	} else {
+		say("brcmfmac: the driver asks for %s: not there%s%s\n", name, used[0] ? " (nor " : "", used[0] ? used : "");
+		if (used[0]) {
+			say("brcmfmac: ... in fw/ or the phone's VENDOR)\n");
+		}
 	}
 	return data;
 }
@@ -221,9 +374,63 @@ hakios_wifi_radio_address(uint8_t *address)
 }
 
 /*
- * brcmfmac=8: the network to join, fw/network of the small image (fw-wifi/network: its name on the first line, its
- * passphrase on the second; hakios.wifi.c reads the same file on the POCO). Only the lengths are said.
+ * brcmfmac=8: the network to join: fw/network of the small image (fw-wifi/network: its name on the first line, its
+ * passphrase on the second; hakios.wifi.c reads the same file on the POCO), else boot-args wifi_ssid and wifi_psk (a
+ * space or any other byte as %XX, so that a name with spaces fits on the command line; an image made with them carries
+ * them: keep it to yourself). Only the lengths are said, never the name or the passphrase.
  */
+static unsigned
+unescape(const char *text, uint8_t *out, unsigned room)
+{
+	unsigned n = 0;
+
+	for (const char *p = text; *p != 0; p++) {
+		int c = (unsigned char)*p;
+
+		if (c == '%' && p[1] != 0 && p[2] != 0) {
+			char hex[3] = { p[1], p[2], 0 };
+			char *end;
+			unsigned long v = strtoul(hex, &end, 16);
+
+			if (*end == 0) {
+				c = (int)v;
+				p += 2;
+			}
+		}
+		if (n == room) {
+			return room + 1;
+		}
+		out[n++] = (uint8_t)c;
+	}
+	return n;
+}
+
+static bool
+network_from_args(uint8_t *name, unsigned *name_length, uint8_t *passphrase, unsigned *passphrase_length)
+{
+	char text[200];
+	unsigned n, p;
+
+	if (!PE_parse_boot_arg_str("wifi_ssid", text, sizeof(text)) || text[0] == 0) {
+		return false;
+	}
+	n = unescape(text, name, *name_length);
+	p = 0;
+	if (PE_parse_boot_arg_str("wifi_psk", text, sizeof(text))) {
+		p = unescape(text, passphrase, *passphrase_length);
+	}
+	memset(text, 0, sizeof(text));
+	say("brcmfmac: 8: boot-args wifi_ssid, wifi_psk: a name of %u bytes and a passphrase of %u bytes%s\n", n, p,
+	    n == 0 || n > 32 || p < 8 || p > 63 ? ": NOT A NAME OF 1 TO 32 BYTES AND A PASSPHRASE OF 8 TO 63" : "");
+	if (n == 0 || n > 32 || p < 8 || p > 63) {
+		return false;
+	}
+	*name_length = n;
+	*passphrase_length = p;
+	return true;
+}
+
+/* The network to join (above): fw/network first, the boot-args when there is none */
 __attribute__((weak)) bool
 hakios_wifi_network(uint8_t *name, unsigned *name_length, uint8_t *passphrase, unsigned *passphrase_length)
 {
@@ -233,7 +440,7 @@ hakios_wifi_network(uint8_t *name, unsigned *name_length, uint8_t *passphrase, u
 	uint8_t *where[2] = { name, passphrase };
 
 	if (file == NULL) {
-		return false;
+		return steps >= 8 && network_from_args(name, name_length, passphrase, passphrase_length);
 	}
 	for (unsigned n = 0; n < 2 && line < end; n++) {
 		const uint8_t *stop = line;

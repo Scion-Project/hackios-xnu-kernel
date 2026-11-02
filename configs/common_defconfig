@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 508 symbols in 19 groups; 51 are set, 42 of them drivers built in.
+# 520 symbols in 19 groups; 51 are set, 42 of them drivers built in.
 #
 
 #
@@ -61,7 +61,7 @@ CONFIG_HAKIOS_TORCH=y
 # the Galaxy S9's flashlight: the S2MPB02's flash block on PERIC1's HSI2C, lit by a pin (torch=N there, the same steps ... [hakios.s2mpb02_torch.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 CONFIG_HAKIOS_S2MPB02_TORCH=y
 
-# the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK, ... [hakios.exynos_camera.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
+# the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK, ... [hakios.exynos_camera.c, hakios.exynos_camera_mem.cpp; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 # CONFIG_HAKIOS_EXYNOS_CAMERA is not set
 
 # the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps ... [hakios.socinfo.c]
@@ -148,7 +148,7 @@ CONFIG_HAKIOS_MAX77705=y
 # the Galaxy S9's temperatures: the Exynos 9810's TMU (BIG, LITTLE, G3D, ISP), read with each sensor's fuses (tmu=1), ... [hakios.exynos_tmu.c]
 CONFIG_HAKIOS_EXYNOS_TMU=y
 
-# the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from ... [hakios.ufs.c, hakios.ufshc.c]
+# the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from ... [hakios.ufs.c, hakios.ufshc.c, hakios.ext4.c]
 CONFIG_HAKIOS_UFS=y
 
 # a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only [hakios.virtio_blk.c]
@@ -440,7 +440,7 @@ CONFIG_TOUCHSCREEN=y
 # CONFIG_VIRTIO_INPUT is not set
 
 #
-# GPU and display (93)
+# GPU and display (94)
 #
 
 # rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone) [needs fw-gpu/ from the phone]
@@ -517,6 +517,9 @@ CONFIG_GPU=y
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_QUEUE is not set
+
+# the kernel's timer coalescing left on
+# CONFIG_FB_TCOAL is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_THREADS is not set
@@ -877,7 +880,7 @@ CONFIG_SOUND=4
 # CONFIG_VIRTIO_SOUND is not set
 
 #
-# Wi-Fi (38)
+# Wi-Fi (44)
 #
 
 # Wi-Fi: the radio, its driver, a connection (also fw-wifi/mac and fw-wifi/network) [needs fw-wifi/ from the phone]
@@ -916,6 +919,9 @@ CONFIG_WIFI=y
 # such a step waits like that before every single write and call
 # CONFIG_WIFI_FINE is not set
 
+# the station firmware's bcmdhd name, in fw/ or VENDOR (default bcmdhd_sta.bin_b2 for B2)
+# CONFIG_WIFI_FW is not set
+
 # read by lx_bus.c (kernel)
 # CONFIG_WIFI_HOLD is not set
 
@@ -949,6 +955,9 @@ CONFIG_WIFI=y
 # steps K and later have not been seen to work (default: the last one)
 # CONFIG_WIFI_NEW is not set
 
+# the NVRAM's name there (default: the module's, from the chip's OTP; else a guess, logged)
+# CONFIG_WIFI_NVRAM is not set
+
 # read by hakios.wifi.c (kernel)
 # CONFIG_WIFI_PAUSE is not set
 
@@ -960,6 +969,9 @@ CONFIG_WIFI=y
 
 # read by hakios.exynos_pcie.c (kernel)
 # CONFIG_WIFI_PCIE_UNGATE is not set
+
+# its passphrase, the same way (8 to 63 bytes); never logged, but the command line is the image's
+# CONFIG_WIFI_PSK is not set
 
 # read by lx_bus.c (kernel)
 # CONFIG_WIFI_QUIET is not set
@@ -979,11 +991,20 @@ CONFIG_WIFI=y
 # before any step: read what the boot chain has set up in the SMMU for the radio's stream (smmu_look() below; nothing ...
 # CONFIG_WIFI_SMMU is not set
 
+# brcmfmac=8 without fw/network: the network's name, a byte as %XX (a space is %20)
+# CONFIG_WIFI_SSID is not set
+
 # read by lx_bus.c (kernel)
 # CONFIG_WIFI_STATION is not set
 
 # read by hakios.wifi.c (kernel)
 # CONFIG_WIFI_STEP is not set
+
+# never read the radio's files from the phone's VENDOR partition (default: read them there, ufs=2)
+# CONFIG_WIFI_VENDOR is not set
+
+# the partition the radio's files are read from (default VENDOR)
+# CONFIG_WIFI_VENDOR_PART is not set
 
 # how long step 11 watches for the DSP to say that it is up (default 10)
 # CONFIG_WIFI_WAIT is not set
@@ -1158,7 +1179,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_SOC_SMEM is not set
 
 #
-# Cameras (18)
+# Cameras (20)
 #
 
 # the cameras (5 is what the README uses) [needs fw-camera/ from the phone]
@@ -1191,6 +1212,9 @@ CONFIG_MODEM_AGAIN=y
 # the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1
 # CONFIG_CAM_S9 is not set
 
+# camshot's Bayer order: 0 RGGB, 1 GRBG (the default, the sensor's), 2 GBRG, 3 BGGR
+# CONFIG_CAM_S9_BAYER is not set
+
 # the exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
 # CONFIG_CAM_S9_EXP is not set
 
@@ -1202,6 +1226,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakios.exynos_camera.c (kernel)
 # CONFIG_CAM_S9_PACK12 is not set
+
+# camshot's bytes a line of the frame (default: 2040, MIPI's, or 2048 if the WDMA wrote more)
+# CONFIG_CAM_S9_STRIDE is not set
 
 # read by hakios.camera.c (kernel)
 # CONFIG_CAM_SENSOR is not set
@@ -1363,7 +1390,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (67)
+# User space (70)
 #
 
 # read by inject_sb.c (user space)
@@ -1384,14 +1411,23 @@ CONFIG_MODEM_AGAIN=y
 # at bt=2 and up, take the expander out of reset if it is held there
 # CONFIG_BT_EXPANDER_RESET is not set
 
-# the patch file's name in fw/ (default bcm4361B2.hcd)
+# the patch file's name in fw/ (default bcm4361B2.hcd); without it, the phone's own from VENDOR
 # CONFIG_BT_HCD is not set
 
 # leave the chip powered at the end (default: BT_EN and BT_WAKE low once the steps are done or one fails)
 # CONFIG_BT_KEEP is not set
 
+# murata or semco: which patch (bcm4361B2_<m>.hcd; default: the module Wi-Fi read in OTP, else a guess)
+# CONFIG_BT_MODULE is not set
+
 # UART_BT's clock in MHz, if bt=1 shows the divider or mux not as Android leaves them (default 200)
 # CONFIG_BT_UART_MHZ is not set
+
+# never read the patch from the phone's VENDOR partition (default: read it there with ufs=2)
+# CONFIG_BT_VENDOR is not set
+
+# the partition the patch is read from (default VENDOR)
+# CONFIG_BT_VENDOR_PART is not set
 
 # CoreAnimation's frame clock from the display driver's refresh notifications
 # CONFIG_CA_VBL is not set

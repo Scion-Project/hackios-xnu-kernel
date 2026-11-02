@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **466 arguments**: 403 read by the kernel, 16 by the loader, 57 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **475 arguments**: 412 read by the kernel, 16 by the loader, 57 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -113,11 +113,11 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 |---|---|---|---|---|
 | `privs` | K | `kern_minimac.c` | `CONFIG_PRIVS` |  |
 
-## Wi-Fi (38)
+## Wi-Fi (44)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
-| `brcmfmac` | K | `hakios.brcmfmac.c`, `lx_brcmf.c` | `CONFIG_BRCMFMAC` |  |
+| `brcmfmac` | K | `hakios.bcm4361_bt.c`, `hakios.brcmfmac.c`, `lx_brcmf.c` | `CONFIG_BRCMFMAC` |  |
 | `brcmfmac_debug` | K | `lx_brcmf.c` | `CONFIG_BRCMFMAC_DEBUG` |  |
 | `brcmfmac_poll` | K | `lx_pci.c` | `CONFIG_BRCMFMAC_POLL` |  |
 | `brcmfmac_poll_ms` | K | `lx_pci.c` | `CONFIG_BRCMFMAC_POLL_MS` |  |
@@ -129,6 +129,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `wifi_dirty` | K | `hakios.wifi.c` | `CONFIG_WIFI_DIRTY` |  |
 | `wifi_file` | K | `hakios.wifi.c` | `CONFIG_WIFI_FILE` |  |
 | `wifi_fine` | K | `hakios.wifi.c` | `CONFIG_WIFI_FINE` |  |
+| `wifi_fw` | K | `hakios.brcmfmac.c` | `CONFIG_WIFI_FW` |  |
 | `wifi_hold` | K | `lx_bus.c` | `CONFIG_WIFI_HOLD` |  |
 | `wifi_irq` | K | `lx_bus.c` | `CONFIG_WIFI_IRQ` | implied by wifi=1 |
 | `wifi_join` | K | `lx_bus.c` | `CONFIG_WIFI_JOIN` |  |
@@ -140,18 +141,23 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `wifi_mac` | K | `hakios.brcmfmac.c`, `hakios.wifi.c` | `CONFIG_WIFI_MAC` |  |
 | `wifi_mission` | K | `hakios.wlfw.c` | `CONFIG_WIFI_MISSION` |  |
 | `wifi_new` | K | `hakios.wifi.c` | `CONFIG_WIFI_NEW` |  |
+| `wifi_nvram` | K | `hakios.brcmfmac.c` | `CONFIG_WIFI_NVRAM` |  |
 | `wifi_pause` | K | `hakios.wifi.c` | `CONFIG_WIFI_PAUSE` |  |
 | `wifi_pcie` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE` |  |
 | `wifi_pcie_tries` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_TRIES` |  |
 | `wifi_pcie_ungate` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_UNGATE` |  |
+| `wifi_psk` | K | `hakios.brcmfmac.c` | `CONFIG_WIFI_PSK` |  |
 | `wifi_quiet` | K | `lx_bus.c` | `CONFIG_WIFI_QUIET` |  |
 | `wifi_radio_read` | K | `hakios.wifi.c` | `CONFIG_WIFI_RADIO_READ` |  |
 | `wifi_ready` | K | `hakios.wlfw.c` | `CONFIG_WIFI_READY` |  |
 | `wifi_return` | K | `hakios.wifi.c` | `CONFIG_WIFI_RETURN` |  |
 | `wifi_scan` | K | `lx_bus.c` | `CONFIG_WIFI_SCAN` |  |
 | `wifi_smmu` | K | `hakios.wifi.c` | `CONFIG_WIFI_SMMU` | implied by wifi=1 (as 2) |
+| `wifi_ssid` | K | `hakios.brcmfmac.c` | `CONFIG_WIFI_SSID` |  |
 | `wifi_station` | K | `lx_bus.c` | `CONFIG_WIFI_STATION` | implied by wifi=1 |
 | `wifi_step` | K | `hakios.wifi.c` | `CONFIG_WIFI_STEP` |  |
+| `wifi_vendor` | K | `hakios.brcmfmac.c` | `CONFIG_WIFI_VENDOR` |  |
+| `wifi_vendor_part` | K | `hakios.brcmfmac.c` | `CONFIG_WIFI_VENDOR_PART` |  |
 | `wifi_wait` | K | `hakios.wifi.c` | `CONFIG_WIFI_WAIT` |  |
 | `wifi_watch` | K | `hakios.wifi.c` | `CONFIG_WIFI_WATCH` |  |
 | `wifi_wide` | K | `lx_80211.c` | `CONFIG_WIFI_WIDE` | implied by wifi=1 |
@@ -485,7 +491,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (69)
+## User space (72)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -497,7 +503,10 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `bt_expander_reset` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_EXPANDER_RESET` |  |
 | `bt_hcd` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_HCD` |  |
 | `bt_keep` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_KEEP` |  |
+| `bt_module` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_MODULE` |  |
 | `bt_uart_mhz` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_UART_MHZ` |  |
+| `bt_vendor` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_VENDOR` |  |
+| `bt_vendor_part` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_VENDOR_PART` |  |
 | `ca_vbl` | U | `inject.c` | `CONFIG_CA_VBL` |  |
 | `caenv` | U | `inject.c`, `inject_sb.c` | `CONFIG_CAENV` |  |
 | `camtl` | U | `inject.c` | `CONFIG_CAMTL` |  |
