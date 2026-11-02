@@ -16,6 +16,13 @@ In the repository:
   such drivers for other phones. They are needed only to rebuild the UEFI image; they can be removed and
   extracted by each user from their own phone's firmware with UEFIReader.
 
+- the Galaxy S9's device repository (Scion-Project/hakios-starlte, checked out at devices/starlte/):
+  prebuilt/SILICIUM_UEFI.fd and BootShim.bin are built from Mu-Silicium with the port's changes
+  (BSD-2-Clause, BSD-2-Clause-Patent); the UEFI image carries Project Silicium's Carbon Hypervisor
+  (Hyp.bin, GPL-2.0, source at github.com/Project-Silicium/Carbon-Hypervisor); prebuilt/mkbootimg.py is
+  AOSP's (Apache 2.0). firmware/audio/ holds Samsung's audio firmware binaries, unchanged from the
+  LineageOS vendor trees: the vendor's, redistribution terms "to verify" (THIRD_PARTY_LICENSES.md).
+
 - the FocalTech touch firmware, drivers/input/hakios.focaltech_fw.h: the touch vendor's;
   generated from a device blob, redistribution terms "to verify" (THIRD_PARTY_LICENSES.md).
 

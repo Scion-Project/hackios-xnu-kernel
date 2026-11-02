@@ -2,7 +2,7 @@
 
 English · [中文](README.zh.md) · [Українська](README.uk.md)
 
-**Apple's open-source Darwin kernel (XNU, xnu-8796.121.2) on Android phones with a Qualcomm SoC**, the way Android is Linux on
+**Apple's open-source Darwin kernel (XNU, xnu-8796.121.2) on Android phones (Qualcomm, Samsung Exynos)**, the way Android is Linux on
 phones: a boot loader of its own, drivers of its own, a configuration system and a version of its own. The same kernel runs in
 QEMU with nothing of Apple's and nothing of any phone's (`make qemu-open`).
 
@@ -27,6 +27,31 @@ QEMU with nothing of Apple's and nothing of any phone's (`make qemu-open`).
 Every part, as each device's own `device.conf` records it: [Devices](docs/devices/index.md). The rows about the lock screen and the
 apps describe what happens when you add layer 2 below yourself.
 
+### Galaxy S9 (`starlte`, SM-G960F, Exynos 9810)
+
+This repository is Scion-Project's fork of HakiOS. Its main addition is the Galaxy S9 port, which boots the iOS 16.5 user space
+you build from your own IPSW. The device repository is [hakios-starlte](https://github.com/Scion-Project/hakios-starlte), and the
+TWRP installer comes from [scion-packaging](https://github.com/Scion-Project/scion-packaging). The table below shows what has been
+seen on the phone. [docs/devices/starlte.md](docs/devices/starlte.md) is generated from the device's own `device.conf` at the
+revision `devices/manifest.conf` pins, so it can lag behind this table.
+
+| | Galaxy S9 | Boot-arguments |
+|---|---|---|
+| Six cores: A55s 2 and 3, and the four Exynos M3s | yes | `cpus=6 bootcpu=2 m3_prep=3 pan=0`; `isa_floor` comes on with `m3_prep=3`. The installer's default is `cpus=2 bootcpu=2` (the two A55s) |
+| Touch (Samsung S6SY761) | yes | `s6sy761=1` |
+| Battery level and charger state (MAX77705, read only) | yes | `max77705=1` |
+| Vibration | yes | `max77705_haptic=1` |
+| The kernel's live log and a line console over USB (CDC-ACM) | yes | `usb_gadget=5 max77705_usbsw=1` |
+| GPU: OpenGL ES through Mesa's Panfrost on the Mali-G72 | yes | `mali=9`, root built with `GL=1` |
+| CPU clocks (ACPM DVFS) | yes | `cpufreq_lit=1794000` (A55s), `cpufreq_big=` (M3s) |
+| Widgets and lock-screen posters | yes | `poster_retry`, on by default in the job list |
+| Brightness from iOS's slider | written, not yet confirmed | `panel=1 backlight=2` |
+| Cameras | written, not yet tested on the phone | `cam_s9=N` |
+| Speakers, Wi-Fi, Bluetooth, temperatures, the flashlight, the kernel's own UFS driver | written, not yet seen | see the device repository's README |
+| Cellular | no | |
+
+[`hakios-starlte`'s README](https://github.com/Scion-Project/hakios-starlte#readme) explains how to build and install for this device.
+
 ## The three layers
 
 1. **The open core**: the kernel port, the loader, the drivers, the tools. All source, in these repositories.
@@ -42,7 +67,7 @@ back to its own Android. The one thing written by default is the loader's own lo
 ## Quick start
 
 ```sh
-git clone https://github.com/oosexgang/hakios-xnu-kernel.git hakios
+git clone https://github.com/Scion-Project/hackios-xnu-kernel.git hakios   # this fork; upstream is oosexgang/hakios-xnu-kernel
 cd hakios
 make doctor           # what this machine lacks, and what to do
 make qemu-open        # the open kernel in QEMU: nothing of Apple's, nothing of a phone's
@@ -65,12 +90,14 @@ make phone SECS=600      # a 10-minute session on the phone, in RAM
 | [hakios-sm7325](https://github.com/oosexgang/hakios-sm7325) | POCO X5 Pro 5G: its defconfig, status, UEFI platform, firmware script, and its SoC's layer (`soc/`: the Qualcomm SC7280 family) |
 | [hakios-uefi](https://github.com/oosexgang/hakios-uefi) | the firmware that starts the loader: Mu-Silicium with HakiOS's boot path, banner and name, and HakiOS's U-Boot (`u-boot/`) |
 | [hakios-metal](https://github.com/oosexgang/hakios-metal) | Metal's command model on the Adreno, through the kernel's GPU driver |
+| [hakios-starlte](https://github.com/Scion-Project/hakios-starlte) | Galaxy S9 (Scion fork): its defconfig, status, UEFI platform and prebuilt UEFI, image script, and its SoC's layer (`soc/`: the Exynos 9810) |
+| [scion-packaging](https://github.com/Scion-Project/scion-packaging) | Scion fork: the S9's TWRP installer (boot image to `BOOT`, the system image you build to `SYSTEM`) |
 
-`devices/manifest.conf` in the common repository names each one and the revision it is at; `tools/hakios-device.py sync` clones them
+`devices/manifest.conf` in the common repository names each one and the revision it is at (in this fork, the Scion-Project forks of them); `tools/hakios-device.py sync` clones them
 into `devices/` and `uefi/`. One repository per device: it carries its SoC's layer, and `tools/hakios-device.py new` makes one. [How the repositories fit](docs/porting/repositories.md).
 
 ```sh
-git clone https://github.com/oosexgang/hakios-xnu-kernel.git hakios && cd hakios
+git clone https://github.com/Scion-Project/hackios-xnu-kernel.git hakios && cd hakios
 tools/hakios-device.py sync      # the SoC, device and UEFI repositories, at the revisions the manifest names
 ```
 

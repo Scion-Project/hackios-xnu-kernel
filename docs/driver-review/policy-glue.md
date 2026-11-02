@@ -26,7 +26,7 @@ instructed.
 
 Method. For each stub I traced who calls it and what the caller does with the answer. For each patch hunk I read the
 unchanged Apple function around it. Apple's original code was read with `git show c54f35ca...:<path>` (read-only) from
-the XNU checkout that lives in WSL (`/home/shimoku/hakios/xnu-src/xnu-8796.121.2`), because this Windows tree has no
+the XNU checkout that lives in WSL (`~/hakios/xnu-src/xnu-8796.121.2`), because this Windows tree has no
 `xnu-src`. Line numbers of the form "Apple file:N" are in that original file; "patch:N" are lines of
 xnu/hakios.patch; everything else is a line of the file named.
 
