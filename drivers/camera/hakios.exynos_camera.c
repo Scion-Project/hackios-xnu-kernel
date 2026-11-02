@@ -15,18 +15,32 @@
  *                  0x1818 [4:0], the gate 0x201C (bit 20 manual, 21 on), its Q-channel 0x3008; Android asks 26 MHz
  *                  (exynos9810_fimc_is_sensor_mclk_on), which is OSCCLK undivided. Out on gpc1-5 of PERIC1's GPIO
  *                  (0x10830080), function 2 ("fimc_is_mclk1_fn"); output low (function 1) when off
- *   the supplies   all four on the S2MPB02 (0x59 on hsi2c@10920000, USI10 of PERIC1: the flashlight's chip, see
+ *   the supplies   all five on the S2MPB02 (0x59 on hsi2c@10920000, USI10 of PERIC1: the flashlight's chip, see
  *                  hakios.s2mpb02_torch.c). An LDO's control register: bit 7 on, [6:0] the voltage, 600 mV + n steps
  *                  (12.5 mV for LDOs 1-5, 25 mV for 6-18):
  *                    VDDD_1.05V_VT   LDO5,  L5CTRL  0x22, 1.05 V = 36 (0x24)
  *                    VDDIO_1.8V_VT   LDO6,  L6CTRL  0x23, 1.8 V  = 48 (0x30)
  *                    VDDA_2.8V_VT    LDO13, L13CTRL 0x2A, 2.8 V  = 88 (0x58)
- *                    VDDAF_2.8V_VT   LDO16, L16CTRL 0x2D, 2.8 V  = 88 (0x58): the lens motor's, read and never switched here
- *   power-up       (the module file's, fimc-is-device-module-3h1.c, less the lens motor's supply): CIS_CLK1 on at 26
- *                  MHz; reset low; VDDA on; VDDIO on; VDDD at 1.05 V and on, 1 ms; the bus pins to I2C, 10 us; reset
- *                  high; MCLK out on its pin, 9 ms. Each LDO is given 1 ms (the regulator's enable time is 180 us).
- *   power-down     MCLK's pin to an output, low; reset low; the bus pins back to inputs; VDDD, VDDA, VDDIO off (the
- *                  module file's order); CIS_CLK1's gate, Q-channel, mux and divider as found.
+ *                    VDDAF_2.8V_VT   LDO16, L16CTRL 0x2D, 2.8 V  = 88 (0x58)
+ *                  and BUCK2, VDD_EXT_1P3_PB02, 1.3 V: B2CTRL1 0x0D [7:6] the enable (3 on, the regulator's enable
+ *                  mask 0xC0), B2CTRL2 0x0E the voltage, 400 mV + 6.25 mV n: 1.3 V = 144 (0x90); enable time 100 us.
+ *                  The star boards define USE_BUCK2_REGULATOR_CONTROL (fimc-is-vendor-config_star.h), and the 3H1's
+ *                  module file then switches BUCK2 on first and off last: the 1.3 V the low-voltage LDOs (VDDD's
+ *                  LDO5 among them) are made from. Without it VDDD is "on" with nothing behind it, and the sensor does
+ *                  not answer (the first phone run, 2 November: 0x35 NACKed, INT_STAT's no-device bit, 0x400)
+ *   power-up       (the module file's, fimc-is-device-module-3h1.c, star's): CIS_CLK1 on at 26 MHz; reset low; BUCK2
+ *                  at 1.3 V and on; VDDAF on; VDDA on; VDDIO on; VDDD at 1.05 V and on, 1 ms; the bus pins to I2C, 10
+ *                  us; reset high; MCLK out on its pin, 9 ms. Each supply is given 200 us (the regulator's enable
+ *                  times are 100 us for a buck, 180 us for an LDO). If the model ID is not read: 20 ms more and again,
+ *                  then the bus's and the pins' registers logged and the bus scanned (below)
+ *   power-down     MCLK's pin to an output, low; reset low; the bus pins back to inputs; VDDAF, VDDD, VDDA, VDDIO off,
+ *                  BUCK2 off (the module file's order); CIS_CLK1's gate, Q-channel, mux and divider as found. BUCK2's
+ *                  voltage register stays at 1.3 V, the value Linux's regulator core gives it at boot (min = max)
+ *   the scan       only when the sensor does not answer at 0x35: a one-byte READ at every 7-bit address 0x08-0x77
+ *                  (nothing is written to anyone), the addresses that acknowledge listed; then, of those, only the
+ *                  other addresses a 3H1 can be strapped to (0x10, 0x1A, 0x20, 0x2D, 0x36, 0x5A: never 0x50-0x57, an
+ *                  EEPROM's) are asked for the model ID (a 16-bit register address written, two bytes read), and
+ *                  one that gives an ID other than 0 and 0xffff is used for the run. cam_s9_addr=A forces one
  *
  * STAGE 2, CSIS1 AND ITS DMA (cam_s9=3, 4)
  *   the domain     ISPPRE (pd-isppre@14064048): the PMU's ISPPRE_CONFIGURATION 0x14064048 [3:0] = 0xF, its STATUS
@@ -110,9 +124,12 @@
  *   3  writes  the ISPPRE domain on (and its DTZPC restore), its clocks; reads CSIS1's version, its WDMA, the DMA
  *              common and the SysMMU's state
  *   4  writes  the D-PHY's isolation off and its reset released, CSIS1 reset and set up for 1632 x 1224 RAW10, the
- *              buffer given to VC0's WDMA, the test pattern generator on for ONE frame (its frame end waited for, 2 s
- *              at the most), then the WDMA and the pattern off; the buffer's checksum, its first bytes, how much of it
- *              changed
+ *              buffer given to VC0's WDMA (a stale DMA abort request in its DMA_CMN_CTRL cleared first), the test
+ *              pattern generator on: first as Android has it, CSIS1's link left off (csi_stream_on with pattern_en),
+ *              500 ms; if no frame has started on CSIS1's WDMA by then, the pattern off and on again with the link
+ *              enabled as csi_hw_enable does (no clock lane: no sensor), 1.5 s; then the WDMA and the pattern off. The
+ *              other three CSISs' DMA interrupts are unmasked for the while (put back after), so the log says which
+ *              WDMA the pattern reached if not CSIS1's. The buffer's checksum, its first bytes, how much of it changed
  *   5  writes  the sensor's mode table, the D-PHY's settle for 719 Mb/s, the link on, streaming; two frame ends of
  *              VC0's WDMA waited for (1.5 s at the most), the WDMA off, streaming off; the counters, the link's errors,
  *              the checksum and the mean of a 64 x 64 patch in the middle (a black frame reads about 64 in 10 bits)
@@ -130,6 +147,7 @@
  *   cam_s9=N           the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1,
  *                      4 one frame of the test pattern into memory, 5 one frame of the sensor's, 6 that and then the
  *                      USB console's camshot (0 or none: nothing)
+ *   cam_s9_addr=A      the sensor's 7-bit I2C address, if not 0x35 (the device tree's) and not found by the scan
  *   cam_s9_ipclk=MHZ   the two HSI2Cs' input clock in MHz (default 400, as the phone showed for the other buses on 1
  *                      November: a wrong guess on the high side only makes the bus slower)
  *   cam_s9_exp=LINES   the exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
@@ -141,10 +159,11 @@
  *   cam_s9_stride=B    camshot's bytes a line of the frame (default: 2040, MIPI's, or 2048 if the WDMA wrote more)
  *
  * Limits, whatever asks. The S2MPB02 makes other supplies too (the flash LED, the rear camera's lens motor, the grip
- * sensor, the proximity LED): every write to it goes through one function that takes only the three LDO registers above,
- * only the values above (Android's voltages, on or off), and reads each back; a write that does not read back, or a byte
+ * sensor, the proximity LED): every write to it goes through one function that takes only the four LDO registers and
+ * BUCK2's two above, only the values above (Android's voltages, on or off; BUCK2's control register only in its enable
+ * bits), and reads each back; a write that does not read back, or a byte
  * nobody acknowledges, and everything is powered down in the power-down's order and nothing more is done for the run.
- * An LDO found on is left as it is and left on at the end; one found on at another voltage stops the run before
+ * A supply found on is left as it is and left on at the end; one found on at another voltage stops the run before
  * anything is written (someone else has it). No other PMIC register is written. The flashlight's driver stays off in a
  * run with cam_s9=N (the same bus, one driver per bus). Nothing of the ISPPRE block is read before its domain is seen
  * on. The DMA is given only the buffer's address, checked to lie below 4 GB, and only with the SysMMU seen off. Every
@@ -154,15 +173,16 @@
  * of buffers on the CSIS's frame-end interrupt (stage 4 of the plan), a live preview.
  *
  * Sources: the phone's device tree (exynos9810-starlte_eur_open_26.dts of the BSP: hsi2c@108F0000 and fimc-is-3h1@35,
- * fimc-is_sensor_3h1@6A, s2mpb02_pmic@59 and its regulators, the fimc_is_mclk1 pin states, hsi2c21-bus, usi@1081102C,
+ * fimc-is_sensor_3h1@6A, s2mpb02_pmic@59 and its regulators (s2mpb02-buck2: VDD_EXT_1P3_PB02), the fimc_is_mclk1 pin states, hsi2c21-bus, usi@1081102C,
  * pd-isppre@14064048 and pd-dpu, fimc_is_sensor@16240000, fimc_is@16290000, dphy_m0s4s2_csis1, sysmmu@16310000);
- * the S9 kernel's fimc-is-device-module-3h1.c, fimc-is-cis-3h1.c/.h (and its bayer_order, GR_BG, for camshot), fimc-is-cis-3h1-setA.h, fimc-is-cis.c,
+ * the S9 kernel's fimc-is-device-module-3h1.c (and vendor/mcd/fimc-is-vendor-config_star.h: USE_BUCK2_REGULATOR_CONTROL), fimc-is-cis-3h1.c/.h (and its bayer_order, GR_BG, for camshot), fimc-is-cis-3h1-setA.h, fimc-is-cis.c,
  * ischain/fimc-is-v6_0_0/setup-fimc-is-sensor.c, fimc-is-config.h and fimc-is-hw-chain.c/.h,
  * include/fimc-is-hw-settle-10nm-lpp.h, include/fimc-is-hw.h, fimc-is-device-csi_v4.c, sensor/csi2/fimc-is-hw-csi-v5_1.c
  * and .h, drivers/phy/phy-exynos8895-mipi.c, drivers/iommu/exynos-iommu.h, drivers/soc/samsung/exynos-pd.c,
  * cal-if/pmucal_local.c, cal-if/ra.c, cal-if/exynos9810/flexpmu_cal_local_exynos9810.h and
  * flexpmu_cal_system_exynos9810.h, cmucal-sfr.c, cmucal-node.c and cmucal-qch.c, drivers/clk/samsung/clk-exynos9810.c,
- * s2mpb02-regulator.c, s2mpb02-private.h, pinctrl-exynos.c (android_kernel_samsung_exynos9810, lineage-24.0, e5906667;
+ * s2mpb02-regulator.c, s2mpb02-private.h (BUCK2's registers, steps and enable mask),
+ * flexpmu_cal_local_exynos9810.h's isppre_save (the CMU_ISPPRE and SYSREG_ISPPRE registers logged at step 3), pinctrl-exynos.c (android_kernel_samsung_exynos9810, lineage-24.0, e5906667;
  * GPL: read for these facts, not copied). The SMC's convention and the lesson of the half-off domain: hakios.mali.c.
  */
 #include <kern/clock.h>
@@ -209,20 +229,25 @@ say(const char *format, ...)
 #define PMIC_ID         0x00
 #define LDO_ON          0x80
 #define LDO_VSEL        0x7f
+#define B2CTRL1         0x0D            /* BUCK2, VDD_EXT_1P3_PB02: [7:6] the enable (3: on) */
+#define B2CTRL2         0x0E            /* BUCK2's voltage: 400 mV + 6.25 mV n */
+#define BUCK_ON         0xC0
+#define BUCK2_VSEL      0x90            /* 1.3 V */
 
 static const struct ldo {
 	const char *name;
 	uint8_t reg, vsel;
-	bool switched;          /* by this driver (the lens motor's is only read) */
+	bool switched;          /* by this driver */
 } ldos[] = {
 	{ "VDDD_1.05V_VT (LDO5)", 0x22, 0x24, true },
 	{ "VDDIO_1.8V_VT (LDO6)", 0x23, 0x30, true },
 	{ "VDDA_2.8V_VT (LDO13)", 0x2A, 0x58, true },
-	{ "VDDAF_2.8V_VT (LDO16)", 0x2D, 0x58, false },
+	{ "VDDAF_2.8V_VT (LDO16)", 0x2D, 0x58, true },
 };
 #define VDDD            0
 #define VDDIO           1
 #define VDDA            2
+#define VDDAF           3
 #define NLDOS           (sizeof(ldos) / sizeof(ldos[0]))
 
 static struct hakios_hsi2c pmic_bus = {
@@ -239,7 +264,9 @@ static struct hakios_hsi2c pmic_bus = {
 
 /* ---- the sensor's bus ---- */
 
-#define SENSOR          0x35
+#define SENSOR          0x35            /* the device tree's (fimc-is-3h1@35, reg = <53>): 7 bits */
+static uint8_t sensor_addr = SENSOR;    /* the one used: the scan's or cam_s9_addr's, if not 0x35 */
+static uint8_t sensor_addr_given = SENSOR;      /* cam_s9_addr's, or 0x35 */
 
 static struct hakios_hsi2c sensor_bus = {
 	.name = "cam-3h1",
@@ -275,6 +302,8 @@ static struct hakios_hsi2c sensor_bus = {
 static vm_offset_t peric0, peric1, cmu_top;
 static uint8_t found[NLDOS];            /* each LDO's register as found */
 static bool mine[NLDOS];                /* switched on by this run */
+static uint8_t b2ctrl1_found, b2ctrl2_found;    /* BUCK2's two registers as found */
+static bool buck2_mine;                 /* BUCK2 switched on by this run */
 static bool broken;                     /* a write did not read back, or the bus failed: no more writing */
 static bool powered;                    /* the sensor's power-up was begun */
 static uint32_t gate_found, mux_found, div_found, qch_found;
@@ -310,26 +339,96 @@ pmic_get(uint8_t reg, uint8_t *value)
 	return hakios_hsi2c_read_reg(&pmic_bus, PMIC, reg, value, 1);
 }
 
-/* The only way anything reaches the S2MPB02: one of the three LDOs, Android's voltage, on or off; read back. */
+/* what may be written to the S2MPB02: the four LDOs at Android's voltage, on or off; BUCK2 at 1.3 V, on or off */
 static bool
-ldo_put(uint32_t i, bool on)
+pmic_allowed(uint8_t reg, uint8_t value)
 {
-	uint8_t value, buf[2], back = 0;
+	for (uint32_t i = 0; i < NLDOS; i++) {
+		if (ldos[i].switched && reg == ldos[i].reg) {
+			return value == ldos[i].vsel || value == (LDO_ON | ldos[i].vsel);
+		}
+	}
+	if (reg == B2CTRL2) {
+		return value == BUCK2_VSEL;
+	}
+	if (reg == B2CTRL1) {
+		return (value & ~BUCK_ON) == (b2ctrl1_found & ~BUCK_ON) && ((value & BUCK_ON) == 0 || (value & BUCK_ON) == BUCK_ON);
+	}
+	return false;
+}
 
-	if (broken || i >= NLDOS || !ldos[i].switched) {
+/* The only way anything reaches the S2MPB02: a register and a value pmic_allowed() takes; read back. */
+static bool
+pmic_put(uint8_t reg, uint8_t value, const char *name)
+{
+	uint8_t buf[2], back = 0;
+	bool same;
+
+	if (broken || !pmic_allowed(reg, value)) {
+		if (!broken) {
+			say("exynos-camera: S2MPB02 %#x (%s) = %#x refused: not a value this driver writes\n", reg, name, value);
+		}
 		return false;
 	}
-	value = (uint8_t)((on ? LDO_ON : 0) | ldos[i].vsel);
-	buf[0] = ldos[i].reg;
+	buf[0] = reg;
 	buf[1] = value;
-	if (hakios_hsi2c_message(&pmic_bus, PMIC, false, buf, 2, true) != 0 || pmic_get(ldos[i].reg, &back) != 0 ||
-	    back != value) {
+	if (hakios_hsi2c_message(&pmic_bus, PMIC, false, buf, 2, true) != 0 || pmic_get(reg, &back) != 0) {
+		same = false;
+	} else {
+		/* BUCK2's control register: its enable bits read back (the rest is as found and not ours) */
+		same = reg == B2CTRL1 ? (back & BUCK_ON) == (value & BUCK_ON) : back == value;
+	}
+	if (!same) {
 		say("exynos-camera: S2MPB02 %#x (%s): wrote %#x, read back %#x (bus %#x): no more writing for this run\n",
-		    ldos[i].reg, ldos[i].name, value, back, pmic_bus.last_error);
+		    reg, name, value, back, pmic_bus.last_error);
 		broken = true;
 		return false;
 	}
 	return true;
+}
+
+static bool
+ldo_put(uint32_t i, bool on)
+{
+	if (i >= NLDOS || !ldos[i].switched) {
+		return false;
+	}
+	return pmic_put(ldos[i].reg, (uint8_t)((on ? LDO_ON : 0) | ldos[i].vsel), ldos[i].name);
+}
+
+/* BUCK2 (VDD_EXT_1P3_PB02) at 1.3 V and on, unless it was found on (then it is left as it is) */
+static bool
+buck2_on(void)
+{
+	if ((b2ctrl1_found & BUCK_ON) == BUCK_ON) {
+		say("exynos-camera: 2: VDD_EXT_1P3_PB02 (BUCK2) was on already (%#x, voltage %#x): left as it is\n",
+		    b2ctrl1_found, b2ctrl2_found);
+		return true;
+	}
+	if (b2ctrl2_found != BUCK2_VSEL && !pmic_put(B2CTRL2, BUCK2_VSEL, "BUCK2's voltage")) {
+		return false;
+	}
+	buck2_mine = true;
+	if (!pmic_put(B2CTRL1, (uint8_t)((b2ctrl1_found & ~BUCK_ON) | BUCK_ON), "VDD_EXT_1P3_PB02 (BUCK2)")) {
+		return false;
+	}
+	say("exynos-camera: 2: VDD_EXT_1P3_PB02 (BUCK2) on at 1.3 V (B2CTRL1 %#x, B2CTRL2 %#x)\n",
+	    (b2ctrl1_found & ~BUCK_ON) | BUCK_ON, BUCK2_VSEL);
+	return true;
+}
+
+static void
+buck2_off(void)
+{
+	if (buck2_mine) {
+		bool was_broken = broken;
+
+		broken = false;         /* switching off is always tried */
+		if (pmic_put(B2CTRL1, (uint8_t)(b2ctrl1_found & ~BUCK_ON), "VDD_EXT_1P3_PB02 (BUCK2)")) {
+			buck2_mine = false;
+		}
+		broken = broken || was_broken;
+	}
 }
 
 /* an LDO to Android's voltage and on, unless it was found on (then it is left as it is) */
@@ -348,6 +447,7 @@ ldo_on(uint32_t i)
 		return false;
 	}
 	say("exynos-camera: 2: %s on (%#x)\n", ldos[i].name, LDO_ON | ldos[i].vsel);
+	spin_us(200);
 	return true;
 }
 
@@ -412,9 +512,11 @@ power_down(void)
 	spin_us(1000);
 	pin_function(peric1 + GPP5, 2, 0);
 	pin_function(peric1 + GPP5, 3, 0);
+	ldo_off(VDDAF);
 	ldo_off(VDDD);
 	ldo_off(VDDA);
 	ldo_off(VDDIO);
+	buck2_off();
 	if (clock_mine) {
 		wr(cmu_top, CIS1_GATE, gate_found);
 		wr(cmu_top, CIS1_QCH, qch_found);
@@ -423,8 +525,9 @@ power_down(void)
 		clock_mine = false;
 	}
 	powered = false;
-	say("exynos-camera: powered down: MCLK and reset low, the bus pins inputs, LDOs %s; CIS_CLK1's gate %x again\n",
-	    (mine[VDDD] || mine[VDDA] || mine[VDDIO]) ? "NOT ALL OFF (a write failed)" : "off as found", gate_found);
+	say("exynos-camera: powered down: MCLK and reset low, the bus pins inputs, BUCK2 and the LDOs %s; CIS_CLK1's gate "
+	    "%x again\n", (mine[VDDD] || mine[VDDA] || mine[VDDIO] || mine[VDDAF] || buck2_mine) ?
+	    "NOT ALL OFF (a write failed)" : "off as found", gate_found);
 }
 
 /* a register of the sensor: its 16-bit address written, a repeated start, len bytes read */
@@ -432,9 +535,9 @@ static uint32_t
 sensor_get(uint16_t reg, uint8_t *buf, uint32_t len)
 {
 	uint8_t address[2] = { (uint8_t)(reg >> 8), (uint8_t)reg };
-	uint32_t error = hakios_hsi2c_message(&sensor_bus, SENSOR, false, address, 2, false);
+	uint32_t error = hakios_hsi2c_message(&sensor_bus, sensor_addr, false, address, 2, false);
 
-	return error ? error : hakios_hsi2c_message(&sensor_bus, SENSOR, true, buf, len, true);
+	return error ? error : hakios_hsi2c_message(&sensor_bus, sensor_addr, true, buf, len, true);
 }
 
 static void
@@ -469,13 +572,22 @@ look_pins(const char *when)
 #define ISPPRE_BUSP_DIV         0x1804
 #define QCH_CSIS1               0x3024
 #define QCH_SYSMMU              0x305C
-/* the Q-channels asked on: the four CSISs' (as setup-fimc-is-sensor.c does), the PDP's DMA's and the SysMMU's */
-static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_SYSMMU };
+/*
+ * the Q-channels asked on: the four CSISs' (as setup-fimc-is-sensor.c does), the PDP's DMA's and the SysMMU's, and the
+ * way the WDMA's writes leave the block: LHS_AXI_D_ISPPRE (+0x306C, the AXI master to the bus) and BTM_ISPPRE (+0x3010,
+ * its traffic monitor), both in pmucal's isppre_save list
+ */
+static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_SYSMMU, 0x306C, 0x3010 };
 #define NQCHS                   (sizeof(qchs) / sizeof(qchs[0]))
 #define QCH_REQ                 (1u << 1)
 #define TOP_ISPPRE_MUX          0x1094          /* CMU_TOP: MUX_CLKCMU_ISPPRE_BUS [1:0] */
 #define TOP_ISPPRE_DIV          0x1890          /* DIV_CLKCMU_ISPPRE_BUS [3:0] */
 #define TOP_ISPPRE_GATE         0x209C          /* GATE_CLKCMU_ISPPRE_BUS: bit 20 manual, 21 on */
+#define ISPPRE_CTRL_OPTION      0x0800          /* ISPPRE_CMU_ISPPRE_CONTROLLER_OPTION: [29:28] the CMU's power management */
+#define QCH_FIRST               0x3010          /* QCH_CON_*: 0x3010 (BTM) to 0x3070 (SYSREG), bit 0 enable, 1 clock request */
+#define QCH_LAST                0x3070
+#define QCH_DBG                 0x4000          /* DBG_NFO_QCH_CON_*: each QCH_CON's state at +0x4000 */
+#define SYSREG_DRCG_EN          0x0104          /* SYSREG_ISPPRE's BUS_COMPONENT_DRCG_EN */
 
 #define SYSREG_ISPPRE_PA        0x16210000UL
 #define DPHY_RESET              0x0500          /* the MIPI PHYs' resets: bit 2 CSIS1's M0S4S2 (1: running) */
@@ -484,6 +596,7 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define CSIS1_PA                0x16240000UL
 #define CSIS_VERSION            0x000
 #define CSIS_CMN_CTRL           0x004
+#define CSIS_CLK_CTRL           0x008           /* CLKGATE_TRAIL [31:16], CLKGATE_EN [7:4] (reset 0xF), read only here */
 #define CSIS_INT_MSK0           0x010
 #define CSIS_INT_SRC0           0x014
 #define CSIS_INT_MSK1           0x018
@@ -531,6 +644,7 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define VCMN_INT_MASK           0x04
 #define VCMN_INT_SRC            0x08
 #define VCMN_CRC_RESULT         0x0C
+#define VCMN_CMN_CTRL           0x14            /* DMA_CMN_CTRL: bit 0 DMA_ABORT_REQ */
 #define VCMN_ERR_CODE           0x18
 #define VCMN_OTF_FORMAT         0x1C
 #define VCMN_IRQ_MASK           0x00F11F00u
@@ -545,6 +659,7 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define CDMA_CTRL               0x08
 #define CDMA_SRAM_SPLIT         0x0C
 #define CDMA_MATRIX             0x10
+#define CDMA_CLK_CTRL           0x14            /* COMMON_DMA_CLK_CTRL: bit 0 CLKGATE_OFF, read only here */
 #define TP_ENABLE               0x20
 #define TP_CTRL                 0x24
 #define TP_RESOL                0x28
@@ -661,7 +776,7 @@ sensor_put(uint16_t reg, uint16_t value, uint32_t bytes)
 	} else {
 		buf[2] = (uint8_t)value;
 	}
-	error = hakios_hsi2c_message(&sensor_bus, SENSOR, false, buf, 2 + bytes, true);
+	error = hakios_hsi2c_message(&sensor_bus, sensor_addr, false, buf, 2 + bytes, true);
 	if (error != 0) {
 		say("exynos-camera: the sensor did not take %#06x = %#x (%x)\n", reg, value, error);
 		sensor_broken = true;
@@ -698,6 +813,9 @@ static const uint16_t mode_1632x1224[][2] = {
 #define MODE_MARGIN     4               /* SENSOR_3H1_COARSE_INTEGRATION_TIME_MAX_MARGIN */
 
 /* ---- stopping things (also on the way out: no sleeping, bounded) ---- */
+
+static bool others_watched;             /* the other CSISs' DMA interrupt masks are this run's (step 4) */
+static void others_watch(bool on);
 
 static void
 dma_stop(void)
@@ -780,6 +898,9 @@ isp_down(void)
 	uint32_t was;
 
 	dma_stop();
+	if (others_watched) {
+		others_watch(false);
+	}
 	link_stop();
 	phy_off();
 	if (cdma_mine && domain_up) {
@@ -831,6 +952,33 @@ isp_down(void)
 }
 
 /* ---- step 3: the domain on, its clocks, what is there ---- */
+
+/* the power domain's and CMU_ISPPRE's state, every Q-channel with its debug state, for the log (reads only) */
+static void
+isp_status(const char *step)
+{
+	char line[2][300];
+	uint32_t len[2] = { 0, 0 };
+
+	say("exynos-camera: %s: PD: ISPPRE configuration %#x, status %#x (0xf: on), DPU status %#x; CMU_TOP CLKCMU_ISPPRE_BUS "
+	    "mux %#x, divider %#x, gate %#x; CMU_ISPPRE: BUS_USER %#x, PLL_CON2 %#x, BUSP divider %#x, CONTROLLER_OPTION %#x; "
+	    "SYSREG_ISPPRE DRCG_EN %#x, MIPI PHY resets %#x\n", step, rd(pmu, PMU_ISPPRE_CONFIG), rd(pmu, PMU_ISPPRE_STATUS),
+	    rd(pmu, PMU_DPU_STATUS), rd(cmu_top, TOP_ISPPRE_MUX), rd(cmu_top, TOP_ISPPRE_DIV), rd(cmu_top, TOP_ISPPRE_GATE),
+	    rd(cmu_isppre, ISPPRE_BUS_USER), rd(cmu_isppre, 0x0108), rd(cmu_isppre, ISPPRE_BUSP_DIV),
+	    rd(cmu_isppre, ISPPRE_CTRL_OPTION), rd(sysreg_isppre, SYSREG_DRCG_EN), rd(sysreg_isppre, DPHY_RESET));
+	for (uint32_t off = QCH_FIRST; off <= QCH_LAST; off += 4) {
+		uint32_t h = off < 0x3040 ? 0 : 1;
+
+		if (len[h] < sizeof(line[h])) {
+			len[h] += (uint32_t)snprintf(line[h] + len[h], sizeof(line[h]) - len[h], " %x:%x/%x", off & 0xff,
+			    rd(cmu_isppre, off), rd(cmu_isppre, off + QCH_DBG));
+		}
+	}
+	say("exynos-camera: %s: CMU_ISPPRE Q-channels, 0x30XX: QCH_CON/DBG_NFO (10 BTM, 14 CMU, 18 3AA, 1c 3AAM, 20-2c "
+	    "CSIS0-3, 30/34 PDP cores, 38 PDP_DMA, 3c PDP_STAT_DMA):%s\n", step, line[0]);
+	say("exynos-camera: %s: CMU_ISPPRE Q-channels, 0x30XX (40/44 PGEN, 48 PPMU, 4c-58 QE, 5c SysMMU, 60 AXI_P, 64/68 ATB, "
+	    "6c AXI_D, 70 SYSREG):%s\n", step, line[1]);
+}
 
 static bool
 isp_up(void)
@@ -887,7 +1035,7 @@ isp_up(void)
 
 	say("exynos-camera: 3: map CMU_ISPPRE, SYSREG_ISPPRE, CSIS1, its D-PHY, its WDMA, the DMA common and the SysMMU\n");
 	if (cmu_isppre == 0) {
-		cmu_isppre = ml_io_map(CMU_ISPPRE_PA, 0x4000);
+		cmu_isppre = ml_io_map(CMU_ISPPRE_PA, 0x8000);    /* the Q-channels' debug states are at +0x7010 */
 		sysreg_isppre = ml_io_map(SYSREG_ISPPRE_PA, 0x1000);
 		csis = ml_io_map(CSIS1_PA, 0x1000);
 		dphy = ml_io_map(CSIS1_PHY_PA, 0x3000);
@@ -930,6 +1078,7 @@ isp_up(void)
 	say("exynos-camera: 3: clocks: CMU_TOP's gate %#x, BUS_USER %#x (bit 4: CMU_TOP's clock), Q-channels CSIS1 %#x, "
 	    "SysMMU %#x (bit 1: requested)\n", rd(cmu_top, TOP_ISPPRE_GATE), rd(cmu_isppre, ISPPRE_BUS_USER),
 	    rd(cmu_isppre, QCH_CSIS1), rd(cmu_isppre, QCH_SYSMMU));
+	isp_status("3");
 
 	dphy_reset_found = rd(sysreg_isppre, DPHY_RESET);
 	say("exynos-camera: 3: CSIS1: version %#x, CMN_CTRL %#x, PHY_STATUS %#x, PHY_CMN_CTRL %#x; the PHYs' resets "
@@ -1139,21 +1288,51 @@ static void
 dma_log(const char *step)
 {
 	snap_take();
-	say("exynos-camera: %s: WDMA CTRL %#x, ACT_CTRL %#x, FCNTSEQ_STAT %#x; its common: INT_SRC %#x, ERR_CODE %#x, CRC "
-	    "%#x; the others' INT_SRC: CSIS0 %#x, CSIS2 %#x, CSIS3 %#x\n", step, rd(wdma, DMA_CTRL), rd(wdma, DMA_ACT_CTRL),
-	    rd(wdma, DMA_FCNTSEQ_STAT), rd(wdma, VCMN + VCMN_INT_SRC), rd(wdma, VCMN + VCMN_ERR_CODE),
-	    rd(wdma, VCMN + VCMN_CRC_RESULT), rd(other_cmn[0], 0x400 + VCMN_INT_SRC), rd(other_cmn[1], 0x400 + VCMN_INT_SRC),
-	    rd(other_cmn[2], 0x400 + VCMN_INT_SRC));
+	say("exynos-camera: %s: WDMA CTRL %#x, ACT_CTRL %#x, FCNTSEQ_STAT %#x; its common: INT_SRC %#x (frame start [7:4], "
+	    "end [11:8], error 12, abort done 16), ERR_CODE %#x, CRC %#x, CMN_CTRL %#x; the others' INT_SRC (VC0 ACT_CTRL): "
+	    "CSIS0 %#x (%#x), CSIS2 %#x (%#x), CSIS3 %#x (%#x); the pattern %#x\n", step, rd(wdma, DMA_CTRL),
+	    rd(wdma, DMA_ACT_CTRL), rd(wdma, DMA_FCNTSEQ_STAT), rd(wdma, VCMN + VCMN_INT_SRC), rd(wdma, VCMN + VCMN_ERR_CODE),
+	    rd(wdma, VCMN + VCMN_CRC_RESULT), rd(wdma, VCMN + VCMN_CMN_CTRL), rd(other_cmn[0], 0x400 + VCMN_INT_SRC),
+	    rd(other_cmn[0], DMA_ACT_CTRL), rd(other_cmn[1], 0x400 + VCMN_INT_SRC), rd(other_cmn[1], DMA_ACT_CTRL),
+	    rd(other_cmn[2], 0x400 + VCMN_INT_SRC), rd(other_cmn[2], DMA_ACT_CTRL), rd(cdma, TP_ENABLE));
 	say("exynos-camera: %s: CSIS1 INT_SRC0 %#x (frame start [27:24], end [23:20], SOT [19:16], lost FS [15:12], lost FE "
 	    "[11:8], overflow 4, wrong config 3, ECC 2, CRC 1, ID 0), INT_SRC1 %#x (V/H size mismatch [15:12]/[11:8]), "
 	    "FRM_CNT_CH0 %u, PHY_STATUS %#x\n", step, rd(csis, CSIS_INT_SRC0), rd(csis, CSIS_INT_SRC1),
 	    rd(csis, CSIS_FRM_CNT_CH0), rd(csis, CSIS_PHY_STATUS));
 }
 
+/* the other three CSISs' DMA interrupts unmasked for the pattern's while (so a frame that goes there shows), and back */
+static uint32_t other_mask_found[3];
+
+static void
+others_watch(bool on)
+{
+	for (uint32_t i = 0; i < 3; i++) {
+		if (on) {
+			other_mask_found[i] = rd(other_cmn[i], 0x400 + VCMN_INT_MASK);
+			wr(other_cmn[i], 0x400 + VCMN_INT_MASK, VCMN_IRQ_MASK);
+			wr(other_cmn[i], 0x400 + VCMN_INT_SRC, rd(other_cmn[i], 0x400 + VCMN_INT_SRC));
+		} else if (others_watched && domain_up) {
+			wr(other_cmn[i], 0x400 + VCMN_INT_MASK, other_mask_found[i]);
+		}
+	}
+	others_watched = on;
+}
+
+static void
+pattern_on_now(void)
+{
+	wr(cdma, TP_CTRL, (rd(cdma, TP_CTRL) & ~0xffffffu) | (16u << 16) | (8u << 8) | 2u);
+	wr(cdma, TP_RESOL, (FRAME_H << 16) | FRAME_W);
+	wr(cdma, TP_ENABLE, TP_DUAL | TP_VBLANK);
+	pattern_on = true;
+	wr(cdma, TP_ENABLE, rd(cdma, TP_ENABLE) | TP_ON);
+}
+
 static bool
 pattern_frame(void)
 {
-	uint32_t last;
+	uint32_t last, cmn;
 	bool ended;
 
 	if (rd(mmu, MMU_CTRL) & 1) {
@@ -1175,17 +1354,45 @@ pattern_frame(void)
 	say("exynos-camera: 4: VC0's WDMA to %#llx, the output on; then the test pattern generator, %u x %u, two pixels a "
 	    "clock, vertical blank %u clocks: ONE frame, its end waited for (2 s at the most)\n", buffer_pa, FRAME_W, FRAME_H,
 	    TP_VBLANK);
+	cmn = rd(wdma, VCMN + VCMN_CMN_CTRL);
+	if (cmn & 1) {
+		wr(wdma, VCMN + VCMN_CMN_CTRL, cmn & ~1u);
+	}
+	say("exynos-camera: 4: before: WDMA ACT_CTRL %#x (bit 16: aborted, bit 0: active), DMA_CMN_CTRL %#x -> %#x (bit 0: "
+	    "abort request); CSIS1 CLK_CTRL %#x; the DMA common: CTRL %#x, CLK_CTRL %#x; the SysMMU: CTRL %#x, CFG %#x, "
+	    "STATUS %#x\n", rd(wdma, DMA_ACT_CTRL), cmn, rd(wdma, VCMN + VCMN_CMN_CTRL), rd(csis, CSIS_CLK_CTRL),
+	    rd(cdma, CDMA_CTRL), rd(cdma, CDMA_CLK_CTRL), rd(mmu, MMU_CTRL), rd(mmu, MMU_CFG), rd(mmu, MMU_STATUS));
+	others_watch(true);
 	dma_start();
-	wr(cdma, TP_CTRL, (rd(cdma, TP_CTRL) & ~0xffffffu) | (16u << 16) | (8u << 8) | 2u);
-	wr(cdma, TP_RESOL, (FRAME_H << 16) | FRAME_W);
-	wr(cdma, TP_ENABLE, TP_DUAL | TP_VBLANK);
-	pattern_on = true;
-	wr(cdma, TP_ENABLE, rd(cdma, TP_ENABLE) | TP_ON);
-	ended = wait_for(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0, DMA_FRM_END0, 2000000, true);
+	pattern_on_now();
+	ended = wait_for(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0, DMA_FRM_END0, 500000, true);
+	if (!ended && (rd(wdma, VCMN + VCMN_INT_SRC) & DMA_FRM_START0) == 0) {
+		dma_log("4, the link off");
+		say("exynos-camera: 4: no frame start on CSIS1's WDMA in 500 ms with the link off (Android's way for the "
+		    "pattern): the pattern off, CSIS1's link enabled as csi_hw_enable does (UPDATE_SHADOW, PHY_SEL 0, no "
+		    "Q-channel, CSI_EN; no clock lane: no sensor), the pattern on again, 1.5 s\n");
+		wr(cdma, TP_ENABLE, rd(cdma, TP_ENABLE) & ~TP_ON);
+		delay_for_interval(5, NSEC_PER_MSEC);
+		wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) | CMN_UPDATE_SHADOW);
+		wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) & ~(CMN_PHY_SEL | CMN_QCHANNEL_EN));
+		wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) | CMN_CSI_EN);
+		wr(wdma, VCMN + VCMN_INT_SRC, rd(wdma, VCMN + VCMN_INT_SRC));
+		pattern_on_now();
+		ended = wait_for(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0, DMA_FRM_END0, 1500000, true);
+		say("exynos-camera: 4: with the link on: %s (CMN_CTRL %#x)\n", ended ? "THE FRAME ENDED" :
+		    "no frame end either", rd(csis, CSIS_CMN_CTRL));
+	} else if (!ended) {
+		/* it started: give it the rest of the 2 s */
+		ended = wait_for(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0, DMA_FRM_END0, 1500000, true);
+	}
 	dma_stop();
 	delay_for_interval(50, NSEC_PER_MSEC);
 	say("exynos-camera: 4: %s; the WDMA and the pattern off\n", ended ? "THE FRAME ENDED" : "no frame end in 2 s");
 	dma_log("4");
+	others_watch(false);
+	if (!ended) {
+		isp_status("4");
+	}
 	if (!dma_quiet()) {
 		say("exynos-camera: 4: the WDMA still reads active (ACT_CTRL %#x): no more DMA into the buffer this run\n",
 		    rd(wdma, DMA_ACT_CTRL));
@@ -1452,6 +1659,13 @@ look_supplies(void)
 		return false;
 	}
 	say("exynos-camera: 1: S2MPB02 ID %#x\n", id);
+	if (pmic_get(B2CTRL1, &b2ctrl1_found) != 0 || pmic_get(B2CTRL2, &b2ctrl2_found) != 0) {
+		say("exynos-camera: 1: BUCK2's registers cannot be read (%x)\n", pmic_bus.last_error);
+		return false;
+	}
+	say("exynos-camera: 1: VDD_EXT_1P3_PB02 (BUCK2): B2CTRL1 %#x (%s), B2CTRL2 %#x (voltage code; Android's %#x, 1.3 V)\n",
+	    b2ctrl1_found, (b2ctrl1_found & BUCK_ON) == BUCK_ON ? "on" : (b2ctrl1_found & BUCK_ON) ? "in another mode" : "off",
+	    b2ctrl2_found, BUCK2_VSEL);
 	for (uint32_t i = 0; i < NLDOS; i++) {
 		if (pmic_get(ldos[i].reg, &found[i]) != 0) {
 			say("exynos-camera: 1: %s cannot be read (%x)\n", ldos[i].name, pmic_bus.last_error);
@@ -1461,6 +1675,76 @@ look_supplies(void)
 		    (found[i] & LDO_ON) ? "on" : "off", found[i] & LDO_VSEL, ldos[i].vsel);
 	}
 	return true;
+}
+
+/* the sensor's bus as it stands: the HSI2C's registers, its USI and CMU_PERIC1 clocks, the pins, CIS_CLK1 */
+static void
+bus_look(const char *step)
+{
+	vm_offset_t r = sensor_bus.regs, c = sensor_bus.cmu;
+
+	say("exynos-camera: %s: the sensor's HSI2C (0x108F0000): CTL %x FIFO_CTL %x INT_EN %x INT_STAT %x FIFO_STAT %x CONF %x "
+	    "TIMEOUT %x TRANS_STATUS %x TIMING_FS1 %x FS2 %x FS3 %x USI_CON %x USI_OPT %x; %llu transfers, %llu errors, the "
+	    "last %x (INT_STAT: 0x100 abort, 0x200 no ack, 0x400 no device, 0x800 time-out)\n", step, rd(r, 0x00),
+	    rd(r, 0x04), rd(r, 0x20), rd(r, 0x24), rd(r, 0x30), rd(r, 0x40), rd(r, 0x48), rd(r, 0x50), rd(r, 0x60),
+	    rd(r, 0x64), rd(r, 0x68), rd(r, 0xC4), rd(r, 0xC8), sensor_bus.transfers, sensor_bus.errors,
+	    sensor_bus.last_error);
+	say("exynos-camera: %s: its USI mode word (0x1081102C) %x (4: I2C); CMU_PERIC1: mux %x, divider %x, gates %x %x %x %x "
+	    "(bit 21 on, 20 manual), Q-channel %x\n", step, *(volatile uint32_t *)sensor_bus.usi, rd(c, sensor_bus.mux),
+	    rd(c, sensor_bus.div), rd(c, sensor_bus.gates[0]), rd(c, sensor_bus.gates[1]), rd(c, sensor_bus.gates[2]),
+	    rd(c, sensor_bus.gates[3]), rd(c, sensor_bus.qch));
+	say("exynos-camera: %s: pins (CON DAT PUD DRV): gpp5 (the bus, pins 2 and 3) %x %x %x %x; gpc1 (MCLK1, pin 5) %x %x %x "
+	    "%x; gpg2 (the reset, pin 5) %x %x %x %x\n", step, rd(peric1 + GPP5, 0), rd(peric1 + GPP5, 4),
+	    rd(peric1 + GPP5, 8), rd(peric1 + GPP5, 0xC), rd(peric1 + GPC1, 0), rd(peric1 + GPC1, 4), rd(peric1 + GPC1, 8),
+	    rd(peric1 + GPC1, 0xC), rd(peric0 + GPG2, 0), rd(peric0 + GPG2, 4), rd(peric0 + GPG2, 8), rd(peric0 + GPG2, 0xC));
+	say("exynos-camera: %s: CIS_CLK1 (CMU_TOP): mux %x (bit 0: 0 OSCCLK), divider %x ([4:0] + 1), gate %x (bit 21 on, 20 "
+	    "manual), Q-channel %x: MCLK %s\n", step, rd(cmu_top, CIS1_MUX), rd(cmu_top, CIS1_DIV), rd(cmu_top, CIS1_GATE),
+	    rd(cmu_top, CIS1_QCH), ((rd(cmu_top, CIS1_MUX) & 1) == 0 && (rd(cmu_top, CIS1_DIV) & 0x1f) == 0 &&
+	    (rd(cmu_top, CIS1_GATE) & (GATE_MANUAL | GATE_ON)) == (GATE_MANUAL | GATE_ON)) ? "26 MHz, gated on" :
+	    "NOT 26 MHz and on");
+}
+
+/*
+ * The bus scanned, reads only: a one-byte read at each 7-bit address, the ones that acknowledge listed. Then only the
+ * other addresses a 3H1 may sit at are asked for the model ID (two address bytes written, two read: never at 0x50-0x57,
+ * where an EEPROM would take the second byte as data). true: the sensor found, sensor_addr set.
+ */
+static const uint8_t sensor_alternatives[] = { 0x10, 0x1A, 0x20, 0x2D, 0x36, 0x5A };
+
+static bool
+bus_scan(void)
+{
+	char list[3 * 112 + 1];
+	uint8_t seen[0x78] = { 0 }, b, model[2];
+	uint32_t n = 0, len = 0;
+
+	for (uint8_t a = 0x08; a <= 0x77; a++) {
+		if (hakios_hsi2c_message(&sensor_bus, a, true, &b, 1, true) == 0) {
+			seen[a] = 1;
+			n++;
+			len += (uint32_t)snprintf(list + len, sizeof(list) - len, " %02x", a);
+		}
+	}
+	say("exynos-camera: 2: the bus scanned (a one-byte read at 0x08-0x77, nothing written): %u address(es) answer%s\n",
+	    n, n ? list : ": none (no device on the bus is powered, or the bus itself is wrong: the registers above)");
+	for (uint32_t i = 0; i < sizeof(sensor_alternatives); i++) {
+		uint8_t a = sensor_alternatives[i];
+
+		if (!seen[a]) {
+			continue;
+		}
+		sensor_addr = a;
+		model[0] = model[1] = 0;
+		if (sensor_get(0x0000, model, 2) == 0 && ((model[0] << 8) | model[1]) != 0 &&
+		    ((model[0] << 8) | model[1]) != 0xffff) {
+			say("exynos-camera: 2: at %#x: model ID %#06x: THE SENSOR IS AT %#x (not the device tree's 0x35); used for the "
+			    "run\n", a, (model[0] << 8) | model[1], a);
+			return true;
+		}
+		say("exynos-camera: 2: at %#x: no model ID (%02x %02x)\n", a, model[0], model[1]);
+	}
+	sensor_addr = sensor_addr_given;
+	return false;
 }
 
 /* step 2: the front camera's power-up in Android's order, and its ID read; false (and powered down) if it does not answer */
@@ -1476,11 +1760,21 @@ sensor_up(void)
 			return false;
 		}
 	}
-	say("exynos-camera: 2: the front camera's power-up (Android's order, less the lens motor's supply)\n");
+	if ((b2ctrl1_found & BUCK_ON) != 0 && ((b2ctrl1_found & BUCK_ON) != BUCK_ON || b2ctrl2_found != BUCK2_VSEL)) {
+		say("exynos-camera: 2: BUCK2 is on in another mode or at another voltage (%#x, %#x): someone else has it; "
+		    "nothing is written\n", b2ctrl1_found, b2ctrl2_found);
+		return false;
+	}
+	say("exynos-camera: 2: the front camera's power-up (Android's order for star: BUCK2, VDDAF, VDDA, VDDIO, VDDD)\n");
 	powered = true;
 	clock_on();
 	pin_out(peric0 + GPG2, RESET_PIN, false);
-	if (!ldo_on(VDDA) || !ldo_on(VDDIO) || !ldo_on(VDDD)) {
+	if (!buck2_on()) {
+		power_down();
+		return false;
+	}
+	spin_us(200);
+	if (!ldo_on(VDDAF) || !ldo_on(VDDA) || !ldo_on(VDDIO) || !ldo_on(VDDD)) {
 		power_down();
 		return false;
 	}
@@ -1495,9 +1789,22 @@ sensor_up(void)
 
 	error = sensor_get(0x0000, model, 2);
 	if (error != 0) {
-		say("exynos-camera: 2: the sensor does not answer at 0x%x (%x)\n", SENSOR, error);
-		power_down();
-		return false;
+		say("exynos-camera: 2: the sensor does not answer at %#x (%x): 20 ms more, and again\n", sensor_addr, error);
+		delay_for_interval(20, NSEC_PER_MSEC);
+		error = sensor_get(0x0000, model, 2);
+	}
+	if (error != 0) {
+		say("exynos-camera: 2: the sensor does not answer at %#x (%x)\n", sensor_addr, error);
+		bus_look("2");
+		if (!bus_scan()) {
+			power_down();
+			return false;
+		}
+		error = sensor_get(0x0000, model, 2);
+		if (error != 0) {
+			power_down();
+			return false;
+		}
 	}
 	(void)sensor_get(0x0002, &revision, 1);
 	(void)sensor_get(0x0005, &frames, 1);
@@ -1861,6 +2168,14 @@ hakios_exynos_camera_init(void)
 	PE_parse_boot_argn("cam_s9_pack12", &cam_pack12, sizeof(cam_pack12));
 	PE_parse_boot_argn("cam_s9_bayer", &cam_bayer, sizeof(cam_bayer));
 	PE_parse_boot_argn("cam_s9_stride", &cam_stride, sizeof(cam_stride));
+	{
+		uint32_t addr = 0;
+
+		if (PE_parse_boot_argn("cam_s9_addr", &addr, sizeof(addr)) && addr >= 0x08 && addr <= 0x77 &&
+		    (addr < 0x50 || addr > 0x57)) {
+			sensor_addr = sensor_addr_given = (uint8_t)addr;
+		}
+	}
 	if (steps > 6) {
 		steps = 6;
 	}
