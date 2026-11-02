@@ -124,7 +124,7 @@ spelling everywhere. A rename is the clean fix if you expect to grow.
   sign-off requirement (`Signed-off-by:`) so each contributor states they have the right to submit.
 - **APSL files:** the `xnu/files/` drivers are under APSL 2.0 (a conservative, correct choice). Keep the
   per-file headers; APSL has termination and patent provisions, so every maintainer should read it once.
-- **The stray XNU build:** `prebuilt/mach.development.bcm2837` is a binary of APSL code, so APSL 2.3 needs
+- **The prebuilt XNU build:** `prebuilt/hakios-kernel` is a binary of APSL code, so APSL 2.3 needs
   corresponding source to be available. It is, in this repo plus Apple's tag; keep `apply.sh` pinned.
 
 ## 4. The token

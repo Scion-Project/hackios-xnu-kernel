@@ -1,6 +1,6 @@
 # Third-party notices for the prebuilt kernel
 
-`prebuilt/mach.development.bcm2837` is built from Apple's XNU (APSL 2.0) with the changes in `xnu/`, and it
+`prebuilt/hakios-kernel` (XNU's `mach.development.bcm2837`, copied there by `make kernel`) is built from Apple's XNU (APSL 2.0) with the changes in `xnu/`, and it
 also contains code of the following projects, linked in at build time (see README.md, "Licenses").
 
 ## ath11k (Linux, drivers/net/wireless/ath/ath11k)

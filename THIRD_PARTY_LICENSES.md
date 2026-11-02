@@ -23,6 +23,8 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 | mkbootimg.py | `devices/redwood/prebuilt/mkbootimg.py` | Android Open Source Project | Apache-2.0 | |
 | Mu-Silicium / Project Mu derived files | `devices/redwood/uefi/` | Project Silicium, Microsoft, contributors | BSD-2-Clause-Patent; some GPL-2.0+ OR MIT | derived parts keep upstream license |
 | Qualcomm/Xiaomi UEFI driver binaries | `devices/redwood/uefi/files/Binaries/` | Qualcomm / Xiaomi (from device `xbl.img`) | vendor's — **to verify** | needed only to rebuild UEFI; removable, re-extract with UEFIReader |
+| Galaxy S9 prebuilt UEFI | `devices/starlte/prebuilt/SILICIUM_UEFI.fd`, `BootShim.bin` (hakios-starlte) | built from Mu-Silicium `e51cd877e31c` with `uefi/` | BSD-2-Clause, BSD-2-Clause-Patent; contains Carbon Hypervisor (`Hyp.bin`), GPL-2.0 | build recipe and hashes in `devices/starlte/prebuilt/README.md`; not yet byte-reproducible |
+| Samsung audio firmware (Galaxy S9) | `devices/starlte/firmware/audio/` (hakios-starlte) | Samsung / Maxim / Cirrus, via the LineageOS vendor trees | vendor's: **to verify** | could be pulled from the user's own phone (`/vendor/firmware`) instead |
 | FocalTech touch firmware header | `drivers/input/hakios.focaltech_fw.h` | FocalTech (device firmware blob) | vendor's — **to verify** | candidate to move to pull-from-device |
 | Apple host headers (build only) | `xnu-deps/hostinc/mach-o/`, `.../mach/` | Apple (open-source cctools/xnu headers) | APSL 2.0 | host-side Mach-O headers for the cross build |
 | Pre-built kernel & user space | `prebuilt/` | built from this repo | APSL 2.0 / MIT (as source) | reproducible from source here |
