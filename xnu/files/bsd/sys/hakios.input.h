@@ -103,6 +103,10 @@ void hakios_mpss_init(void);           /* boot-arg modem=1: the phone's modem st
 void hakios_wifi_stop(void);           /* where a run ends in order: the Wi-Fi DSP, if it was started, shut down */
 int hakios_wifi_say(const char *format, ...) __printflike(1, 2);      /* a line of the Wi-Fi steps' log */
 int hakios_wifi_tell(const char *format, ...) __printflike(1, 2);     /* ... one that is said even with wifi=1 */
+/* the radio's log kept (hakios.lx.c: what the Linux driver and its bus said, the last 32 KB), and said again with what
+ * the driver says of itself now: the USB console's "wifi", and once when the console is first up */
+void hakios_wifi_report_add(const char *line);
+void hakios_wifi_report(bool first);
 uint32_t hakios_wifi_option(const char *name);                         /* a boot-arg's number, or what wifi=1 stands for */
 const uint8_t *hakios_wifi_file(const char *name, uint64_t *size);     /* a file of fw/ in the small image, in place */
 bool hakios_wlfw_exchange(uint32_t step);                              /* step 15 of wifi_step=N: hakios.wlfw.c */

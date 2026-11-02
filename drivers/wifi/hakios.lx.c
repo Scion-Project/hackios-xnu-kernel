@@ -35,6 +35,7 @@ extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, u
 extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
 extern kern_return_t thread_terminate(thread_t thread);
 extern void thread_set_thread_name(thread_t thread, const char *name);
+extern void loader_log_line(const char *line);
 
 #define say hakios_wifi_say
 
@@ -112,15 +113,106 @@ lx_os_map_registers(unsigned long long physical, unsigned long size)
 
 /* ---- saying things ----------------------------------------------------------------------------------- */
 
+/*
+ * The radio's log, kept: what the Linux driver and its bus say (lx_os_print(), lx_os_tell(), hakios_wifi_report_add()),
+ * the last REPORT_SIZE bytes of it, whole lines. The kernel's own log is a ring that the boot's chatter wraps before
+ * anyone is connected; this is said again on the USB console when it is first up and on its "wifi"
+ * (hakios_wifi_report()), with what the driver says of itself at that moment (lx_os_wifi_state()).
+ */
+#define REPORT_SIZE     (32u * 1024u)
+static LCK_GRP_DECLARE(report_group, "hakios-wifi-report");
+static LCK_SPIN_DECLARE(report_lock, &report_group);
+static char report[REPORT_SIZE];
+static uint32_t report_len;
+static void (*report_state)(void);
+
+void
+hakios_wifi_report_add(const char *line)
+{
+	size_t n = strlen(line);
+
+	if (n == 0) {
+		return;
+	}
+	if (n > REPORT_SIZE / 4) {
+		n = REPORT_SIZE / 4;
+	}
+	lck_spin_lock(&report_lock);
+	if (report_len + n > REPORT_SIZE) {
+		uint32_t drop = report_len + (uint32_t)n - REPORT_SIZE + REPORT_SIZE / 8;
+		char *nl;
+
+		drop = drop < report_len ? drop : report_len;
+		nl = memchr(report + drop, '\n', report_len - drop);
+		drop = nl != NULL ? (uint32_t)(nl + 1 - report) : report_len;
+		memmove(report, report + drop, report_len - drop);
+		report_len -= drop;
+	}
+	memcpy(report + report_len, line, n);
+	report_len += (uint32_t)n;
+	lck_spin_unlock(&report_lock);
+}
+
+void
+lx_os_wifi_state(void (*state)(void))
+{
+	report_state = state;
+}
+
+void
+hakios_wifi_report(bool first)
+{
+	char *copy, line[300];
+	uint32_t len, at = 0;
+	void (*state)(void) = report_state;
+
+	if (first && report_len == 0) {
+		return;
+	}
+	copy = kalloc_data(REPORT_SIZE, Z_WAITOK);
+	if (copy == NULL) {
+		return;
+	}
+	lck_spin_lock(&report_lock);
+	len = report_len;
+	memcpy(copy, report, len);
+	lck_spin_unlock(&report_lock);
+	snprintf(line, sizeof(line), "wifi: the radio's log so far, %u bytes kept%s:\n", len,
+	    first ? " (said again now that the console is up; again with \"wifi\")" : "");
+	loader_log_line(line);
+	while (at < len) {
+		uint32_t n = 0;
+
+		while (at + n < len && n < sizeof(line) - 2 && copy[at + n] != '\n') {
+			n++;
+		}
+		memcpy(line, copy + at, n);
+		line[n] = '\n';
+		line[n + 1] = 0;
+		loader_log_line(line);
+		at += n + (at + n < len && copy[at + n] == '\n' ? 1 : 0);
+	}
+	kfree_data(copy, REPORT_SIZE);
+	loader_log_line("wifi: (end of what was kept)\n");
+	if (state != NULL) {
+		loader_log_line("wifi: the driver now:\n");
+		state();
+	} else {
+		loader_log_line("wifi: no driver to ask now\n");
+	}
+}
+
 void
 lx_os_print(const char *text)
 {
+	hakios_wifi_report_add(text);
 	say("%s", text);
 }
 
 void
 lx_os_tell(const char *text)
 {
+	hakios_wifi_report_add(text);
 	hakios_wifi_tell("%s", text);
 }
 

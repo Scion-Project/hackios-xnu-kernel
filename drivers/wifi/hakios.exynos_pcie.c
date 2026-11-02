@@ -706,6 +706,22 @@ hakios_exynos_pcie_intx(bool on)
  */
 #define SYSMMU_PA       0x11420000UL
 #define SYSREG_FSYS1_PA 0x11410000UL
+static void
+say_kept(const char *format, ...) __printflike(1, 2);
+
+static void
+say_kept(const char *format, ...)
+{
+	char line[300];
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(line, sizeof(line), format, list);
+	va_end(list);
+	hakios_wifi_report_add(line);
+	say("%s", line);
+}
+
 void
 hakios_exynos_pcie_say_dma(const char *when)
 {
@@ -720,13 +736,13 @@ hakios_exynos_pcie_say_dma(const char *when)
 		fsys1_sysreg = ml_io_map(SYSREG_FSYS1_PA, 0x1000);
 	}
 	if (mmu != 0) {
-		say("exynos_pcie: %s: SysMMU CTRL %08x CFG %08x STATUS %08x VERSION %08x INT_STATUS %08x; "
+		say_kept("exynos_pcie: %s: SysMMU CTRL %08x CFG %08x STATUS %08x VERSION %08x INT_STATUS %08x; "
 		    "fault AR %08x:%08x (info %08x), AW %08x:%08x (info %08x)\n", when,
 		    rd(mmu, 0x000), rd(mmu, 0x004), rd(mmu, 0x008), rd(mmu, 0x034), rd(mmu, 0x060),
 		    rd(mmu, 0x074), rd(mmu, 0x070), rd(mmu, 0x078), rd(mmu, 0x084), rd(mmu, 0x080), rd(mmu, 0x088));
 	}
 	if (fsys1_sysreg != 0) {
-		say("exynos_pcie: %s: SYSREG_FSYS1 +0x700 (shareability) %08x\n", when, rd(fsys1_sysreg, 0x700));
+		say_kept("exynos_pcie: %s: SYSREG_FSYS1 +0x700 (shareability) %08x\n", when, rd(fsys1_sysreg, 0x700));
 	}
 	at = cfg_rd(0x34) & 0xfc;
 	for (unsigned n = 0; at >= 0x40 && n < 24; n++) {
@@ -738,7 +754,7 @@ hakios_exynos_pcie_say_dma(const char *when)
 		}
 		at = (cap >> 8) & 0xfc;
 	}
-	say("exynos_pcie: %s: root port command/status %08x (device status %04x), endpoint %08x (device status %04x, "
+	say_kept("exynos_pcie: %s: root port command/status %08x (device status %04x), endpoint %08x (device status %04x, "
 	    "control %04x), ELBI IRQ latch %08x\n", when, dbi_rd(DBI_COMMAND), dbi_rd(0x78) >> 16, cfg_rd(0x04),
 	    ep_cap ? cfg_rd(ep_cap + 8) >> 16 : 0xffff, ep_cap ? cfg_rd(ep_cap + 8) & 0xffff : 0xffff, rd(elbi, ELBI_IRQ_PULSE));
 }

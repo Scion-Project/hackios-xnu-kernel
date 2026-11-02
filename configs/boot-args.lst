@@ -75,6 +75,7 @@ brcmfmac	k
 brcmfmac_debug	k
 brcmfmac_poll	k
 brcmfmac_poll_ms	k
+brcmfmac_tcm_idx	k
 brightness_bridge	u
 bt	k
 bt_again	k

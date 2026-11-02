@@ -30,6 +30,8 @@ void	*lx_os_map_registers(unsigned long long physical, unsigned long size);	/* n
 /* ---- saying things ---- */
 void	 lx_os_print(const char *text);				/* for whoever looks for a fault: may be kept back */
 void	 lx_os_tell(const char *text);				/* for whoever runs the machine: always said */
+/* the driver's own account of itself, for the USB console's "wifi" (hakios_wifi_report()); NULL: no longer there */
+void	 lx_os_wifi_state(void (*say)(void));
 void	 lx_os_panic(const char *text) __attribute__((noreturn));
 
 /* ---- time, threads, sleeping ---- */
@@ -105,6 +107,8 @@ unsigned lx_os_pci_config_read(unsigned offset);		/* a 32-bit word of its config
 void	 lx_os_pci_config_write(unsigned offset, unsigned value);
 /* where BAR n is (the processor's physical address, which is also the bus's) and how big: 1, or 0 if it has none */
 int	 lx_os_pci_bar(unsigned bar, unsigned long long *address, unsigned long long *size);
+/* what stands between the radio and memory (the SysMMU, the shareability, both ends' status), said and kept */
+void	 lx_os_pci_say_dma(const char *when);
 
 /* ---- the station: scanning and joining, for whoever asks the kernel (hakios.sta.h) ---- */
 void	 lx_os_station(const struct hakios_sta_ops *ops);	/* here it is, to be asked; NULL: no longer (returns when no call is under way) */

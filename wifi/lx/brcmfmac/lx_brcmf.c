@@ -196,3 +196,10 @@ lx_transmit(const unsigned char *frame, unsigned long length)
 {
 	return (lx_cfg_transmit(frame, length));
 }
+
+/* brcmfmac_tcm_idx=1: the rings' indices stay in the chip's RAM, not written into ours by its DMA (lx-state.patch) */
+bool
+lx_brcmf_tcm_idx(void)
+{
+	return (lx_os_option("brcmfmac_tcm_idx") != 0);
+}

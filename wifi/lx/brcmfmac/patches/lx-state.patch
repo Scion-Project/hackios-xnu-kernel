@@ -1,0 +1,117 @@
+What the firmware and the driver share, said (HakiOS): lx_brcmf_say_state() prints the shared area, the common
+rings' addresses and indices, the mailbox and the firmware's console on the setup's failure and on the USB
+console's "wifi" (lx_os_wifi_state(), drivers/wifi/hakios.lx.c); brcmfmac_tcm_idx=1 keeps the rings' indices in
+the chip's RAM although the firmware offers to write them into ours by DMA.
+--- a/brcmfmac/pcie.c
++++ b/brcmfmac/pcie.c
+@@ -50,6 +50,10 @@
+ void lx_brcmf_attached(struct device *dev);
+ /* (HakiOS) which module the chip is, from its OTP, before the firmware is asked for (wifi/lx/brcmfmac/lx_brcmf.c) */
+ void lx_brcmf_identify(void *ctx, u32 chip, u32 chiprev);
++/* (HakiOS) brcmfmac_tcm_idx=1 (lx_brcmf.c); what the console's "wifi" says of the driver now (lx-state.patch) */
++bool lx_brcmf_tcm_idx(void);
++void lx_os_wifi_state(void (*say)(void));
++void lx_os_pci_say_dma(const char *when);
+ 
+ enum brcmf_pcie_state {
+ 	BRCMFMAC_PCIE_STATE_DOWN,
+@@ -1656,6 +1660,12 @@
+ 		else
+ 			devinfo->dma_idx_sz = sizeof(u32);
+ 	}
++	if (devinfo->dma_idx_sz != 0 && lx_brcmf_tcm_idx()) {
++		/* (HakiOS) brcmfmac_tcm_idx=1: the rings' indices in the chip's RAM, not written into ours by its DMA */
++		pr_err("lx: brcmfmac_tcm_idx=1: the firmware offers its indices by DMA (flags %#x); they stay in its RAM\n",
++		       shared->flags);
++		devinfo->dma_idx_sz = 0;
++	}
+ 
+ 	addr = sharedram_addr + BRCMF_SHARED_MAX_RXBUFPOST_OFFSET;
+ 	shared->max_rxbufpost = brcmf_pcie_read_tcm16(devinfo, addr);
+@@ -2157,7 +2167,59 @@
+ #define BRCMF_PCIE_FW_NVRAM	1
+ #define BRCMF_PCIE_FW_CLM	2
+ #define BRCMF_PCIE_FW_TXCAP	3
++
++/* (HakiOS) the device now, for lx_brcmf_say_state() (lx-state.patch); NULL once it is removed */
++static struct brcmf_pciedev_info *lx_devinfo;
++
++/*
++ * (HakiOS) what the firmware and the driver share, said: the shared area, the common rings (where they are for the
++ * chip, the host's own indices and the ones in memory, read now), the mailbox, and the firmware's console since the
++ * last look. On the setup's failure and on the console's "wifi" (lx_os_wifi_state()).
++ */
++static void lx_brcmf_say_state(void)
++{
++	struct brcmf_pciedev_info *devinfo = lx_devinfo;
++	struct brcmf_pcie_shared_info *shared;
++	u32 i;
++
++	if (devinfo == NULL) {
++		pr_err("lx: brcmfmac: no device now\n");
++		return;
++	}
++	lx_os_pci_say_dma("brcmfmac's state");
++	shared = &devinfo->shared;
++	pr_err("lx: brcmfmac: state %d; shared at %#x: version %u flags %#x (DMA indices %s, %u bytes each); ring info %#x; "
++	       "mailbox data h2d %#x d2h %#x; max %u submission %u completion %u flow rings, rx post %u, rx offset %u\n",
++	       devinfo->state, shared->tcm_base_address, shared->version, shared->flags,
++	       devinfo->dma_idx_sz ? "in host memory" : "in the chip's RAM", devinfo->dma_idx_sz, shared->ring_info_addr,
++	       shared->htod_mb_data_addr, shared->dtoh_mb_data_addr, shared->max_submissionrings,
++	       shared->max_completionrings, shared->max_flowrings, shared->max_rxbufpost, shared->rx_dataoffset);
++	pr_err("lx: brcmfmac: idxbuf %#llx (%u bytes), scratch %#llx, ringupd %#llx; mailboxint %#x mailboxmask %#x intmask %#x\n",
++	       (unsigned long long)devinfo->idxbuf_dmahandle, devinfo->idxbuf_sz,
++	       (unsigned long long)shared->scratch_dmahandle, (unsigned long long)shared->ringupd_dmahandle,
++	       brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->mailboxint),
++	       brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->mailboxmask),
++	       brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->intmask));
++	for (i = 0; i < BRCMF_NROF_COMMON_MSGRINGS; i++) {
++		struct brcmf_pcie_ringbuf *ring = shared->commonrings[i];
+ 
++		if (ring == NULL)
++			continue;
++		pr_err("lx: brcmfmac: ring %u (id %u) at %#llx, %u x %u bytes: host r %u w %u; in memory r %u (at %#x) w %u (at %#x)\n",
++		       i, ring->id, (unsigned long long)ring->dma_handle, ring->commonring.depth, ring->commonring.item_len,
++		       ring->commonring.r_ptr, ring->commonring.w_ptr, devinfo->read_ptr(devinfo, ring->r_idx_addr),
++		       ring->r_idx_addr, devinfo->read_ptr(devinfo, ring->w_idx_addr), ring->w_idx_addr);
++	}
++	if (shared->console.base_addr != 0)
++		pr_err("lx: brcmfmac: console at %#x: buffer %#x, %u bytes, written to %u, read to %u\n",
++		       shared->console.base_addr, shared->console.buf_addr, shared->console.bufsize,
++		       brcmf_pcie_read_tcm32(devinfo, shared->console.base_addr + BRCMF_CONSOLE_WRITEIDX_OFFSET),
++		       shared->console.read_idx);
++	else
++		pr_err("lx: brcmfmac: no console (its address in the shared area is 0)\n");
++	brcmf_pcie_bus_console_read(devinfo, true);
++}
++
+ static void brcmf_pcie_setup(struct device *dev, int ret,
+ 			     struct brcmf_fw_request *fwreq)
+ {
+@@ -2171,6 +2233,8 @@
+ 
+ 	bus = dev_get_drvdata(dev);
+ 	pcie_bus_dev = bus->bus_priv.pcie;
++	lx_devinfo = pcie_bus_dev->devinfo;	/* (HakiOS) */
++	lx_os_wifi_state(lx_brcmf_say_state);
+ 	devinfo = pcie_bus_dev->devinfo;
+ 
+ 	/* check firmware loading result */
+@@ -2256,7 +2320,7 @@
+ 
+ fail:
+ 	brcmf_err(bus, "Dongle setup failed\n");
+-	brcmf_pcie_bus_console_read(devinfo, true);
++	lx_brcmf_say_state();	/* (HakiOS; it reads the console too) */
+ 	brcmf_fw_crashed(dev);
+ 	device_release_driver(dev);
+ }
+@@ -2620,6 +2684,8 @@
+ 
+ 	devinfo = bus->bus_priv.pcie->devinfo;
+ 	brcmf_pcie_bus_console_read(devinfo, false);
++	lx_devinfo = NULL;	/* (HakiOS) */
++	lx_os_wifi_state(NULL);
+ 	brcmf_pcie_fwcon_timer(devinfo, false);
+ 
+ 	devinfo->state = BRCMFMAC_PCIE_STATE_DOWN;

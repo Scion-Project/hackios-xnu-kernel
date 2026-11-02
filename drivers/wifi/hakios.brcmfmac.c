@@ -603,6 +603,12 @@ lx_os_irq_line_attach(void (*function)(void *), void *argument)
 }
 
 void
+lx_os_pci_say_dma(const char *when)
+{
+	hakios_exynos_pcie_say_dma(when);
+}
+
+void
 lx_os_irq_line_enable(void)
 {
 	if (line.attached) {
