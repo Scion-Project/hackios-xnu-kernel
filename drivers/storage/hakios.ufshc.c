@@ -2872,7 +2872,7 @@ hc_look_uefi(uint64_t list_pa, uint32_t nutrs)
 	for (uint32_t i = 0; i < nutrs && shown < 6; i++) {
 		volatile const uint32_t *d = (volatile const uint32_t *)(list + 32 * i);
 		uint64_t ucd = (uint64_t)d[5] << 32 | d[4];
-		uint32_t prd_off, prd_len, rsp_off, entries, stride, sum = 0, expected;
+		uint32_t prd_off, prd_len, rsp_off, entries, stride, sum = 0, expected, used;
 		volatile const uint8_t *u;
 		vm_offset_t map;
 
@@ -2924,20 +2924,33 @@ hc_look_uefi(uint64_t list_pa, uint32_t nutrs)
 		 * this kernel never does: 128 bytes on type 3 (as S-Boot leaves it and the S9's kernel sets it),
 		 * 16 on type 0. Whichever makes UEFI's own entries add up to its UPIU's length is the one.
 		 */
+		/*
+		 * 16-byte entries first (what UEFI's reads on the S9 have shown), then the protector's 128. An entry
+		 * all zero is one UEFI left unused (ro6: a table of 256 bytes, one entry used, fifteen zero) and is
+		 * not counted. A single-entry read cannot tell 16 from 128 apart; the layout read (two entries) does.
+		 */
 		for (unsigned c = 0; c < (soc->prdt_bytes ? 2u : 1u); c++) {
-			stride = soc->prdt_bytes ? (c == 0 ? soc->prd_entry : 16) : 16;
+			stride = soc->prdt_bytes ? (c == 0 ? 16 : soc->prd_entry) : 16;
 			entries = soc->prdt_bytes ? (prd_len % stride == 0 ? prd_len / stride : 0) : prd_len;
 			sum = 0;
+			used = 0;
 			for (uint32_t k = 0; k < entries; k++) {
-				uint32_t at = (soc->prdt_bytes ? prd_off : prd_off * 4) + k * stride, w3;
+				uint32_t at = (soc->prdt_bytes ? prd_off : prd_off * 4) + k * stride, w[4];
 
 				if (at + 16 > PAGE_SIZE + PAGE_SIZE - (ucd & PAGE_MASK)) {
 					break;
 				}
-				w3 = (uint32_t)u[at + 12] | (uint32_t)u[at + 13] << 8 | (uint32_t)u[at + 14] << 16 |
-				    (uint32_t)u[at + 15] << 24;
-				sum += (w3 & (soc->prdt_bytes ? 0x3ffffff : 0x3ffff)) + 1;
+				for (int b = 0; b < 4; b++) {
+					w[b] = (uint32_t)u[at + 4 * b] | (uint32_t)u[at + 4 * b + 1] << 8 |
+					    (uint32_t)u[at + 4 * b + 2] << 16 | (uint32_t)u[at + 4 * b + 3] << 24;
+				}
+				if (w[0] == 0 && w[1] == 0 && w[2] == 0 && w[3] == 0) {
+					continue;               /* (unused) */
+				}
+				used++;
+				sum += (w[3] & (soc->prdt_bytes ? 0x3ffffff : 0x3ffff)) + 1;
 			}
+			entries = used;
 			if (entries != 0 && sum == expected) {
 				break;
 			}
@@ -3293,8 +3306,18 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 			int verdict = hc_look_uefi(uefi_pa, hc_nutrs);
 
 			if (hc_soc->prdt_bytes && verdict < 0) {
-				/* this SoC's layout is taken from its kernel's source: UEFI's own reads must not disagree */
-				no = "UEFI's own read is not laid out as this driver would lay out its own";
+				/*
+				 * UEFI's leftovers do not decide (ro6: a read of its whose table this file misread): said, and
+				 * the layout read -- this driver's own READ of LUN 0's blocks 0-1 against the loader's -- does.
+				 */
+				hc_soc_own.prd_entry = 16;
+				if (hc_layout_ref == NULL && hc_step >= 4) {
+					no = "UEFI's own read is not laid out as this driver would lay out its own, and no reference to "
+					    "read against";
+				} else {
+					hc_say("ufs: own: UEFI's leftover read is not laid out as this driver reads it (above): not "
+					    "decisive; PRDT entries of 16 bytes, to be proven by the layout read before anything else\n");
+				}
 			} else if (hc_soc->prdt_bytes && verdict == 0) {
 				/*
 				 * No read of UEFI's left to tell the entry size by (UEFI reuses its slots): 16 bytes,
