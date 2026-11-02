@@ -61,7 +61,9 @@
  * (dpu_dma_type_to_channel); and the device tree of the same tree (exynos9810-starlte_eur_open_26.dts: decon_f@16030000,
  * dpp@16021000-16026000 with their IDMA at 16071000-16076000). GPL: read for these facts, nothing copied.
  *
- * Written, not yet seen on the phone.
+ * Seen on the phone (run 33, 2 November): the probe as expected (window 5 on G0, reading 0xCC000000); the buffers were
+ * then never had, the presenter asking IOKit for memory below 4 GB where this kernel has none (its RAM is the bank from
+ * 0x880000000): hence hakios_scanout_memory. Every step says what it decided, in the loader's log.
  */
 #include <stdarg.h>
 #include <kern/clock.h>
@@ -76,6 +78,7 @@ extern void IOSleep(unsigned milliseconds);
 
 /* the display driver's side (MiniIOMobileFramebuffer.cpp); stand-ins in drivers/core/hakios.stubs.c */
 int hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t rowbytes);
+int hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t *phys);
 int hakios_scanout_attach(int mode, const uint64_t *phys, unsigned count, uint32_t width, uint32_t height,
     uint32_t rowbytes, unsigned shown);
 int hakios_scanout_flip(unsigned index);
@@ -276,6 +279,43 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 	boot_data_path_1 = path1;
 	channel_type = boot_type;
 	probed = 1;
+	say("exynos_dpu: probe: as expected (window %u on %s reading the boot framebuffer, command mode, running; the "
+	    "boot channel's IDMA enable reads %x, not checked): flips and the scaler may be asked for\n", win,
+	    type_name[boot_type], rd(idma(boot_type), IDMA_ENABLE));
+	return 0;
+}
+
+/*
+ * Where the scan-out's buffers can be: the DECON's DMA takes 32-bit addresses, and none of this kernel's own memory is
+ * below 4 GB on the S9 (the loader gives XNU the bank from 0x880000000 on; IOKit's "below 4 GB" never succeeds there).
+ * In the lower bank, the gap of the phone's device tree between the moved payload and panic log (0xD0000000 -
+ * 0xD3FFFFFF, kernel PR 144) and secure_camera (0xE1900000): no reserved-memory node, outside XNU's RAM, used by
+ * neither payload layout (the memory table of hakios-starlte's README, starlte PR 27). Not 0xF0000000 and above: the
+ * Shannon modem's region (modem_if, cp_ram_logging), then ABOX's. `count` buffers of `bytes` each from 0xD4000000,
+ * 64 KB apart at least; physical addresses, the caller maps them (write-combined). 0 if they fit.
+ */
+#define SCAN_MEMORY_PA          0xD4000000ULL
+#define SCAN_MEMORY_END         0xE1900000ULL   /* secure_camera */
+
+int
+hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t *phys)
+{
+	uint64_t step = (bytes + 0xFFFFULL) & ~0xFFFFULL;
+
+	if (probed <= 0) {
+		say("exynos_dpu: memory: not the S9's DECON as expected: no buffers of its own\n");
+		return -1;
+	}
+	if (SCAN_MEMORY_PA + step * count > SCAN_MEMORY_END) {
+		say("exynos_dpu: memory: %u buffers of %llu bytes do not fit between %#llx and %#llx\n", count, bytes,
+		    SCAN_MEMORY_PA, SCAN_MEMORY_END);
+		return -1;
+	}
+	for (unsigned k = 0; k < count; k++) {
+		phys[k] = SCAN_MEMORY_PA + step * k;
+	}
+	say("exynos_dpu: memory: %u buffers of %llu bytes at %#llx to %#llx (the device tree's gap below secure_camera at "
+	    "%#llx)\n", count, bytes, SCAN_MEMORY_PA, SCAN_MEMORY_PA + step * count, SCAN_MEMORY_END);
 	return 0;
 }
 
@@ -486,7 +526,11 @@ int
 hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t width, uint32_t height, uint32_t rowbytes,
     unsigned shown)
 {
+	say("exynos_dpu: attach: %s asked for, %u buffers of %ux%u (%u bytes a row), the first at %#llx, %u drawn\n",
+	    want == 2 ? "VGF0's scaler (fb_dpp)" : want == 1 ? "flips (fb_flip)" : "nothing", count, width, height, rowbytes,
+	    count ? phys[0] : 0, shown);
 	if (probed <= 0 || mode != 0 || count < 2 || count > 4 || shown >= count) {
+		say("exynos_dpu: attach: refused (probe %d, mode %d, %u buffers, buffer %u drawn)\n", probed, mode, count, shown);
 		return -1;
 	}
 	for (unsigned k = 0; k < count; k++) {
@@ -500,7 +544,9 @@ hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t w
 	if (want == 1) {
 		if (width != (rd(idma(boot_type), IDMA_IMG_SIZE) & 0x1fff) || rowbytes != (rd(idma(boot_type), IDMA_SRC_SIZE) &
 		    0xffff) * 4) {
-			say("exynos_dpu: flips need buffers like the boot one\n");
+			say("exynos_dpu: flips need buffers like the boot one (%u wide, %u bytes a row; given %u, %u)\n",
+			    rd(idma(boot_type), IDMA_IMG_SIZE) & 0x1fff, (rd(idma(boot_type), IDMA_SRC_SIZE) & 0xffff) * 4, width,
+			    rowbytes);
 			return -1;
 		}
 		mode = 1;
@@ -516,6 +562,8 @@ hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t w
 		say("exynos_dpu: VGF0 scales %ux%u to the panel; flips between %u buffers\n", width, height, count);
 		return 0;
 	}
+	say("exynos_dpu: attach: %s not taken: the boot loader's window and buffer stay\n",
+	    want == 2 ? "VGF0's scaler" : "this mode");
 	nbuffers = 0;
 	return -1;
 }
