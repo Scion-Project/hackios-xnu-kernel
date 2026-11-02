@@ -52,6 +52,16 @@ revision `devices/manifest.conf` pins, so it can lag behind this table.
 
 [`hakios-starlte`'s README](https://github.com/Scion-Project/hakios-starlte#readme) explains how to build and install for this device.
 
+### Galaxy S9+ (`star2lte`, SM-G965F) and Galaxy Note9 (`crownlte`, SM-N960F): written, never run
+
+The same SoC and, by Samsung's device trees, the same board as the S9's for everything the drivers touch, so they share the
+S9's drivers and the loader's S9 platform under their own names (`loader_platform=`, written by their image scripts).
+**Nobody has run any of it on either phone.** There is no UEFI of their own (Silicium has no target for them): their images
+borrow the S9's, only when asked (`mkimage.sh -U`). Their device repositories,
+[hakios-star2lte](https://github.com/Scion-Project/hakios-star2lte) and [hakios-crownlte](https://github.com/Scion-Project/hakios-crownlte),
+say what differs from the S9, where each fact comes from, and what to try first; scion-packaging's `universal/` installer
+takes all three phones.
+
 ## The three layers
 
 1. **The open core**: the kernel port, the loader, the drivers, the tools. All source, in these repositories.
@@ -91,6 +101,7 @@ make phone SECS=600      # a 10-minute session on the phone, in RAM
 | [hakios-uefi](https://github.com/oosexgang/hakios-uefi) | the firmware that starts the loader: Mu-Silicium with HakiOS's boot path, banner and name, and HakiOS's U-Boot (`u-boot/`) |
 | [hakios-metal](https://github.com/oosexgang/hakios-metal) | Metal's command model on the Adreno, through the kernel's GPU driver |
 | [hakios-starlte](https://github.com/Scion-Project/hakios-starlte) | Galaxy S9 (Scion fork): its defconfig, status, UEFI platform and prebuilt UEFI, image script, and its SoC's layer (`soc/`: the Exynos 9810) |
+| [hakios-star2lte](https://github.com/Scion-Project/hakios-star2lte), [hakios-crownlte](https://github.com/Scion-Project/hakios-crownlte) | Galaxy S9+ and Note9: their defconfigs, status (nothing seen), image script, and the same `soc/` as the S9's; no UEFI yet |
 | [scion-packaging](https://github.com/Scion-Project/scion-packaging) | Scion fork: the S9's TWRP installer (boot image to `BOOT`, the system image you build to `SYSTEM`) |
 
 `devices/manifest.conf` in the common repository names each one and the revision it is at (in this fork, the Scion-Project forks of them); `tools/hakios-device.py sync` clones them
