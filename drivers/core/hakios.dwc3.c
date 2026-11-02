@@ -42,6 +42,12 @@
  *   uptime            seconds since boot
  *   sysctl NAME       a sysctl's value (an integer or a string)
  *   log               the kernel's log again from its start (what the kernel keeps of it: the first 256 KB)
+ *   shot [N]          the panel's picture as it is now (the boot framebuffer the display driver scales onto), every
+ *                     Nth pixel of every Nth row (1-16; 4 when not given), as binary on bulk IN, framed:
+ *                       "SHOT w h stride rgb888 bytes\n", then the bytes (rows top to bottom, R G B), then "END\n"
+ *                     The log is held back meanwhile (what came before the command is sent first, what comes during
+ *                     it after END), so the picture is never mixed with it. tools/usb-shot.py asks for one and writes
+ *                     a PNG. The panel is read while the display may be drawing it: a shot can catch half a frame
  *   return            end the run: the data volume saved, the drivers given back, the loader restarts the phone
  * Not a shell: user space is not reached from here.
  *
@@ -85,6 +91,7 @@
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
 #include <vm/memory_types.h>
+#include <console/video_console.h>
 
 #include "hakios.usb_acm.h"
 #include "hakios.usb_glue.h"
@@ -102,6 +109,7 @@ extern void hakios_wifi_stop(void);
 extern void hakios_adsp_stop(void);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern void delay(int usec);
+extern struct vc_info vinfo;            /* the boot framebuffer: the panel's memory, as the display driver draws on it */
 void hakios_usb_gadget_quiesce(void);
 
 SYSCTL_DECL(_kern_hakios);
@@ -263,6 +271,17 @@ static uint32_t ring_head, ring_tail, ring_dropped;
 static uint64_t n_resets, n_setups, n_stalls, n_in, n_out, n_events, last_phy_say;
 static int usb_speed_v;
 static char usb_state[24] = "off";
+
+/* a picture of the panel on its way out (the console's shot): the phase, and where in it */
+enum { SHOT_OFF, SHOT_LOG, SHOT_HEAD, SHOT_PIXELS, SHOT_END };
+static struct {
+	int phase;
+	uint32_t mark;                  /* the log up to here goes out before the picture */
+	uint32_t n, w, h, x, y, rowbytes, sent;
+	uintptr_t base;
+	uint64_t start;
+} shot;
+static uint64_t n_shots;
 
 SYSCTL_NODE(_kern_hakios, OID_AUTO, usb, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "the USB gadget link (drivers/core/hakios.dwc3.c, usb_gadget=N)");
 SYSCTL_STRING(_kern_hakios_usb, OID_AUTO, state, CTLFLAG_RD | CTLFLAG_LOCKED, usb_state, 0, "off, phy, core, waiting, default, address, configured");
@@ -634,12 +653,134 @@ bulk_up(void)
 	}
 }
 
+/*
+ * The console's shot, one bulk IN transfer at a time: first the log as far as it had got when the command came, then
+ * the header line, the pixels (as many whole pixels as fit in a transfer), "END". The log that comes meanwhile waits
+ * in the ring (1 MB; a shot at N=4 is 0.8 MB and takes some 0.1 s at high speed) and goes out after END.
+ */
+static uint32_t
+shot_fill(void)
+{
+	volatile uint8_t *out = dma + IN_OFF;
+	uint32_t n = 0;
+
+	if (shot.phase == SHOT_LOG) {
+		uint32_t t = ring_tail;
+
+		while (t != shot.mark && n + 2 <= IN_CHUNK) {
+			char c = ring[t & (RING_SIZE - 1)];
+
+			if (c == '\n' && crlf) {
+				out[n++] = '\r';
+			}
+			out[n++] = (uint8_t)c;
+			t++;
+		}
+		os_atomic_store(&ring_tail, t, release);
+		if (t != shot.mark || n != 0) {
+			if (t == shot.mark) {
+				shot.phase = SHOT_HEAD;
+			}
+			return n;
+		}
+		shot.phase = SHOT_HEAD;
+	}
+	if (shot.phase == SHOT_HEAD) {
+		shot.phase = SHOT_PIXELS;
+		shot.x = shot.y = 0;
+		shot.start = mach_absolute_time();
+		return (uint32_t)snprintf((char *)(uintptr_t)out, 96, "SHOT %u %u %u rgb888 %u\n", shot.w, shot.h, shot.w * 3,
+		           shot.w * shot.h * 3);
+	}
+	if (shot.phase == SHOT_PIXELS) {
+		while (shot.y < shot.h && n + 3 <= IN_CHUNK) {
+			const volatile uint32_t *row = (const volatile uint32_t *)(shot.base +
+			    (size_t)(shot.y * shot.n + shot.n / 2) * shot.rowbytes);
+			uint32_t px = row[shot.x * shot.n + shot.n / 2];      /* B G R A in memory */
+
+			out[n++] = (uint8_t)(px >> 16);
+			out[n++] = (uint8_t)(px >> 8);
+			out[n++] = (uint8_t)px;
+			if (++shot.x == shot.w) {
+				shot.x = 0;
+				shot.y++;
+			}
+		}
+		shot.sent += n;
+		if (shot.y < shot.h) {
+			return n;
+		}
+		shot.phase = SHOT_END;
+		if (n != 0) {
+			return n;
+		}
+	}
+	/* SHOT_END */
+	out[0] = 'E';
+	out[1] = 'N';
+	out[2] = 'D';
+	out[3] = '\n';
+	shot.phase = SHOT_OFF;
+	n_shots++;
+	{
+		uint64_t ns;
+
+		absolutetime_to_nanoseconds(mach_absolute_time() - shot.start, &ns);
+		con("usb: shot %llu sent: %ux%u, %u bytes of pixels in %llu ms\n", n_shots, shot.w, shot.h, shot.sent,
+		    ns / NSEC_PER_MSEC);
+	}
+	return 4;
+}
+
+/* the console's "shot [N]": the panel's picture, every Nth pixel, queued behind what the log has already said */
+static void
+shot_begin(const char *arg)
+{
+	uint32_t n = 0;
+
+	for (; *arg >= '0' && *arg <= '9' && n < 1000; arg++) {
+		n = n * 10 + (uint32_t)(*arg - '0');
+	}
+	if (n == 0) {
+		n = 4;
+	}
+	if (n > 16 || *arg != 0) {
+		con("usb: shot failed: N is a number from 1 to 16 (shot 4: a quarter of the panel's width and height)\n");
+		return;
+	}
+	if (shot.phase != SHOT_OFF) {
+		con("usb: shot failed: one is on its way already\n");
+		return;
+	}
+	if (vinfo.v_baseaddr == 0 || vinfo.v_depth != 32 || vinfo.v_width < n || vinfo.v_height < n) {
+		con("usb: shot failed: no 32-bit panel framebuffer (%ux%u, depth %u)\n", vinfo.v_width, vinfo.v_height, vinfo.v_depth);
+		return;
+	}
+	shot.n = n;
+	shot.w = vinfo.v_width / n;
+	shot.h = vinfo.v_height / n;
+	shot.rowbytes = vinfo.v_rowbytes;
+	shot.base = (uintptr_t)vinfo.v_baseaddr;
+	shot.sent = 0;
+	con("usb: shot: the panel (%ux%u, %u bytes a row), every %uth pixel: %ux%u RGB, %u bytes, after this line\n",
+	    vinfo.v_width, vinfo.v_height, vinfo.v_rowbytes, n, shot.w, shot.h, shot.w * shot.h * 3);
+	shot.mark = os_atomic_load(&ring_head, acquire);
+	shot.phase = SHOT_LOG;
+}
+
 static void
 pump_in(void)
 {
 	uint32_t n = 0, lost;
 
 	if (steps < 5 || acm.config == 0 || pep[PEP_IN].active || (acm.halted & 2)) {
+		return;
+	}
+	if (shot.phase != SHOT_OFF) {
+		n = shot_fill();
+		if (n != 0) {
+			(void)start_xfer(PEP_IN, dma_pa + IN_OFF, n, TRBCTL_NORMAL);
+		}
 		return;
 	}
 	lost = os_atomic_xchg(&ring_dropped, 0, relaxed);
@@ -791,10 +932,12 @@ console(char *line)
 	}
 	con("usb> %s%s%s\n", line, *arg ? " " : "", arg);
 	if (strcmp(line, "help") == 0) {
-		con("usb: help, stat, uptime, sysctl NAME, log (the kernel's log again from its start), return (end the run)\n");
+		con("usb: help, stat, uptime, sysctl NAME, log (the kernel's log again from its start), shot [N] (the panel's picture, "
+		    "binary: tools/usb-shot.py), return (end the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
-		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events\n",
-		    usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out, ring_dropped, n_events);
+		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
+		    "%llu shots\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out, ring_dropped,
+		    n_events, n_shots);
 	} else if (strcmp(line, "uptime") == 0) {
 		uint64_t ns;
 
@@ -832,6 +975,8 @@ console(char *line)
 		con("usb: the kernel's log from its start:\n");
 		(void)loader_log_tap_set(tap, history);
 		con("usb: (end of what the kernel keeps; the rest was sent as it came)\n");
+	} else if (strcmp(line, "shot") == 0) {
+		shot_begin(arg);
 	} else if (strcmp(line, "return") == 0) {
 		con("usb: ending the run: the loader will restart the phone\n");
 		want_return = true;     /* done by tick() once this event is handled and the controller let go */
