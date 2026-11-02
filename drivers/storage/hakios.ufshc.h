@@ -178,4 +178,11 @@ int ufshc_read(uint8_t lun, uint64_t offset, uint8_t *dst, uint64_t len);
 void ufshc_report(const char *when);
 void hakios_ufs_quiesce(void);
 
+/* ufs=3's summary (hakios.ufs.c): how it is said */
+#define HAKIOS_UFS_SAY_LOG        1     /* the loader's log, and so the USB console */
+#define HAKIOS_UFS_SAY_PRINTF     2     /* the kernel's log (dmesg, last_kmsg) */
+#define HAKIOS_UFS_SAY_NUFS_ONLY  4     /* nothing unless ufs=3 was asked */
+void hakios_ufs_summary(const char *when, int how);
+void hakios_ufs_refused(const char *why);
+
 #endif

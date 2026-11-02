@@ -221,6 +221,23 @@ static int ufs_nufs_failed(const char *name, uint64_t offset, int error);
 static void nufs_say(const char *format, ...) __printflike(1, 2);
 static int ufs_nufs_write(uint32_t part, uint64_t offset, const uint8_t *src, uint64_t len);
 
+/*
+ * ufs=3: what the run did, kept in memory and said as a summary (hakios_ufs_summary): when the USB console comes up,
+ * on its "ufs", every 30 s with fps_log=1 or ufs_native_log=1, and at the end of the run (into the kernel's log, and
+ * the last lines of the loader's). Only counted here: nothing of it decides anything.
+ */
+static struct {
+	uint32_t step;                  /* the last step begun (1-5); 0: not started */
+	int selftest, fences;           /* 0 not run, 1 passed, -1 failed */
+	uint32_t fences_tried;
+	char why[128];                  /* why not native: the first reason given */
+	uint64_t reads_native, reads_loader, read_errors, read_bytes, refused;
+	char refusal[3][100];           /* the first three refusals */
+} nufs_sum;
+static void nufs_refused(const char *format, ...) __printflike(1, 2);
+static void nufs_why(const char *why);
+static const char *nufs_pname(uint32_t part);
+
 /* own mode (ufs_native=4): the table is this kernel's, the loader serves nothing */
 static bool ufs_own;
 static int ufs_own_write_part = -1;             /* the partition ufs_native_write= names; -1: none */
@@ -611,6 +628,21 @@ ufs_native_out(const char *why)
 	return error;
 }
 
+/* ufs=3's summary: a read through the loader, counted */
+static int
+nufs_loader_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
+{
+	int error = ufs_read_mailbox(part, offset, dst, len);
+
+	if (error == 0) {
+		os_atomic_inc(&nufs_sum.reads_loader, relaxed);
+		os_atomic_add(&nufs_sum.read_bytes, len, relaxed);
+	} else {
+		os_atomic_inc(&nufs_sum.read_errors, relaxed);
+	}
+	return error;
+}
+
 /* The way chosen (ufs_native=, kern.hakios.ufs_native); if this kernel's own fails, the loader's */
 static int
 ufs_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
@@ -633,19 +665,23 @@ ufs_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 		int error = ufs_lun[part] == 0xff ? ENXIO : ufs_read_native(part, offset, dst, len);
 
 		if (error == 0) {
+			os_atomic_inc(&nufs_sum.reads_native, relaxed);
+			os_atomic_add(&nufs_sum.read_bytes, len, relaxed);
 			return 0;
 		}
 		if (ufs_lun[part] == 0xff) {
+			nufs_refused("a read of %s: on a unit this kernel's driver does not read", nufs_pname(part));
 			if (ufs_nufs_unmapped++ < 4) {
 				nufs_say("ufs: nufs: %s: on a unit this kernel's driver does not read: not read\n",
 				    (const char *)ufs_page->part[part].name);
 			}
 			return ENXIO;
 		}
+		os_atomic_inc(&nufs_sum.read_errors, relaxed);
 		if (ufs_nufs_failed((const char *)ufs_page->part[part].name, offset, error) != 0) {
 			return EIO;
 		}
-		return ufs_read_mailbox(part, offset, dst, len);
+		return nufs_loader_read(part, offset, dst, len);
 	}
 	if (ufs_native_on && ufs_lun[part] != 0xff) {
 		int error = ufs_read_native(part, offset, dst, len);
@@ -655,7 +691,7 @@ ufs_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 		}
 		if (ufs_write_busy) {
 			/* the list is out for a write of ours, not broken: this read goes the other way */
-			return ufs_read_mailbox(part, offset, dst, len);
+			return nufs_loader_read(part, offset, dst, len);
 		}
 		if (ufs_native_on) {
 			ufs_native_on = false;
@@ -665,7 +701,7 @@ ufs_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 		}
 		ufs_native_out("a read failed");
 	}
-	return ufs_read_mailbox(part, offset, dst, len);
+	return nufs_loader_read(part, offset, dst, len);
 }
 
 /*
@@ -684,6 +720,8 @@ ufs_write(uint32_t op, uint32_t part, uint64_t offset, const uint8_t *src, uint6
 
 	if (!ufs_ready || ufs_write_part < 0 || part != (uint32_t)ufs_write_part) {
 		ufs_write_refused++;
+		nufs_refused("a write to %s: %s", nufs_pname(part), ufs_write_part < 0 ? "nothing takes writes in this run" :
+		    "not the partition that takes writes");
 		return EROFS;
 	}
 	nbs = ufs_page->part[part].block_size;
@@ -694,6 +732,7 @@ ufs_write(uint32_t op, uint32_t part, uint64_t offset, const uint8_t *src, uint6
 	    len > ufs_part_bytes(part) - offset) {
 		/* the Darwin volume, the cryptexes, and anything past the partition's end: never */
 		ufs_write_refused++;
+		nufs_refused("a write to %s at byte %llu: outside the blocks it takes writes in", nufs_pname(part), offset);
 		return EROFS;
 	}
 	per = ufs_buffer_size / nbs;
@@ -947,6 +986,8 @@ ufs_open(dev_t dev, int flags, __unused int devtype, __unused proc_t p)
 		return ENXIO;
 	}
 	if (flags & FWRITE) {
+		nufs_refused("/dev/ufs_%s opened for writing: a block device of this driver never writes",
+		    nufs_pname((uint32_t)minor(dev)));
 		return EROFS;           /* a block device of this driver never writes */
 	}
 	return 0;
@@ -1010,6 +1051,7 @@ ufs_strategy(buf_t bp)
 		return;
 	}
 	if (!(buf_flags(bp) & B_READ)) {
+		nufs_refused("a write to /dev/ufs_%s: a block device of this driver never writes", nufs_pname(part));
 		buf_seterror(bp, EROFS);         /* this device never writes */
 		buf_biodone(bp);
 		return;
@@ -1153,11 +1195,15 @@ ufs_cwrite(dev_t dev, struct uio *uio, __unused int ioflag)
 		return ufs_own_cwrite(part, uio);
 	}
 	if (!ufs_ready || part >= ufs_parts || ufs_write_part < 0 || part != (uint32_t)ufs_write_part) {
+		nufs_refused("a write to /dev/rufs_%s: %s", nufs_pname(part), ufs_write_part < 0 ?
+		    "nothing takes writes in this run" : "not the partition that takes writes");
 		return EROFS;
 	}
 	if (ufs_var_busy_pid != proc_selfpid()) {
 		/* one writer of the store at a time, and it says so first (kern.hakios.var_busy) */
 		ufs_write_refused++;
+		nufs_refused("a write to /dev/rufs_%s by pid %d: not the store's writer (kern.hakios.var_busy)",
+		    nufs_pname(part), proc_selfpid());
 		return EPERM;
 	}
 	nbs = ufs_page->part[part].block_size;
@@ -1229,6 +1275,8 @@ hakios_var_save_on_return(void)
 {
 	uint32_t ms = VAR_SAVE_MS;
 	uint64_t waited = 0;
+
+	hakios_ufs_summary("the run is ending", HAKIOS_UFS_SAY_LOG | HAKIOS_UFS_SAY_PRINTF | HAKIOS_UFS_SAY_NUFS_ONLY);
 
 	/*
 	 * The data volume mounted (/dev/ufs_NAME_data opened for writing): what HFS Plus still holds in memory goes
@@ -2351,6 +2399,12 @@ ufs_own_init(uint32_t mode)
  * be given back; if it cannot, the storage is off for the run (nothing is asked of UEFI's driver behind a list that
  * is not its own). A write that fails is an error, never retried the other way. Every step is said into the
  * loader's log (loader_log_line), where the run's log is read.
+ *
+ * The run's outcome is kept in memory (nufs_sum) and said as a summary (hakios_ufs_summary): after the start, when
+ * the USB console's host configures the link, on the console's "ufs", every 30 s with fps_log=1 or ufs_native_log=1,
+ * when the run is ending (hakios_var_save_on_return: the kernel's log too, whose message buffer loader_return appends
+ * last to the loader's log) and once more as the drivers are given back (hakios_ufs_quiesce, any way out, a panic's
+ * too: the loader's log only).
  */
 
 extern void loader_log_line(const char *line);
@@ -2371,6 +2425,134 @@ nufs_say(const char *format, ...)
 	}
 	printf("%s", line);
 	loader_log_line(line);
+}
+
+/* ---- ufs=3's summary (nufs_sum) ---- */
+
+static const char *
+nufs_pname(uint32_t part)
+{
+	return ufs_page != NULL && part < ufs_parts ? (const char *)ufs_page->part[part].name : "?";
+}
+
+/* a refusal: counted, the first three kept with their reasons */
+static void
+nufs_refused(const char *format, ...)
+{
+	uint64_t n = os_atomic_inc_orig(&nufs_sum.refused, relaxed);
+	va_list list;
+
+	if (n < 3) {
+		va_start(list, format);
+		vsnprintf(nufs_sum.refusal[n], sizeof(nufs_sum.refusal[0]), format, list);
+		va_end(list);
+	}
+}
+
+/* the controller's whitelist refused a command (hakios.ufshc.c) */
+void
+hakios_ufs_refused(const char *why)
+{
+	nufs_refused("the whitelist: %s", why);
+}
+
+/* why the run is not on this kernel's own driver: the first reason given is kept */
+static void
+nufs_why(const char *why)
+{
+	if (nufs_sum.why[0] == 0) {
+		strlcpy(nufs_sum.why, why, sizeof(nufs_sum.why));
+	}
+}
+
+static void
+nufs_summary_line(int how, const char *format, ...) __printflike(2, 3);
+static void
+nufs_summary_line(int how, const char *format, ...)
+{
+	char line[400];
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(line, sizeof(line), format, list);
+	va_end(list);
+	if (strlen(line) == sizeof(line) - 1) {
+		line[sizeof(line) - 2] = '\n';
+	}
+	if (how & HAKIOS_UFS_SAY_LOG) {
+		loader_log_line(line);
+	}
+	if (how & HAKIOS_UFS_SAY_PRINTF) {
+		printf("%s", line);
+	}
+}
+
+/*
+ * The summary of ufs=3, in two lines and then the first three refusals:
+ *   ufs: nufs: summary (WHEN, up S s): step N of 5 (NAME); self-test R; fence test R; mode M
+ *   ufs: nufs: summary: reads N native, N through the loader (N MB), N failed; writes N (N MB), N failed; refused N
+ *   ufs: nufs: summary: refused #1: WHY
+ * M: NATIVE (...), FELL BACK to ufs=2: WHY, NO STORAGE: WHY, not started: WHY, in progress, or ufs=3 not asked.
+ * how: HAKIOS_UFS_SAY_LOG (the loader's log, and so the USB console), _PRINTF (the kernel's), _NUFS_ONLY (nothing
+ * unless ufs=3 was asked). Takes no lock: from the USB console's poll, a thread, or the end of the run.
+ */
+void
+hakios_ufs_summary(const char *when, int how)
+{
+	static const char *const steps[] = { "not started", "references through the loader", "the controller taken",
+		                             "self-test", "the fences", "switched" };
+	char mode[192], fence[64];
+	uint64_t ns;
+	uint32_t step = nufs_sum.step;
+
+	if ((how & HAKIOS_UFS_SAY_NUFS_ONLY) && !ufs_nufs) {
+		return;
+	}
+	if (step >= sizeof(steps) / sizeof(steps[0])) {
+		step = 0;
+	}
+	if (!ufs_nufs) {
+		strlcpy(mode, "ufs=3 not asked", sizeof(mode));
+	} else if (ufs_nufs_on) {
+		snprintf(mode, sizeof(mode), "NATIVE (every read through this kernel's own driver; %s)", ufs_nufs_ro ?
+		    "read only, ufs_native_ro=1" : ufs_write_part >= 0 ? "USERDATA's writes too" : "read only");
+	} else if (ufs_dead) {
+		snprintf(mode, sizeof(mode), "NO STORAGE: %s", nufs_sum.why[0] ? nufs_sum.why : "?");
+	} else if (nufs_sum.why[0] != 0) {
+		snprintf(mode, sizeof(mode), "%s: %s; reads through the loader", nufs_sum.step == 0 ? "not started" :
+		    "FELL BACK to ufs=2", nufs_sum.why);
+	} else if (nufs_sum.step == 0) {
+		strlcpy(mode, "not started yet: reads through the loader", sizeof(mode));
+	} else {
+		strlcpy(mode, "in progress", sizeof(mode));
+	}
+	if (nufs_sum.fences == 0) {
+		strlcpy(fence, "not run", sizeof(fence));
+	} else {
+		snprintf(fence, sizeof(fence), "%s (%u writes judged, none sent)", nufs_sum.fences > 0 ? "passed" : "FAILED",
+		    nufs_sum.fences_tried);
+	}
+	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+	nufs_summary_line(how, "ufs: nufs: summary (%s, up %llu s): step %u of 5 (%s); self-test %s; fence test %s; mode %s\n",
+	    when, ns / NSEC_PER_SEC, step, steps[step], nufs_sum.selftest == 0 ? "not run" : nufs_sum.selftest > 0 ?
+	    "passed" : "FAILED", fence, mode);
+	nufs_summary_line(how, "ufs: nufs: summary: reads %llu native, %llu through the loader (%llu MB), %llu failed; "
+	    "writes %llu (%llu MB), %llu failed; refused %llu\n", nufs_sum.reads_native, nufs_sum.reads_loader,
+	    nufs_sum.read_bytes >> 20, nufs_sum.read_errors, ufs_writes, ufs_write_bytes >> 20, ufs_write_errors,
+	    nufs_sum.refused);
+	for (uint32_t i = 0; i < 3 && i < nufs_sum.refused; i++) {
+		nufs_summary_line(how, "ufs: nufs: summary: refused #%u: %s\n", i + 1, nufs_sum.refusal[i]);
+	}
+}
+
+/* fps_log=1 or ufs_native_log=1: the summary every 30 s for the run */
+static void
+nufs_summary_thread(__unused void *arg, __unused wait_result_t wr)
+{
+	for (;;) {
+		IOSleep(30 * 1000);
+		hakios_ufs_summary("every 30 s", HAKIOS_UFS_SAY_LOG | HAKIOS_UFS_SAY_PRINTF);
+	}
 }
 
 /* The partitions that are never written, whatever is asked (and ufs_never_written's besides) */
@@ -2903,6 +3085,8 @@ nufs_prove_fences(int data_unit_lun, bool window)
 	}
 	nufs_say("ufs: nufs: fence test: %u writes made and judged, none sent: %s\n", tried, right ? "every one as it should be" :
 	    "NOT AS IT SHOULD BE");
+	nufs_sum.fences_tried = tried;
+	nufs_sum.fences = right ? 1 : -1;
 	return right;
 }
 
@@ -2913,6 +3097,7 @@ nufs_abort(const char *why)
 	bool back;
 
 	nufs_say("ufs: nufs: ABORTED: %s\n", why);
+	nufs_why(why);
 	ufs_nufs_on = false;
 	ufs_native_on = false;
 	memset(ufs_lun, 0xff, sizeof(ufs_lun));
@@ -2951,12 +3136,15 @@ ufs_nufs_start(void)
 	    "READ ONLY (ufs_native_ro=1)" : ufs_write_part >= 0 ? "USERDATA writable (ufs_write=1)" : "read only (no ufs_write=1)");
 
 	nufs_say("ufs: nufs: step 1: references through the loader\n");
+	nufs_sum.step = 1;
 	why = nufs_references();
 	if (why != NULL) {
 		nufs_say("ufs: nufs: not taken: %s; through the loader (ufs=2), nothing changed\n", why);
+		nufs_why(why);
 		goto out;
 	}
 	nufs_say("ufs: nufs: step 2: the controller taken as UEFI left it (own mode, step %u)\n", step);
+	nufs_sum.step = 2;
 	if (ufs_nufs_ro || ufs_write_part < 0) {
 		ufshc_force_ro();       /* (the whitelist's own fence, from before this kernel's list is in) */
 	}
@@ -2965,15 +3153,19 @@ ufs_nufs_start(void)
 		lck_mtx_unlock(&ufs_lock);
 		if (ufshc_release("not taken")) {
 			nufs_say("ufs: nufs: not taken (above); UEFI's list is in: through the loader (ufs=2)\n");
+			nufs_why("the controller could not be taken (step 2; the lines before say why)");
 		} else {
 			ufs_dead = true;
 			nufs_say("ufs: nufs: not taken, and UEFI's list is NOT back: no storage in this run\n");
+			nufs_why("the controller could not be taken, and UEFI's list is NOT back");
 		}
 		goto out;
 	}
 	lck_mtx_unlock(&ufs_lock);
 	nufs_say("ufs: nufs: step 3: self-test\n");
+	nufs_sum.step = 3;
 	why = nufs_selftest();
+	nufs_sum.selftest = why == NULL ? 1 : -1;
 	if (why != NULL) {
 		nufs_abort(why);
 		goto out;
@@ -2988,6 +3180,7 @@ ufs_nufs_start(void)
 		}
 	}
 	nufs_say("ufs: nufs: step 4: the fences\n");
+	nufs_sum.step = 4;
 	if (!nufs_fences(ufs_nufs_ro ? -1 : data_lun)) {
 		ufs_write_part = -1;
 	}
@@ -3013,6 +3206,7 @@ ufs_nufs_start(void)
 	}
 	nufs_say("ufs: nufs: step 5: switched: every read%s through this kernel's own driver from now on; the loader is asked "
 	    "for nothing (core 0 stays the loader's)\n", window ? ", and USERDATA's writes," : "");
+	nufs_sum.step = 5;
 	ufs_native_mapped = true;
 	ufs_native_on = true;
 	ufs_nufs_on = true;
@@ -3054,6 +3248,7 @@ ufs_nufs_write(uint32_t part, uint64_t offset, const uint8_t *src, uint64_t len)
 	int e;
 
 	if (ufs_lun[part] == 0xff) {
+		nufs_refused("a write to %s: on a unit this kernel's driver does not write", nufs_pname(part));
 		return EROFS;
 	}
 	e = ufshc_write(ufs_lun[part], ufs_lun_offset[part] + offset, src, len);
@@ -3135,6 +3330,7 @@ hakios_ufs_init(void)
 	if (!PE_parse_boot_argn("ufs_shared_pa", &pa, sizeof(pa)) || pa == 0) {
 		if (ufs_nufs) {
 			nufs_say("ufs: nufs: ufs=3, but the loader published no page (a loader older than ufs=3?): no storage\n");
+			nufs_why("the loader published no page (ufs_shared_pa): no storage");
 			return;
 		}
 		/* the loader was not asked for ufs=2: nothing to read through, unless this kernel has the controller */
@@ -3245,18 +3441,30 @@ hakios_ufs_init(void)
 
 	if (ufs_nufs) {
 		/* (nothing answers from the devices meanwhile: the loader's mailbox and the controller change hands here) */
+		uint32_t every = 0, fps = 0;
+		thread_t thread;
+
 		ufs_ready = false;
 		ufs_nufs_start();
 		ufs_ready = true;
+		hakios_ufs_summary("after the start", HAKIOS_UFS_SAY_LOG | HAKIOS_UFS_SAY_PRINTF);
+		PE_parse_boot_argn("ufs_native_log", &every, sizeof(every));
+		PE_parse_boot_argn("fps_log", &fps, sizeof(fps));
+		if ((every != 0 || fps != 0) && kernel_thread_start(nufs_summary_thread, NULL, &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+		}
 	}
 
 	/*
 	 * ufs_native=1: through this kernel's own driver instead, its own transfer list in the
 	 * controller for the run, if all is as expected; 2: only look; 3: a dry run -- the list in and
 	 * out again, and in once more for the end of the run to take out, no command sent.
+	 * (Not with ufs=3: ufs_nufs_start has mapped the units, and its map is the one the reads use.)
 	 */
 	check = native;
-	memset(ufs_lun, 0xff, sizeof(ufs_lun));
+	if (!ufs_nufs) {
+		memset(ufs_lun, 0xff, sizeof(ufs_lun));
+	}
 	if (check >= 1 && check <= 3) {
 		struct ufshc_loader offer = {
 			.hc_pa = ufs_page->native.hc_pa, .area_pa = ufs_page->native.area_pa,

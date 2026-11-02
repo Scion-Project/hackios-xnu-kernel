@@ -911,6 +911,7 @@ ufshc_permitted(const uint8_t *upiu, uint32_t dw0)
 		return true;
 	}
 	hc_refused++;
+	hakios_ufs_refused(why);
 	hc_say("ufs: native: REFUSED (%s): UPIU %02x %02x %02x %02x, CDB %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x, "
 	    "descriptor %08x; it goes into no slot\n", why, upiu[0], upiu[1], upiu[2], upiu[3], upiu[16], upiu[17], upiu[18],
 	    upiu[19], upiu[20], upiu[21], upiu[22], upiu[23], upiu[24], upiu[25], dw0);
@@ -3327,8 +3328,18 @@ hc_own_give_back(void)
  * already stopped): nothing more is sent, what is in flight is waited for, UEFI's list put back.
  * No locks (a stopped processor may hold one).
  */
+static void hc_quiesce(void);
+
 void
 hakios_ufs_quiesce(void)
+{
+	hc_quiesce();
+	/* ufs=3: what the run did, once more, after the controller's own last lines (no printf here: no locks) */
+	hakios_ufs_summary("the drivers given back", HAKIOS_UFS_SAY_LOG | HAKIOS_UFS_SAY_NUFS_ONLY);
+}
+
+static void
+hc_quiesce(void)
 {
 	struct hc_put_back_result r;
 
