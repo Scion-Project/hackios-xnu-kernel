@@ -1277,6 +1277,30 @@ hc_place(struct hc_slot *s, const struct hc_cmd *c, uint32_t bytes)
 }
 
 /*
+ * Own mode's completion notification (UTRLCNR, 0x64): UFSHCI 3.0's, and the Exynos 9810's 2.1
+ * controller has it too. A slot's bit is set when its request is done; a one written clears it.
+ * Seen on the phone (ufs-rw7): a request done (OCS 0, its response there, IS's UTRCS set) and its
+ * bit in UTRLCNR set, while its doorbell bit stayed until something cleared it -- on nearly every
+ * request, each then waiting out the 100 ms tick of hc_wait. [BSP]'s ufshcd_intr acknowledges IS
+ * (writes back what it read) before ufshcd_transfer_req_compl reads the doorbell; this kernel,
+ * its interrupt masked, acknowledged IS only before the next doorbell. So UTRLCNR is the completion
+ * here: the slot's bit cleared before its doorbell is rung (UEFI leaves bits set: 00000014), a set
+ * bit after it is the request done; then IS acknowledged, the bit cleared, and the doorbell bit
+ * must drop within HC_CNR_DROP_US. A doorbell bit that stays even so is the safety net's
+ * (hc_unstick, UTRLCLR on a slot proven done), counted and said. A UTRLCNR bit that does not
+ * clear when written turns this off: completions are then the doorbell's alone, as before.
+ */
+#define HC_CNR_DROP_US      1000
+static bool hc_cnr_broken;                      /* a written one did not clear a UTRLCNR bit */
+static uint64_t hc_cnr_seen, hc_cnr_dropped, hc_cnr_drop_max_us, hc_cnr_db_first;
+
+static bool
+hc_cnr_on(void)
+{
+	return hc_mode == HC_OWN && !hc_cnr_broken && (hc_ver >= 0x300 || hc_soc->cnr);
+}
+
+/*
  * The doorbell: only while this kernel's list is the one in, running, and (shared mode) the
  * loader not taking it back, or (own mode) no fatal status. Before it, the SoC's nexus hook.
  */
@@ -1300,6 +1324,14 @@ hc_ring(struct hc_slot *s, bool scsi)
 	if (ok) {
 		if (hc_mode == HC_OWN) {
 			hc_write(UFSHC_IS, IS_UTRCS);   /* completions acknowledged; error bits stay as evidence (ShengUfs) */
+		}
+		if (hc_cnr_on()) {
+			hc_write(UFSHC_UTRLCNR, bit);   /* no stale notification: a set bit after the doorbell is this request's */
+			if (hc_read(UFSHC_UTRLCNR) & bit) {
+				hc_cnr_broken = true;
+				hc_say("ufs: native: slot %u: its UTRLCNR bit did not clear when written (UTRLCNR %08x): "
+				    "completions from the doorbell alone from now on\n", s->number, hc_read(UFSHC_UTRLCNR));
+			}
 		}
 		if (hc_soc->nexus != NULL) {
 			hc_soc->nexus(s->number, scsi);
@@ -1358,13 +1390,14 @@ hc_off(void)
 
 /*
  * Waiting for the controller. Its interrupt stays off (UEFI's setting; own mode masks it), so
- * completions are seen by reading UTRLDBR. A waiter looks at its own bit for a short while
+ * completions are seen by reading UTRLDBR, and in own mode UTRLCNR too (hc_cnr_complete). A waiter looks at its own bit for a short while
  * (hc_spin_us: a small read is done by then), then sleeps; one poller thread looks for all who
  * sleep and wakes each whose slot is done. So the processors are not all taken by threads
  * spinning on the doorbell, which kept others -- one woken because the volume's lock came free,
  * say -- from running.
  */
 static void hc_stuck(struct hc_slot *s);
+static bool hc_cnr_complete(struct hc_slot *s);
 static volatile uint32_t hc_waiting;            /* slots whose waiters sleep (hc_lock) */
 static uint32_t hc_done;                        /* slots the poller has seen done, not yet collected (hc_lock) */
 static bool hc_poller_asleep;
@@ -1409,18 +1442,52 @@ hc_unstick(struct hc_slot *s)
 	}
 	hc_unstuck++;
 	if (hc_unstuck <= 8 || (hc_unstuck & (hc_unstuck - 1)) == 0) {
-		hc_say("ufs: native: slot %u: done (OCS %x, response %02x status %02x, IS %08x, UTRLCNR %08x) but its doorbell bit "
-		    "stayed: cleared with UTRLCLR and taken as done (%llu so far)\n", s->number, ocs, r[0], r[7],
+		hc_say("ufs: native: slot %u: SAFETY NET: done (OCS %x, response %02x status %02x, IS %08x, UTRLCNR %08x) but its "
+		    "doorbell bit stayed: cleared with UTRLCLR and taken as done (%llu so far)\n", s->number, ocs, r[0], r[7],
 		    hc_read(UFSHC_IS), hc_read(UFSHC_UTRLCNR), hc_unstuck);
 	}
 	return true;
+}
+
+/*
+ * The slot's UTRLCNR bit is set: its request is done. IS acknowledged ([BSP]'s order: IS, then the
+ * doorbell), the bit cleared; the doorbell bit must then drop by itself. If it does not within
+ * HC_CNR_DROP_US, the safety net (hc_unstick: OCS and response checked first). true: the slot is
+ * done and its doorbell bit clear. hc_lock held.
+ */
+static bool
+hc_cnr_complete(struct hc_slot *s)
+{
+	uint32_t bit = 1u << s->number;
+	uint64_t t = mach_absolute_time(), us;
+
+	hc_write(UFSHC_IS, IS_UTRCS);
+	hc_write(UFSHC_UTRLCNR, bit);
+	while ((hc_read(UFSHC_UTRLDBR) & bit) && hc_us_since(t) < HC_CNR_DROP_US) {
+		__builtin_arm_yield();
+	}
+	us = hc_us_since(t);
+	hc_cnr_seen++;
+	if ((hc_read(UFSHC_UTRLDBR) & bit) == 0) {
+		hc_cnr_dropped++;
+		if (us > hc_cnr_drop_max_us) {
+			hc_cnr_drop_max_us = us;
+		}
+		if (hc_cnr_dropped == 1) {
+			hc_cnr_db_first = us;
+			hc_say("ufs: native: slot %u: done by UTRLCNR; IS acknowledged and the bit cleared, the doorbell bit dropped "
+			    "in %llu us (the first)\n", s->number, us);
+		}
+		return true;
+	}
+	return hc_unstick(s);
 }
 
 static void
 hc_poller(__unused void *arg, __unused wait_result_t wr)
 {
 	for (;;) {
-		uint32_t waiting, db, done;
+		uint32_t waiting, db, done, cnr;
 
 		lck_mtx_lock(&hc_lock);
 		while (hc_waiting == 0) {
@@ -1431,12 +1498,14 @@ hc_poller(__unused void *arg, __unused wait_result_t wr)
 		waiting = hc_waiting;
 		lck_mtx_unlock(&hc_lock);
 		hc_poller_rounds++;
-		/* until one of them is done, or another waiter comes */
-		while (((db = hc_read(UFSHC_UTRLDBR)) & waiting) == waiting && hc_waiting == waiting) {
+		/* until one of them is done (its doorbell bit clear, or its UTRLCNR bit set), or another waiter comes */
+		cnr = 0;
+		while (((db = hc_read(UFSHC_UTRLDBR)) & waiting) == waiting && hc_waiting == waiting &&
+		    (!hc_cnr_on() || (cnr = hc_read(UFSHC_UTRLCNR) & waiting) == 0)) {
 			hc_poller_polls++;
 			__builtin_arm_yield();
 		}
-		done = waiting & ~db;
+		done = waiting & (~db | cnr);
 		if (done != 0) {
 			lck_mtx_lock(&hc_lock);
 			done &= hc_waiting;     /* (a waiter that took its slot as done itself, hc_unstick, or gave up, waits no more) */
@@ -1451,18 +1520,26 @@ hc_poller(__unused void *arg, __unused wait_result_t wr)
 }
 
 /*
- * Until the controller is done with the slot's command: its doorbell bit clear, and (ShengUfs)
- * its descriptor's OCS written back -- a cleared bit alone is not taken for a completion.
+ * Until the controller is done with the slot's command: its doorbell bit clear (in own mode, its
+ * UTRLCNR bit set first, then the doorbell bit dropping once that is cleared), and (ShengUfs) its
+ * descriptor's OCS written back -- a cleared bit alone is not taken for a completion.
  */
 static int
 hc_wait(struct hc_slot *s, const char *what, bool count)
 {
 	uint64_t started = mach_absolute_time(), us, polls = 1;
 	uint32_t bit = 1u << s->number, ocs;
+	bool cnr = false;
 
-	while ((hc_read(UFSHC_UTRLDBR) & bit) && hc_us_since(started) < hc_spin_us) {
+	while ((hc_read(UFSHC_UTRLDBR) & bit) && !(cnr = hc_cnr_on() && (hc_read(UFSHC_UTRLCNR) & bit)) &&
+	    hc_us_since(started) < hc_spin_us) {
 		polls++;
 		__builtin_arm_yield();
+	}
+	if (cnr && (hc_read(UFSHC_UTRLDBR) & bit)) {
+		lck_mtx_lock(&hc_lock);
+		(void)hc_cnr_complete(s);       /* (false: the sleep below, its tick and its 10 s, as for any slot) */
+		lck_mtx_unlock(&hc_lock);
 	}
 	if (hc_read(UFSHC_UTRLDBR) & bit) {
 		struct timespec second = { 0, 100 * 1000 * 1000 };      /* (a tick: a done slot whose bit stays, hc_unstick) */
@@ -1473,7 +1550,18 @@ hc_wait(struct hc_slot *s, const char *what, bool count)
 		if (hc_poller_asleep) {
 			wakeup((void *)&hc_waiting);
 		}
-		while ((hc_done & bit) == 0) {
+		for (;;) {
+			if (hc_done & bit) {
+				/* the poller saw it done: its doorbell bit clear, or its UTRLCNR bit set */
+				if ((hc_read(UFSHC_UTRLDBR) & bit) == 0 || (hc_cnr_on() && hc_cnr_complete(s))) {
+					break;
+				}
+				hc_done &= ~bit;        /* its doorbell bit stays: waited for again (the tick, the 10 s) */
+				hc_waiting |= bit;
+				if (hc_poller_asleep) {
+					wakeup((void *)&hc_waiting);
+				}
+			}
 			/*
 			 * The path went off while this one waited (another slot of the same read timed out):
 			 * do not wait out a fresh 10 s per slot (31 slots would hold the read for 310 s).
@@ -2497,6 +2585,10 @@ hc_report(const char *when, bool late)
 		    hc_flight_hist[2], hc_flight_hist[3], hc_flight_hist[4], hc_flight_hist[5]);
 		(late ? hc_say_late : hc_say)("ufs: native: %s: waiters spin %u us, then sleep: %llu slept; the poller %llu "
 		    "rounds, %llu doorbell reads\n", when, hc_spin_us, hc_sleeps, hc_poller_rounds, hc_poller_polls);
+		(late ? hc_say_late : hc_say)("ufs: native: %s: completion: UTRLCNR %s; %llu done by it, the doorbell bit "
+		    "dropping by itself in %llu (the first in %llu us, the slowest %llu us); safety net (UTRLCLR) %llu\n", when,
+		    hc_cnr_broken ? "NOT USED (a bit did not clear)" : hc_cnr_on() ? "used" : "not used", hc_cnr_seen,
+		    hc_cnr_dropped, hc_cnr_db_first, hc_cnr_drop_max_us, hc_unstuck);
 	}
 }
 
@@ -3597,8 +3689,15 @@ hc_own_give_back(void)
 			if (hc_soc->nexus != NULL) {
 				hc_soc->nexus(SLOT_CONTROL, true);
 			}
+			if (hc_cnr_on()) {
+				hc_write(UFSHC_UTRLCNR, 1u << SLOT_CONTROL);
+			}
 			hc_write(UFSHC_UTRLDBR, 1u << SLOT_CONTROL);
 			for (t = mach_absolute_time(); (hc_read(UFSHC_UTRLDBR) & 1) && hc_us_since(t) < 2000000;) {
+				if (hc_cnr_on() && (hc_read(UFSHC_UTRLCNR) & (1u << SLOT_CONTROL))) {
+					hc_write(UFSHC_IS, IS_UTRCS);   /* done: acknowledged and cleared, as hc_cnr_complete */
+					hc_write(UFSHC_UTRLCNR, 1u << SLOT_CONTROL);
+				}
 				__builtin_arm_yield();
 			}
 			FlushPoC_DcacheRegion((vm_offset_t)s->utrd, 32);
