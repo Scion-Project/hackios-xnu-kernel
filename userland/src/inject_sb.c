@@ -49,6 +49,7 @@
 #include <notify.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
+#include <os/lock.h>
 #include <stdarg.h>
 #include <sys/stat.h>
 #include <stdbool.h>
@@ -1642,11 +1643,15 @@ cc_set_level(id self, SEL selector, float level)
 	original_cc_set_level(self, selector, level);
 }
 
+static void brightness_unlock(id controller, const char *where);
+
+/* (asked when the slider is made and whenever it is updated: the moment to make it operative again too) */
 static float
 cc_level(id self, SEL selector)
 {
 	float user = brightness_user;
 
+	brightness_unlock(self, "_backlightLevel");
 	return user >= 0.0f ? user : original_cc_level(self, selector);
 }
 
@@ -1714,13 +1719,17 @@ bks_set(float level, long unknown)
 /*
  * Replace -[CLASS SELECTOR] whatever its address, when its types are `types` (the return type and those of the
  * arguments after self and _cmd, as the runtime writes them: "vf" for -(void)x:(float)). Returns the original, or
- * NULL (and says so once) when the class or the method is not there or is not of that kind.
+ * NULL (and says so once) when the class or the method is not there or is not of that kind. With `own`, a method the
+ * class only inherits (UIView's, UIControl's) is not replaced where it is defined but added to this class alone,
+ * the original being the inherited one: so only this class's objects come through the hook.
  */
 static IMP
-brightness_hook(const char *class_name, const char *selector, const char *types, IMP replacement)
+brightness_hook_in(const char *class_name, const char *selector, const char *types, IMP replacement, bool own)
 {
 	Class cls = objc_getClass(class_name);
-	Method method = cls == Nil ? NULL : class_getInstanceMethod(cls, sel_registerName(selector));
+	SEL sel = sel_registerName(selector);
+	Method method = cls == Nil ? NULL : class_getInstanceMethod(cls, sel);
+	Class super_class = cls == Nil ? Nil : class_getSuperclass(cls);
 	char kind[32];
 	unsigned n;
 
@@ -1732,7 +1741,8 @@ brightness_hook(const char *class_name, const char *selector, const char *types,
 	method_getReturnType(method, kind, sizeof(kind));
 	n = method_getNumberOfArguments(method);
 	if (kind[0] != types[0] || n != strlen(types) + 1) {
-		say("hakios: brightness: -[%s %s] is not of the kind expected; not hooked\n", class_name, selector);
+		say("hakios: brightness: -[%s %s] is not of the kind expected ('%s', %u arguments); not hooked\n", class_name,
+		    selector, kind, n);
 		return NULL;
 	}
 	for (unsigned i = 2; i < n; i++) {
@@ -1743,29 +1753,534 @@ brightness_hook(const char *class_name, const char *selector, const char *types,
 			return NULL;
 		}
 	}
+	if (own && super_class != Nil && class_getInstanceMethod(super_class, sel) == method) {
+		IMP inherited = method_getImplementation(method);
+
+		return class_addMethod(cls, sel, replacement, method_getTypeEncoding(method)) ? inherited : NULL;
+	}
 	return method_setImplementation(method, replacement);
+}
+
+static IMP
+brightness_hook(const char *class_name, const char *selector, const char *types, IMP replacement)
+{
+	return brightness_hook_in(class_name, selector, types, replacement, false);
+}
+
+/*
+ * iOS 16.5's Control Center slider, and why it did not move. Public class dumps of DisplayModule (iOS 17 and 18;
+ * the 16 ones are not public, but 14 has the same view controller without the first three of these) show:
+ *   -_updateBrightnessControlAvailability   [sliderView setInoperative:![self _canAdjustBrightness]], from
+ *                                           -viewWillAppear: and whenever CoreBrightness says something changed
+ *   -_canAdjustBrightness                   one call into BackBoardServices (backboardd: is the brightness
+ *                                           controllable?), which here has nothing to control
+ *   -_sliderEditingDidBegin:                 BKSDisplayBrightnessTransactionCreate()
+ *   -_sliderPresentationValueDidChange:      (16+; 14's -_sliderValueDidChange:) -> -_setBacklightLevel: ONLY while
+ *                                           that transaction is not NULL
+ * An inoperative CCUIContinuousSliderView is drawn dimmed and does not follow the finger: the slider "doesn't go up
+ * or down", and -_setBacklightLevel: is never called. So:
+ *   - _canAdjustBrightness answers YES (what it would have said is logged once, with the function it calls);
+ *   - after _updateBrightnessControlAvailability, -viewWillAppear: and _backlightLevel the slider is made operative
+ *     (and enabled) again, and -[CCUIContinuousSliderView setInoperative:YES] is refused for the brightness slider
+ *     (the one the module holds, or the one named "cc-brightness-slider");
+ *   - the slider's value is read straight from it in each of the module's slider actions and in the slider's own
+ *     -sendAction:to:forEvent:, so a level is taken even when the transaction is NULL and _setBacklightLevel: is
+ *     never reached.
+ * Each candidate's first call is logged ("hakios: brightness: ... first call ..."), and so are the CoreBrightness
+ * properties SpringBoard asks for and registers for, so that one run on the phone shows the path 16.5 takes.
+ */
+static void *brightness_slider;                         /* the module's CCUIContinuousSliderView (compared only) */
+static void (*original_slider_set_inoperative)(id self, SEL selector, BOOL inoperative);
+static void (*original_slider_set_enabled)(id self, SEL selector, BOOL enabled);
+
+/* the first call of something, said once; `flag` is that something's own */
+#define BRIGHTNESS_FIRST(flag, ...) do { static bool flag; if (!flag) { flag = true; say(__VA_ARGS__); } } while (0)
+
+static bool
+brightness_responds(id object, const char *selector)
+{
+	return object != nil && class_respondsToSelector(object_getClass(object), sel_registerName(selector));
+}
+
+/* a float or double getter with no argument */
+static bool
+brightness_get_float(id object, const char *getter, float *value)
+{
+	SEL sel = sel_registerName(getter);
+	Method method = object == nil ? NULL : class_getInstanceMethod(object_getClass(object), sel);
+	char kind[8];
+
+	if (method == NULL || method_getNumberOfArguments(method) != 2) {
+		return false;
+	}
+	method_getReturnType(method, kind, sizeof(kind));
+	if (kind[0] == 'f') {
+		*value = ((float (*)(id, SEL))objc_msgSend)(object, sel);
+	} else if (kind[0] == 'd') {
+		*value = (float)((double (*)(id, SEL))objc_msgSend)(object, sel);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+static bool
+brightness_get_bool(id object, const char *getter, const char *other, BOOL *value)
+{
+	const char *name = brightness_responds(object, getter) ? getter : brightness_responds(object, other) ? other : NULL;
+
+	if (name == NULL) {
+		return false;
+	}
+	*value = SEND(BOOL, object, name);
+	return true;
+}
+
+static bool
+is_brightness_slider(id slider)
+{
+	id name;
+
+	if (slider == nil) {
+		return false;
+	}
+	if ((void *)slider == brightness_slider) {
+		return true;
+	}
+	name = brightness_responds(slider, "accessibilityIdentifier") ? SEND(id, slider, "accessibilityIdentifier") : nil;
+	return name != nil && CFGetTypeID((CFTypeRef)name) == CFStringGetTypeID() &&
+	       CFStringCompare((CFStringRef)name, CFSTR("cc-brightness-slider"), 0) == kCFCompareEqualTo;
+}
+
+/* the module's slider, noted */
+static id
+brightness_slider_of(id controller)
+{
+	id slider = brightness_responds(controller, "sliderView") ? SEND(id, controller, "sliderView") : nil;
+
+	if (slider != nil) {
+		brightness_slider = (void *)slider;
+	}
+	return slider;
+}
+
+/* the module's slider made operative and enabled again, if it is not; said the first time each is needed */
+static void
+brightness_unlock(id controller, const char *where)
+{
+	id slider = brightness_slider_of(controller);
+	BOOL state;
+
+	if (slider == nil) {
+		return;
+	}
+	if (brightness_get_bool(slider, "isInoperative", "inoperative", &state) && state) {
+		if (original_slider_set_inoperative != NULL) {
+			original_slider_set_inoperative(slider, sel_registerName("setInoperative:"), NO);
+		} else {
+			SEND1(void, slider, "setInoperative:", BOOL, NO);
+		}
+		BRIGHTNESS_FIRST(said_unlock, "hakios: brightness: the slider was inoperative (CoreBrightness: no brightness "
+		    "control); made operative, after %s\n", where);
+	}
+	if (brightness_get_bool(slider, "isEnabled", "enabled", &state) && !state) {
+		SEND1(void, slider, "setEnabled:", BOOL, YES);
+		BRIGHTNESS_FIRST(said_enable, "hakios: brightness: the slider was disabled; enabled, after %s\n", where);
+	}
+}
+
+/* the slider's value now (presentationValue: what is drawn while it is dragged; else value), to the panel */
+static void
+brightness_from_slider(id slider, const char *source, bool *said)
+{
+	float value;
+
+	if (slider != nil && (brightness_get_float(slider, "presentationValue", &value) ||
+	    brightness_get_float(slider, "value", &value))) {
+		brightness_from_hook(value, source, said);
+	}
+}
+
+/* Where the code at `imp` goes first: its first branch, through a stub if it is one, named by dladdr. */
+static const char *
+brightness_callee(IMP imp)
+{
+	const uint32_t *code = (const uint32_t *)(uintptr_t)imp;
+	uintptr_t target = 0, x16 = 0;
+	Dl_info info;
+
+	for (int i = 0; i < 12 && code != NULL && target == 0; i++) {
+		uint32_t insn = code[i];
+
+		if ((insn & 0x7C000000u) == 0x14000000u) {              /* B / BL imm26 */
+			int64_t offset = (int64_t)(int32_t)((insn & 0x03FFFFFFu) << 6) >> 4;   /* imm26 * 4, signed */
+
+			target = (uintptr_t)&code[i] + (uintptr_t)offset;
+		} else if ((insn & 0xFFFFFC1Fu) == 0xD61F0000u || (insn & 0xFFFFF800u) == 0xD71F0800u ||
+		    (insn & 0xFFFFFBE0u) == 0xD61F0BE0u) {
+			return "(an indirect branch first)";             /* BR / BRAA / BRAAZ: not followed */
+		}
+	}
+	/* a stub: ADRP x16; ADD x16, x16, #imm or LDR x16, [x16, #imm]; BR x16 */
+	for (int hops = 0; hops < 2 && target != 0; hops++) {
+		const uint32_t *stub = (const uint32_t *)target;
+		uint32_t adrp = stub[0], next = stub[1];
+
+		if ((adrp & 0x9F00001Fu) != 0x90000010u) {
+			break;
+		}
+		int64_t page = (int64_t)(int32_t)((((adrp >> 29) & 3u) | (((adrp >> 5) & 0x7FFFFu) << 2)) << 11) >> 11;
+
+		x16 = (target & ~(uintptr_t)0xFFF) + (uintptr_t)(page << 12);
+		if ((next & 0xFFC003FFu) == 0x91000210u) {                     /* ADD x16, x16, #imm12 */
+			target = x16 + ((next >> 10) & 0xFFFu);
+		} else if ((next & 0xFFC003FFu) == 0xF9400210u) {              /* LDR x16, [x16, #imm12 * 8] */
+			target = *(const uintptr_t *)(x16 + ((next >> 10) & 0xFFFu) * 8) & 0x0000007FFFFFFFFFULL;
+		} else {
+			break;
+		}
+	}
+	if (target != 0 && dladdr((const void *)target, &info) && info.dli_sname != NULL) {
+		return info.dli_sname;
+	}
+	return target != 0 ? "(a function with no name)" : "(no branch in its first instructions)";
+}
+
+/* -[CCUIDisplayModuleViewController _canAdjustBrightness]: YES */
+static BOOL (*original_cc_can_adjust)(id self, SEL selector);
+
+static BOOL
+cc_can_adjust(id self, SEL selector)
+{
+	static bool said;
+
+	if (!said) {
+		said = true;
+		say("hakios: brightness: -[CCUIDisplayModuleViewController _canAdjustBrightness] first call: it would say %s "
+		    "(it calls %s); YES is answered\n", original_cc_can_adjust(self, selector) ? "YES" : "NO",
+		    brightness_callee((IMP)original_cc_can_adjust));
+	}
+	return YES;
+}
+
+/* -_updateBrightnessControlAvailability, -_updateBrightnessControlInteractionEnabled, -viewWillAppear: */
+static void (*original_cc_update_availability)(id self, SEL selector);
+static void (*original_cc_update_interaction)(id self, SEL selector);
+static void (*original_cc_will_appear)(id self, SEL selector, BOOL animated);
+
+static void
+cc_update_availability(id self, SEL selector)
+{
+	BOOL inoperative = NO;
+
+	brightness_slider_of(self);
+	original_cc_update_availability(self, selector);
+	(void)brightness_get_bool(brightness_slider_of(self), "isInoperative", "inoperative", &inoperative);
+	BRIGHTNESS_FIRST(said, "hakios: brightness: -[CCUIDisplayModuleViewController _updateBrightnessControlAvailability] "
+	    "first call (the slider %s after it)\n", inoperative ? "inoperative" : "operative");
+	brightness_unlock(self, "_updateBrightnessControlAvailability");
+}
+
+static void
+cc_update_interaction(id self, SEL selector)
+{
+	id slider;
+	BOOL interactive = NO;
+
+	original_cc_update_interaction(self, selector);
+	slider = brightness_slider_of(self);
+	interactive = slider != nil && SEND(BOOL, slider, "isUserInteractionEnabled");
+	BRIGHTNESS_FIRST(said, "hakios: brightness: -[CCUIDisplayModuleViewController "
+	    "_updateBrightnessControlInteractionEnabled] first call: the slider takes touches: %s\n", interactive ? "yes" :
+	    "no");
+}
+
+static void
+cc_will_appear(id self, SEL selector, BOOL animated)
+{
+	original_cc_will_appear(self, selector, animated);
+	BRIGHTNESS_FIRST(said, "hakios: brightness: Control Center's display module appears (first time)\n");
+	brightness_unlock(self, "viewWillAppear:");
+}
+
+/* the module's slider actions: 14's _sliderValueDidChange:, 16+'s _sliderPresentationValueDidChange:, editing */
+static void (*original_cc_value_changed)(id self, SEL selector, id slider);
+static void (*original_cc_presentation_changed)(id self, SEL selector, id slider);
+static void (*original_cc_editing_began)(id self, SEL selector, id slider);
+static void (*original_cc_editing_ended)(id self, SEL selector, id slider);
+static bool said_cc_value, said_cc_presentation, said_cc_began, said_cc_ended;
+
+static void
+cc_value_changed(id self, SEL selector, id slider)
+{
+	brightness_from_slider(slider, "-[CCUIDisplayModuleViewController _sliderValueDidChange:]", &said_cc_value);
+	original_cc_value_changed(self, selector, slider);
+}
+
+static void
+cc_presentation_changed(id self, SEL selector, id slider)
+{
+	brightness_from_slider(slider, "-[CCUIDisplayModuleViewController _sliderPresentationValueDidChange:]",
+	    &said_cc_presentation);
+	original_cc_presentation_changed(self, selector, slider);
+}
+
+static void
+cc_editing_began(id self, SEL selector, id slider)
+{
+	original_cc_editing_began(self, selector, slider);
+	brightness_from_slider(slider, "-[CCUIDisplayModuleViewController _sliderEditingDidBegin:]", &said_cc_began);
+}
+
+static void
+cc_editing_ended(id self, SEL selector, id slider)
+{
+	brightness_from_slider(slider, "-[CCUIDisplayModuleViewController _sliderEditingDidEnd:]", &said_cc_ended);
+	original_cc_editing_ended(self, selector, slider);
+}
+
+/* CCUIContinuousSliderView: setInoperative:YES refused for the brightness slider; setEnabled:NO likewise */
+static void
+slider_set_inoperative(id self, SEL selector, BOOL inoperative)
+{
+	if (inoperative && is_brightness_slider(self)) {
+		BRIGHTNESS_FIRST(said, "hakios: brightness: -[CCUIContinuousSliderView setInoperative:YES] for the "
+		    "brightness slider (first call): refused, it stays operative\n");
+		inoperative = NO;
+	}
+	original_slider_set_inoperative(self, selector, inoperative);
+}
+
+static void
+slider_set_enabled(id self, SEL selector, BOOL enabled)
+{
+	if (!enabled && is_brightness_slider(self)) {
+		BRIGHTNESS_FIRST(said, "hakios: brightness: -[CCUIContinuousSliderView setEnabled:NO] for the brightness "
+		    "slider (first call): refused\n");
+		enabled = YES;
+	}
+	original_slider_set_enabled(self, selector, enabled);
+}
+
+/* setUserInteractionEnabled: logged only (the module turns touches off while it is hidden, as it should) */
+static void (*original_slider_set_interaction)(id self, SEL selector, BOOL enabled);
+
+static void
+slider_set_interaction(id self, SEL selector, BOOL enabled)
+{
+	if (!enabled && is_brightness_slider(self)) {
+		BRIGHTNESS_FIRST(said, "hakios: brightness: -[CCUIContinuousSliderView setUserInteractionEnabled:NO] for "
+		    "the brightness slider (first call; left as it is)\n");
+	}
+	original_slider_set_interaction(self, selector, enabled);
+}
+
+/* every action the brightness slider sends (UIControl -sendAction:to:forEvent:): the first few named, the value taken */
+static void (*original_slider_send_action)(id self, SEL selector, SEL action, id target, id event);
+static bool said_slider_action;
+
+static void
+slider_send_action(id self, SEL selector, SEL action, id target, id event)
+{
+	static SEL said[8];
+	static unsigned n_said;
+
+	if (is_brightness_slider(self)) {
+		unsigned i;
+
+		for (i = 0; i < n_said && said[i] != action; i++) {
+		}
+		if (i == n_said && n_said < sizeof(said) / sizeof(said[0])) {
+			float value = -1;
+
+			said[n_said++] = action;
+			(void)brightness_get_float(self, "value", &value);
+			say("hakios: brightness: the slider sends -[%s %s] (first time; value %.3f)\n",
+			    target ? object_getClassName(target) : "(responder chain)", action ? sel_getName(action) : "?",
+			    value);
+		}
+		brightness_from_slider(self, "-[CCUIContinuousSliderView sendAction:to:forEvent:]", &said_slider_action);
+	}
+	original_slider_send_action(self, selector, action, target, event);
+}
+
+/* -setValue:animated: of the slider, float or double: who sets it back, and to what (the first few, logged) */
+static void (*original_slider_set_value_f)(id self, SEL selector, float value, BOOL animated);
+static void (*original_slider_set_value_d)(id self, SEL selector, double value, BOOL animated);
+static unsigned said_set_value;
+
+static void
+slider_set_value_f(id self, SEL selector, float value, BOOL animated)
+{
+	if (said_set_value < 4 && is_brightness_slider(self)) {
+		say("hakios: brightness: the slider set to %.3f (setValue:animated:, %u of the first 4)\n", value,
+		    ++said_set_value);
+	}
+	original_slider_set_value_f(self, selector, value, animated);
+}
+
+static void
+slider_set_value_d(id self, SEL selector, double value, BOOL animated)
+{
+	if (said_set_value < 4 && is_brightness_slider(self)) {
+		say("hakios: brightness: the slider set to %.3f (setValue:animated:, %u of the first 4)\n", value,
+		    ++said_set_value);
+	}
+	original_slider_set_value_d(self, selector, value, animated);
+}
+
+/* CoreBrightness, what SpringBoard asks of it: each property the first time, with its answer, and what it watches */
+static id (*original_bsc_copy_property)(id self, SEL selector, id key);
+static void (*original_bsc_register)(id self, SEL selector, id block, id properties);
+
+static id
+bsc_copy_property(id self, SEL selector, id key)
+{
+	static CFStringRef said[24];
+	static unsigned n_said;
+	static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+	id result = original_bsc_copy_property(self, selector, key);
+	bool first = false;
+
+	if (key != nil && CFGetTypeID((CFTypeRef)key) == CFStringGetTypeID()) {
+		os_unfair_lock_lock(&lock);
+		unsigned i;
+
+		for (i = 0; i < n_said && !CFEqual(said[i], (CFStringRef)key); i++) {
+		}
+		if (i == n_said && n_said < sizeof(said) / sizeof(said[0])) {
+			said[n_said++] = CFStringCreateCopy(NULL, (CFStringRef)key);
+			first = true;
+		}
+		os_unfair_lock_unlock(&lock);
+	}
+	if (first) {
+		char text[160];
+
+		strlcpy(text, text_of(result), sizeof(text));
+		for (char *c = text; *c != 0; c++) {
+			*c = *c == '\n' ? ' ' : *c;
+		}
+		say("hakios: brightness: CoreBrightness asked for %s (first time): %s\n", text_of(key), text);
+	}
+	return result;
+}
+
+static void
+bsc_register(id self, SEL selector, id block, id properties)
+{
+	static unsigned said;
+
+	if (said++ < 4) {
+		char text[300];
+
+		strlcpy(text, text_of(properties), sizeof(text));
+		for (char *c = text; *c != 0; c++) {
+			*c = *c == '\n' ? ' ' : *c;
+		}
+		say("hakios: brightness: CoreBrightness: notifications asked for %s\n", text);
+	}
+	original_bsc_register(self, selector, block, properties);
+}
+
+/* which of the names backboardd's "can the brightness be set" might have BackBoardServices exports (presence only) */
+static void
+brightness_say_bks_names(void)
+{
+	static const char *const names[] = {
+		"BKSDisplayBrightnessIsBrightnessLevelControlAvailable", "BKSDisplayBrightnessIsBrightnessControlAvailable",
+		"BKSDisplayBrightnessIsAvailable", "BKSDisplayBrightnessControlAvailable",
+		"BKSDisplayBrightnessGetIsBrightnessControlAvailable", "BKSDisplayBrightnessTransactionCreate",
+		"BKSDisplayBrightnessSetAutoBrightnessEnabled", "BKSDisplayBrightnessRestoreSystemBrightness",
+	};
+	char line[600];
+	size_t n = 0;
+
+	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]) && n < sizeof(line); i++) {
+		n += (size_t)snprintf(line + n, sizeof(line) - n, "%s%s %s", i ? ", " : "", names[i],
+		    dlsym(RTLD_DEFAULT, names[i]) ? "yes" : "no");
+	}
+	say("hakios: brightness: BackBoardServices exports: %s\n", line);
 }
 
 static void
 brightness_hook_control_center(void)
 {
 	static bool done;
-	IMP set;
+	static const char *const slider_classes[] = { "CCUIContinuousSliderView", "CCUIModuleSliderView" };
+	const char *slider_class = NULL;
+	IMP original;
 
 	if (done || objc_getClass("CCUIDisplayModuleViewController") == Nil) {
 		return;
 	}
 	done = true;
-	if ((set = brightness_hook("CCUIDisplayModuleViewController", "_setBacklightLevel:", "vf", (IMP)cc_set_level))) {
-		original_cc_set_level = (void (*)(id, SEL, float))set;
-		original_cc_level = (float (*)(id, SEL))brightness_hook("CCUIDisplayModuleViewController", "_backlightLevel",
-		    "f", (IMP)cc_level);
-		original_cc_current = (float (*)(id, SEL))brightness_hook("CCUIDisplayModuleViewController",
-		    "currentBrightness", "f", (IMP)cc_current);
-		say("hakios: brightness: Control Center's slider hooked "
-		    "(-[CCUIDisplayModuleViewController _setBacklightLevel:]%s%s)\n",
-		    original_cc_level ? ", _backlightLevel" : "", original_cc_current ? ", currentBrightness" : "");
+	/* the slider's own class first, so the module's hooks below can use the original setters */
+	for (size_t i = 0; i < sizeof(slider_classes) / sizeof(slider_classes[0]) && slider_class == NULL; i++) {
+		slider_class = objc_getClass(slider_classes[i]) != Nil ? slider_classes[i] : NULL;
 	}
+	if (slider_class != NULL) {
+		Method set_value = class_getInstanceMethod(objc_getClass(slider_class), sel_registerName("setValue:animated:"));
+		char kind[8] = "";
+
+		original_slider_set_inoperative = (void (*)(id, SEL, BOOL))brightness_hook(slider_class, "setInoperative:",
+		    "vB", (IMP)slider_set_inoperative);
+		original_slider_set_enabled = (void (*)(id, SEL, BOOL))brightness_hook_in(slider_class, "setEnabled:", "vB",
+		    (IMP)slider_set_enabled, true);
+		original_slider_set_interaction = (void (*)(id, SEL, BOOL))brightness_hook_in(slider_class,
+		    "setUserInteractionEnabled:", "vB", (IMP)slider_set_interaction, true);
+		original_slider_send_action = (void (*)(id, SEL, SEL, id, id))brightness_hook_in(slider_class,
+		    "sendAction:to:forEvent:", "v:@@", (IMP)slider_send_action, true);
+		if (set_value != NULL) {
+			method_getArgumentType(set_value, 2, kind, sizeof(kind));
+		}
+		if (kind[0] == 'd') {
+			original_slider_set_value_d = (void (*)(id, SEL, double, BOOL))brightness_hook_in(slider_class,
+			    "setValue:animated:", "vdB", (IMP)slider_set_value_d, true);
+		} else {
+			original_slider_set_value_f = (void (*)(id, SEL, float, BOOL))brightness_hook_in(slider_class,
+			    "setValue:animated:", "vfB", (IMP)slider_set_value_f, true);
+		}
+	} else {
+		say("hakios: brightness: neither CCUIContinuousSliderView nor CCUIModuleSliderView is here: the slider's "
+		    "own hooks left out\n");
+	}
+
+	if ((original = brightness_hook("CCUIDisplayModuleViewController", "_setBacklightLevel:", "vf", (IMP)cc_set_level))) {
+		original_cc_set_level = (void (*)(id, SEL, float))original;
+	}
+	original_cc_level = (float (*)(id, SEL))brightness_hook("CCUIDisplayModuleViewController", "_backlightLevel", "f",
+	    (IMP)cc_level);
+	original_cc_current = (float (*)(id, SEL))brightness_hook("CCUIDisplayModuleViewController", "currentBrightness",
+	    "f", (IMP)cc_current);
+	original_cc_can_adjust = (BOOL (*)(id, SEL))brightness_hook("CCUIDisplayModuleViewController",
+	    "_canAdjustBrightness", "B", (IMP)cc_can_adjust);
+	original_cc_update_availability = (void (*)(id, SEL))brightness_hook("CCUIDisplayModuleViewController",
+	    "_updateBrightnessControlAvailability", "v", (IMP)cc_update_availability);
+	original_cc_update_interaction = (void (*)(id, SEL))brightness_hook("CCUIDisplayModuleViewController",
+	    "_updateBrightnessControlInteractionEnabled", "v", (IMP)cc_update_interaction);
+	original_cc_will_appear = (void (*)(id, SEL, BOOL))brightness_hook_in("CCUIDisplayModuleViewController",
+	    "viewWillAppear:", "vB", (IMP)cc_will_appear, true);
+	original_cc_value_changed = (void (*)(id, SEL, id))brightness_hook("CCUIDisplayModuleViewController",
+	    "_sliderValueDidChange:", "v@", (IMP)cc_value_changed);
+	original_cc_presentation_changed = (void (*)(id, SEL, id))brightness_hook("CCUIDisplayModuleViewController",
+	    "_sliderPresentationValueDidChange:", "v@", (IMP)cc_presentation_changed);
+	original_cc_editing_began = (void (*)(id, SEL, id))brightness_hook("CCUIDisplayModuleViewController",
+	    "_sliderEditingDidBegin:", "v@", (IMP)cc_editing_began);
+	original_cc_editing_ended = (void (*)(id, SEL, id))brightness_hook("CCUIDisplayModuleViewController",
+	    "_sliderEditingDidEnd:", "v@", (IMP)cc_editing_ended);
+	say("hakios: brightness: Control Center's slider hooked: _setBacklightLevel: %s, _backlightLevel %s, "
+	    "currentBrightness %s, _canAdjustBrightness %s, _updateBrightnessControlAvailability %s, viewWillAppear: %s, "
+	    "_sliderValueDidChange: %s, _sliderPresentationValueDidChange: %s, editing began/ended %s/%s; %s: "
+	    "setInoperative: %s, setEnabled: %s, sendAction:to:forEvent: %s, setValue:animated: %s\n",
+	    original_cc_set_level ? "yes" : "no", original_cc_level ? "yes" : "no", original_cc_current ? "yes" : "no",
+	    original_cc_can_adjust ? "yes" : "no", original_cc_update_availability ? "yes" : "no",
+	    original_cc_will_appear ? "yes" : "no", original_cc_value_changed ? "yes" : "no",
+	    original_cc_presentation_changed ? "yes" : "no", original_cc_editing_began ? "yes" : "no",
+	    original_cc_editing_ended ? "yes" : "no", slider_class ? slider_class : "no slider class",
+	    original_slider_set_inoperative ? "yes" : "no", original_slider_set_enabled ? "yes" : "no",
+	    original_slider_send_action ? "yes" : "no",
+	    (original_slider_set_value_f || original_slider_set_value_d) ? "yes" : "no");
 }
 
 /* in one image outside the shared cache, its imports of BKSDisplayBrightnessSet pointed at bks_set */
@@ -1855,6 +2370,12 @@ brightness_image_added(const struct mach_header *header, intptr_t image_slide)
 		    dladdr(header, &info) && info.dli_fname ? info.dli_fname : "?", rebound);
 	}
 	if (dladdr(header, &info) && info.dli_fname != NULL && strstr(info.dli_fname, "/DisplayModule.bundle/") != NULL) {
+		/*
+		 * At once, here (as image_added() does for Siri's orb): Control Center makes the module's view controller
+		 * right after the bundle loads, in the same turn of the main queue, so hooks put in from the queue
+		 * would miss its first appearance. From the queue as well, in case its classes are not there yet.
+		 */
+		brightness_hook_control_center();
 		dispatch_async(dispatch_get_main_queue(), ^{
 			brightness_hook_control_center();
 		});
@@ -1912,6 +2433,14 @@ brightness_bridge(const char *arguments)
 	}
 	if (bks_brightness_set == NULL) {
 		say("hakios: brightness: BKSDisplayBrightnessSet is not there; not hooked\n");
+	}
+	brightness_say_bks_names();
+	if ((original = brightness_hook("BrightnessSystemClient", "copyPropertyForKey:", "@@", (IMP)bsc_copy_property))) {
+		original_bsc_copy_property = (id (*)(id, SEL, id))original;
+	}
+	if ((original = brightness_hook("BrightnessSystemClient", "registerNotificationBlock:forProperties:", "v@@",
+	    (IMP)bsc_register))) {
+		original_bsc_register = (void (*)(id, SEL, id, id))original;
 	}
 	if (objc_getClass("CCUIDisplayModuleViewController") == Nil) {
 		say("hakios: brightness: Control Center's display module is not loaded yet; hooked when it is\n");
