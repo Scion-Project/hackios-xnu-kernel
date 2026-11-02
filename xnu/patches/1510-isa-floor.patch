@@ -1,0 +1,95 @@
+diff --git a/osfmk/arm/commpage/commpage.c b/osfmk/arm/commpage/commpage.c
+--- a/osfmk/arm/commpage/commpage.c
++++ b/osfmk/arm/commpage/commpage.c
+@@ -36,6 +36,7 @@
+  *	File:		arm/commpage/commpage.c
+  *	Purpose:	Set up and export a RO/RW page
+  */
++#include <pexpert/pexpert.h>
+ #include <libkern/section_keywords.h>
+ #include <mach/mach_types.h>
+ #include <mach/machine.h>
+@@ -363,6 +364,38 @@
+ }
+ 
+ #if defined(__arm64__)
++/*
++ * HakiOS (Galaxy S9, patch 1510): with the Exynos M3s started next to the Cortex-A55s, user space must be told only what every core
++ * has: the M3 is ARMv8.0 (seen on the phone, 2 November: launchd killed with SIGILL on an M3 when it was told the A55's
++ * ARMv8.2 set). Boot-arg isa_floor=1 (also set by m3_prep=3): every 4-bit field of the ID registers below is lowered to
++ * the M3's -- ISAR0 AES+PMULL, SHA1, SHA2 (not 512), CRC32; nothing of ISAR1, MMFR2 or PFR1; PFR0's FP and AdvSIMD
++ * without half precision. (The S9's Linux /proc/cpuinfo: fp asimd evtstrm aes pmull sha1 sha2 crc32.)
++ */
++static int hakios_isa_floor = -1;
++static uint64_t
++hakios_id_floor(uint64_t value, uint64_t floor)
++{
++	if (hakios_isa_floor < 0) {
++		uint32_t on = 0, m3 = 0;
++
++		PE_parse_boot_argn("isa_floor", &on, sizeof(on));
++		PE_parse_boot_argn("m3_prep", &m3, sizeof(m3));
++		hakios_isa_floor = (on != 0 || m3 >= 3) ? 1 : 0;
++		if (hakios_isa_floor) {
++			printf("commpage: isa_floor: user space told the ARMv8.0 set the Exynos M3 has\n");
++		}
++	}
++	if (!hakios_isa_floor) {
++		return value;
++	}
++	uint64_t out = 0;
++	for (int shift = 0; shift < 64; shift += 4) {
++		uint64_t a = (value >> shift) & 0xf, b = (floor >> shift) & 0xf;
++		out |= (a < b ? a : b) << shift;
++	}
++	return out;
++}
++
+ /**
+  * Initializes all commpage entries and sysctls for EL0 visible features in ID_AA64ISAR0_EL1
+  */
+@@ -370,7 +403,7 @@
+ commpage_init_arm_optional_features_isar0(uint64_t *commpage_bits)
+ {
+ 	uint64_t bits = 0;
+-	uint64_t isar0 = __builtin_arm_rsr64("ID_AA64ISAR0_EL1");
++	uint64_t isar0 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64ISAR0_EL1"), 0x0000000000011120ULL);
+ 
+ 	if ((isar0 & ID_AA64ISAR0_EL1_TS_MASK) >= ID_AA64ISAR0_EL1_TS_FLAGM_EN) {
+ 		gARM_FEAT_FlagM = 1;
+@@ -433,7 +466,7 @@
+ commpage_init_arm_optional_features_isar1(uint64_t *commpage_bits)
+ {
+ 	uint64_t bits = 0;
+-	uint64_t isar1 = __builtin_arm_rsr64("ID_AA64ISAR1_EL1");
++	uint64_t isar1 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64ISAR1_EL1"), 0ULL);
+ 	uint64_t sctlr = __builtin_arm_rsr64("SCTLR_EL1");
+ 
+ 	if ((isar1 & ID_AA64ISAR1_EL1_SPECRES_MASK) >= ID_AA64ISAR1_EL1_SPECRES_EN &&
+@@ -520,7 +553,7 @@
+ commpage_init_arm_optional_features_mmfr2(uint64_t *commpage_bits)
+ {
+ 	uint64_t bits = 0;
+-	uint64_t mmfr2 = __builtin_arm_rsr64("ID_AA64MMFR2_EL1");
++	uint64_t mmfr2 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64MMFR2_EL1"), 0ULL);
+ 
+ 	if ((mmfr2 & ID_AA64MMFR2_EL1_AT_MASK) >= ID_AA64MMFR2_EL1_AT_LSE2_EN) {
+ 		gARM_FEAT_LSE2 = 1;
+@@ -537,7 +570,7 @@
+ commpage_init_arm_optional_features_pfr0(uint64_t *commpage_bits)
+ {
+ 	uint64_t bits = 0;
+-	uint64_t pfr0 = __builtin_arm_rsr64("ID_AA64PFR0_EL1");
++	uint64_t pfr0 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64PFR0_EL1"), 0x000000000000ffffULL);
+ 
+ 	if ((pfr0 & ID_AA64PFR0_EL1_CSV3_MASK) >= ID_AA64PFR0_EL1_CSV3_EN) {
+ 		gARM_FEAT_CSV3 = 1;
+@@ -573,7 +606,7 @@
+ static void
+ commpage_init_arm_optional_features_pfr1(uint64_t *commpage_bits __unused)
+ {
+-	uint64_t pfr1 = __builtin_arm_rsr64("ID_AA64PFR1_EL1");
++	uint64_t pfr1 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64PFR1_EL1"), 0ULL);
+ 
+ 	if ((pfr1 & ID_AA64PFR1_EL1_SSBS_MASK) >= ID_AA64PFR1_EL1_SSBS_EN) {
+ 		gARM_FEAT_SSBS = 1;
