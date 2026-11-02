@@ -42,7 +42,8 @@
  *   uptime            seconds since boot
  *   sysctl NAME       a sysctl's value (an integer or a string)
  *   log               the kernel's log again from its start (what the kernel keeps of it: the first 256 KB)
- *   shot [N]          the panel's picture as it is now (the boot framebuffer the display driver scales onto), every
+ *   shot [N]          the panel's picture as it is now (what the display controller scans out: the boot framebuffer,
+ *                     or with fb_dpp=1 / fb_flip=1 the presenter's buffer shown now, hakios_fb_scanned()), every
  *                     Nth pixel of every Nth row (1-16; 4 when not given), as binary on bulk IN, framed:
  *                       "SHOT w h stride rgb888 bytes\n", then the bytes (rows top to bottom, R G B), then "END\n"
  *                     The log is held back meanwhile (what came before the command is sent first, what comes during
@@ -113,6 +114,8 @@ extern void hakios_adsp_stop(void);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern void delay(int usec);
 extern struct vc_info vinfo;            /* the boot framebuffer: the panel's memory, as the display driver draws on it */
+/* the presenter's buffer scanned out now (MiniIOMobileFramebuffer.cpp): 2 fb_dpp, 1 fb_flip, 0 the boot framebuffer */
+extern int hakios_fb_scanned(uintptr_t *base, uint32_t *width, uint32_t *height, uint32_t *rowbytes, unsigned *index);
 void hakios_usb_gadget_quiesce(void);
 
 SYSCTL_DECL(_kern_hakios);
@@ -758,18 +761,37 @@ shot_begin(const char *arg)
 		con("usb: shot failed: one is on its way already\n");
 		return;
 	}
-	if (vinfo.v_baseaddr == 0 || vinfo.v_depth != 32 || vinfo.v_width < n || vinfo.v_height < n) {
+	/*
+	 * With fb_dpp=1 the boot framebuffer is no longer shown (it keeps the boot logo): the buffer VGF0 scans out is the
+	 * presenter's, the display's own size (1125x2436), and the shot is of that; with fb_flip=1 the flip buffer shown.
+	 */
+	uintptr_t base = (uintptr_t)vinfo.v_baseaddr;
+	uint32_t width = vinfo.v_width, height = vinfo.v_height, rowbytes = vinfo.v_rowbytes;
+	unsigned index = 0;
+	int scanned = hakios_fb_scanned(&base, &width, &height, &rowbytes, &index);
+
+	if (scanned == 0 && (vinfo.v_baseaddr == 0 || vinfo.v_depth != 32)) {
 		con("usb: shot failed: no 32-bit panel framebuffer (%ux%u, depth %u)\n", vinfo.v_width, vinfo.v_height, vinfo.v_depth);
 		return;
 	}
+	if (width < n || height < n) {
+		con("usb: shot failed: a picture of %ux%u, smaller than every %uth pixel\n", width, height, n);
+		return;
+	}
 	shot.n = n;
-	shot.w = vinfo.v_width / n;
-	shot.h = vinfo.v_height / n;
-	shot.rowbytes = vinfo.v_rowbytes;
-	shot.base = (uintptr_t)vinfo.v_baseaddr;
+	shot.w = width / n;
+	shot.h = height / n;
+	shot.rowbytes = rowbytes;
+	shot.base = base;
 	shot.sent = 0;
-	con("usb: shot: the panel (%ux%u, %u bytes a row), every %uth pixel: %ux%u RGB, %u bytes, after this line\n",
-	    vinfo.v_width, vinfo.v_height, vinfo.v_rowbytes, n, shot.w, shot.h, shot.w * shot.h * 3);
+	if (scanned != 0) {
+		con("usb: shot: %s buffer %u (%ux%u, %u bytes a row), every %uth pixel: %ux%u RGB, %u bytes, after this line\n",
+		    scanned == 2 ? "fb_dpp: VGF0's" : "fb_flip: the shown", index, width, height, rowbytes, n, shot.w, shot.h,
+		    shot.w * shot.h * 3);
+	} else {
+		con("usb: shot: the panel (%ux%u, %u bytes a row), every %uth pixel: %ux%u RGB, %u bytes, after this line\n",
+		    width, height, rowbytes, n, shot.w, shot.h, shot.w * shot.h * 3);
+	}
 	shot.mark = os_atomic_load(&ring_head, acquire);
 	shot.phase = SHOT_LOG;
 }

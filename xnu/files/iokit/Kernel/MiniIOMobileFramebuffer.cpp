@@ -440,6 +440,8 @@ public:
 	thread_t        fSwapThread;            /* fps_log: the thread the last swap came from, and how the kernel classed it */
 	uint32_t        fSwapClass;
 	SInt32          fFpsVSyncs;
+	uint32_t        fFpsSameSurface, fFpsUndrawn;   /* fps_log: frames from the surface of the frame before; shown with the GPU not done */
+	uint32_t        fLastSurface;
 	uint64_t        fFpsDraw, fFpsDrawMax, fFpsWait, fFpsWaitMax;
 	thread_call_t   fFpsCall;
 
@@ -473,7 +475,11 @@ public:
 	static void fpsFired(thread_call_param_t self, thread_call_param_t unused);
 	void fpsLine(void);
 	void swapSource(void);
+	int scanned(uintptr_t * base, uint32_t * width, uint32_t * height, uint32_t * rowbytes, unsigned * index);
 };
+
+/* the one framebuffer, for the USB console's shot (hakios_fb_scanned) */
+static IOMobileFramebuffer * gScanOwner;
 
 OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
 
@@ -650,6 +656,7 @@ IOMobileFramebuffer::start(IOService * provider)
 	fBootRowBytes = fRowBytes;
 	fScanFront = fScanPending = fScanTarget = NO_BUFFER;
 	scanSetup();
+	gScanOwner = this;
 	if (gTimerCoalescing == 0 && mach_timer_coalescing_enabled) {
 		mach_timer_coalescing_enabled = FALSE;
 		scanSay("MiniIOMobileFramebuffer: the kernel's timer coalescing turned off: the window server's frame timer fires "
@@ -1552,6 +1559,42 @@ IOMobileFramebuffer::scanDrop(const char * why)
 	fScanFront = fScanPending = fScanTarget = NO_BUFFER;
 }
 
+/*
+ * The buffer the display controller scans out now, for the USB console's shot (drivers/core/hakios.dwc3.c): with fb_dpp
+ * one of the three display-sized buffers VGF0 scales (the flip asked for, once the DECON has taken it, else the one
+ * before), with fb_flip one of the panel-sized ones. 2 (fb_dpp) or 1 (fb_flip) and where it is; 0 when frames go into
+ * the boot framebuffer, which is then what is shown. Read without the lock: the presenter may move on meanwhile, and
+ * a shot may then catch a newer frame, or half of one (the buffer is drawn into again two frames later).
+ */
+int
+IOMobileFramebuffer::scanned(uintptr_t * base, uint32_t * width, uint32_t * height, uint32_t * rowbytes, unsigned * index)
+{
+	int mode = fScanMode;
+	unsigned front = fScanFront, pending = fScanPending, shown;
+
+	if (mode <= 0) {
+		return 0;
+	}
+	shown = pending < fScanCount && hakios_scanout_latched() ? pending : front;
+	if (shown >= fScanCount || fScanBase[shown] == NULL) {
+		return 0;
+	}
+	*base = (uintptr_t) fScanBase[shown];
+	*width = fScanWidth;
+	*height = fScanHeight;
+	*rowbytes = fScanRowBytes;
+	*index = shown;
+	return mode;
+}
+
+extern "C" int hakios_fb_scanned(uintptr_t * base, uint32_t * width, uint32_t * height, uint32_t * rowbytes, unsigned * index);
+
+int
+hakios_fb_scanned(uintptr_t * base, uint32_t * width, uint32_t * height, uint32_t * rowbytes, unsigned * index)
+{
+	return gScanOwner != NULL ? gScanOwner->scanned(base, width, height, rowbytes, index) : 0;
+}
+
 void
 IOMobileFramebuffer::fpsFired(thread_call_param_t self, thread_call_param_t unused __unused)
 {
@@ -1562,7 +1605,7 @@ IOMobileFramebuffer::fpsFired(thread_call_param_t self, thread_call_param_t unus
 void
 IOMobileFramebuffer::fpsLine(void)
 {
-	uint32_t presents, lost, held, shown, flips, partial, refreshes = hakios_scanout_refreshes(), refreshed;
+	uint32_t presents, lost, held, shown, flips, partial, same, undrawn, refreshes = hakios_scanout_refreshes(), refreshed;
 	uint64_t draw, drawMax, wait, waitMax, deadline;
 	const char * mode;
 	char line[320];
@@ -1581,7 +1624,9 @@ IOMobileFramebuffer::fpsLine(void)
 	drawMax = fFpsDrawMax;
 	wait = fFpsWait;
 	waitMax = fFpsWaitMax;
-	fFpsShown = fFpsFlips = fFpsPartial = 0;
+	same = fFpsSameSurface;
+	undrawn = fFpsUndrawn;
+	fFpsShown = fFpsFlips = fFpsPartial = fFpsSameSurface = fFpsUndrawn = 0;
 	fFpsDraw = fFpsDrawMax = fFpsWait = fFpsWaitMax = 0;
 	mode = fScanMode == 2 ? "dpp: VGF0 scales" : fScanMode == 1 ? "flip" : fScanMode < 0 ? "flip/dpp not yet taken" :
 	    "boot framebuffer";
@@ -1594,8 +1639,9 @@ IOMobileFramebuffer::fpsLine(void)
 		fFpsIdle = 0;
 		snprintf(line, sizeof(line), "fps: %u presented, %u drawn, %u flips, %u lost, %u held; drawing %llu us a frame, "
 		    "%llu at most; waiting for the flip before %llu us, %llu at most; %u refreshes; %u partial; %d refresh "
-		    "notifications sent; %s\n", presents, shown, flips, lost, held, shown ? micros(draw) / shown : 0, micros(drawMax),
-		    shown ? micros(wait) / shown : 0, micros(waitMax), refreshed, partial, (int) told, mode);
+		    "notifications sent; %u from the surface before, %u not done by the GPU; %s\n", presents, shown, flips, lost,
+		    held, shown ? micros(draw) / shown : 0, micros(drawMax), shown ? micros(wait) / shown : 0, micros(waitMax),
+		    refreshed, partial, (int) told, same, undrawn, mode);
 		loader_log_line(line);
 		IOLog("%s", line);
 	} else if (fFpsIdle++ == 0) {
@@ -1656,12 +1702,14 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	uint32_t layers = 0;
 	bool scanned;                           /* (fb_flip/fb_dpp: drawn into a buffer of the scan-out's) */
 	MiniIOSurface * recorded = NULL;
+	uint32_t undrawn = 0;                   /* (fps_log: layers shown before the GPU was done with them) */
 	bool report;
 
 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
 		if (surfaces[layer] != NULL && !MiniIOSurfaceDrawn(surfaces[layer], SWAP_GPU_MS)) {
 			IOLog("MiniIOMobileFramebuffer: swap %u: the GPU is not done with surface %u after %u ms; shown as it is\n",
 			    swapWord(swap, SWAP_ID), swapWord(swap, SWAP_SURFACE(layer)), SWAP_GPU_MS);
+			undrawn++;
 		}
 	}
 	fStatWaiting += mach_absolute_time() - began;
@@ -1710,6 +1758,16 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	}
 	fLastFrame = began;
 	report = fSwapsShown < 8;
+	/*
+	 * fps_log: a frame from the very surface the frame before came from (CoreAnimation drawing again into what is being
+	 * shown: a picture half of one frame and half of the next, or one not drawn yet), and frames shown before the GPU
+	 * was done with them -- the ways a stale or partly drawn picture could reach the panel from here
+	 */
+	fFpsUndrawn += undrawn;
+	if (swapWord(swap, SWAP_SURFACE(0)) != 0) {
+		fFpsSameSurface += swapWord(swap, SWAP_SURFACE(0)) == fLastSurface;
+		fLastSurface = swapWord(swap, SWAP_SURFACE(0));
+	}
 	/* (fb_flip/fb_dpp: into a buffer of its own, from the second picture on: the first is the console's end) */
 	scanned = fGraphics && scanBegin(coversDisplay(swap, surfaces, fWidth, fHeight));
 	if (report) {
