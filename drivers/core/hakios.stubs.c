@@ -131,6 +131,25 @@ void hakios_max98512_quiesce(void) {}
 #ifndef HAKIOS_S6E3HA8
 void hakios_s6e3ha8_init(void) {}
 #endif
+#ifndef HAKIOS_EXYNOS_DPU
+/* the display's own scan-out (MiniIOMobileFramebuffer.cpp, fb_flip/fb_dpp/fps_log): none, frames go into the boot framebuffer */
+int hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t rowbytes);
+int hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t *phys);
+int hakios_scanout_attach(int mode, const uint64_t *phys, unsigned count, uint32_t width, uint32_t height,
+    uint32_t rowbytes, unsigned shown);
+int hakios_scanout_flip(unsigned index);
+int hakios_scanout_latched(void);
+void hakios_scanout_detach(const char *why);
+uint32_t hakios_scanout_refreshes(void);
+int hakios_scanout_probe(__unused uint64_t fb_phys, __unused uint32_t width, __unused uint32_t height, __unused uint32_t rowbytes) { return -1; }
+int hakios_scanout_memory(__unused uint64_t bytes, __unused unsigned count, __unused uint64_t *phys) { return -1; }
+int hakios_scanout_attach(__unused int mode, __unused const uint64_t *phys, __unused unsigned count, __unused uint32_t width,
+    __unused uint32_t height, __unused uint32_t rowbytes, __unused unsigned shown) { return -1; }
+int hakios_scanout_flip(__unused unsigned index) { return -1; }
+int hakios_scanout_latched(void) { return 1; }
+void hakios_scanout_detach(__unused const char *why) {}
+uint32_t hakios_scanout_refreshes(void) { return 0; }
+#endif
 
 #ifndef HAKIOS_USB_GADGET
 void hakios_usb_gadget_quiesce(void) {}

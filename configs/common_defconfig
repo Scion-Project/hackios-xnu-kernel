@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 472 symbols in 19 groups; 50 are set, 41 of them drivers built in.
+# 498 symbols in 19 groups; 51 are set, 42 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (43)
+# Drivers built in (46)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -61,6 +61,9 @@ CONFIG_HAKIOS_TORCH=y
 # the Galaxy S9's flashlight: the S2MPB02's flash block on PERIC1's HSI2C, lit by a pin (torch=N there, the same steps ... [hakios.s2mpb02_torch.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 CONFIG_HAKIOS_S2MPB02_TORCH=y
 
+# the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK, ... [hakios.exynos_camera.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
+# CONFIG_HAKIOS_EXYNOS_CAMERA is not set
+
 # the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps ... [hakios.socinfo.c]
 CONFIG_HAKIOS_SOCINFO=y
 
@@ -69,6 +72,9 @@ CONFIG_HAKIOS_EXYNOS_HSI2C=y
 
 # the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the clocks' DVFS ... [hakios.exynos_acpm.c]
 CONFIG_HAKIOS_EXYNOS_ACPM=y
+
+# the Galaxy S9's big cores (four Exynos M3s): the six CLUSTER1 fields of the PMU that Samsung's kernel writes before ... [hakios.exynos_m3.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_EXYNOS_M3 is not set
 
 # a USB device link for phones with a DesignWare DWC3: the kernel's log streamed to a host over a CDC-ACM serial port ... [hakios.dwc3.c]
 # CONFIG_HAKIOS_USB_GADGET is not set
@@ -81,6 +87,9 @@ CONFIG_HAKIOS_ADRENO=y
 
 # the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the IOKit ... [hakios.mali.c, hakios.mali.cpp; requires CONFIG_HAKIOS_EXYNOS_ACPM]
 CONFIG_HAKIOS_MALI=y
+
+# the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's refresh, ... [hakios.exynos_dpu.c]
+CONFIG_HAKIOS_EXYNOS_DPU=y
 
 # the Galaxy S9's panel brightness through DSIM0's command FIFO: the gamma worked out from the panel's MTP as ... [hakios.s6e3ha8.c]
 CONFIG_HAKIOS_S6E3HA8=y
@@ -370,7 +379,7 @@ CONFIG_UFS=2
 # CONFIG_VIRTIO_BLK_RW is not set
 
 #
-# Touch and buttons (15)
+# Touch and buttons (17)
 #
 
 # the touch screen, and the power and volume buttons
@@ -400,8 +409,14 @@ CONFIG_TOUCHSCREEN=y
 # read by hakios.s6sy761.c (kernel)
 # CONFIG_S6SY761_LDO is not set
 
+# the polling thread's priority. Default 92 (BASEPRI_PREEMPT, as the display's presenter, fb_pri)
+# CONFIG_S6SY761_PRI is not set
+
 # read by hakios.s6sy761.c (kernel)
 # CONFIG_S6SY761_STEPS is not set
+
+# the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate
+# CONFIG_S6SY761_TRACE is not set
 
 # read by hakios.goodix.c (kernel)
 # CONFIG_TOUCH_FLIP is not set
@@ -419,7 +434,7 @@ CONFIG_TOUCHSCREEN=y
 # CONFIG_VIRTIO_INPUT is not set
 
 #
-# GPU and display (90)
+# GPU and display (93)
 #
 
 # rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone) [needs fw-gpu/ from the phone]
@@ -476,8 +491,14 @@ CONFIG_GPU=y
 # which pixels of the panel each frame changed (it costs: the panel's memory is slow to read)
 # CONFIG_FB_DIFF is not set
 
+# three buffers of the display's size (the iPhone's 1125 x 2436): a frame is copied into one, not scaled
+# CONFIG_FB_DPP is not set
+
 # the picture is scaled to the panel nearest neighbour, as it once was
 # CONFIG_FB_FILTER is not set
+
+# read by MiniIOMobileFramebuffer.cpp (kernel)
+# CONFIG_FB_FLIP is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_HZ is not set
@@ -505,6 +526,9 @@ CONFIG_GPU=y
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FBWIDTH is not set
+
+# a line a second while frames come ("fps: ...", in the loader's log and the kernel's): swaps
+# CONFIG_FPS_LOG is not set
 
 # the surface's memory, as before
 # CONFIG_GLBLIT is not set
@@ -693,7 +717,7 @@ CONFIG_GPU=y
 # CONFIG_VBLUR is not set
 
 #
-# Audio and battery (49)
+# Audio and battery (50)
 #
 
 # the audio DSP; the battery level in the UI and charging state come through it [needs fw-audio/ from the phone]
@@ -788,6 +812,9 @@ CONFIG_SOUND=4
 
 # read by hakios.max77705.c (kernel)
 # CONFIG_MAX77705_STEPS is not set
+
+# read by hakios.max77705.c (kernel)
+# CONFIG_MAX77705_USBSW is not set
 
 # a look: the bus brought up (its clocks, the USI, the pins), both chips' revisions and registers
 # CONFIG_MAX98512 is not set
@@ -1125,7 +1152,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_SOC_SMEM is not set
 
 #
-# Cameras (13)
+# Cameras (18)
 #
 
 # the cameras (5 is what the README uses) [needs fw-camera/ from the phone]
@@ -1154,6 +1181,21 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakios.camera.c (kernel)
 # CONFIG_CAM_PATTERN is not set
+
+# the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1
+# CONFIG_CAM_S9 is not set
+
+# the exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
+# CONFIG_CAM_S9_EXP is not set
+
+# the analog gain of step 5's frame, 0x20 being 1x (default 0x40, at most 0x200)
+# CONFIG_CAM_S9_GAIN is not set
+
+# read by hakios.exynos_camera.c (kernel)
+# CONFIG_CAM_S9_IPCLK is not set
+
+# read by hakios.exynos_camera.c (kernel)
+# CONFIG_CAM_S9_PACK12 is not set
 
 # read by hakios.camera.c (kernel)
 # CONFIG_CAM_SENSOR is not set
@@ -1315,7 +1357,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (47)
+# User space (59)
 #
 
 # read by inject_sb.c (user space)
@@ -1323,6 +1365,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by 1001-avf-psci-system-off.patch (kernel)
 # CONFIG_AVF_EXIT is not set
+
+# the brightness the user sets (Control Center's slider, Settings) is taken to the panel
+# CONFIG_BRIGHTNESS_BRIDGE is not set
 
 # read by hakios.bcm4361_bt.c, hakios.bt.c (kernel)
 # CONFIG_BT is not set
@@ -1354,6 +1399,12 @@ CONFIG_MODEM_AGAIN=y
 # read by inject_sb.c (user space)
 # CONFIG_CC_FADE is not set
 
+# is the big cluster in the same coherency domain as the A55s once it is started? (off by default)
+# CONFIG_COHTEST is not set
+
+# read by hakios.exynos_m3.c (kernel)
+# CONFIG_COHTEST_DELAY is not set
+
 # read by 1003-avf-console-quiet.patch (kernel)
 # CONFIG_CONSOLE_QUIET is not set
 
@@ -1362,6 +1413,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by 1503-early-log-and-panic.patch (kernel)
 # CONFIG_EARLY_LOG is not set
+
+# read by 1507-esslog-exynos-snapshot.patch, 1509-m3-diag-and-pan-off.patch (kernel)
+# CONFIG_ESSLOG is not set
 
 # not even with a GPU; gl=1: also without one, by Mesa's software driver (slow; for working on eagl.c in QEMU)
 # CONFIG_GL is not set
@@ -1384,14 +1438,38 @@ CONFIG_MODEM_AGAIN=y
 # read by hakios.vgpu3d_xnu.c (kernel)
 # CONFIG_GPU3D_SIZE is not set
 
+# read by 1509-m3-diag-and-pan-off.patch (kernel)
+# CONFIG_IMMEDIATE_NMI is not set
+
 # no IOAESAccelerator at all, as the kernel was before this driver
 # CONFIG_IOAES is not set
+
+# read by 1510-isa-floor.patch (kernel)
+# CONFIG_ISA_FLOOR is not set
+
+# read by 1509-m3-diag-and-pan-off.patch (kernel)
+# CONFIG_M3_DIAG is not set
+
+# read by 1509-m3-diag-and-pan-off.patch (kernel)
+# CONFIG_M3_FLUSH is not set
+
+# read by 1509-m3-diag-and-pan-off.patch (kernel)
+# CONFIG_M3_IDS is not set
+
+# read by 1510-isa-floor.patch, hakios.exynos_m3.c (kernel)
+# CONFIG_M3_PREP is not set
 
 # read by 1101-virtio-disk-as-md0.patch (kernel)
 # CONFIG_MD0 is not set
 
 # read by hakiosmetal_air.m (user space)
 # CONFIG_METAL_PROFILE is not set
+
+# read by 1509-m3-diag-and-pan-off.patch (kernel)
+# CONFIG_PAN is not set
+
+# read by poster_retry.c (user space)
+# CONFIG_POSTER_RETRY is not set
 
 # the root is to be the Darwin root volume on /dev/DEV -- the phone's flash, read only
 # CONFIG_ROOT_APFS is not set

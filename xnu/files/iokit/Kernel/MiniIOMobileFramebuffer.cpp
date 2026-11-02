@@ -210,6 +210,42 @@ swapQueue(void)
  * touch takes to show (tools/latency.py; the touch's own lines: drivers/input/hakios.input.c).
  */
 static TUNABLE(uint32_t, gTouchLat, "touch_lat", 0);
+/*
+ * Boot-args fb_flip=1 and fb_dpp=1: every frame drawn into a buffer of its own and shown from the display controller's
+ * next refresh on, never drawn into the buffer the controller is reading (which tears: half a frame and half the next
+ * reach the panel). The Galaxy S9 only, through its DPU (drivers/gpu/hakios.exynos_dpu.c, which says how; elsewhere the
+ * stand-ins of drivers/core/hakios.stubs.c say no and nothing changes).
+ *   fb_flip=1  three buffers of the panel's size (the boot framebuffer and two more); the scaling on the processor, as
+ *              without it.
+ *   fb_dpp=1   three buffers of the display's size (the iPhone's 1125 x 2436): a frame is copied into one, not scaled,
+ *              and the DPU's VGF0 scaler enlarges it to the panel. fb_filter means nothing then (the scaler filters).
+ * A frame is flipped only once the flip before it has been taken (at a refresh), so frames reach the panel at most once
+ * a refresh, and a buffer is drawn into only when it is neither shown nor about to be. Either mode falls back to
+ * drawing into the boot framebuffer, as without them: when the DPU is not as expected, when the scaler reports an
+ * error, or when a flip is not taken within FLIP_STUCK_MS.
+ * Boot-arg fps_log=1: a line a second while frames come ("fps: ...", in the loader's log and the kernel's): swaps
+ * presented, frames drawn, flips taken, swaps lost and held, the drawing (scaling or copy) time and the wait for the
+ * flip before, and the display controller's own refresh count (the S9's DECON: hakios_scanout_refreshes(); 0 elsewhere).
+ */
+static TUNABLE(uint32_t, gFlip, "fb_flip", 0);
+static TUNABLE(uint32_t, gDPP, "fb_dpp", 0);
+static TUNABLE(uint32_t, gFpsLog, "fps_log", 0);
+#define SCAN_BUFFERS    3
+#define FLIP_STUCK_MS   100
+#define NO_BUFFER       (~0u)
+extern "C" {
+int hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t rowbytes);
+int hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t * phys);
+int hakios_scanout_attach(int mode, const uint64_t * phys, unsigned count, uint32_t width, uint32_t height,
+    uint32_t rowbytes, unsigned shown);
+int hakios_scanout_flip(unsigned index);
+int hakios_scanout_latched(void);
+void hakios_scanout_detach(const char * why);
+uint32_t hakios_scanout_refreshes(void);
+void loader_log_line(const char * line);
+void flush_dcache64(addr64_t addr, unsigned count, int phys);
+vm_offset_t ml_vtophys(vm_offset_t vaddr);
+}
 
 static inline uint64_t
 micros(uint64_t absolute)
@@ -363,6 +399,21 @@ public:
 	bool            fRecWrapped;            /* (rec_ring) the memory has been full once: frames go over the oldest */
 	uint64_t        fRecCost, fRecCostMax;  /* what copying the recorded frames took (mach_absolute_time), and the worst */
 	uint32_t        fRecCosted;             /* ... of how many frames: a line every 120 */
+	/* fb_flip / fb_dpp: the scan-out's buffers */
+	int             fScanMode;              /* 0 the boot framebuffer; 1 flips; 2 flips, the DPU scales; -1, -2 set up, not yet taken */
+	unsigned        fScanCount, fScanFront, fScanPending, fScanTarget;
+	uint8_t *       fScanBase[SCAN_BUFFERS];
+	uint64_t        fScanPhys[SCAN_BUFFERS];
+	IOMemoryDescriptor * fScanMemory[SCAN_BUFFERS];  /* (IOKit's buffers, or the DPU driver's memory described) */
+	IOMemoryMap *   fScanMap[SCAN_BUFFERS];
+	uint8_t *       fBootBase;              /* the boot framebuffer, as it was before fBase pointed elsewhere */
+	uint32_t        fScanWidth, fScanHeight, fScanRowBytes;
+	uint32_t        fBootWidth, fBootHeight, fBootRowBytes;
+	bool            fScanSaid;              /* the first frame into a scan-out buffer has been told of */
+	/* fps_log: this second's counts */
+	uint32_t        fFpsPresents, fFpsShown, fFpsFlips, fFpsLost, fFpsHeld, fFpsPartial, fFpsIdle, fFpsRefreshes;
+	uint64_t        fFpsDraw, fFpsDrawMax, fFpsWait, fFpsWaitMax;
+	thread_call_t   fFpsCall;
 
 	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
 	void publishModes(void);
@@ -386,6 +437,13 @@ public:
 	unsigned        fHelpersBusy, fHelpersStarted;
 	uint32_t *      fHelperBlend[7];
 	void record(MiniIOSurface * s);
+	void scanSetup(void);
+	bool scanBegin(bool covered);
+	bool scanEnd(void);
+	void scanDrop(const char * why);
+	void drawLayers(const uint8_t * swap, MiniIOSurface ** surfaces);
+	static void fpsFired(thread_call_param_t self, thread_call_param_t unused);
+	void fpsLine(void);
 };
 
 OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
@@ -557,6 +615,21 @@ IOMobileFramebuffer::start(IOService * provider)
 	fDiffLeft = fDiffTop = ~0u;
 	IOLog("MiniIOMobileFramebuffer: display %ux%u on a panel of %ux%u (%u bytes per row)\n", fWidth, fHeight,
 	    fPanelWidth, fPanelHeight, fRowBytes);
+	fBootBase = fBase;
+	fBootWidth = fPanelWidth;
+	fBootHeight = fPanelHeight;
+	fBootRowBytes = fRowBytes;
+	fScanFront = fScanPending = fScanTarget = NO_BUFFER;
+	scanSetup();
+	if (gFpsLog) {
+		uint64_t deadline;
+
+		fFpsCall = thread_call_allocate(&IOMobileFramebuffer::fpsFired, this);
+		clock_interval_to_deadline(1, NSEC_PER_SEC, &deadline);
+		if (fFpsCall != NULL) {
+			thread_call_enter_delayed(fFpsCall, deadline);
+		}
+	}
 
 	if (gRecSeconds != 0) {
 		/* one piece of physical memory: the loader will send it over USB as it lies */
@@ -1048,10 +1121,13 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	fStatSwapsLate += fSwapTime != 0 && now - fSwapTime > period && now - fSwapTime < pause;
 	fSwapTime = now;
 	fStatHeld += fSwapsWaiting >= swapQueue();
+	fFpsHeld += fSwapsWaiting >= swapQueue();
+	fFpsPresents++;
 	while (fSwapsWaiting >= swapQueue()) {
 		if (IOLockSleepDeadline(fSwapLock, &fSwapsWaiting, deadline, THREAD_UNINT) == THREAD_TIMED_OUT &&
 		    fSwapsWaiting >= swapQueue()) {
 			fStatLost++;                    /* (the GPU has stopped answering: the frame before is waiting for it) */
+			fFpsLost++;
 			IOLockUnlock(fSwapLock);
 			return;
 		}
@@ -1112,7 +1188,7 @@ IOMobileFramebuffer::presenter(void)
 		memcpy(surfaces, fSwapSurfaces[fSwapFirst], sizeof(surfaces));
 		IOLockUnlock(fSwapLock);
 		show(swap, surfaces);
-		unsettled = gFilter == 2;
+		unsettled = gFilter == 2 && fScanMode != 2 && fScanMode != -2;     /* (the DPU's scaler filters) */
 		if (!unsettled) {
 			for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
 				if (surfaces[layer] != NULL) {
@@ -1126,18 +1202,366 @@ IOMobileFramebuffer::presenter(void)
 }
 
 /*
+ * Does the bottom layer of a swap cover the whole display (or is it taken away, the screen black)? Then a scan-out
+ * buffer need not hold the frame before it to be drawn into; otherwise the shown one is copied into it first.
+ */
+static bool
+coversDisplay(const uint8_t * swap, MiniIOSurface ** surfaces, uint32_t width, uint32_t height)
+{
+	MiniIOSurface * s = surfaces[0];
+	int32_t dst[4];
+
+	if (swapWord(swap, SWAP_SURFACE(0)) == 0) {
+		return (swapWord(swap, SWAP_LAYERS_SET) & 1) != 0;
+	}
+	if (s == NULL || s->info.bytesPerElement != 4 || s->info.planeCount != 0) {
+		return false;
+	}
+	memcpy(dst, swap + SWAP_DEST(0), sizeof(dst));
+	if (dst[2] <= 0 || dst[3] <= 0) {
+		return true;
+	}
+	return dst[0] <= 0 && dst[1] <= 0 && (int64_t) dst[0] + dst[2] >= (int64_t) width &&
+	       (int64_t) dst[1] + dst[3] >= (int64_t) height;
+}
+
+/* fb_flip / fb_dpp / fps_log: a line in the loader's log (which the phone's runs are read from) and the kernel's */
+static void scanSay(const char * format, ...) __printflike(1, 2);
+
+static void
+scanSay(const char * format, ...)
+{
+	char line[320];
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(line, sizeof(line), format, list);
+	va_end(list);
+	loader_log_line(line);
+	IOLog("%s", line);
+}
+
+/*
+ * fb_flip / fb_dpp (see the boot-args): the S9's DPU asked whether it is as expected, and three buffers made for it,
+ * physically contiguous and below 4 GB (its DMA takes 32-bit addresses), mapped write-combined as the boot framebuffer
+ * is: the processor only writes them, the display controller reads them from memory. Taken at the first frame.
+ */
+void
+IOMobileFramebuffer::scanSetup(void)
+{
+	int want = gDPP ? 2 : gFlip ? 1 : 0;
+	const char * name = gDPP ? "fb_dpp" : "fb_flip";
+	uint64_t phys = vinfo.v_physaddr != 0 ? vinfo.v_physaddr : ml_vtophys((vm_offset_t) vinfo.v_baseaddr);
+	uint64_t carved[SCAN_BUFFERS];
+	uint32_t width, height, rowbytes;
+	uint64_t size;
+	unsigned i, first, own;
+	bool carve;
+
+	if (want == 0 && !gFpsLog) {
+		return;
+	}
+	scanSay("MiniIOMobileFramebuffer: scan-out: fb_dpp=%u fb_flip=%u fps_log=%u; the boot framebuffer at %#llx, %ux%u, "
+	    "%u bytes a row; the display %ux%u\n", gDPP, gFlip, gFpsLog, phys, fPanelWidth, fPanelHeight, fRowBytes, fWidth,
+	    fHeight);
+	if (hakios_scanout_probe(phys, fPanelWidth, fPanelHeight, fRowBytes) != 0) {
+		scanSay("MiniIOMobileFramebuffer: scan-out: the display controller is not as expected (or not the S9's)%s\n",
+		    want != 0 ? ": frames go into the boot framebuffer" : "");
+		return;
+	}
+	if (want == 0) {
+		scanSay("MiniIOMobileFramebuffer: scan-out: neither fb_flip nor fb_dpp: frames go into the boot framebuffer\n");
+		return;
+	}
+	if (want == 2 && fWidth <= fPanelWidth && fHeight <= fPanelHeight) {
+		width = fWidth;
+		height = fHeight;
+		rowbytes = (fWidth * 4 + 255) & ~255u;
+	} else {
+		if (want == 2) {
+			scanSay("MiniIOMobileFramebuffer: fb_dpp: the display (%ux%u) is larger than the panel (%ux%u): flips "
+			    "(fb_flip) instead\n", fWidth, fHeight, fPanelWidth, fPanelHeight);
+		}
+		want = 1;
+		name = "fb_flip";
+		width = fPanelWidth;
+		height = fPanelHeight;
+		rowbytes = fRowBytes;
+	}
+	size = round_page((uint64_t) rowbytes * height);
+	/* (with flips the boot framebuffer is buffer 0, the one shown now; the others are this driver's) */
+	first = want == 1 ? 1 : 0;
+	own = SCAN_BUFFERS - first;
+	if (first) {
+		fScanBase[0] = fBootBase;
+		fScanPhys[0] = phys;
+	}
+	/*
+	 * Memory the display controller's DMA reaches (32-bit addresses): on the S9 none of this kernel's own is (its RAM is
+	 * above 4 GB), so the DPU driver says where in the lower bank (hakios_scanout_memory); mapped write-combined, as the
+	 * boot framebuffer is. Elsewhere IOKit's contiguous memory below 4 GB.
+	 */
+	carve = hakios_scanout_memory(size, own, carved) == 0;
+	for (i = first; i < SCAN_BUFFERS; i++) {
+		if (carve) {
+			/*
+			 * Not ml_io_map_wcomb: io_map takes its addresses from io_submap, 8 MB on arm64 for every ml_io_map of
+			 * the kernel's, and allocates with KMA_NOFAIL: a buffer of 11 MB panicked the kernel (60fps-a2,
+			 * "kmem_alloc(..., 11239424, 0x100021): failed with 3"). A physical descriptor mapped by IOKit takes
+			 * its addresses from the kernel's map and says NULL when it cannot.
+			 */
+			fScanPhys[i] = carved[i - first];
+			fScanMemory[i] = IOMemoryDescriptor::withPhysicalAddress((IOPhysicalAddress) fScanPhys[i],
+			    (IOByteCount) size, kIODirectionInOut);
+			if (fScanMemory[i] == NULL) {
+				scanSay("MiniIOMobileFramebuffer: %s: buffer %u at %#llx (%llu bytes): no descriptor\n", name, i,
+				    fScanPhys[i], size);
+				break;
+			}
+			fScanMap[i] = fScanMemory[i]->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapWriteCombineCache);
+			if (fScanMap[i] == NULL) {
+				scanSay("MiniIOMobileFramebuffer: %s: buffer %u at %#llx (%llu bytes) cannot be mapped\n", name, i,
+				    fScanPhys[i], size);
+				break;
+			}
+			fScanBase[i] = (uint8_t *) fScanMap[i]->getVirtualAddress();
+			continue;
+		}
+		fScanMemory[i] = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+		    kIODirectionInOut | kIOMemoryPhysicallyContiguous, size, 0x00000000FFFFF000ULL);
+		if (fScanMemory[i] == NULL) {
+			scanSay("MiniIOMobileFramebuffer: %s: buffer %u: IOKit has no %llu bytes in one piece below 4 GB\n", name, i,
+			    size);
+			break;
+		}
+		fScanMap[i] = fScanMemory[i]->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapWriteCombineCache);
+		if (fScanMap[i] == NULL) {
+			scanSay("MiniIOMobileFramebuffer: %s: buffer %u cannot be mapped write-combined\n", name, i);
+			break;
+		}
+		fScanPhys[i] = fScanMemory[i]->getPhysicalSegment(0, NULL, kIOMemoryMapperNone);
+		/* nothing of the buffer's cached mapping may be written back over what goes through the other one later */
+		flush_dcache64((addr64_t) fScanPhys[i], (unsigned) size, TRUE);
+		fScanBase[i] = (uint8_t *) fScanMap[i]->getVirtualAddress();
+		if (fScanPhys[i] == 0 || fScanPhys[i] + size > (1ULL << 32)) {
+			scanSay("MiniIOMobileFramebuffer: %s: buffer %u is at %#llx: not below 4 GB\n", name, i, fScanPhys[i]);
+			break;
+		}
+	}
+	if (i < SCAN_BUFFERS) {
+		scanSay("MiniIOMobileFramebuffer: %s: no memory for buffer %u (%llu bytes, contiguous, below 4 GB): frames go "
+		    "into the boot framebuffer\n", name, i, size);
+		for (i = 0; i < SCAN_BUFFERS; i++) {
+			OSSafeReleaseNULL(fScanMap[i]);
+			OSSafeReleaseNULL(fScanMemory[i]);
+			fScanBase[i] = NULL;
+		}
+		return;
+	}
+	fScanCount = SCAN_BUFFERS;
+	fScanMode = -want;
+	fScanFront = want == 1 ? 0 : NO_BUFFER;
+	fDiff = false;          /* (fb_diff reads what it draws over: in these buffers, a frame two before) */
+	fScanWidth = width;
+	fScanHeight = height;
+	fScanRowBytes = rowbytes;
+	scanSay("MiniIOMobileFramebuffer: %s: %u buffers of %ux%u, %u bytes a row, at %#llx %#llx %#llx (%s); taken at the "
+	    "first frame drawn\n", name, SCAN_BUFFERS, width, height, rowbytes, fScanPhys[0], fScanPhys[1], fScanPhys[2],
+	    carve ? "the DPU driver's, below 4 GB" : "IOKit's");
+}
+
+/*
+ * A frame is about to be drawn: into the buffer that is neither shown nor waiting to be (there is always one of three).
+ * If the frame does not cover the display, what is shown is copied into it first. True if fBase is that buffer.
+ */
+bool
+IOMobileFramebuffer::scanBegin(bool covered)
+{
+	unsigned t;
+
+	if (fScanMode == 0) {
+		return false;
+	}
+	for (t = 0; t < fScanCount && (t == fScanFront || t == fScanPending); t++) {
+	}
+	fScanTarget = t;
+	if (!fScanSaid) {
+		fScanSaid = true;
+		scanSay("MiniIOMobileFramebuffer: scan-out: the first frame drawn into buffer %u (%#llx, %ux%u)%s; mode %d\n", t,
+		    fScanPhys[t], fScanWidth, fScanHeight, covered ? "" : ", what is shown copied in first", fScanMode);
+	}
+	fBase = fScanBase[t];
+	/* (fb_dpp: what is drawn is the display's own size, one pixel for one: the DPU enlarges it) */
+	fPanelWidth = fScanWidth;
+	fPanelHeight = fScanHeight;
+	fRowBytes = fScanRowBytes;
+	if (!covered) {
+		fFpsPartial++;
+		for (uint32_t y = 0; y < fPanelHeight; y++) {
+			uint8_t * to = fBase + (size_t) y * fRowBytes;
+
+			if (fScanFront < fScanCount) {
+				memcpy(to, fScanBase[fScanFront] + (size_t) y * fRowBytes, (size_t) fPanelWidth * 4);
+			} else {
+				bzero(to, (size_t) fPanelWidth * 4);
+			}
+		}
+	}
+	return true;
+}
+
+/*
+ * The frame is in fScanTarget: once the flip before it has been taken (at a refresh: the DECON clears its shadow
+ * request), flip to it. The first time, hand the buffers over (and, for fb_dpp, move the window to the scaler). False
+ * if the scan-out was given up meanwhile: the frame has to be drawn into the boot framebuffer.
+ */
+bool
+IOMobileFramebuffer::scanEnd(void)
+{
+	uint64_t began = mach_absolute_time(), waited;
+
+	__asm__ volatile ("dsb sy" ::: "memory");      /* (the write-combined writes out before the controller is told) */
+	if (fScanMode < 0) {
+		int want = -fScanMode;
+
+		if (hakios_scanout_attach(want, fScanPhys, fScanCount, fPanelWidth, fPanelHeight, fRowBytes, fScanTarget) != 0) {
+			scanDrop("the display controller did not take the buffers");
+			return false;
+		}
+		scanSay("MiniIOMobileFramebuffer: %s: taken: %s from buffer %u on\n", want == 2 ? "fb_dpp" : "fb_flip",
+		    want == 2 ? "VGF0 scales the display's frames to the panel" : "frames flipped at the DECON's refresh",
+		    fScanTarget);
+		fScanMode = want;
+		if (want == 2) {
+			fScanFront = fScanTarget;               /* (the window was moved and waited for) */
+			fFpsFlips++;
+		} else {
+			fScanPending = fScanTarget;
+		}
+		return true;
+	}
+	if (fScanPending != NO_BUFFER) {
+		for (unsigned ms = 0; !hakios_scanout_latched(); ms++) {
+			if (ms >= FLIP_STUCK_MS) {
+				scanDrop("a flip not taken in 100 ms");
+				return false;
+			}
+			IOSleep(1);
+		}
+		fScanFront = fScanPending;
+		fScanPending = NO_BUFFER;
+		fFpsFlips++;
+	}
+	hakios_scanout_flip(fScanTarget);
+	fScanPending = fScanTarget;
+	waited = mach_absolute_time() - began;
+	fFpsWait += waited;
+	fFpsWaitMax = waited > fFpsWaitMax ? waited : fFpsWaitMax;
+	return true;
+}
+
+/* Back to drawing into the boot framebuffer, which the display controller shows again. (The buffers are kept.) */
+void
+IOMobileFramebuffer::scanDrop(const char * why)
+{
+	char line[200];
+
+	snprintf(line, sizeof(line), "MiniIOMobileFramebuffer: the scan-out given up (%s): frames go into the boot framebuffer\n",
+	    why);
+	loader_log_line(line);
+	IOLog("%s", line);
+	if (fScanMode > 0) {
+		hakios_scanout_detach(why);
+	}
+	fScanMode = 0;
+	fBase = fBootBase;
+	fPanelWidth = fBootWidth;
+	fPanelHeight = fBootHeight;
+	fRowBytes = fBootRowBytes;
+	fScanFront = fScanPending = fScanTarget = NO_BUFFER;
+}
+
+void
+IOMobileFramebuffer::fpsFired(thread_call_param_t self, thread_call_param_t unused __unused)
+{
+	((IOMobileFramebuffer *) self)->fpsLine();
+}
+
+/* fps_log=1: the last second, in one line (and one "idle" line when frames stop) */
+void
+IOMobileFramebuffer::fpsLine(void)
+{
+	uint32_t presents, lost, held, shown, flips, partial, refreshes = hakios_scanout_refreshes(), refreshed;
+	uint64_t draw, drawMax, wait, waitMax, deadline;
+	const char * mode;
+	char line[320];
+
+	IOLockLock(fSwapLock);
+	presents = fFpsPresents;
+	lost = fFpsLost;
+	held = fFpsHeld;
+	fFpsPresents = fFpsLost = fFpsHeld = 0;
+	IOLockUnlock(fSwapLock);
+	IOLockLock(fLock);
+	shown = fFpsShown;
+	flips = fFpsFlips;
+	partial = fFpsPartial;
+	draw = fFpsDraw;
+	drawMax = fFpsDrawMax;
+	wait = fFpsWait;
+	waitMax = fFpsWaitMax;
+	fFpsShown = fFpsFlips = fFpsPartial = 0;
+	fFpsDraw = fFpsDrawMax = fFpsWait = fFpsWaitMax = 0;
+	mode = fScanMode == 2 ? "dpp: VGF0 scales" : fScanMode == 1 ? "flip" : fScanMode < 0 ? "flip/dpp not yet taken" :
+	    "boot framebuffer";
+	IOLockUnlock(fLock);
+	refreshed = refreshes - fFpsRefreshes;
+	fFpsRefreshes = refreshes;
+	if (presents != 0 || shown != 0) {
+		fFpsIdle = 0;
+		snprintf(line, sizeof(line), "fps: %u presented, %u drawn, %u flips, %u lost, %u held; drawing %llu us a frame, "
+		    "%llu at most; waiting for the flip before %llu us, %llu at most; %u refreshes; %u partial; %s\n", presents,
+		    shown, flips, lost, held, shown ? micros(draw) / shown : 0, micros(drawMax), shown ? micros(wait) / shown : 0,
+		    micros(waitMax), refreshed, partial, mode);
+		loader_log_line(line);
+		IOLog("%s", line);
+	} else if (fFpsIdle++ == 0) {
+		snprintf(line, sizeof(line), "fps: idle (%u refreshes in the last second; %s)\n", refreshed, mode);
+		loader_log_line(line);
+		IOLog("%s", line);
+	}
+	clock_interval_to_deadline(1, NSEC_PER_SEC, &deadline);
+	thread_call_enter_delayed(fFpsCall, deadline);
+}
+
+/*
  * The frame on the panel once more, filtered (fb_filter=2): the same layers from the same surfaces where show() put
  * them, nothing else (no turn to wait for, no swap to hand on, nothing counted). Its surfaces were held since.
  */
 void
 IOMobileFramebuffer::settle(const uint8_t * swap, MiniIOSurface ** surfaces)
 {
-	int32_t src[4], dst[4];
+	bool scanned;
 
-	if (!fGraphics) {
+	if (!fGraphics || fScanMode == 2 || fScanMode == -2) {
 		return;
 	}
+	scanned = scanBegin(coversDisplay(swap, surfaces, fWidth, fHeight));
 	fSettling = true;
+	drawLayers(swap, surfaces);
+	fSettling = false;
+	fStatSettled++;
+	if (scanned) {
+		(void) scanEnd();
+	}
+}
+
+/* The 32-bit layers of a swap drawn where fBase points, nothing else (settle(), and a frame drawn again by show()). */
+void
+IOMobileFramebuffer::drawLayers(const uint8_t * swap, MiniIOSurface ** surfaces)
+{
+	int32_t src[4], dst[4];
+
 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
 		MiniIOSurface * s = surfaces[layer];
 
@@ -1148,8 +1572,6 @@ IOMobileFramebuffer::settle(const uint8_t * swap, MiniIOSurface ** surfaces)
 		memcpy(dst, swap + SWAP_DEST(layer), sizeof(dst));
 		drawLayer(s, src, dst);
 	}
-	fSettling = false;
-	fStatSettled++;
 }
 
 /* A swap's surfaces onto the panel, once the GPU is done with them. */
@@ -1159,6 +1581,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	uint32_t set = swapWord(swap, SWAP_LAYERS_SET);
 	uint64_t began = mach_absolute_time(), nanos, ready, shown, drawn;
 	uint32_t layers = 0;
+	bool scanned;                           /* (fb_flip/fb_dpp: drawn into a buffer of the scan-out's) */
 	MiniIOSurface * recorded = NULL;
 	bool report;
 
@@ -1214,6 +1637,8 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	}
 	fLastFrame = began;
 	report = fSwapsShown < 8;
+	/* (fb_flip/fb_dpp: into a buffer of its own, from the second picture on: the first is the console's end) */
+	scanned = fGraphics && scanBegin(coversDisplay(swap, surfaces, fWidth, fHeight));
 	if (report) {
 		IOLog("MiniIOMobileFramebuffer: swap %u (#%u): surfaces %u %u %u %u, layers set 0x%x cleared 0x%x\n",
 		    swapWord(swap, SWAP_ID), fSwapsShown, swapWord(swap, SWAP_SURFACE(0)), swapWord(swap, SWAP_SURFACE(1)),
@@ -1270,6 +1695,13 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	drawn = mach_absolute_time();
 	if (recorded != NULL) {
 		record(recorded);
+	}
+	fFpsShown++;
+	fFpsDraw += drawn - began;
+	fFpsDrawMax = drawn - began > fFpsDrawMax ? drawn - began : fFpsDrawMax;
+	if (scanned && !scanEnd()) {
+		/* the scan-out given up: this frame again, into the boot framebuffer */
+		drawLayers(swap, surfaces);
 	}
 	fSwapsShown++;
 	if (gTouchLat) {
