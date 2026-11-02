@@ -29,7 +29,10 @@
  * and the part of it an answer covers is invalidated here before it is copied out.
  *
  * The data volume of Darwin (HFS Plus, built into this kernel: bsd/hfs) is /dev/ufs_darwin_data: darwin from
- * UFS_WRITE_FIRST to its end, a block device of its own that reads and writes, there with ufs_write=1 only. Its
+ * UFS_WRITE_FIRST to its end, a block device of its own that reads and writes, there with ufs_write=1 only. A port
+ * with no darwin has its loader offer one partition of its own instead, named in the loader's platform (the Galaxy
+ * S9's USERDATA, given up to Darwin; UFS_DATA_PART here): all of it is the data volume, /dev/ufs_USERDATA_data, from
+ * its first block, and the same rules hold for it as for darwin (see ufs_write_first). Its
  * writes go the same way as /dev/rufs_darwin's -- through the loader, which flushes and reads every one back before it
  * answers -- so a write that has come back is on the flash, which is what the file system's journal counts on. The
  * one and the other are not used in the same run: once the data volume has been opened for writing, the packed store
@@ -87,6 +90,7 @@ extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, u
 extern void IOSleep(unsigned int milliseconds);
 extern void loader_return(void);        /* osfmk/arm64/loader_return.c */
 extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);   /* osfmk/arm64/caches_asm.s */
+extern int sync_internal(void);          /* bsd/vfs/vfs_syscalls.c: a shutdown's sync, bounded */
 
 /* the page the loader publishes: the same layout as struct loader_block in xnuloader/loader.c */
 #define BLOCK_MAGIC        0x4b434f4c42574452ULL       /* "RDWBLOCK" */
@@ -110,6 +114,13 @@ extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);   /* osfmk/arm
  */
 #define UFS_WRITE_FIRST    2042368ULL                  /* darwin's blocks of 4096 */
 #define UFS_DARWIN_MIN     5242875ULL                  /* the first phone's darwin, in blocks of 4096 */
+/*
+ * The only other partition a write may reach: the Galaxy S9's USERDATA (Android's data, given up), when the loader
+ * offers it (its platform names it: xnuloader/loader.c, data_part) and from its first block -- nothing of the
+ * port's is in it. A partition, not a unit; the first unit; blocks of 4096; at least 1 GiB.
+ */
+#define UFS_DATA_PART      "USERDATA"
+#define UFS_DATA_PART_MIN  262144ULL                   /* blocks of 4096: 1 GiB */
 
 struct loader_block_part {
 	char name[36];
@@ -241,6 +252,7 @@ static int ufs_var_busy_pid;
 
 /* ufs_write=1 and the one partition it is for: everything else answers EROFS as it always did */
 static int ufs_write_part = -1;
+static uint64_t ufs_write_first = UFS_WRITE_FIRST;     /* its first block a write may reach: darwin's, or 0 (USERDATA) */
 static volatile bool ufs_write_busy;            /* a write of ours has this kernel's list out: not a failure */
 static bool ufs_write_out, ufs_write_was_native;        /* the list is out for writing, and was in before */
 static uint64_t ufs_writes, ufs_write_bytes, ufs_write_errors, ufs_write_refused;
@@ -647,7 +659,7 @@ ufs_write(uint32_t op, uint32_t part, uint64_t offset, const uint8_t *src, uint6
 	if (len == 0 || offset % nbs != 0 || len % nbs != 0) {
 		return EINVAL;          /* whole blocks only: nothing is read before a write */
 	}
-	if (offset / nbs < UFS_WRITE_FIRST || offset > ufs_part_bytes(part) ||
+	if (offset / nbs < ufs_write_first || offset > ufs_part_bytes(part) ||
 	    len > ufs_part_bytes(part) - offset) {
 		/* the Darwin volume, the cryptexes, and anything past the partition's end: never */
 		ufs_write_refused++;
@@ -712,7 +724,7 @@ ufs_write_restore(void)
 	lck_mtx_unlock(&ufs_write_mtx);
 }
 
-/* ---- the data volume: darwin from UFS_WRITE_FIRST on ---- */
+/* ---- the data volume: darwin from UFS_WRITE_FIRST on, or USERDATA from its first block ---- */
 
 static bool
 ufs_is_data(dev_t dev)
@@ -723,7 +735,7 @@ ufs_is_data(dev_t dev)
 static uint64_t
 ufs_data_bytes(void)
 {
-	return ufs_part_bytes((uint32_t)ufs_write_part) - UFS_WRITE_FIRST * 4096;
+	return ufs_part_bytes((uint32_t)ufs_write_part) - ufs_write_first * 4096;
 }
 
 /*
@@ -748,7 +760,7 @@ ufs_data_flush(void)
 	lck_mtx_lock(&ufs_write_mtx);
 	lck_mtx_lock(&ufs_lock);
 	/* one block in bounds, for the loader's checks; nothing of it is touched */
-	error = ufshc_list_in() ? EIO : ufs_request(BLOCK_OP_FLUSH, (uint32_t)ufs_write_part, UFS_WRITE_FIRST, 1, NULL, NULL);
+	error = ufshc_list_in() ? EIO : ufs_request(BLOCK_OP_FLUSH, (uint32_t)ufs_write_part, ufs_write_first, 1, NULL, NULL);
 	lck_mtx_unlock(&ufs_lock);
 	lck_mtx_unlock(&ufs_write_mtx);
 	return error;
@@ -762,7 +774,7 @@ ufs_data_flush(void)
 static int
 ufs_data_io(bool write, uint64_t offset, uint8_t *p, uint64_t len)
 {
-	uint64_t base = UFS_WRITE_FIRST * 4096, size = ufs_data_bytes();
+	uint64_t base = ufs_write_first * 4096, size = ufs_data_bytes();
 	uint8_t *bounce;
 	int error = 0;
 
@@ -1170,6 +1182,19 @@ hakios_var_save_on_return(void)
 	uint32_t ms = VAR_SAVE_MS;
 	uint64_t waited = 0;
 
+	/*
+	 * The data volume mounted (/dev/ufs_NAME_data opened for writing): what HFS Plus still holds in memory goes
+	 * into the flash before the run hands back, as a shutdown's sync would -- bounded by the kernel's own
+	 * sync_timeout_seconds, and whatever it did not reach the journal makes whole at the next mount.
+	 */
+	if (ufs_ready && ufs_write_part >= 0 && ufs_data_used) {
+		int e;
+
+		printf("ufs: the run is ending: the file systems synced, the data volume's last writes into %s\n",
+		    (const char *)ufs_page->part[ufs_write_part].name);
+		e = sync_internal();
+		printf("ufs: synced (%d); %llu writes, %llu MB this run\n", e, ufs_writes, ufs_write_bytes >> 20);
+	}
 	if (!ufs_ready || ufs_write_part < 0 || ufs_var_save != VAR_SAVE_IDLE) {
 		return;
 	}
@@ -2329,23 +2354,28 @@ hakios_ufs_init(void)
 	 * ufs_write=1: /dev/rufs_darwin takes writes, past the Darwin volume and the cryptexes. darwin
 	 * has to be the partition the port was set up with, in everything the loader's table says of
 	 * it; the loader looks at its GUIDs besides, and refuses the same bounds of its own accord.
+	 * Or, on a port with no darwin, the partition its loader offers by name (UFS_DATA_PART), all
+	 * of it: the loader's offer has to say block 0 and this name, and nothing else is taken.
 	 */
 	check = 0;
 	if (PE_parse_boot_argn("ufs_write", &check, sizeof(check)) && check == 1) {
 		uint32_t offered = ufs_page->write_part_plus_one;
 
-		if (offered == 0 || offered > ufs_parts || ufs_page->write_first != UFS_WRITE_FIRST) {
+		if (offered == 0 || offered > ufs_parts) {
 			printf("ufs: the loader offers no partition to write into (ufs_write=1 on its command "
 			    "line too, and a loader that knows about writes)\n");
 		}
 		for (uint32_t i = 0; offered != 0 && i < ufs_parts; i++) {
-			const char *why = NULL;
+			const char *name = (const char *)ufs_page->part[i].name, *why = NULL;
+			bool darwin = strncmp(name, "darwin", 7) == 0;
 
-			if (strncmp((const char *)ufs_page->part[i].name, "darwin", 7) != 0) {
+			if (!darwin && strncmp(name, UFS_DATA_PART, sizeof(UFS_DATA_PART)) != 0) {
 				continue;
 			}
 			if (i != offered - 1) {
 				why = "the loader offers another partition";
+			} else if (ufs_page->write_first != (darwin ? UFS_WRITE_FIRST : 0)) {
+				why = "the loader would write it from another block";
 			} else if (ufs_page->part[i].flags & BLOCK_PART_UNIT) {
 				why = "it is a whole logical unit, not the partition";
 			} else if (ufs_page->part[i].unit != 0) {
@@ -2353,29 +2383,32 @@ hakios_ufs_init(void)
 				 * has compared with the loader's reads; the device path this firmware gives
 				 * says no logical unit number at all, so part[].lun is 0xff for every unit */
 				why = "it is not on the first logical unit";
-			} else if (ufs_page->part[i].blocks < UFS_DARWIN_MIN) {
-				why = "it is smaller than the layout's 20 GiB";
+			} else if (ufs_page->part[i].blocks < (darwin ? UFS_DARWIN_MIN : UFS_DATA_PART_MIN)) {
+				why = darwin ? "it is smaller than the layout's 20 GiB" : "it is smaller than 1 GiB";
 			} else if (ufs_page->part[i].block_size != 4096) {
 				why = "its blocks are not 4096 bytes";
 			}
 			if (why != NULL) {
-				printf("ufs: darwin: no write will be asked for: %s\n", why);
+				printf("ufs: %s: no write will be asked for: %s\n", name, why);
 				continue;
 			}
 			ufs_write_part = (int)i;
+			ufs_write_first = darwin ? UFS_WRITE_FIRST : 0;
 		}
 		if (ufs_write_part >= 0) {
-			printf("ufs: /dev/rufs_darwin takes writes, whole blocks from %llu on (%llu MB of it); "
-			    "everything else of the storage is read only\n", UFS_WRITE_FIRST,
-			    (ufs_page->part[ufs_write_part].blocks - UFS_WRITE_FIRST) * 4096 >> 20);
+			const char *name = (const char *)ufs_page->part[ufs_write_part].name;
+
+			printf("ufs: /dev/rufs_%s takes writes, whole blocks from %llu on (%llu MB of it); "
+			    "everything else of the storage is read only\n", name, ufs_write_first,
+			    (ufs_page->part[ufs_write_part].blocks - ufs_write_first) * 4096 >> 20);
 			if (devfs_make_node(makedev(ufs_bmajor, UFS_DATA_MINOR), DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640,
-			    "ufs_darwin_data") != NULL) {
-				printf("ufs: /dev/ufs_darwin_data: the same %llu MB as a block device, for the data volume; "
-				    "%s\n", ufs_data_bytes() >> 20, ufs_data_op() == BLOCK_OP_WRITE_FAST ?
+			    "ufs_%s_data", name) != NULL) {
+				printf("ufs: /dev/ufs_%s_data: the same %llu MB as a block device, for the data volume; "
+				    "%s\n", name, ufs_data_bytes() >> 20, ufs_data_op() == BLOCK_OP_WRITE_FAST ?
 				    "writes flushed when the file system asks" : "every write flushed and read back (an older loader)");
 			}
 		} else {
-			printf("ufs: nothing takes writes: darwin is not among the partitions\n");
+			printf("ufs: nothing takes writes: neither darwin nor " UFS_DATA_PART " is offered as it should be\n");
 		}
 	}
 

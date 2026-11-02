@@ -663,6 +663,7 @@ struct platform {
 	uint8_t affinity_unreliable;     /* PSCI AFFINITY_INFO says "on" of cores that are off: CPU_ON's answer is what counts */
 	uint64_t payload_home;           /* not 0: the payload is moved here (or a 64 MiB step above) from PAYLOAD_BASE at the start */
 	struct { uint64_t base, size; const char *what; } keep_out[2];  /* RAM neither UEFI nor XNU may have: reserved at the start */
+	const char *data_part;           /* a port with no darwin: the one partition, by name, ufs_write=1 may write (block_is_data_part) */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -735,6 +736,11 @@ static const struct platform platform_starlte = {
 	 * is to go, and a run's restart goes to recovery, where its log is read (recovery_after_reset).
 	 */
 	.recovery_pmu = 0x14060000,
+	/*
+	 * The data volume (/private/var kept between runs, ufs_write=1 var_hfs=ufs_USERDATA_data): this phone has no
+	 * darwin, and Android's USERDATA, given up for it, is the only partition a write may reach, the whole of it.
+	 */
+	.data_part = "USERDATA",
 	/*
 	 * Cluster 1's watchdog (watchdog_cl1@10060000, PMU bit 23), armed for the whole run as the mainline Linux port to the
 	 * S9+ arms it: a hang of the whole SoC becomes a restart into recovery (exynos_wdt_start; wdt=0: not). Cluster 0's
@@ -2345,6 +2351,7 @@ static efi_block_io *block_bios[BLOCK_MAX_PARTS];
 static int block_enabled;
 static int block_write_requested;       /* ufs_write=1 on the command line */
 static int block_write_part = -1;       /* the only partition a write may reach; -1: none, writes refused */
+static uint64_t block_write_first = BLOCK_WRITE_FIRST;  /* ... and its first block a write may reach */
 static uint64_t block_writes, block_writes_refused, block_write_bytes;
 
 /* the bytes of a device path before its end node */
@@ -2631,6 +2638,48 @@ block_is_darwin(const efi_partition_info *info, const efi_block_io *bio, const s
 	return 1;
 }
 
+/*
+ * A port with no darwin (PLAT->data_part: the Galaxy S9's USERDATA, given up to Darwin): that one partition, by its
+ * exact name, is the data volume from its first block (the kernel's /dev/ufs_NAME_data, HFS Plus made once from
+ * TWRP). Nothing of the port's is in it, so there is nothing to keep out but the other partitions; it has to be a
+ * partition (not a whole unit), on the first logical unit, in blocks of 4096, at least 1 GiB, whole as its GPT entry
+ * says, and writable as UEFI gives it out. Anything else: nothing is written this run.
+ */
+#define BLOCK_DATA_MIN     262144ULL                   /* blocks of 4096: 1 GiB */
+
+static int
+block_is_data_part(const efi_partition_info *info, const efi_block_io *bio, const struct loader_block_part *bp)
+{
+	const char *name = PLAT->data_part, *why = NULL;
+
+	if (name == NULL) {
+		return 0;
+	}
+	for (unsigned i = 0;; i++) {
+		if (i >= sizeof(bp->name) || bp->name[i] != name[i]) {
+			return 0;               /* another partition: nothing to say about it */
+		}
+		if (name[i] == 0) {
+			break;
+		}
+	}
+	if (bp->unit != 0) {
+		why = "it is not on the first logical unit";
+	} else if (bp->block_size != 4096 || bp->blocks < BLOCK_DATA_MIN ||
+	    info->end_lba - info->start_lba + 1 != bp->blocks) {
+		why = "it is not at least 1 GiB in blocks of 4096, whole";
+	} else if (bio->media->read_only) {
+		why = "UEFI gives it out read only";
+	}
+	if (why != NULL) {
+		print("ufs: %s: no write will be served: %s\n", name, why);
+		return 0;
+	}
+	print("ufs: %s (LBA %d..%d of unit 0): the data volume, all of its blocks may be written this run\n", name,
+	    info->start_lba, info->end_lba);
+	return 1;
+}
+
 static void
 block_start(void)
 {
@@ -2703,8 +2752,11 @@ block_start(void)
 				}
 			}
 		}
-		if (block_write_requested && block_is_darwin(info, bio, bp)) {
+		/* a port that names its data partition writes only that one; the others only darwin */
+		if (block_write_requested &&
+		    (PLAT->data_part != NULL ? block_is_data_part(info, bio, bp) : block_is_darwin(info, bio, bp))) {
 			block_write_part = (int)block_shared.parts;
+			block_write_first = PLAT->data_part != NULL ? 0 : BLOCK_WRITE_FIRST;
 		}
 		block_bios[block_shared.parts++] = bio;
 		if (block_probe_requested && bp->name[0] == 'd' && bp->name[1] == 'a' && bp->name[2] == 'r' &&
@@ -2753,7 +2805,7 @@ block_start(void)
 	block_writes = block_writes_refused = block_write_bytes = 0;
 	if (block_write_part >= 0) {
 		block_shared.write_part_plus_one = (uint32_t)block_write_part + 1;
-		block_shared.write_first = BLOCK_WRITE_FIRST;
+		block_shared.write_first = block_write_first;
 		block_shared.write_caps = BLOCK_CAN_FAST;
 	}
 	block_shared.magic = BLOCK_MAGIC;
@@ -2881,8 +2933,8 @@ block_poll(void)
 			s = 0x800000000000000FULL;      /* EFI_ACCESS_DENIED */
 			bytes = 0;
 		} else if (op == BLOCK_OP_WRITE || op == BLOCK_OP_WRITE_FAST || op == BLOCK_OP_FLUSH) {
-			if (block_write_part < 0 || part != (uint32_t)block_write_part || lba < BLOCK_WRITE_FIRST) {
-				/* not darwin, or not past what the build writes from the computer: never */
+			if (block_write_part < 0 || part != (uint32_t)block_write_part || lba < block_write_first) {
+				/* not darwin (or the port's data partition), or not past what the build writes there: never */
 				if (block_writes_refused++ < 8) {
 					print("ufs: a write of %d blocks from %d of %s: REFUSED\n", count, lba,
 					    block_shared.part[part].name);
@@ -2919,8 +2971,8 @@ block_poll(void)
 					flush_dcache((uint64_t)(uintptr_t)block_buffer,
 					    (uint64_t)(uintptr_t)block_buffer + bytes);
 					if (!EFI_ERROR(s) && ufs_crc32(block_buffer, bytes) != want) {
-						print("ufs: %d blocks from %d of darwin read back DIFFERENT\n",
-						    count, lba);
+						print("ufs: %d blocks from %d of %s read back DIFFERENT\n",
+						    count, lba, block_shared.part[part].name);
 						s = 0x800000000000000AULL;      /* EFI_VOLUME_CORRUPTED */
 					}
 				}
@@ -3992,6 +4044,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	 * loader asked for (the loader stays resident across runs) */
 	block_write_requested = 0;
 	block_write_part = -1;
+	block_write_first = BLOCK_WRITE_FIRST;
 	/*
 	 * the same for the other storage requests (they are only ever OR-ed in below): without this a run
 	 * that did not ask for ufs=2 is still offered a stale page and given its ufs_shared_pa
@@ -4572,8 +4625,8 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		    (uint64_t)block_shared.kernel_native.switched_in, (uint64_t)block_shared.kernel_native.switched_out);
 	}
 	if (block_write_requested) {
-		print("ufs: %d writes into darwin, %d bytes, read back the same; %d refused\n", block_writes,
-		    block_write_bytes, block_writes_refused);
+		print("ufs: %d writes into %s, %d bytes, read back the same; %d refused\n", block_writes,
+		    PLAT->data_part != NULL ? PLAT->data_part : "darwin", block_write_bytes, block_writes_refused);
 	}
 	/* ... and its other cores should all be off again: the next kernel cannot start one that is not */
 	for (int i = 1; i < cpu_count; i++) {

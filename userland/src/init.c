@@ -858,7 +858,7 @@ read_whole(const char *path, char *buf, size_t size)
 
 /*
  * The data volume on the phone's flash (boot-arg var_hfs=DEV, DEV a node of /dev: ufs_darwin_data, darwin past the
- * Darwin volume and the cryptexes): HFS Plus, which this kernel has built in, so that what Darwin keeps in /private/var is
+ * Darwin volume and the cryptexes; on the Galaxy S9 ufs_USERDATA_data, all of USERDATA): HFS Plus, which this kernel has built in, so that what Darwin keeps in /private/var is
  * there at the next boot and its size is the size of the space -- not a memory filesystem's quarter of the RAM.
  * Journaled: a phone reset in the middle of a write finds the volume whole at the next mount. If it does not mount
  * (no volume made there yet, or this kernel cannot write it), the memory filesystem as before.
@@ -934,6 +934,48 @@ empty_tree(const char *path, int depth)
 		lseek(fd, 0, 0);
 	}
 	close(fd);
+}
+
+/*
+ * On the kept volume: which run of it this is (/private/var/hakios-runs, one number, counted up at every boot) and
+ * the crash reports the runs before left in ReportCrash's own directory -- so that a boot's log says whether
+ * /private/var outlived the last run, on a phone with no shell to look.
+ */
+static void
+show_kept_volume(void)
+{
+	static const char runs[] = "/private/var/hakios-runs", reports[] = "/private/var/mobile/Library/Logs/CrashReporter";
+	char text[32], buf[4096];
+	long run = 0;
+	int fd, count = 0;
+	off_t position = 0;
+	ssize_t n;
+
+	if (read_whole(runs, text, sizeof(text)) > 0) {
+		run = parse_number(text, 10);
+	}
+	run++;
+	fd = open(runs, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd >= 0) {
+		dprintf(fd, "%ld\n", run);
+		fsync(fd);
+		close(fd);
+	}
+	printf("  run %ld on this data volume%s\n", run, run == 1 ? ", its first" : ": what the runs before wrote is here");
+	fd = open(reports, O_RDONLY | O_DIRECTORY, 0);
+	while (fd >= 0 && (n = getdirentries(fd, buf, sizeof(buf), &position)) > 0) {
+		for (ssize_t at = 0; at < n; at += ((struct dirent *)(buf + at))->d_reclen) {
+			const char *name = ((struct dirent *)(buf + at))->d_name;
+
+			if (name[0] != '.' && count++ < 12) {
+				printf("  kept: %s/%s\n", reports, name);
+			}
+		}
+	}
+	if (fd >= 0) {
+		close(fd);
+	}
+	printf("  %d entries in %s from the runs before\n", count, reports);
 }
 
 static void
@@ -1017,6 +1059,9 @@ mount_writable(void)
 	printf("  %d directories, %d files, in %ld ms\n", made, files,
 	    (long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000);
 	check(ok && made > 50, "create the directories of the data volume");
+	if (var_kept) {
+		show_kept_volume();
+	}
 
 	/*
 	 * and the package manager's prefix, when the image was built with one (tools/mk-jb.sh): /jb of
