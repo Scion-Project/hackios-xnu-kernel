@@ -359,6 +359,8 @@ struct ufshc_soc {
 	uint32_t default_step;                  /* own mode: ufs_native_step= when none is given (1 look ... 5 all) */
 	uint64_t dma_lo, dma_hi;                /* where UEFI's descriptors can be (followed only there); 0, 0: anywhere */
 	uint64_t carve_pa, carve_size;          /* own mode's memory: physical memory XNU does not manage; 0: XNU's own */
+	uint32_t default_slots;                 /* own mode: requests in flight at once unless ufs_native_slots= says; 0: 15 */
+	bool cnr;                               /* has UTRLCNR below UFSHCI 3.0 (cleared per slot as 3.0's) */
 	const char *(*look)(bool link);         /* own mode: the blocks beside the controller, read only; why not */
 	const char *(*adopt)(void);             /* own mode: the vendor's registers looked at and kept; why not */
 	void (*nexus)(uint32_t slot, bool scsi);        /* before every doorbell */
@@ -387,6 +389,12 @@ static const struct ufshc_soc hc_socs[] = {
 		.prdt_offset = 2048, .clear_with_ones = true, .dma32 = true, .slot_buffer = 64u << 10,
 		.default_step = 1, .dma_lo = 0x80000000ULL, .dma_hi = 0x100000000ULL,
 		.carve_pa = UFSHC_S9_MEM_PA, .carve_size = UFSHC_S9_MEM_BYTES,
+		/*
+		 * One request at a time, as Silicium's UfsDxe does (ufs-ro4 on the phone: 57 reads, two in flight at
+		 * once, then slot 4's 64 KB read never cleared its doorbell bit, with IS's UTRCS set and its bit in
+		 * 0x64 (UTRLCNR, which this 2.1 controller has: it read 00000014) set). UTRLCNR cleared per slot.
+		 */
+		.default_slots = 1, .cnr = true,
 		.look = exynos_look, .adopt = exynos_adopt, .nexus = exynos_nexus, .give_back = exynos_give_back,
 	},
 };
@@ -1356,6 +1364,7 @@ hc_off(void)
  * spinning on the doorbell, which kept others -- one woken because the volume's lock came free,
  * say -- from running.
  */
+static void hc_stuck(struct hc_slot *s);
 static volatile uint32_t hc_waiting;            /* slots whose waiters sleep (hc_lock) */
 static uint32_t hc_done;                        /* slots the poller has seen done, not yet collected (hc_lock) */
 static bool hc_poller_asleep;
@@ -1441,6 +1450,7 @@ hc_wait(struct hc_slot *s, const char *what, bool count)
 				hc_say("ufs: native: slot %u (%s) not done in %u s (doorbell %08x, IS %08x, HCS %08x): "
 				    "this path is off from now on\n", s->number, what, TIMEOUT_MS / 1000, hc_read(UFSHC_UTRLDBR),
 				    hc_read(UFSHC_IS), hc_read(UFSHC_HCS));
+				hc_stuck(s);
 				hc_off();
 				return ETIMEDOUT;
 			}
@@ -1464,7 +1474,7 @@ hc_wait(struct hc_slot *s, const char *what, bool count)
 	if (hc_mode == HC_OWN) {
 		uint32_t is = hc_read(UFSHC_IS);
 
-		if (hc_ver >= 0x300) {
+		if (hc_ver >= 0x300 || hc_soc->cnr) {
 			hc_write(UFSHC_UTRLCNR, bit);   /* the slot's completion notification, cleared */
 		}
 		if (is & IS_FATAL) {
@@ -1480,6 +1490,28 @@ hc_wait(struct hc_slot *s, const char *what, bool count)
 		return EIO;
 	}
 	return 0;
+}
+
+/* A slot whose doorbell bit did not clear: everything that tells what the controller made of it */
+static void
+hc_stuck(struct hc_slot *s)
+{
+	volatile const uint8_t *r;
+
+	if (hc_mode != HC_OWN) {
+		return;
+	}
+	hc_dma_sync(s->utrd, 32);
+	hc_dma_sync(s->ucd, hc_soc->rsp_offset + hc_soc->rsp_length);
+	r = (volatile const uint8_t *)s->ucd + hc_soc->rsp_offset;
+	hc_say("ufs: native: slot %u stuck: its descriptor %08x %08x %08x %08x %08x %08x %08x %08x (OCS %x%s); response "
+	    "%02x %02x %02x %02x %02x %02x %02x %02x; UTRLCNR %08x, UTRLRSR %08x, task doorbell %08x, in flight %u\n",
+	    s->number, s->utrd[0], s->utrd[1], s->utrd[2], s->utrd[3], s->utrd[4], s->utrd[5], s->utrd[6], s->utrd[7],
+	    s->utrd[2] & 0xff, (s->utrd[2] & 0xff) == OCS_INVALID ? ": not written back" : ": WRITTEN BACK", r[0], r[1], r[2],
+	    r[3], r[4], r[5], r[6], r[7], hc_read(UFSHC_UTRLCNR), hc_read(UFSHC_UTRLRSR), hc_read(UFSHC_UTMRLDBR), hc_in_flight);
+	if (hc_vs != 0 && hc_soc->nexus == exynos_nexus) {
+		hc_say("ufs: native: slot %u stuck: exynos: UTRL_NEXUS_TYPE %08x\n", s->number, vs_read(EXY_UTRL_NEXUS_TYPE));
+	}
 }
 
 static int
@@ -3275,6 +3307,9 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	if (list == 0) {
 		hc_not_used(dma32 ? "no memory for the list below 4 GB" : "no memory for the list");
 		return false;
+	}
+	if (hc_soc->default_slots != 0) {
+		slots = hc_soc->default_slots;
 	}
 	PE_parse_boot_argn("ufs_native_slots", &slots, sizeof(slots));
 	if (slots < 1 || slots > 15) {

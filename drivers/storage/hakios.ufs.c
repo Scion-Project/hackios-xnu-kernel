@@ -638,7 +638,16 @@ nufs_loader_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 		os_atomic_inc(&nufs_sum.reads_loader, relaxed);
 		os_atomic_add(&nufs_sum.read_bytes, len, relaxed);
 	} else {
+		static uint32_t said;
+
 		os_atomic_inc(&nufs_sum.read_errors, relaxed);
+		if (said < 8) {
+			said++;
+			/* (why the loader's path failed: refused here while this kernel's list is in, or UEFI's driver's error) */
+			nufs_say("ufs: nufs: %s: a read through the loader at byte %llu, %llu bytes, failed (%d)%s\n",
+			    (const char *)ufs_page->part[part].name, offset, len, error, ufshc_list_in() ?
+			    " (this kernel's list is still in)" : "");
+		}
 	}
 	return error;
 }
