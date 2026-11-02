@@ -15,8 +15,14 @@
 /* ------------------------------------------------------------------------ */
 /* Fixed conventions shared with the boot shim, the packer and the kernel   */
 
+/*
+ * Where the boot shim (or QEMU's loader device, or U-Boot's hakios command) puts the payload, and where the firmware's
+ * boot manager finds loader.efi in it: fixed in the UEFI image (hakios-uefi, XnuLoader.h) and the shim. A platform with a
+ * payload_home moves it from there at the start (payload_move) and works from payload_base after that.
+ */
 #define PAYLOAD_BASE        0xF0000000ULL
 #define PAYLOAD_MAGIC       0x50554E58u /* "XNUP" */
+static uint64_t payload_base = PAYLOAD_BASE;   /* where the payload is read from: PAYLOAD_BASE, or its home once moved */
 
 struct payload_header { uint32_t magic; uint32_t size; };
 struct payload_entry { char name[16]; uint32_t size; uint32_t reserved; };
@@ -38,8 +44,8 @@ struct payload_entry { char name[16]; uint32_t size; uint32_t reserved; };
 #define CHECKPOINT_SELFTEST 999
 #define PANIC_LOG_SIZE      0x80000u
 #define NVRAM_BANK_SIZE     0x2000u
-#define PANIC_LOG_BASE      (PAYLOAD_BASE + PAYLOAD_MAX_SIZE - 0x100000ULL)
-#define PAYLOAD_MAX_SIZE    0x04000000ULL         /* RAM reserved for the payload in the UEFI memory map */
+#define PANIC_LOG_BASE      (payload_base + PAYLOAD_MAX_SIZE - 0x100000ULL)
+#define PAYLOAD_MAX_SIZE    0x04000000ULL         /* RAM reserved for the payload in the UEFI memory map (and taken at its home) */
 
 /* ------------------------------------------------------------------------ */
 /* XNU structures (pexpert/pexpert/arm64/boot.h, mach-o/loader.h)           */
@@ -655,6 +661,8 @@ struct platform {
 	uint32_t exynos_wdt_pmu_bit;     /* ... its bit in recovery_pmu's MASK_WDT_RESET_REQUEST and DISABLE_WDT */
 	uint32_t parked_cores;           /* a bit for each core the boot loader leaves running in a loop of its own: never the kernel's */
 	uint8_t affinity_unreliable;     /* PSCI AFFINITY_INFO says "on" of cores that are off: CPU_ON's answer is what counts */
+	uint64_t payload_home;           /* not 0: the payload is moved here (or a 64 MiB step above) from PAYLOAD_BASE at the start */
+	struct { uint64_t base, size; const char *what; } keep_out[2];  /* RAM neither UEFI nor XNU may have: reserved at the start */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -741,6 +749,17 @@ static const struct platform platform_starlte = {
 	 */
 	.parked_cores = 0x2,
 	.affinity_unreliable = 1,
+	/*
+	 * The Shannon CP's memory (Samsung's device tree, reserved-memory: modem_if 0xF0000000 + 0x9200000, cp_ram_logging
+	 * 0xF9200000 + 0x2000000), whose window EL3 fixes at cold boot, and ABOX's (abox_rmem 0xFB200000 + 0x2800000, for
+	 * calliope): taken from UEFI's allocator at the start and never in XNU's window (choose_window). The payload lands
+	 * at 0xF0000000 (the UEFI image's boot manager finds loader.efi there), so it is moved out first, to 0xD0000000:
+	 * between the panel's buffer (0xCC000000 + 0x1043000) and secure_camera (0xE1900000), where the device tree reserves
+	 * nothing (docs: devices/starlte, docs/modem-plan.md). The CP is not running while the loader moves it: nothing
+	 * starts the modem before XNU (S-Boot does not; Android's cbd would).
+	 */
+	.payload_home = 0xD0000000,
+	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
 };
 
 static const struct platform platform_frankel = {
@@ -3530,12 +3549,12 @@ payload_walk_size(uint32_t header_size)
 static int
 parse_payload(struct payload_info *pi, int verbose)
 {
-	struct payload_header *ph = (struct payload_header *)PAYLOAD_BASE;
+	struct payload_header *ph = (struct payload_header *)payload_base;
 
 	memset(pi, 0, sizeof(*pi));
 	pi->cmdline = "";
 	if (ph->magic != PAYLOAD_MAGIC) {
-		print("no payload at %x (magic %x)\n", PAYLOAD_BASE, (uint64_t)ph->magic);
+		print("no payload at %x (magic %x)\n", payload_base, (uint64_t)ph->magic);
 		return 0;
 	}
 	/*
@@ -3700,7 +3719,12 @@ choose_window(const struct payload_info *pi)
 	uint64_t map_size = sizeof(map_buf), map_key, desc_size;
 	uint32_t desc_ver;
 	uint64_t best_base = 0, best_size = 0;
-	uint64_t pay_lo = PAYLOAD_BASE, pay_hi = PAYLOAD_BASE + PAYLOAD_MAX_SIZE;
+	/* what XNU's window must stay clear of: the payload where it landed and where it is now, and the platform's keep-outs */
+	uint64_t avoid[4][2] = {
+		{ PAYLOAD_BASE, PAYLOAD_BASE + PAYLOAD_MAX_SIZE }, { payload_base, payload_base + PAYLOAD_MAX_SIZE },
+		{ PLAT->keep_out[0].base, PLAT->keep_out[0].base + PLAT->keep_out[0].size },
+		{ PLAT->keep_out[1].base, PLAT->keep_out[1].base + PLAT->keep_out[1].size },
+	};
 
 	if (win_size != 0) {
 		return 1;
@@ -3715,13 +3739,20 @@ choose_window(const struct payload_info *pi)
 			continue;
 		}
 		uint64_t lo = d->phys_start, hi = d->phys_start + (d->pages << 12);
-		/* the payload sits in RAM that UEFI may consider free: stay clear of it */
-		if (lo < pay_hi && hi > pay_lo) {
-			if (pay_lo - lo > hi - pay_hi && pay_lo > lo) {
-				hi = pay_lo;
-			} else {
-				lo = pay_hi;
+		/* the payload and the keep-outs may sit in RAM that UEFI considers free: stay clear of them (the larger side) */
+		for (int a = 0; a < 4; a++) {
+			uint64_t pay_lo = avoid[a][0], pay_hi = avoid[a][1];
+
+			if (pay_hi > pay_lo && lo < pay_hi && hi > pay_lo) {
+				if (pay_lo - lo > hi - pay_hi && pay_lo > lo) {
+					hi = pay_lo;
+				} else {
+					lo = pay_hi;
+				}
 			}
+		}
+		if (hi <= lo) {
+			continue;
 		}
 		lo = (lo + BASE_ALIGN - 1) & ~(BASE_ALIGN - 1);
 		hi &= ~(BASE_ALIGN - 1);
@@ -3737,6 +3768,15 @@ choose_window(const struct payload_info *pi)
 	}
 	if (best_size > MAX_MEM_SIZE) {
 		best_size = MAX_MEM_SIZE;
+	}
+	for (int k = 0; k < 2; k++) {
+		uint64_t ko = PLAT->keep_out[k].base, ke = ko + PLAT->keep_out[k].size;
+
+		if (ke > ko && best_base < ke && best_base + best_size > ko) {
+			print("phys window %x size %x would cover %x..%x (%s): refused\n", best_base, best_size, ko, ke - 1,
+			    PLAT->keep_out[k].what);
+			return 0;
+		}
 	}
 	/* UEFI stays alive while the kernel runs, so the kernel must own all of its window. */
 	uint64_t claim = best_base;
@@ -3925,6 +3965,18 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	if (rd1_size != 0) {
 		print("resident image at pa %x size %x: it is the root (md0), the payload ramdisk is md1\n", rd1_pa, rd1_size);
 	}
+	/* the whole layout in two lines, so that one run's log proves where everything went */
+	print("layout: payload %x..%x%s, kernel %x..%x, ramdisk %x..%x, device tree %x..%x, boot_args %x, panic log %x\n",
+	    payload_base, payload_base + PAYLOAD_MAX_SIZE - 1, payload_base != PAYLOAD_BASE ? " (moved)" : "", kern_lo,
+	    kern_hi - 1, rd_pa, rd_pa + rd_size - 1, dt_pa, dt_pa + dt_max - 1, ba_pa, PANIC_LOG_BASE);
+	print("layout: XNU's RAM %x..%x (memSize %x); kept from XNU and UEFI:", win_base, win_base + win_size - 1, win_size);
+	for (int k = 0; k < 2; k++) {
+		if (PLAT->keep_out[k].size != 0) {
+			print(" %x..%x (%s)", PLAT->keep_out[k].base, PLAT->keep_out[k].base + PLAT->keep_out[k].size - 1,
+			    PLAT->keep_out[k].what);
+		}
+	}
+	print("%s\n", PLAT->keep_out[0].size != 0 ? "" : " nothing");
 
 	/* "bootcpu=N" among the kernel's arguments: run it on core N (see run_on_other_cpu) */
 	uint64_t this_mpidr = READ_SYSREG(MPIDR_EL1) & 0xFFFFFF, kernel_mpidr = this_mpidr;
@@ -4845,7 +4897,7 @@ fb_command(char *cmd)
 		} else if (starts_with(cmd, "download:")) {
 			uint64_t total = parse_number(cmd + 9, 16), got = 0;
 			uint64_t limit = PAYLOAD_MAX_SIZE - 0x100000;
-			uint8_t *dest = (uint8_t *)PAYLOAD_BASE;
+			uint8_t *dest = (uint8_t *)payload_base;
 			int to_ramdisk = download_to_ramdisk;
 
 			download_to_ramdisk = 0;
@@ -5237,6 +5289,104 @@ close:
 }
 
 /*
+ * The platform's keep-outs (struct platform keep_out) taken from UEFI's allocator: every free piece of [lo, hi) becomes
+ * EfiReservedMemoryType, so that nothing UEFI hands out later (pool, the loader's own pages, a driver's buffer) lands
+ * there while it stays alive beside the kernel, and choose_window never sees it as free. Pieces the firmware already has
+ * are said, not taken.
+ */
+static void
+keep_out_reserve(uint64_t lo, uint64_t hi, const char *what)
+{
+	static uint8_t map_buf[65536];
+	uint64_t map_size = sizeof(map_buf), map_key, desc_size, taken = 0, held = 0, failed = 0;
+	uint32_t desc_ver;
+
+	if (EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &map_key, &desc_size, &desc_ver))) {
+		print("keep-out %x..%x (%s): GetMemoryMap failed, NOT reserved\n", lo, hi - 1, what);
+		return;
+	}
+	for (uint64_t off = 0; off < map_size; off += desc_size) {
+		efi_memory_descriptor *d = (efi_memory_descriptor *)(map_buf + off);
+		uint64_t a = d->phys_start, b = d->phys_start + (d->pages << 12);
+
+		if (b <= lo || a >= hi) {
+			continue;
+		}
+		a = a < lo ? lo : a;
+		b = b > hi ? hi : b;
+		if (d->type == EfiConventionalMemory) {
+			uint64_t at = a;
+
+			if (EFI_ERROR(BS->allocate_pages(AllocateAddress, 0 /* EfiReservedMemoryType */, (b - a) >> 12, &at))) {
+				failed += b - a;
+				print("  keep-out %x..%x free but NOT taken\n", a, b - 1);
+			} else {
+				taken += b - a;
+			}
+		} else {
+			held += b - a;
+			print("  keep-out %x..%x is the firmware's already: type %d\n", a, b - 1, (uint64_t)d->type);
+		}
+	}
+	print("keep-out %x..%x (%s): %d KB reserved now, %d KB the firmware's already, %d KB not taken\n", lo, hi - 1, what,
+	    taken >> 10, held >> 10, failed >> 10);
+}
+
+/*
+ * A platform whose payload landing place is memory that is not ours to keep (the Galaxy S9: the CP's region, struct
+ * platform payload_home) has it moved out at the start, before anything else reads it: a 64 MiB block at payload_home
+ * (or a step of 64 MiB above, up to three) is taken from UEFI, the payload copied there and checked, and the copy at
+ * PAYLOAD_BASE made no payload (its magic cleared). If no block can be had, or the copy does not read back the same,
+ * the payload stays where it landed and the run goes on as before the move: a run is never lost to it.
+ * Then the keep-outs are reserved.
+ */
+static void
+payload_move(void)
+{
+	const struct payload_header *ph = (const struct payload_header *)PAYLOAD_BASE;
+	uint64_t home = 0, bytes;
+
+	if (PLAT->payload_home != 0 && ph->magic == PAYLOAD_MAGIC) {
+		bytes = (sizeof(*ph) + payload_walk_size(ph->size) + 15) & ~15ULL;
+		for (int i = 0; i < 4 && home == 0; i++) {
+			uint64_t at = PLAT->payload_home + (uint64_t)i * PAYLOAD_MAX_SIZE;
+
+			if (!EFI_ERROR(BS->allocate_pages(AllocateAddress, EfiLoaderData, PAYLOAD_MAX_SIZE >> 12, &at))) {
+				home = at;
+			} else {
+				print("payload: %x..%x is not free\n", at, at + PAYLOAD_MAX_SIZE - 1);
+			}
+		}
+		if (home == 0) {
+			print("payload: NOT moved (no 64 MiB free from %x): it stays at %x, in memory the platform keeps out\n",
+			    PLAT->payload_home, PAYLOAD_BASE);
+		} else {
+			memcpy((void *)(uintptr_t)home, (const void *)(uintptr_t)PAYLOAD_BASE, bytes);
+			if (memcmp((const void *)(uintptr_t)home, (const void *)(uintptr_t)PAYLOAD_BASE, bytes) != 0) {
+				print("payload: the copy at %x does not read back the same: NOT moved, it stays at %x\n", home,
+				    PAYLOAD_BASE);
+				BS->free_pages(home, PAYLOAD_MAX_SIZE >> 12);
+			} else {
+				clean_dcache(home, home + bytes);
+				payload_base = home;
+				((volatile struct payload_header *)(uintptr_t)PAYLOAD_BASE)->magic = 0;
+				clean_dcache(PAYLOAD_BASE, PAYLOAD_BASE + 64);
+				print("payload: moved from %x to %x (%x bytes; its region %x..%x, the panic log at %x)\n", PAYLOAD_BASE,
+				    home, bytes, home, home + PAYLOAD_MAX_SIZE - 1, PANIC_LOG_BASE);
+			}
+		}
+	} else if (PLAT->payload_home != 0) {
+		print("payload: none at %x to move (magic %x)\n", PAYLOAD_BASE, (uint64_t)ph->magic);
+	}
+	for (int k = 0; k < 2; k++) {
+		if (PLAT->keep_out[k].size != 0) {
+			keep_out_reserve(PLAT->keep_out[k].base, PLAT->keep_out[k].base + PLAT->keep_out[k].size,
+			    PLAT->keep_out[k].what);
+		}
+	}
+}
+
+/*
  * The version of the kernel in the payload (the entry kernel.ver, made by xnuloader/mkpayload.py from
  * tools/kernel-version.py), or NULL if the payload has none. A look at the payload that changes
  * nothing and prints nothing, so that the banner can use it before the rest of the loader runs.
@@ -5244,7 +5394,7 @@ close:
 static const char *
 payload_kernel_version(void)
 {
-	const struct payload_header *ph = (const struct payload_header *)PAYLOAD_BASE;
+	const struct payload_header *ph = (const struct payload_header *)payload_base;
 
 	if (ph->magic != PAYLOAD_MAGIC) {
 		return NULL;
@@ -5374,6 +5524,14 @@ efi_main(efi_handle image, efi_system_table *st)
 
 	int have_payload = parse_payload(&pi, 0);
 	exynos_wdt_start(have_payload ? pi.cmdline : "");   /* the Galaxy S9's hardware watchdog, and INFORM3 */
+	/*
+	 * The Galaxy S9: the payload out of the CP's region, which is then kept from UEFI and XNU. Here, under the watchdog
+	 * just armed, so that a hang in it is a restart into recovery; and read again from where it is now.
+	 */
+	if (PLAT->payload_home != 0 || PLAT->keep_out[0].size != 0) {
+		payload_move();
+		have_payload = parse_payload(&pi, 0);
+	}
 	if (have_payload && pi.usb_mode && usb_start()) {
 		flush_log();
 		usb_command_loop();
