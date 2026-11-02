@@ -45,6 +45,8 @@ driver EXYNOS_M3
 	help    the Galaxy S9's big cores (four Exynos M3s): the six CLUSTER1 fields of the PMU that Samsung's kernel writes
 	help    before it starts any other core, and the cluster's state logged before CPU_ON (m3_prep=N, the first N of 3
 	help    steps: read, write, start the M3s; patch 1508 asks it before every CPU_ON)
+	help    and cohtest=N, a check that the big cluster is coherent with the A55s once started (cached ping-pong,
+	help    cache maintenance by VA across the clusters, read back through an uncached alias), off by default
 
 driver USB_GADGET
 	file    bsd/dev/hakios.dwc3.c

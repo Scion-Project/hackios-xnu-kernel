@@ -100,6 +100,8 @@ cam_shutter	k
 cam_vblank	k
 camtl	u
 cc_fade	u
+cohtest	k
+cohtest_delay	k
 console_quiet	k
 cpufreq	k
 cpuload	k
