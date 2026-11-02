@@ -48,7 +48,10 @@
  *                     The log is held back meanwhile (what came before the command is sent first, what comes during
  *                     it after END), so the picture is never mixed with it. tools/usb-shot.py asks for one and writes
  *                     a PNG. The panel is read while the display may be drawing it: a shot can catch half a frame
- *   return            end the run: the data volume saved, the drivers given back, the loader restarts the phone
+ *   return            end the run: the data volume saved, the drivers given back, the loader restarts the phone (into
+ *                     TWRP on the S9). Done on a thread call of its own; should that not have ended the run after
+ *                     RETURN_FORCE_SECONDS (the save or a driver's stop waiting on something under load), the poll goes
+ *                     back to the loader without them, as a panic does
  * Not a shell: user space is not reached from here.
  *
  * Boot-args:
@@ -257,6 +260,9 @@ static int stage;                       /* how far the bring-up got: 0 none ... 
 static bool started, connected, high_speed;
 static uint32_t busy;                   /* the poll, or the way back to the loader, has the controller */
 static bool want_return;                /* the console asked to end the run */
+static thread_call_t return_call;       /* ... which end_the_run() does, on a thread of its own */
+static uint64_t return_asked_at;        /* when it was started (mach_absolute_time), 0: not yet */
+#define RETURN_FORCE_SECONDS    15      /* then the poll returns to the loader itself, without the save and the stops */
 
 static struct usbacm acm;
 static struct usbacm_line cline;
@@ -985,6 +991,43 @@ console(char *line)
 	}
 }
 
+/*
+ * The console's "return": what loader_return_timer() does before it returns, then the return. Not on the poll's thread:
+ * the save can wait for the storage, and the poll is what moves the log meanwhile.
+ */
+static void
+end_the_run(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
+{
+	hakios_var_save_on_return();
+	hakios_adreno_stop();
+	hakios_wifi_stop();
+	hakios_adsp_stop();
+	loader_return();
+}
+
+/* from the poll, once the console has asked: start the end of the run, or force it when it has not come */
+static void
+return_check(void)
+{
+	uint64_t now = mach_absolute_time(), ns;
+
+	if (return_asked_at == 0) {
+		return_asked_at = now;
+		if (return_call != NULL) {
+			thread_call_enter(return_call);
+		} else {
+			end_the_run(NULL, NULL);
+		}
+		return;
+	}
+	absolutetime_to_nanoseconds(now - return_asked_at, &ns);
+	if (ns >= (uint64_t)RETURN_FORCE_SECONDS * NSEC_PER_SEC) {
+		say("usb: the run has not ended %u s after \"return\" (the data volume's save or a driver's stop is waiting): "
+		    "back to the loader without them\n", RETURN_FORCE_SECONDS);
+		loader_return();
+	}
+}
+
 /* ---- bring-up ---- */
 
 static void
@@ -1230,11 +1273,7 @@ tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 	}
 	os_atomic_store(&busy, 0, release);
 	if (want_return) {
-		hakios_var_save_on_return();
-		hakios_adreno_stop();
-		hakios_wifi_stop();
-		hakios_adsp_stop();
-		loader_return();
+		return_check();
 	}
 again:
 	clock_interval_to_deadline(connected ? poll_ms : 20, NSEC_PER_MSEC, &deadline);
@@ -1308,7 +1347,15 @@ usb_gadget_init(void)
 		say("usb: usb_gadget=%u, but no glue for \"%s\" in this kernel; off\n", steps, soc);
 		return;
 	}
-	call = thread_call_allocate(tick, NULL);
+	/*
+	 * The kernel-high group, not thread_call_allocate()'s "high" one: that group runs its calls one at a time
+	 * (thread_call.c: TCG_NONE, a second thread only when none is active), and most drivers' periodic calls are in it,
+	 * so a long one there held up the console (and the log) behind it. kernel-high has the IOKit timers that ask for it
+	 * and little else. The end of the run goes into "high", where the timed return (loader_return_after=) runs: should
+	 * it wait there, the poll is free to force the return (return_check).
+	 */
+	call = thread_call_allocate_with_priority(tick, NULL, THREAD_CALL_PRIORITY_KERNEL_HIGH);
+	return_call = thread_call_allocate(end_the_run, NULL);
 	thread_call_enter(call);
 }
 STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, usb_gadget_init);

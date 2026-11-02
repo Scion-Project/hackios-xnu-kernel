@@ -321,6 +321,13 @@ static uint8_t block_buffer[BLOCK_BUFFER_SIZE] __attribute__((aligned(0x2000)));
 static uint8_t log_verify[sizeof(out_buf) + 8192] __attribute__((aligned(0x2000)));
 static const char *staged_data = out_buf;   /* what "upload" sends: normally the log in out_buf */
 static uint64_t staged_len;
+/*
+ * The kernel's log of the last run, once it is back (write_logs): every later write of the log (flush_log(), the one
+ * before the restart among them) keeps it behind the loader's. Before, the restart's flush put the loader's log alone
+ * into the RAM log, over the kernel's. run_kernel() forgets it when the next kernel is loaded.
+ */
+static const char *last_klog;
+static uint64_t last_klog_len;
 
 static void
 compose_logs(const char *klog, uint64_t klog_len)
@@ -427,8 +434,54 @@ write_ram_dump(const char *klog, uint64_t klog_len)
 	clean_dcache(ram_dump_base, ram_dump_base + sizeof(*h) + h->size);
 }
 
+static void wdt_pet(void);
+static uint64_t timer_hz(void);
+
+/*
+ * The returned kernel's log on the console, for a machine with no log partition (QEMU, the Galaxy S9). Not into the
+ * loader's own log (log_buf, 32 KB): the kernel's is in the staged log already, behind the loader's. On the S9 the
+ * console is UEFI's text console on the panel, a character at a time: a run's log of a megabyte or two takes minutes
+ * there. Meanwhile the watchdog is fed (it bit in the middle of the echo before: a reset that loses INFORM3, so the
+ * phone came back into BOOT, not TWRP), and where the log is in a RAM log already the echo stops after ECHO_SECONDS.
+ */
+#define ECHO_SECONDS    20
+
 static void
-write_logs(const char *klog, uint64_t klog_len)
+echo_kernel_log(const char *klog, uint64_t klog_len)
+{
+	static const char cut[] = "\n[... the rest is in the RAM log: not shown here ...]";
+	uint64_t started = READ_SYSREG(CNTVCT_EL0), limit = ram_log_base != 0 ? ECHO_SECONDS * timer_hz() : 0;
+	char16 w[3] = { 0, 0, 0 };
+
+	print("\n== KERNEL LOG ==\n");
+	if (ST->con_out != NULL && !screen_quiet) {
+		for (uint64_t i = 0; i < klog_len; i++) {
+			if ((i & 1023) == 0) {
+				wdt_pet();
+				if (limit != 0 && READ_SYSREG(CNTVCT_EL0) - started >= limit) {
+					for (const char *c = cut; *c; c++) {
+						w[0] = (char16)*c, w[1] = 0;
+						ST->con_out->output_string(ST->con_out, w);
+					}
+					print("\n(the console's echo of the kernel's log stopped after %d s, at byte %d of %d)",
+					    (uint64_t)ECHO_SECONDS, i, klog_len);
+					break;
+				}
+			}
+			if (klog[i] == '\n') {
+				w[0] = '\r', w[1] = '\n';
+			} else {
+				w[0] = (char16)klog[i], w[1] = 0;
+			}
+			ST->con_out->output_string(ST->con_out, w);
+		}
+		wdt_pet();
+	}
+	print("\n== END OF LOG ==\n");
+}
+
+static void
+write_logs_echo(const char *klog, uint64_t klog_len, int echo)
 {
 	efi_block_io *bio = find_log_partition();
 
@@ -436,13 +489,12 @@ write_logs(const char *klog, uint64_t klog_len)
 	write_ram_log();
 	write_ram_dump(klog, klog_len);
 	if (bio == NULL) {
-		/* No log partition (QEMU): echo the returned kernel log on the console instead. */
-		if (klog != NULL) {
-			print("\n== KERNEL LOG ==\n");
-			for (uint64_t i = 0; i < klog_len; i++) {
-				put_char(klog[i]);
-			}
-			print("\n== END OF LOG ==\n");
+		/* No log partition (QEMU, the S9): echo the returned kernel log on the console instead. */
+		if (klog != NULL && echo) {
+			echo_kernel_log(klog, klog_len);
+			/* and the log again with the lines the echo added, the kernel's still behind them */
+			compose_logs(klog, klog_len);
+			write_ram_log();
 		}
 		return;
 	}
@@ -480,10 +532,22 @@ write_logs(const char *klog, uint64_t klog_len)
 	compose_logs(klog, klog_len);
 }
 
+/* the log, and a kernel's that came back (kept for the writes after it: last_klog) */
+static void
+write_logs(const char *klog, uint64_t klog_len)
+{
+	if (klog != NULL) {
+		last_klog = klog;
+		last_klog_len = klog_len;
+	}
+	write_logs_echo(klog, klog_len, 1);
+}
+
+/* the loader's log as it is now, the last run's kernel log (if there is one) behind it, not echoed again */
 static void
 flush_log(void)
 {
-	write_logs(NULL, 0);
+	write_logs_echo(last_klog, last_klog_len, 0);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -654,6 +718,7 @@ struct platform {
 	uint64_t ufs_hc;                 /* the UFS host controller the kernel's own driver may take over (ufs_native=); 0: none */
 	uint64_t timer_hz;               /* the timer's frequency where CNTFRQ_EL0 reads 0 (the firmware never set it), 0: none */
 	uint64_t recovery_pmu;           /* Samsung: the PMU whose INFORM registers send a restart into recovery (recovery_after_reset) */
+	uint32_t pmu_swreset;            /* ... and its SWRESET register's offset: the restart itself (platform_restart), 0: none */
 	uint64_t gic_redist_size;        /* the redistributors' region, where it is not 1 MB (GICv4 frames are 256 KB a core) */
 	const char *compatible;          /* told apart by this in the device tree's root "compatible" instead (platform_from_fdt) */
 	uint64_t exynos_wdt;             /* Samsung Exynos: the cluster watchdog armed for the run (exynos_wdt_start), 0: none */
@@ -736,9 +801,16 @@ static const struct platform platform_starlte = {
 	 */
 	.recovery_pmu = 0x14060000,
 	/*
+	 * The restart: the PMU's SWRESET (+0x400), 1 written, as Samsung's own kernel restarts the phone (exynos-reboot.c,
+	 * exynos_reboot(), after sec_reboot() has set INFORM2/3). Only that kind of reset keeps the INFORM registers: S-Boot
+	 * reads them as 0 after the watchdog's (platform_restart).
+	 */
+	.pmu_swreset = 0x400,
+	/*
 	 * Cluster 1's watchdog (watchdog_cl1@10060000, PMU bit 23), armed for the whole run as the mainline Linux port to the
-	 * S9+ arms it: a hang of the whole SoC becomes a restart into recovery (exynos_wdt_start; wdt=0: not). Cluster 0's
-	 * (watchdog_cl0@10050000), which S-Boot also leaves running, is stopped.
+	 * S9+ arms it: a hang of the whole SoC becomes a restart (exynos_wdt_start; wdt=0: not), into BOOT on this S9, as its
+	 * reset clears INFORM3 (platform_restart). Cluster 0's (watchdog_cl0@10050000), which S-Boot also leaves running, is
+	 * stopped.
 	 */
 	.exynos_wdt = 0x10060000, .exynos_wdt_other = 0x10050000, .exynos_wdt_pmu_bit = 23,
 	/*
@@ -1285,15 +1357,62 @@ recovery_after_reset(void)
 	__asm__ volatile ("dsb sy" ::: "memory");
 }
 
+/*
+ * The restart, from anywhere in the loader (the end of a run, a hung kernel, an exception in the loader itself).
+ *
+ * On the Galaxy S9 the INFORM registers are written again right before it, and the reset is the PMU's software reset,
+ * as Samsung's kernel does it (sec_reboot.c sets INFORM2/3, then exynos-reboot.c writes SWRESET): S-Boot's log after
+ * such a reset reads "SW_RST (0x20000000)", "INF2: 12345678 / INF3: 1234567x" and goes where INFORM3 says. Not
+ * UEFI's ResetSystem (PSCI SYSTEM_RESET, Silicium's ArmPsciResetSystemLib): no run's restart was ever seen to come
+ * from it. And not the watchdog: every one of the S9's logs after its reset (WDT_RST2, RST_STAT 0x800000) has
+ * "INF2: 0 / INF3: 0", the values written at the start gone, and S-Boot starts BOOT, the run again. Only the keys
+ * held (S-Boot's "s5p_check_keypad: recovery mode") sent those to TWRP. Should SWRESET not take, the firmware's
+ * ResetSystem is tried after a second, and after that the watchdog is what is left.
+ *
+ * recovery=0 on the command line: INFORM2/3 not written, a restart comes back into BOOT, as before.
+ * SYSIP_DAT0 (+0x810), which exynos_reboot() also sets for "reboot recovery" (0xFF), is not written: whether S-Boot
+ * ever clears it is not known, and a value left there could send every later start to recovery.
+ */
+static void
+platform_restart(void)
+{
+	static int restarting;          /* an exception in the log's write below comes back here: then no more writing */
+	int again = restarting++;
+
+	recovery_after_reset();
+	if (PLAT != NULL && PLAT->recovery_pmu != 0 && PLAT->pmu_swreset != 0) {
+		volatile uint32_t *pmu = (volatile uint32_t *)(uintptr_t)PLAT->recovery_pmu;
+		uint64_t t0, hz = timer_hz();
+
+		wdt_pet();
+		if (!again) {
+			print("restart: INFORM2 %x, INFORM3 %x (%s); the PMU's software reset (SWRESET +%x)\n",
+			    (uint64_t)pmu[0x808 / 4], (uint64_t)pmu[0x80C / 4],
+			    reset_to_recovery ? "S-Boot starts recovery" : "recovery=0: BOOT again", (uint64_t)PLAT->pmu_swreset);
+			flush_log();
+		}
+		recovery_after_reset();         /* (again: nothing may come between these and the reset) */
+		pmu[PLAT->pmu_swreset / 4] = 1;
+		__asm__ volatile ("dsb sy\nisb" ::: "memory");
+		for (t0 = READ_SYSREG(CNTVCT_EL0); READ_SYSREG(CNTVCT_EL0) - t0 < hz;) {
+		}
+		if (!again) {
+			print("restart: still running a second after SWRESET: the firmware's ResetSystem instead\n");
+			flush_log();
+		}
+		recovery_after_reset();
+	}
+	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
+	for (;;) {
+	}
+}
+
 static void
 reboot(void)
 {
 	hc_take_back("before the reset");
 	flush_log();
-	recovery_after_reset();
-	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
-	for (;;) {
-	}
+	platform_restart();
 }
 
 /*
@@ -3176,7 +3295,9 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 /* Exynos cluster watchdog (the Galaxy S9: platform_starlte's exynos_wdt).   */
 /* Armed from the loader's start to the end of the run and fed by this core  */
 /* while it watches a kernel on another: when the whole SoC hangs, this core */
-/* with it, the watchdog resets the SoC and S-Boot starts recovery (TWRP).   */
+/* with it, the watchdog resets the SoC. S-Boot then finds INFORM3 cleared   */
+/* and starts BOOT, not TWRP: a run that ends normally restarts with the     */
+/* PMU's SWRESET instead (platform_restart), which keeps INFORM3.            */
 
 /*
  * The facts are the mainline Linux port to the S9+'s, which turns every hang into a restart into TWRP this way
@@ -3196,10 +3317,14 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
  *                  cluster 1's watchdog)
  *   the timeout    prescaler 255, divider 128 (WTCON 0xFF39: on, the reset, no interrupt): 26 MHz / 256 / 128 = 793.457
  *                  Hz in 16 bits of count, 82 s at most; 30 s is about 23805
- *   afterwards     the PMU's INFORM registers keep what they were given across the reset, and S-Boot reads INFORM3 =
- *                  0x12345674 as "recovery": the S9+ port writes it first thing, and its watchdog's resets land in
- *                  TWRP. So INFORM2/3 are written here (recovery_after_reset()) before the watchdog is armed; recovery=0:
- *                  not, and a restart is BOOT again
+ *   afterwards     S-Boot reads INFORM3 = 0x12345674 as "recovery" (and INFORM2 = 0x12345678: a restart, not a power-off).
+ *                  The S9+ port writes them first thing and has its watchdog's resets land in TWRP; on this S9 they do
+ *                  not: after every reset by this watchdog (S-Boot: "WDT_RST2 (0x800000)") its log reads "INF2: 0 /
+ *                  INF3: 0", what was written here gone, and BOOT is started, the run again (only keys held send it to
+ *                  TWRP). After the PMU's software reset (SWRESET, "SW_RST (0x20000000)") they are kept. So INFORM2/3 are
+ *                  written here (recovery_after_reset()) before the watchdog is armed, and again right before the
+ *                  loader's own restart, which is SWRESET (platform_restart()); the watchdog is the last resort, for a
+ *                  hang of this core too, and that lands in BOOT. recovery=0: not written, and a restart is BOOT again
  * UEFI's page tables (devices/starlte/uefi, MemoryMapLib) do not map the watchdogs: their pages are mapped through the
  * CPU protocol's SetMemoryAttributes as device memory, and touched only if the processor then translates them (AT
  * S1E1R; Carbon at EL2 has no stage 2) to themselves as device memory.
@@ -3355,7 +3480,8 @@ exynos_wdt_start(const char *cmdline)
 	print("watchdog: INFORM2 %x, INFORM3 %x: %s; the last reset: RST_STAT %x%s\n",
 	    (uint64_t)exynos_rd(pmu + EXYNOS_PMU_INFORM2), (uint64_t)exynos_rd(pmu + EXYNOS_PMU_INFORM3),
 	    reset_to_recovery ? "a restart goes to recovery" : "recovery=0, a restart comes back here", (uint64_t)rst,
-	    (rst & bit) ? " (this watchdog's)" : "");
+	    (rst & bit) ? " (this watchdog's: S-Boot found INFORM2/3 cleared by it, and started BOOT unless keys were held)" :
+	    (rst & 0x20000000u) ? " (a software reset)" : "");
 	print("watchdog: PMU DISABLE_WDT %x, MASK_WDT_RESET_REQUEST %x as found\n",
 	    (uint64_t)exynos_rd(pmu + EXYNOS_PMU_WDT_DISABLE), (uint64_t)exynos_rd(pmu + EXYNOS_PMU_WDT_MASK));
 	if (!wanted) {
@@ -3481,10 +3607,7 @@ exception_handler(int64_t type, uint64_t *ctx)
 	print("loader image base %x (elr offset %x)\n", (uint64_t)(uintptr_t)&__ImageBase,
 	    ctx[EXC_CTX_ELR] - (uint64_t)(uintptr_t)&__ImageBase);
 	flush_log();
-	recovery_after_reset();
-	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
-	for (;;) {
-	}
+	platform_restart();
 }
 
 static void
@@ -3805,6 +3928,8 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	uint32_t desc_ver;
 	struct payload_info pi;
 
+	last_klog = NULL;               /* (the last run's kernel log is in memory this run reuses) */
+	last_klog_len = 0;
 	if (!parse_payload(&pi, 1) || pi.kernel == NULL) {
 		print("no kernel in payload\n");
 		return 0;
@@ -5034,7 +5159,7 @@ fb_command(char *cmd)
 		} else if (starts_with(cmd, "reboot") || starts_with(cmd, "oem reboot")) {
 			fb_reply("OKAY", "");
 			BS->stall(200000);
-			ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
+			platform_restart();
 		} else {
 			fb_reply("FAIL", "unknown command");
 		}
