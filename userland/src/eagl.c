@@ -51,7 +51,8 @@
  * program and of the functions it asks for in vain (see census_draw()); glshaders=1 writes down
  * the text of every shader, glshow=TEXTURE (or WxH, with glshow_part=W,H and glshow_zoom=N) puts that texture over the corner of the picture, glplain=0 leaves the
  * draws without a program alone, glskip=N[,N...] leaves out the draws of those programs (see skip_draw()), glcopy=1 copies every IOSurface as if the library could not
- * share one, glwait=1 waits for the GPU at the end of every frame and glwait=0 never (see
+ * share one, glsurfaces=N and glsurfaces_mb=N bound the table of textures that stand for IOSurfaces
+ * (4096 of them, 512 MB of surfaces held, by default: see image_room()), glwait=1 waits for the GPU at the end of every frame and glwait=0 never (see
  * wait_for_frames), glfetch=0 keeps EXT_shader_framebuffer_fetch from CoreAnimation (see
  * fetch_offered), glgroup=0 leaves vibrant layers inside groups as they were (see group_draw_begin()), glprecision=0 leaves the shaders' "lowp" and "mediump" as they are (see all_highp), glenv=NAME=VALUE puts that into the environment for the library to find
  * (its own switches: FD_MESA_DEBUG=sysmem, say), vblur=0 blurs nothing whose radius varies and
@@ -244,6 +245,8 @@ struct image {
 	GLenum to, internal, format, type;
 	uint32_t plane, seed;
 	GLsizei width, height;
+	unsigned used;                  /* the frame it was last bound or made in (image_evict(): least recently used goes first) */
+	size_t bytes;                   /* its surface's size (what the table holds alive: IMAGE_BYTES) */
 };
 
 struct eagl {
@@ -251,8 +254,16 @@ struct eagl {
 	id object;                      /* the EAGLContext */
 	struct hakios_gl *gl;
 	unsigned long api;
-	struct image images[256];
-	unsigned image_count;
+	struct image *images;           /* the textures that stand for IOSurfaces (image_new()), image_room of them made room for */
+	unsigned image_count, image_room, image_most;
+	int32_t *image_index;           /* ... and where each is, by texture name: open addressing (image_slot()) */
+	unsigned index_room, index_taken;       /* (taken: entries and tombstones) */
+	uint64_t image_bytes;           /* the sizes of their surfaces, together */
+	struct image_counts {           /* what has happened to the table since the last line about it (image_report()) */
+		unsigned made, deleted, released, respecified, evicted, untracked, refills;
+		uint64_t refill_bytes;
+	} image_counts;
+	uint64_t image_said;            /* when that line was written (now_us()) */
 	GLuint framebuffer;             /* the one bound */
 	GLuint colour;                  /* ... and the texture that is its colour attachment (0: none, or no texture) */
 	GLuint reader;                  /* a framebuffer of ours, to read a texture back */
@@ -535,38 +546,125 @@ summary(struct eagl *e)
 
 /* ---- IOSurfaces ----------------------------------------------------------------------------------- */
 
-static struct image *
-image_of(struct eagl *e, GLuint texture)
+/*
+ * The textures that stand for IOSurfaces. This was a table of 256, and a full table refused the
+ * next texture: -texImageIOSurface returned NO, the texture stayed as CoreAnimation had made it --
+ * incomplete, which a shader reads as (0, 0, 0, 1) -- and a label's mask or an icon came out a solid
+ * black rectangle ("more textures with IOSurfaces than there is room for"; the Galaxy S9 in Settings,
+ * 2 Nov). CoreAnimation keeps a texture for every layer's surface it has drawn recently: every
+ * label's glyphs ('A008', alpha only) and every symbol ('LA08') is one, about a thousand were made
+ * in a minute of use, and more than 256 of them live at once was enough. It deletes them
+ * (glDeleteTextures) when it lets go of them, and comes back for room as soon as it has.
+ *
+ * Now the table grows (doubling, from IMAGES_FIRST up to IMAGES_MOST) and is found by texture
+ * name in a hash (image_slot(): glBindTexture looks every bind up). What it holds alive is each
+ * surface (CFRetain) -- the textures are CoreAnimation's, and so are the copies in them. Past
+ * IMAGES_MOST entries or IMAGE_BYTES of surfaces it lets go of one first (image_evict()): one whose
+ * surface nobody else holds any more, else the one bound least recently that is not being drawn
+ * with or into; such a texture keeps what was last copied into it, it is only no longer refilled.
+ * If there is still no room the surface is copied into the texture once (image_copy_once()), so
+ * that a texture is never left empty by this. An entry goes when its texture is deleted, when the
+ * texture is given other pixels (glTexImage2D, glCompressedTexImage2D: image_respecified()), and,
+ * every IMAGE_SWEEP_US, when nobody but the table holds its surface any more (image_sweep()).
+ * A line says what the table has done, at most every IMAGE_SWEEP_US (image_report()):
+ * "hakios-gl: IOSurface textures: ...".
+ */
+#define IMAGES_FIRST    256
+#define IMAGES_MOST     4096
+#define IMAGE_BYTES     (512ull << 20)  /* (surfaces held: the Galaxy S9's Mali-G72 draws from the 4 GB of system memory) */
+#define IMAGE_SWEEP_US  5000000ull
+#define INDEX_EMPTY     (-1)
+#define INDEX_GONE      (-2)
+
+static uint64_t image_bytes_most = IMAGE_BYTES;        /* boot-arg glsurfaces_mb=N */
+static unsigned images_most = IMAGES_MOST;              /* boot-arg glsurfaces=N (at least 16) */
+
+/* Where texture `texture` is in the index, or where it would go (an empty entry; or -1: the index is full). */
+static int
+image_slot(const struct eagl *e, GLuint texture, bool *found)
 {
-	for (unsigned i = 0; i < e->image_count; i++) {
-		if (e->images[i].texture == texture) {
-			return &e->images[i];
+	unsigned mask = e->index_room - 1, at = (texture * 2654435761u) & mask;
+	int first_gone = -1;
+
+	*found = false;
+	if (e->index_room == 0) {
+		return -1;
+	}
+	for (unsigned probes = 0; probes < e->index_room; probes++, at = (at + 1) & mask) {
+		int32_t i = e->image_index[at];
+
+		if (i == INDEX_EMPTY) {
+			return first_gone >= 0 ? first_gone : (int)at;
+		}
+		if (i == INDEX_GONE) {
+			if (first_gone < 0) {
+				first_gone = (int)at;
+			}
+		} else if (e->images[i].texture == texture) {
+			*found = true;
+			return (int)at;
 		}
 	}
-	return NULL;
+	return first_gone;
+}
+
+/* The index made again, `room` entries (a power of two, at least twice the table's), without tombstones. */
+static bool
+image_index_make(struct eagl *e, unsigned room)
+{
+	int32_t *index = malloc(room * sizeof(*index));
+	bool found;
+
+	if (index == NULL) {
+		return false;
+	}
+	for (unsigned at = 0; at < room; at++) {
+		index[at] = INDEX_EMPTY;
+	}
+	free(e->image_index);
+	e->image_index = index;
+	e->index_room = room;
+	e->index_taken = e->image_count;
+	for (unsigned i = 0; i < e->image_count; i++) {
+		index[image_slot(e, e->images[i].texture, &found)] = (int32_t)i;
+	}
+	return true;
 }
 
 static struct image *
-image_new(struct eagl *e, GLuint texture, IOSurfaceRef surface)
+image_of(struct eagl *e, GLuint texture)
 {
-	struct image *image = image_of(e, texture);
+	bool found;
+	int at;
 
-	if (image == NULL) {
-		if (e->image_count == sizeof(e->images) / sizeof(e->images[0])) {
-			say("hakios-gl: more textures with IOSurfaces than there is room for\n");
-			return NULL;
-		}
-		image = &e->images[e->image_count++];
-	} else {
-		if (image->mirror != 0) {
-			glDeleteTextures(1, &image->mirror);
-		}
-		CFRelease(image->surface);
+	if (e->image_count == 0) {
+		return NULL;
 	}
-	memset(image, 0, sizeof(*image));
-	image->texture = texture;
-	image->surface = (IOSurfaceRef)CFRetain(surface);
-	return image;
+	at = image_slot(e, texture, &found);
+	return found ? &e->images[e->image_index[at]] : NULL;
+}
+
+/* Let go of an entry: its texture stays CoreAnimation's, with what it holds. */
+static void
+image_remove(struct eagl *e, struct image *image)
+{
+	unsigned i = (unsigned)(image - e->images), last = e->image_count - 1;
+	bool found;
+	int at;
+
+	if (image->mirror != 0) {
+		glDeleteTextures(1, &image->mirror);
+	}
+	e->image_bytes -= image->bytes;
+	CFRelease(image->surface);
+	at = image_slot(e, image->texture, &found);
+	e->image_index[at] = INDEX_GONE;
+	if (i != last) {
+		e->images[i] = e->images[last];
+		at = image_slot(e, e->images[i].texture, &found);
+		e->image_index[at] = (int32_t)i;
+	}
+	e->image_count--;
 }
 
 static void
@@ -575,12 +673,187 @@ image_forget(struct eagl *e, GLuint texture)
 	struct image *image = image_of(e, texture);
 
 	if (image != NULL) {
-		if (image->mirror != 0) {
-			glDeleteTextures(1, &image->mirror);
-		}
-		CFRelease(image->surface);
-		*image = e->images[--e->image_count];
+		image_remove(e, image);
+		e->image_counts.deleted++;
 	}
+}
+
+/* Nobody but the table holds the surface: whoever showed it has let it go. */
+static bool
+image_orphaned(const struct image *image)
+{
+	return CFGetRetainCount(image->surface) <= 1;
+}
+
+/* An entry that may be let go of now: not the picture being drawn into, nor bound, nor used this frame. */
+static bool
+image_idle(const struct eagl *e, const struct image *image)
+{
+	if (image->texture == e->colour || image->used == e->frames + 1) {
+		return false;
+	}
+	for (unsigned unit = 0; unit < sizeof(e->bound) / sizeof(e->bound[0]); unit++) {
+		if (e->bound[unit] == image->texture) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/*
+ * Make room by letting one entry go: one whose surface only the table holds, else the least
+ * recently used one that is shown (not drawn into), else a picture drawn into that has not been
+ * used for a second (60 frames). False: none may go.
+ */
+static bool
+image_evict(struct eagl *e)
+{
+	struct image *best = NULL;
+	unsigned best_rank = 3;
+
+	for (unsigned i = 0; i < e->image_count; i++) {
+		struct image *image = &e->images[i];
+		unsigned rank;
+
+		if (!image_idle(e, image)) {
+			continue;
+		}
+		rank = image_orphaned(image) ? 0 : !image->target ? 1 : e->frames - image->used >= 60 ? 2 : 3;
+		if (rank < best_rank || (rank == best_rank && best != NULL && image->used < best->used)) {
+			best = image;
+			best_rank = rank;
+		}
+	}
+	if (best == NULL || best_rank == 3) {
+		return false;
+	}
+	if (best_rank == 0) {
+		e->image_counts.released++;
+	} else {
+		e->image_counts.evicted++;
+	}
+	image_remove(e, best);
+	return true;
+}
+
+/* Room for one more entry, of `bytes` more of surfaces: grown, or made by letting another go. */
+static bool
+image_room(struct eagl *e, size_t bytes)
+{
+	while (e->image_count != 0 && (e->image_count >= images_most || e->image_bytes + bytes > image_bytes_most)) {
+		if (!image_evict(e)) {
+			return false;
+		}
+	}
+	if (e->image_count == e->image_room) {
+		unsigned room = e->image_room == 0 ? IMAGES_FIRST : 2 * e->image_room;
+		struct image *images;
+
+		if (room > images_most) {
+			room = images_most;
+		}
+		if (room <= e->image_room || (images = realloc(e->images, room * sizeof(*images))) == NULL) {
+			return false;
+		}
+		e->images = images;
+		e->image_room = room;
+	}
+	/* the index at most half taken, tombstones included */
+	if (2 * (e->index_taken + 1) > e->index_room) {
+		unsigned room = 2 * IMAGES_FIRST;
+
+		while (room < 4 * e->image_room) {
+			room *= 2;
+		}
+		if (!image_index_make(e, room)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static struct image *
+image_new(struct eagl *e, GLuint texture, IOSurfaceRef surface)
+{
+	struct image *image = image_of(e, texture);
+	size_t bytes = IOSurfaceGetAllocSize(surface);
+	bool found;
+	int at;
+
+	if (image != NULL) {
+		image_remove(e, image);         /* the same texture, another surface (or the same one again): made anew */
+	}
+	if (!image_room(e, bytes)) {
+		say("hakios-gl: more textures with IOSurfaces than there is room for (%u, %llu MB of surfaces), "
+		    "and none can be let go of: texture %u is copied once\n", e->image_count, e->image_bytes >> 20, texture);
+		return NULL;
+	}
+	at = image_slot(e, texture, &found);
+	if (e->image_index[at] == INDEX_EMPTY) {
+		e->index_taken++;
+	}
+	e->image_index[at] = (int32_t)e->image_count;
+	image = &e->images[e->image_count++];
+	e->image_counts.made++;
+	if (e->image_count > e->image_most) {
+		e->image_most = e->image_count;
+	}
+	memset(image, 0, sizeof(*image));
+	image->texture = texture;
+	image->surface = (IOSurfaceRef)CFRetain(surface);
+	image->bytes = bytes;
+	image->used = e->frames + 1;
+	e->image_bytes += bytes;
+	return image;
+}
+
+/* The texture bound to `target` on this unit is given other pixels: it no longer stands for its surface. */
+static void
+image_respecified(struct eagl *e, GLenum target, GLint level)
+{
+	struct image *image;
+
+	if (target == GL_TEXTURE_2D && level == 0 && e->unit < sizeof(e->bound) / sizeof(e->bound[0]) &&
+	    e->bound[e->unit] != 0 && (image = image_of(e, e->bound[e->unit])) != NULL) {
+		image_remove(e, image);
+		e->image_counts.respecified++;
+	}
+}
+
+/*
+ * Every IMAGE_SWEEP_US, at a frame's end: the entries whose surface only the table holds let go
+ * of, and a line of what the table has done since the last one, when it has done anything.
+ */
+static void
+image_report(struct eagl *e)
+{
+	uint64_t now = now_us(), span;
+	struct image_counts *c = &e->image_counts;
+
+	if (now - e->image_said < IMAGE_SWEEP_US) {
+		return;
+	}
+	for (unsigned i = 0; i < e->image_count;) {
+		if (image_orphaned(&e->images[i]) && image_idle(e, &e->images[i])) {
+			image_remove(e, &e->images[i]);         /* (the last one is moved here: look at i again) */
+			c->released++;
+		} else {
+			i++;
+		}
+	}
+	span = e->image_said == 0 ? IMAGE_SWEEP_US : now - e->image_said;
+	e->image_said = now;
+	if (c->made == 0 && c->deleted == 0 && c->released == 0 && c->respecified == 0 && c->evicted == 0 &&
+	    c->untracked == 0 && c->refills == 0) {
+		return;
+	}
+	say("hakios-gl: IOSurface textures: %u in use (at most %u, room for %u of %u), %llu MB of surfaces held (of %llu); "
+	    "in %llu s: %u new, %u deleted, %u let go (surface released), %u given other pixels, %u evicted, "
+	    "%u copied once (no room); %u refilled (%llu.%llu a second, %llu KB)\n", e->image_count, e->image_most,
+	    e->image_room, images_most, e->image_bytes >> 20, image_bytes_most >> 20, (span + 500000) / 1000000, c->made,
+	    c->deleted, c->released, c->respecified, c->evicted, c->untracked, c->refills,
+	    c->refills * 1000000ull / span, c->refills * 10000000ull / span % 10, c->refill_bytes >> 10);
+	memset(c, 0, sizeof(*c));
 }
 
 /* Apple's OpenGL ES takes blue-first pixels into a texture called GL_RGBA; everybody else's calls the texture so too. */
@@ -730,11 +1003,17 @@ surface_to_texture(struct eagl *e, struct image *image)
 	GLint row_length = 0, alignment = 4;
 	uint8_t *base, *flipped = NULL;
 	bool alpha_first = image->alpha_first && !planar && pixel == 4;
+	uint32_t seed = 0;
 
 	if (image->shared) {
 		return;
 	}
-	if (IOSurfaceLock(surface, kIOSurfaceLockReadOnly, NULL) != 0) {
+	/*
+	 * The seed is the one the lock sees, before the pixels are read: taken after the copy, as it was,
+	 * a write between the two (a label's text drawn into its layer while it was being copied) moved
+	 * it unseen, and the texture kept the old pixels -- a label missing its text -- until the next write.
+	 */
+	if (IOSurfaceLock(surface, kIOSurfaceLockReadOnly, &seed) != 0) {
 		say("hakios-gl: an IOSurface cannot be locked\n");
 		return;
 	}
@@ -794,7 +1073,7 @@ surface_to_texture(struct eagl *e, struct image *image)
 	}
 	IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL);
 	free(flipped);
-	image->seed = IOSurfaceGetSeed(surface);
+	image->seed = seed;
 	e->uploads++;
 	e->upload_bytes += row * (size_t)image->height;
 }
@@ -1217,6 +1496,8 @@ frame_begin(struct eagl *e)
 		}
 		glBindTexture(image->to, image->texture);
 		surface_to_texture(e, image);
+		e->image_counts.refills++;
+		e->image_counts.refill_bytes += IOSurfaceGetBytesPerRow(image->surface) * (size_t)image->height;
 	}
 	if (rebound) {
 		glBindTexture(GL_TEXTURE_2D, (GLuint)bound);
@@ -1346,6 +1627,7 @@ frame_end(struct eagl *e, bool finished)
 		summary(e);
 	}
 	census_report();
+	image_report(e);
 	/*
 	 * Each check is a round trip to the host (about 1,000 a second while a video plays), so they
 	 * stop after the first 600 frames of any context, errors or not: those are told above.
@@ -1424,10 +1706,14 @@ my_glBindTexture(void *context, GLenum target, GLuint texture)
 	if (target == GL_TEXTURE_2D && e->unit < 8) {
 		e->bound[e->unit] = texture;
 	}
-	if (texture != 0 && e->image_count != 0 && (image = image_of(e, texture)) != NULL && !image->shared &&
-	    (!image->target ? IOSurfaceGetSeed(image->surface) != image->seed || surface_changed(e, image) :
-	    image->wrapped && !image->painted && surface_changed(e, image))) {
-		surface_to_texture(e, image);
+	if (texture != 0 && e->image_count != 0 && (image = image_of(e, texture)) != NULL) {
+		image->used = e->frames + 1;
+		if (!image->shared && (!image->target ? IOSurfaceGetSeed(image->surface) != image->seed ||
+		    surface_changed(e, image) : image->wrapped && !image->painted && surface_changed(e, image))) {
+			surface_to_texture(e, image);
+			e->image_counts.refills++;
+			e->image_counts.refill_bytes += IOSurfaceGetBytesPerRow(image->surface) * (size_t)image->height;
+		}
 	}
 	EAGL_LEAVE(e, 0x30);
 }
@@ -3553,6 +3839,7 @@ my_glTexImage2D(void *context, GLenum target, GLint level, GLint internal, GLsiz
 	if (target == GL_TEXTURE_2D && e->unit < 8) {
 		group_forget(e, e->bound[e->unit]);
 	}
+	image_respecified(e, target, level);
 	uint64_t began = slow_calls_us != 0 ? now_us() : 0;
 	glTexImage2D(target, level, (GLint)internal_format((GLenum)internal, format), width, height, border, format, type, pixels);
 	if (began != 0 && now_us() - began >= slow_calls_us) {
@@ -3699,6 +3986,7 @@ my_glCompressedTexImage2D(void *context, GLenum target, GLint level, GLenum inte
 	if (level == 0) {
 		note_format("compressed", internal, 0, 0, width, height);
 	}
+	image_respecified(e, target, level);
 	if (told < 40) {
 		(void)glGetError();             /* so that what is left behind is this call's own */
 	}
@@ -4140,9 +4428,26 @@ my_texImageIOSurface(id self, SEL selector, IOSurfaceRef surface, unsigned long 
 	eagl_enter(e, 0);
 	clear_now(e);
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
-	if (target != GL_TEXTURE_2D || texture == 0 || (image = image_new(e, (GLuint)texture, surface)) == NULL) {
+	if (target != GL_TEXTURE_2D || texture == 0) {
 		say("hakios-gl: -texImageIOSurface: target %#lx, texture %d: not done\n", target, texture);
 		return NO;
+	}
+	if ((image = image_new(e, (GLuint)texture, surface)) == NULL) {
+		/*
+		 * No room in the table even after letting go of what could be (image_room()): the
+		 * surface is copied into the texture once, as it is now, and not followed after. A
+		 * texture left as it was made is incomplete and is read as opaque black.
+		 */
+		struct image once = {
+			.texture = (GLuint)texture, .surface = surface, .to = (GLenum)target, .internal = (GLenum)internal,
+			.format = (GLenum)format, .type = (GLenum)type, .plane = plane, .invert = invert, .width = width,
+			.height = height, .alpha_first = false,
+		};
+
+		surface_to_texture(e, &once);
+		e->image_counts.untracked++;
+		eagl_leave(e, 0x970);
+		return YES;
 	}
 	image->to = (GLenum)target;
 	image->internal = (GLenum)internal;
@@ -4191,11 +4496,24 @@ my_attachImage(id self, SEL selector, unsigned long target, IOSurfaceRef surface
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
 	pixels = IOSurfaceGetPixelFormat(surface);
 	if (target != GL_TEXTURE_2D || texture == 0 || (pixels != 'BGRA' && pixels != 0) ||
-	    IOSurfaceGetBytesPerElement(surface) != 4 || IOSurfaceGetPlaneCount(surface) != 0 ||
-	    (image = image_new(e, (GLuint)texture, surface)) == NULL) {
+	    IOSurfaceGetBytesPerElement(surface) != 4 || IOSurfaceGetPlaneCount(surface) != 0) {
 		say("hakios-gl: -attachImage: target %#lx, texture %d, an IOSurface of '%.4s': not done\n", target, texture,
 		    (const char *)&(uint32_t){ __builtin_bswap32(pixels) });
 		return NO;
+	}
+	if ((image = image_new(e, (GLuint)texture, surface)) == NULL) {
+		/* (no room, as above: what the surface holds now, once, and nothing drawn reaches it) */
+		struct image once = {
+			.texture = (GLuint)texture, .surface = surface, .to = GL_TEXTURE_2D, .internal = GL_BGRA, .format = GL_BGRA,
+			.type = GL_UNSIGNED_BYTE, .invert = inverted, .alpha_first = pixels == 0,
+			.width = (GLsizei)IOSurfaceGetWidth(surface), .height = (GLsizei)IOSurfaceGetHeight(surface),
+		};
+
+		surface_to_texture(e, &once);
+		e->image_counts.untracked++;
+		say("hakios-gl: -attachImage: texture %d: no room to follow its IOSurface; copied once\n", texture);
+		eagl_leave(e, 0x970);
+		return YES;
 	}
 	image->target = true;
 	image->to = GL_TEXTURE_2D;
@@ -4261,6 +4579,11 @@ my_dealloc(id self, SEL selector)
 			current = NULL;
 		}
 		hakios_gl_destroy(e->gl);
+		for (unsigned i = 0; i < e->image_count; i++) {
+			CFRelease(e->images[i].surface);        /* (the textures, the mirrors among them, went with the library's context) */
+		}
+		free(e->images);
+		free(e->image_index);
 		free(e);
 	}
 	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&super, selector);
@@ -4399,6 +4722,14 @@ install(void)
 			}
 		}
 		share_surfaces = strstr(arguments, "glcopy=1") == NULL;
+		if ((argument = strstr(arguments, "glsurfaces=")) != NULL) {
+			images_most = (unsigned)strtoul(argument + 11, NULL, 10);
+			images_most = images_most < 16 ? 16 : images_most;
+		}
+		if ((argument = strstr(arguments, "glsurfaces_mb=")) != NULL) {
+			image_bytes_most = strtoull(argument + 14, NULL, 10) << 20;
+			image_bytes_most = image_bytes_most < (16ull << 20) ? 16ull << 20 : image_bytes_most;
+		}
 		blit_targets = strstr(arguments, "glblit=0") == NULL;
 		sync_frames = strstr(arguments, "glsync=0") == NULL;
 		pace_frames = strstr(arguments, "glpace=0") == NULL;
