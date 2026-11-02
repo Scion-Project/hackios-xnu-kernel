@@ -92,7 +92,8 @@
  *
  * kern.hakios.brightness: 0-255, written to set it (read: what it was set to, -1 never). What iOS sets reaches the
  * panel through hakios.backlight.cpp, where this driver registers at start: the display service's "brightness", and with
- * backlight=2 AppleARMBacklight's.
+ * backlight=2 AppleARMBacklight's. Each set the DSIM took is logged ("s6e3ha8: brightness N sent (..., AOR 0x....)"),
+ * at most once a second, with how many were left out since the last line.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -503,6 +504,21 @@ panel_set(int level)
 		say("s6e3ha8: brightness %d (%s, AOR 0x%x) not sent: the DSIM's FIFO did not take it "
 		    "(FIFOCTRL %x, INTSRC %x)\n", level, gamma_ready ? "gamma row and AOR" : "AOR alone", aor,
 		    rd(DSIM_FIFOCTRL), rd(DSIM_INTSRC));
+	} else if (ok) {
+		/* each set that was sent, at most a line a second (a slider dragged sends many): what went out */
+		static uint64_t said_at;
+		static uint32_t unsaid;
+		uint64_t now = mach_absolute_time(), second;
+
+		nanoseconds_to_absolutetime(NSEC_PER_SEC, &second);
+		if (said_at == 0 || now - said_at >= second) {
+			say("s6e3ha8: brightness %d sent (%s, AOR 0x%04x; the DSIM took every packet; %u sets not logged "
+			    "since the last line)\n", level, gamma_ready ? "gamma row and AOR" : "AOR alone", aor, unsaid);
+			said_at = now;
+			unsaid = 0;
+		} else {
+			unsaid++;
+		}
 	}
 	return ok ? 0 : EIO;
 }

@@ -42,6 +42,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
+#include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <notify.h>
 #include <objc/message.h>
@@ -1467,27 +1470,47 @@ caenv(void)
 /*
  * Boot-arg brightness_bridge=1: the brightness the user sets (Control Center's slider, Settings) is
  * taken to the panel. CoreBrightness in backboardd keeps the level but never reaches a display
- * here (no AppleARMBacklight it knows, no ambient light sensor), so nothing it decides is applied.
- * This asks for the level four times a second -- BKSDisplayBrightnessGetCurrent() of
- * BackBoardServices, what -[UIScreen brightness] asks, or failing that CoreBrightness's own
- * BrightnessSystemClient (property DisplayBrightness) -- and writes it to the panel driver's
- * sysctl kern.hakios.brightness (0-255; the Galaxy S9's hakios.s6e3ha8.c) on a square curve with a
- * floor, so a slider at zero is dim and never black:
+ * here (no AppleARMBacklight it knows, no ambient light sensor), and never even takes the level
+ * the slider sets: BKSDisplayBrightnessGetCurrent() stays at 0.5 whatever the user does. So the
+ * level is caught where it is set, in SpringBoard, which runs Control Center:
+ *   -[CCUIDisplayModuleViewController _setBacklightLevel:]   Control Center's slider (DisplayModule.bundle,
+ *                                                            loaded when Control Center is first opened)
+ *   -[SBBrightnessController setBrightnessLevel:] and _setBrightnessLevel:showHUD:   SpringBoard's own
+ *   -[BrightnessSystemClient setProperty:forKey:]           CoreBrightness, key DisplayBrightness
+ *   BKSDisplayBrightnessSet(float, NSInteger)               BackBoardServices; its calls are rebound only in
+ *                                                            the libraries outside the shared cache (inside it
+ *                                                            one library branches straight into the other)
+ * Each passes the level on and then does what it did. Control Center's slider would then jump
+ * back to 0.5 when it is opened again (it asks -[... _backlightLevel], which asks
+ * BKSDisplayBrightnessGetCurrent), so once the user has set a level, that is what it is told.
+ * The old way stays beside them: the level is asked for four times a second --
+ * BKSDisplayBrightnessGetCurrent() of BackBoardServices, or failing that CoreBrightness's own
+ * BrightnessSystemClient (property DisplayBrightness) -- and taken when it changes (only then, so
+ * a level that stays at 0.5 does not undo the user's).
+ * A level goes to the panel driver's sysctl kern.hakios.brightness (0-255; the Galaxy S9's
+ * hakios.s6e3ha8.c) on a square curve with a floor, so a slider at zero is dim and never black:
  *     level = 8 + 247 * b * b      (b = 0.0 ... 1.0)
  * brightness_bridge=2 also takes the panel to 0 (its lowest level, still lit) while SpringBoard
  * says the screen is blanked (notification state com.apple.springboard.hasBlankedScreen), and back
- * to the slider's level as soon as it is not. A change is said on the console at most once a
- * second ("hakios: brightness: ..."). Whatever is not found is said once and only that part is
- * left out; nothing here can stop SpringBoard.
+ * to the user's level as soon as it is not. Which hooks are in is said once; a hook's first call is
+ * said, and a change of level at most once a second, with where it came from ("hakios:
+ * brightness: ..."). Whatever is not found is said once and only that part is left out; nothing
+ * here can stop SpringBoard.
  */
 #define BRIGHTNESS_FLOOR 8
 
 static float (*bks_brightness_get)(void);
+static void (*bks_brightness_set)(float level, long unknown);
 static id brightness_client;            /* a BrightnessSystemClient, when BackBoardServices has not the function */
+static dispatch_queue_t brightness_queue;
 static int brightness_blanked_token = NOTIFY_TOKEN_INVALID;
-static int brightness_written = -2, brightness_said = -2, brightness_writes;
-static float brightness_last_value = -1;
+/* on brightness_queue only: */
+static int brightness_written = -2, brightness_said = -2, brightness_writes, brightness_calls;
+static float brightness_value = -1, brightness_polled = -2;
+static const char *brightness_source = "";
 static uint64_t brightness_said_at;
+/* what the user set through a hook (-1: nothing yet), for Control Center's slider when it asks */
+static volatile float brightness_user = -1;
 
 static bool
 brightness_read(float *value)
@@ -1518,24 +1541,23 @@ brightness_read(float *value)
 	return false;
 }
 
-static void
-brightness_tick(void)
+static float
+brightness_clamp(float value)
 {
-	float value = brightness_last_value;
+	return !(value >= 0.0f) ? 0.0f : value > 1.0f ? 1.0f : value;      /* (a NaN is 0) */
+}
+
+/* the level now (brightness_value, and the blanked screen) to the panel; on brightness_queue */
+static void
+brightness_push(void)
+{
+	float value = brightness_value;
 	uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000;
 	int level, blanked = 0;
 	uint64_t state = 0;
 
-	if (brightness_read(&value)) {
-		if (!(value >= 0.0f)) {                 /* (and a NaN) */
-			value = 0.0f;
-		} else if (value > 1.0f) {
-			value = 1.0f;
-		}
-		brightness_last_value = value;
-	}
 	if (value < 0.0f) {
-		return;                                 /* nothing read yet: the panel keeps what it has */
+		return;                                 /* nothing yet: the panel keeps what it has */
 	}
 	if (brightness_blanked_token != NOTIFY_TOKEN_INVALID &&
 	    notify_get_state(brightness_blanked_token, &state) == NOTIFY_STATUS_OK && state != 0) {
@@ -1560,11 +1582,282 @@ brightness_tick(void)
 		brightness_writes++;
 	}
 	if (brightness_written != brightness_said && now - brightness_said_at >= 1000000) {
-		say("hakios: brightness: slider %.3f%s -> kern.hakios.brightness=%d (%d writes)\n", value,
-		    blanked ? ", screen blanked" : "", brightness_written, brightness_writes);
+		say("hakios: brightness: slider %.3f from %s%s -> kern.hakios.brightness=%d (%d writes, %d hook calls)\n",
+		    value, brightness_source, blanked ? ", screen blanked" : "", brightness_written, brightness_writes,
+		    brightness_calls);
 		brightness_said = brightness_written;
 		brightness_said_at = now;
 		brightness_writes = 0;
+		brightness_calls = 0;
+	}
+}
+
+static void
+brightness_tick(void)
+{
+	float value;
+
+	if (brightness_read(&value)) {
+		value = brightness_clamp(value);
+		if (value != brightness_polled) {       /* (taken only when it changes: see above) */
+			brightness_polled = value;
+			brightness_value = value;
+			brightness_source = bks_brightness_get ? "BKSDisplayBrightnessGetCurrent" : "BrightnessSystemClient";
+		}
+	}
+	brightness_push();
+}
+
+/* a level the user set, caught by a hook (any thread): to the panel at once */
+static void
+brightness_from_hook(float value, const char *source, bool *said)
+{
+	if (brightness_queue == NULL) {
+		return;
+	}
+	value = brightness_clamp(value);
+	brightness_user = value;
+	dispatch_async(brightness_queue, ^{
+		if (!*said) {
+			*said = true;
+			say("hakios: brightness: %s called (%.3f): the first time\n", source, value);
+		}
+		brightness_calls++;
+		brightness_value = value;
+		brightness_source = source;
+		brightness_push();
+	});
+}
+
+/* -[CCUIDisplayModuleViewController _setBacklightLevel:], _backlightLevel and currentBrightness */
+static void (*original_cc_set_level)(id self, SEL selector, float level);
+static float (*original_cc_level)(id self, SEL selector);
+static float (*original_cc_current)(id self, SEL selector);
+static bool said_cc_set;
+
+static void
+cc_set_level(id self, SEL selector, float level)
+{
+	brightness_from_hook(level, "-[CCUIDisplayModuleViewController _setBacklightLevel:]", &said_cc_set);
+	original_cc_set_level(self, selector, level);
+}
+
+static float
+cc_level(id self, SEL selector)
+{
+	float user = brightness_user;
+
+	return user >= 0.0f ? user : original_cc_level(self, selector);
+}
+
+static float
+cc_current(id self, SEL selector)
+{
+	float user = brightness_user;
+
+	return user >= 0.0f ? user : original_cc_current(self, selector);
+}
+
+/* -[SBBrightnessController setBrightnessLevel:] and -_setBrightnessLevel:showHUD: */
+static void (*original_sb_set_level)(id self, SEL selector, float level);
+static void (*original_sb_set_level_hud)(id self, SEL selector, float level, BOOL hud);
+static bool said_sb_set, said_sb_set_hud;
+
+static void
+sb_set_level(id self, SEL selector, float level)
+{
+	brightness_from_hook(level, "-[SBBrightnessController setBrightnessLevel:]", &said_sb_set);
+	original_sb_set_level(self, selector, level);
+}
+
+static void
+sb_set_level_hud(id self, SEL selector, float level, BOOL hud)
+{
+	brightness_from_hook(level, "-[SBBrightnessController _setBrightnessLevel:showHUD:]", &said_sb_set_hud);
+	original_sb_set_level_hud(self, selector, level, hud);
+}
+
+/* -[BrightnessSystemClient setProperty:forKey:], key DisplayBrightness: a number, or {Brightness: number} */
+static BOOL (*original_bsc_set_property)(id self, SEL selector, id property, id key);
+static bool said_bsc_set;
+
+static BOOL
+bsc_set_property(id self, SEL selector, id property, id key)
+{
+	float value;
+
+	if (key != nil && CFGetTypeID((CFTypeRef)key) == CFStringGetTypeID() &&
+	    CFStringCompare((CFStringRef)key, CFSTR("DisplayBrightness"), 0) == kCFCompareEqualTo && property != nil) {
+		CFTypeRef number = (CFTypeRef)property;
+
+		if (CFGetTypeID(number) == CFDictionaryGetTypeID()) {
+			number = CFDictionaryGetValue((CFDictionaryRef)number, CFSTR("Brightness"));
+		}
+		if (number != NULL && CFGetTypeID(number) == CFNumberGetTypeID() &&
+		    CFNumberGetValue((CFNumberRef)number, kCFNumberFloatType, &value)) {
+			brightness_from_hook(value, "-[BrightnessSystemClient setProperty:forKey:] DisplayBrightness", &said_bsc_set);
+		}
+	}
+	return original_bsc_set_property(self, selector, property, key);
+}
+
+/* BKSDisplayBrightnessSet(level, unknown), where a library outside the shared cache calls it */
+static bool said_bks_set;
+
+static void
+bks_set(float level, long unknown)
+{
+	brightness_from_hook(level, "BKSDisplayBrightnessSet", &said_bks_set);
+	bks_brightness_set(level, unknown);
+}
+
+/*
+ * Replace -[CLASS SELECTOR] whatever its address, when its types are `types` (the return type and those of the
+ * arguments after self and _cmd, as the runtime writes them: "vf" for -(void)x:(float)). Returns the original, or
+ * NULL (and says so once) when the class or the method is not there or is not of that kind.
+ */
+static IMP
+brightness_hook(const char *class_name, const char *selector, const char *types, IMP replacement)
+{
+	Class cls = objc_getClass(class_name);
+	Method method = cls == Nil ? NULL : class_getInstanceMethod(cls, sel_registerName(selector));
+	char kind[32];
+	unsigned n;
+
+	if (method == NULL) {
+		say("hakios: brightness: -[%s %s] %s; not hooked\n", class_name, selector,
+		    cls == Nil ? "(no such class)" : "is not there");
+		return NULL;
+	}
+	method_getReturnType(method, kind, sizeof(kind));
+	n = method_getNumberOfArguments(method);
+	if (kind[0] != types[0] || n != strlen(types) + 1) {
+		say("hakios: brightness: -[%s %s] is not of the kind expected; not hooked\n", class_name, selector);
+		return NULL;
+	}
+	for (unsigned i = 2; i < n; i++) {
+		method_getArgumentType(method, i, kind, sizeof(kind));
+		if (kind[0] != types[i - 1]) {
+			say("hakios: brightness: -[%s %s] takes '%s' where '%c' was expected; not hooked\n", class_name,
+			    selector, kind, types[i - 1]);
+			return NULL;
+		}
+	}
+	return method_setImplementation(method, replacement);
+}
+
+static void
+brightness_hook_control_center(void)
+{
+	static bool done;
+	IMP set;
+
+	if (done || objc_getClass("CCUIDisplayModuleViewController") == Nil) {
+		return;
+	}
+	done = true;
+	if ((set = brightness_hook("CCUIDisplayModuleViewController", "_setBacklightLevel:", "vf", (IMP)cc_set_level))) {
+		original_cc_set_level = (void (*)(id, SEL, float))set;
+		original_cc_level = (float (*)(id, SEL))brightness_hook("CCUIDisplayModuleViewController", "_backlightLevel",
+		    "f", (IMP)cc_level);
+		original_cc_current = (float (*)(id, SEL))brightness_hook("CCUIDisplayModuleViewController",
+		    "currentBrightness", "f", (IMP)cc_current);
+		say("hakios: brightness: Control Center's slider hooked "
+		    "(-[CCUIDisplayModuleViewController _setBacklightLevel:]%s%s)\n",
+		    original_cc_level ? ", _backlightLevel" : "", original_cc_current ? ", currentBrightness" : "");
+	}
+}
+
+/* in one image outside the shared cache, its imports of BKSDisplayBrightnessSet pointed at bks_set */
+static int
+brightness_rebind(const struct mach_header_64 *header, intptr_t image_slide)
+{
+	const struct load_command *command = (const struct load_command *)(header + 1);
+	const struct segment_command_64 *linkedit = NULL;
+	const struct symtab_command *symtab = NULL;
+	const struct dysymtab_command *dysymtab = NULL;
+	int rebound = 0;
+
+	if (header->magic != MH_MAGIC_64) {
+		return 0;
+	}
+	for (uint32_t i = 0; i < header->ncmds; i++, command = (const void *)((const char *)command + command->cmdsize)) {
+		if (command->cmd == LC_SEGMENT_64 &&
+		    strcmp(((const struct segment_command_64 *)command)->segname, SEG_LINKEDIT) == 0) {
+			linkedit = (const void *)command;
+		} else if (command->cmd == LC_SYMTAB) {
+			symtab = (const void *)command;
+		} else if (command->cmd == LC_DYSYMTAB) {
+			dysymtab = (const void *)command;
+		}
+	}
+	if (linkedit == NULL || symtab == NULL || dysymtab == NULL || dysymtab->nindirectsyms == 0) {
+		return 0;
+	}
+	uintptr_t base = (uintptr_t)image_slide + linkedit->vmaddr - linkedit->fileoff;
+	const struct nlist_64 *symbols = (const void *)(base + symtab->symoff);
+	const char *strings = (const char *)(base + symtab->stroff);
+	const uint32_t *indirect = (const uint32_t *)(base + dysymtab->indirectsymoff);
+
+	command = (const struct load_command *)(header + 1);
+	for (uint32_t i = 0; i < header->ncmds; i++, command = (const void *)((const char *)command + command->cmdsize)) {
+		const struct segment_command_64 *segment = (const void *)command;
+		const struct section_64 *section = (const void *)(segment + 1);
+
+		if (command->cmd != LC_SEGMENT_64 || (strcmp(segment->segname, SEG_DATA) != 0 &&
+		    strcmp(segment->segname, "__DATA_CONST") != 0)) {
+			continue;
+		}
+		for (uint32_t s = 0; s < segment->nsects; s++, section++) {
+			uint32_t type = section->flags & SECTION_TYPE;
+			void **pointers = (void **)((uintptr_t)image_slide + section->addr);
+
+			if (type != S_LAZY_SYMBOL_POINTERS && type != S_NON_LAZY_SYMBOL_POINTERS) {
+				continue;
+			}
+			for (uint64_t k = 0; k < section->size / sizeof(void *); k++) {
+				uint32_t index = indirect[section->reserved1 + k];
+				vm_address_t page;
+
+				if ((index & (INDIRECT_SYMBOL_ABS | INDIRECT_SYMBOL_LOCAL)) != 0 || index >= symtab->nsyms ||
+				    strcmp(strings + symbols[index].n_un.n_strx, "_BKSDisplayBrightnessSet") != 0 ||
+				    pointers[k] == (void *)bks_set) {
+					continue;
+				}
+				page = (vm_address_t)&pointers[k] & ~(vm_address_t)(vm_page_size - 1);
+				if (vm_protect(mach_task_self(), page, vm_page_size, false, VM_PROT_READ | VM_PROT_WRITE |
+				    VM_PROT_COPY) != KERN_SUCCESS) {
+					continue;
+				}
+				pointers[k] = (void *)bks_set;
+				rebound++;
+				if (strcmp(segment->segname, "__DATA_CONST") == 0) {
+					(void)vm_protect(mach_task_self(), page, vm_page_size, false, VM_PROT_READ);
+				}
+			}
+		}
+	}
+	return rebound;
+}
+
+/* every image, those there now and each loaded later: Control Center's module, and BKSDisplayBrightnessSet's callers */
+static void
+brightness_image_added(const struct mach_header *header, intptr_t image_slide)
+{
+	size_t length = 0;
+	uintptr_t cache = (uintptr_t)_dyld_get_shared_cache_range(&length);
+	Dl_info info;
+	int rebound;
+
+	if (bks_brightness_set != NULL && !(cache != 0 && (uintptr_t)header >= cache && (uintptr_t)header < cache + length) &&
+	    (rebound = brightness_rebind((const struct mach_header_64 *)header, image_slide)) > 0) {
+		say("hakios: brightness: BKSDisplayBrightnessSet rebound in %s (%d)\n",
+		    dladdr(header, &info) && info.dli_fname ? info.dli_fname : "?", rebound);
+	}
+	if (dladdr(header, &info) && info.dli_fname != NULL && strstr(info.dli_fname, "/DisplayModule.bundle/") != NULL) {
+		dispatch_async(dispatch_get_main_queue(), ^{
+			brightness_hook_control_center();
+		});
 	}
 }
 
@@ -1575,6 +1868,7 @@ brightness_bridge(const char *arguments)
 	int mode;
 	void *library;
 	dispatch_source_t timer;
+	IMP original;
 
 	while (arg != NULL && arg != arguments && arg[-1] != ' ') {
 		arg = strstr(arg + 1, "brightness_bridge=");
@@ -1584,31 +1878,50 @@ brightness_bridge(const char *arguments)
 	}
 	library = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
 	bks_brightness_get = library ? (float (*)(void))dlsym(library, "BKSDisplayBrightnessGetCurrent") : NULL;
+	bks_brightness_set = library ? (void (*)(float, long))dlsym(library, "BKSDisplayBrightnessSet") : NULL;
+	dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_LAZY);
 	if (bks_brightness_get == NULL) {
-		Class cls;
+		Class cls = objc_getClass("BrightnessSystemClient");
 
-		dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_LAZY);
-		cls = objc_getClass("BrightnessSystemClient");
 		if (cls != Nil && class_getInstanceMethod(cls, sel_registerName("copyPropertyForKey:")) != NULL) {
 			brightness_client = ((id (*)(id, SEL))objc_msgSend)(((id (*)(Class, SEL))objc_msgSend)(cls,
 			    sel_registerName("alloc")), sel_registerName("init"));
 		}
 	}
-	if (bks_brightness_get == NULL && brightness_client == nil) {
-		say("hakios: brightness: brightness_bridge=%d, but neither BKSDisplayBrightnessGetCurrent nor "
-		    "BrightnessSystemClient is here; the panel keeps its level\n", mode);
-		return;
-	}
 	if (mode >= 2 && notify_register_check("com.apple.springboard.hasBlankedScreen", &brightness_blanked_token) !=
 	    NOTIFY_STATUS_OK) {
 		brightness_blanked_token = NOTIFY_TOKEN_INVALID;
 	}
-	say("hakios: brightness: brightness_bridge=%d: the level from %s to kern.hakios.brightness (now %d), "
-	    "floor %d%s\n", mode, bks_brightness_get ? "BKSDisplayBrightnessGetCurrent" : "BrightnessSystemClient",
-	    sysctl_int("kern.hakios.brightness"), BRIGHTNESS_FLOOR,
+	brightness_queue = dispatch_queue_create("com.hakios.brightness", DISPATCH_QUEUE_SERIAL);
+	say("hakios: brightness: brightness_bridge=%d: the level set in SpringBoard, and %s asked four times a second, "
+	    "to kern.hakios.brightness (now %d), floor %d%s\n", mode, bks_brightness_get ? "BKSDisplayBrightnessGetCurrent" :
+	    brightness_client ? "BrightnessSystemClient" : "nothing (neither BKSDisplayBrightnessGetCurrent nor "
+	    "BrightnessSystemClient is here)", sysctl_int("kern.hakios.brightness"), BRIGHTNESS_FLOOR,
 	    brightness_blanked_token != NOTIFY_TOKEN_INVALID ? ", 0 while the screen is blanked" : "");
-	timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-	    dispatch_queue_create("com.hakios.brightness", DISPATCH_QUEUE_SERIAL));
+
+	/* the hooks: SpringBoard's own, CoreBrightness's, then Control Center's module whenever it is loaded */
+	if ((original = brightness_hook("SBBrightnessController", "setBrightnessLevel:", "vf", (IMP)sb_set_level))) {
+		original_sb_set_level = (void (*)(id, SEL, float))original;
+	}
+	if ((original = brightness_hook("SBBrightnessController", "_setBrightnessLevel:showHUD:", "vfB",
+	    (IMP)sb_set_level_hud))) {
+		original_sb_set_level_hud = (void (*)(id, SEL, float, BOOL))original;
+	}
+	if ((original = brightness_hook("BrightnessSystemClient", "setProperty:forKey:", "B@@", (IMP)bsc_set_property))) {
+		original_bsc_set_property = (BOOL (*)(id, SEL, id, id))original;
+	}
+	if (bks_brightness_set == NULL) {
+		say("hakios: brightness: BKSDisplayBrightnessSet is not there; not hooked\n");
+	}
+	if (objc_getClass("CCUIDisplayModuleViewController") == Nil) {
+		say("hakios: brightness: Control Center's display module is not loaded yet; hooked when it is\n");
+	}
+	_dyld_register_func_for_add_image(brightness_image_added);
+	dispatch_async(dispatch_get_main_queue(), ^{
+		brightness_hook_control_center();
+	});
+
+	timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, brightness_queue);
 	dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), 250 * NSEC_PER_MSEC,
 	    50 * NSEC_PER_MSEC);
 	dispatch_source_set_event_handler(timer, ^{
