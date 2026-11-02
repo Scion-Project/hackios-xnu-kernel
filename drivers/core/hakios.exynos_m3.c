@@ -296,40 +296,52 @@ hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr)
  * and memory written outside the caches, would not crash anything.
  *
  * How. One thread is bound to each processor; each says its MPIDR, MIDR, CTR_EL0 (the line sizes), CLIDR, SCTLR (the
- * caches on) and TCR. Then one A55 (MPIDR Aff1 0) and one M3 (Aff1 1) are given these in turn. Every command and answer
+ * caches on) and TCR. Which cluster a core is in is read from its MIDR: an A55 is implementer 0x41 part 0xD05 (MIDR
+ * 0x410fd051 on the phone), an M3 implementer 0x53 (0x531f0020). (Not from MPIDR: the A55s, in a DynamIQ cluster, set
+ * MPIDR.MT and have the core number in Aff1 (cores 2 and 3: 0x200 and 0x300, patch 1504), the M3s have the cluster in
+ * Aff1 (0x100-0x103), so Aff1 does not tell the clusters apart. The first version of this test took Aff1 0 for an A55
+ * and found "no A55" on a phone running two A55s and four M3s.) Then every A55 is paired with
+ * every M3, and each pair is given these steps twice: once with the A55 as X and the M3 as Y, once the other way round,
+ * so that every step is made in both directions. Every command and answer
  * goes through a Device-memory (uncached) alias of the test's pages, so a failure of coherency cannot hide or hang the
  * test itself, and "memory has" is read through the same alias. Each step has a time limit; nothing waits for ever.
- *   0  the method: the A55 writes cached, cleans by VA to the point of coherency itself; memory has it
+ *   0  the method: X writes cached, cleans by VA to the point of coherency itself; memory has it
  *   1  ping-pong: the two take turns 100000 times on a cached line; each round a counter and 256 bytes of data
  *      (four lines) written with a store-release, read with a load-acquire. Stale data under a new counter, or a counter
  *      that is not seen in 500 ms, is incoherence
- *   2  the M3 writes cached, nothing more; the A55 reads cached (the snoop the other way: is a dirty line seen?)
+ *   2  Y writes cached, nothing more; X reads cached (the snoop the other way: is a dirty line seen?)
  *   3  the same, the other way round
- *   4  the M3 writes cached; the A55 cleans by VA (DC CVAC, broadcast); does memory have it? (a picture drawn on an M3,
- *      made ready for the GPU or the display from an A55)
+ *   4  Y writes cached; X cleans by VA (DC CVAC, broadcast); does memory have it? (a picture drawn on Y,
+ *      made ready for the GPU or the display from X)
  *   5  the same, the other way round
- *   6  the M3 writes cached and cleans by VA itself; does memory have it?
- *   7  memory changed under the M3's cached copy (a GPU's write); the A55 invalidates by VA (DC IVAC, broadcast); does
- *      the M3 read the new data? (7c, the control: the M3 invalidates itself)
- * Each step is said with the number of 64-byte lines (or rounds) that were wrong, then a verdict line.
+ *   6  Y writes cached and cleans by VA itself; does memory have it?
+ *   7  memory changed under Y's cached copy (a GPU's write); X invalidates by VA (DC IVAC, broadcast); does
+ *      Y read the new data? (7c, the control: Y invalidates itself)
+ * For the first pair (both ways) each step is said with the number of 64-byte lines (or rounds) that were wrong; for
+ * the rest only a step that fails is said. Each direction ends with a line of its own, and the run with one summary
+ * line: "cohtest: summary: PASS: COHERENT: ..." or "cohtest: summary: FAIL: NOT COHERENT: ...".
  *
  * Boot-args: cohtest=N runs it N times (1-10; 0 or none: never), the first cohtest_delay seconds after start-up (30,
- * when the screen is drawing), then every 30 s. It uses 16 KB and two processors for a second or so.
+ * when the screen is drawing), then every 30 s. It uses 16 KB, and two processors at a time for a few seconds in all.
  *
- * Expected on a coherent phone (the numbers are examples; with bootcpu=2 the A55s are MPIDR 0x2 and 0x3):
+ * Expected on a coherent phone (cpus=6 bootcpu=2 m3_prep=3: cpus 0-1 the A55s, 2-5 the M3s; the numbers are examples):
  *   cohtest: cohtest=1: the clusters' coherency is measured 30 s after start-up
  *   cohtest: 16 KB at 0x..., cached at 0x... and uncached (Device) at 0x...
  *   cohtest: run 1 of 1: 6 processors
- *   cohtest: cpu 2 (ran on 2): MPIDR 0x100 MIDR 0x... CTR 0x... (D line 64, I line 64) CLIDR 0x... SCTLR 0x... (C 1) TCR 0x...
- *            (one such line a processor: the line sizes and SCTLR.C of an M3 next to an A55's)
- *   cohtest: A55 cpu 0 (MPIDR 0x2) and M3 cpu 2 (MPIDR 0x100); 128 lines of 64 bytes a step
- *   cohtest: 0 the method (A55 writes, cleans; memory has it?): 0 of 128 lines wrong: ok
- *   cohtest: 1 ping-pong A55 <-> M3: 100000 of 100000 rounds, 0 stale (first at count 0), 0 stuck (seen 0 waiting
+ *   cohtest: cpu 0 (ran on 0): A55, MPIDR 0x200 MIDR 0x410fd051 CTR 0x... (D line 64, I line 64) CLIDR 0x... SCTLR ...
+ *   cohtest: cpu 2 (ran on 2): M3, MPIDR 0x100 MIDR 0x531f0020 CTR 0x... (one such line a processor)
+ *   cohtest: 2 A55s and 4 M3s: every pair, both ways (the first in full, then only what fails); 128 lines of 64 bytes a step
+ *   cohtest: A55 0 -> M3 2: 0 the method (A55 writes, cleans; memory has it?): 0 of 128 lines wrong: ok
+ *   cohtest: A55 0 -> M3 2: 1 ping-pong: 100000 of 100000 rounds, 0 stale (first at count 0), 0 stuck (seen 0 waiting
  *            for 0), 900 ns a round trip: ok
- *   cohtest: 2 M3 writes cached; A55 reads cached: 0 of 128 lines wrong: ok
+ *   cohtest: A55 0 -> M3 2: 2 M3 writes cached; A55 reads cached: 0 of 128 lines wrong: ok
  *   ... 3, 4, 5, 6, 7 and 7c the same
- *   cohtest: verdict: COHERENT: all 9 checks passed (A55 cpu 0, M3 cpu 2)
- * and when not, FAIL on the steps that failed and "cohtest: verdict: NOT COHERENT: n of 9 checks failed". Reading it:
+ *   cohtest: A55 0 -> M3 2: 9 of 9 checks passed: ok
+ *   cohtest: M3 2 -> A55 0: ... (the same steps, the other way round), then 9 of 9 checks passed: ok
+ *   cohtest: A55 1 -> M3 2: 9 of 9 checks passed: ok          (and so on: 16 directions for 2 A55s and 4 M3s)
+ *   cohtest: summary: PASS: COHERENT: 16 of 16 directions (2 A55s x 4 M3s, both ways), all 144 checks passed
+ * and when not, FAIL on the steps that failed and "cohtest: summary: FAIL: NOT COHERENT: n of 16 directions failed, ...".
+ * With no A55 or no M3 answering: "cohtest: summary: NOT RUN: ...". Reading it (X -> Y as in the step list):
  * 1, 2 or 3 failing is the clusters not snooping each other at all (the kernel itself would be in trouble soon); 4 or
  * 5 alone, cleaning by VA not broadcast to the other cluster; 6 alone, the M3's clean not reaching memory; 7 alone
  * (7c passing), invalidation by VA not broadcast: a picture the GPU wrote read stale on an M3. Any of 4-7 fits the
@@ -364,6 +376,14 @@ enum { OP_NONE, OP_ID, OP_PING, OP_WRITE, OP_WRITE_CLEAN, OP_CLEAN, OP_INVAL, OP
 struct coh_ctl {                        /* one per processor, 256 bytes apart, in the Device alias */
 	uint32_t seq, op, arg, done;
 	uint64_t r[8];
+};
+
+enum { COH_OTHER, COH_A55, COH_M3 };
+
+struct coh_tally {                      /* one direction of one pair */
+	uint32_t checks, failed;
+	bool loud;                      /* every step said, not only the failures */
+	char pair[40];                  /* "A55 0 -> M3 2:" */
 };
 
 static uint32_t coh_runs, coh_delay = 30, coh_run;
@@ -605,9 +625,9 @@ coh_do(int cpu, uint32_t op, uint32_t arg)
 	return true;
 }
 
-/* one step: memory or a cache set up by the others, then the count of wrong lines from `reader` */
+/* one step: memory or a cache set up by the others, then the count of wrong lines from `reader`; said in full when `loud` */
 static int
-coh_count(const char *what, int reader, uint32_t op, uint32_t tag, uint32_t *failed, uint32_t *checks)
+coh_count(const char *what, int reader, uint32_t op, uint32_t tag, struct coh_tally *t)
 {
 	uint64_t wrong;
 
@@ -615,20 +635,146 @@ coh_count(const char *what, int reader, uint32_t op, uint32_t tag, uint32_t *fai
 		return -1;
 	}
 	wrong = coh_ctl(reader)->r[0];
-	(*checks)++;
+	t->checks++;
 	if (wrong != 0) {
-		(*failed)++;
+		t->failed++;
 	}
-	say("cohtest: %s: %llu of %u lines wrong: %s\n", what, wrong, COH_LINES, wrong ? "FAIL" : "ok");
+	if (t->loud || wrong != 0) {
+		say("cohtest: %s %s: %llu of %u lines wrong: %s\n", t->pair, what, wrong, COH_LINES, wrong ? "FAIL" : "ok");
+	}
 	return wrong != 0;
+}
+
+/* the cluster of a core, by its MIDR: Arm's Cortex-A55 (implementer 0x41, part 0xD05), Samsung's M3 (implementer 0x53) */
+static int
+coh_kind(uint64_t midr)
+{
+	uint32_t implementer = (uint32_t)(midr >> 24) & 0xff, part = (uint32_t)(midr >> 4) & 0xfff;
+
+	if (implementer == 0x41 && part == 0xd05) {
+		return COH_A55;
+	}
+	if (implementer == 0x53) {
+		return COH_M3;
+	}
+	return COH_OTHER;
+}
+
+static const char *const coh_kind_name[] = { "other", "A55", "M3" };
+
+/*
+ * The nine checks between x and y, x in the A55's place of the steps above and y in the M3's: run once with x an A55
+ * and y an M3 and once the other way round, so that every check is made in both directions. false: a processor did
+ * not answer (the run stops there).
+ */
+static bool
+coh_pair(int x, int y, uint32_t tag, struct coh_tally *t)
+{
+	const char *xn = coh_kind_name[coh_kind(coh_ctl(x)->r[1])], *yn = coh_kind_name[coh_kind(coh_ctl(y)->r[1])];
+	char what[160];
+
+	snprintf(t->pair, sizeof(t->pair), "%s %d -> %s %d:", xn, x, yn, y);
+	*coh_abort() = 0;
+	__asm__ volatile ("dsb sy" ::: "memory");
+
+	/* 0: the method */
+	snprintf(what, sizeof(what), "0 the method (%s writes, cleans; memory has it?)", xn);
+	if (!coh_do(x, OP_WRITE_CLEAN, tag + 0) || coh_count(what, x, OP_DEV_COUNT, tag + 0, t) < 0) {
+		return false;
+	}
+
+	/* 1: the ping-pong, on a line nobody has cached yet */
+	{
+		uint64_t *seq = (uint64_t *)(coh_va + COH_PING);
+		uint64_t *data = (uint64_t *)(coh_va + COH_PING + 64);
+		volatile struct coh_ctl *cx = coh_ctl(x), *cy = coh_ctl(y);
+		bool ok;
+
+		*seq = 0;
+		for (uint32_t i = 0; i < COH_WORDS; i++) {
+			data[i] = coh_pattern(0, i);
+		}
+		FlushPoC_DcacheRegion(coh_va + COH_PING, 4096);
+		(void)coh_send(y, OP_PING, 1);
+		(void)coh_send(x, OP_PING, 0);
+		ok = coh_wait(x, 5000) && coh_wait(y, 5000);
+		t->checks++;
+		if (!ok) {
+			*coh_abort() = 1;
+			t->failed++;
+			say("cohtest: %s 1 ping-pong: no end in 5 s: FAIL\n", t->pair);
+		} else {
+			uint64_t rounds = cx->r[0] + cy->r[0], stale = cx->r[1] + cy->r[1], stuck = cx->r[2] + cy->r[2];
+			uint64_t ns = MAX(cx->r[6], cy->r[6]);
+			bool bad = stale != 0 || stuck != 0 || rounds != 2ull * COH_ROUNDS;
+
+			t->failed += bad;
+			if (t->loud || bad) {
+				say("cohtest: %s 1 ping-pong: %llu of %u rounds, %llu stale (first at count %llu), %llu stuck "
+				    "(seen %llu waiting for %llu), %llu ns a round trip: %s\n", t->pair, rounds / 2, COH_ROUNDS, stale,
+				    cx->r[1] ? cx->r[5] : cy->r[5], stuck, cx->r[2] ? cx->r[3] : cy->r[3],
+				    cx->r[2] ? cx->r[4] : cy->r[4], rounds ? ns * 2 / rounds : 0, bad ? "FAIL" : "ok");
+			}
+		}
+	}
+
+	/* 2, 3: a dirty line in one cluster, read cached from the other */
+	snprintf(what, sizeof(what), "2 %s writes cached; %s reads cached", yn, xn);
+	if (!coh_do(y, OP_WRITE, tag + 2) || coh_count(what, x, OP_READ, tag + 2, t) < 0) {
+		return false;
+	}
+	snprintf(what, sizeof(what), "3 %s writes cached; %s reads cached", xn, yn);
+	if (!coh_do(x, OP_WRITE, tag + 3) || coh_count(what, y, OP_READ, tag + 3, t) < 0) {
+		return false;
+	}
+	/* 4, 5: written in one, cleaned by VA from the other: in memory? */
+	snprintf(what, sizeof(what), "4 %s writes; %s cleans by VA; memory has it?", yn, xn);
+	if (!coh_do(y, OP_WRITE, tag + 4) || !coh_do(x, OP_CLEAN, 0) || coh_count(what, x, OP_DEV_COUNT, tag + 4, t) < 0) {
+		return false;
+	}
+	snprintf(what, sizeof(what), "5 %s writes; %s cleans by VA; memory has it?", xn, yn);
+	if (!coh_do(x, OP_WRITE, tag + 5) || !coh_do(y, OP_CLEAN, 0) || coh_count(what, x, OP_DEV_COUNT, tag + 5, t) < 0) {
+		return false;
+	}
+	/* 6: written and cleaned in y */
+	snprintf(what, sizeof(what), "6 %s writes, cleans by VA itself; memory has it?", yn);
+	if (!coh_do(y, OP_WRITE_CLEAN, tag + 6) || coh_count(what, x, OP_DEV_COUNT, tag + 6, t) < 0) {
+		return false;
+	}
+	/* 7: memory changed under y's cached copy; x invalidates by VA (7), y itself (7c) */
+	for (int own = 0; own < 2; own++) {
+		uint32_t old = tag + 0x70 + (uint32_t)own * 2, now = old + 1;
+
+		if (!coh_do(x, OP_CLEAN, 0) || !coh_do(x, OP_INVAL, 0) || !coh_do(y, OP_CLEAN, 0) || !coh_do(y, OP_INVAL, 0) ||
+		    !coh_do(x, OP_DEV_WRITE, old) || !coh_do(y, OP_INVAL, 0) ||
+		    !coh_do(y, OP_READ, old)) {
+			return false;
+		}
+		if (coh_ctl(y)->r[0] != 0) {
+			say("cohtest: %s 7%s: (setting up) the %s did not read what memory had even after its own invalidate: "
+			    "%llu lines (not counted; 7c says more)\n", t->pair, own ? "c" : "", yn, coh_ctl(y)->r[0]);
+		}
+		if (own) {
+			snprintf(what, sizeof(what), "7c memory changed; %s invalidates by VA itself; %s reads new data? (control)",
+			    yn, yn);
+		} else {
+			snprintf(what, sizeof(what), "7 memory changed under the %s's copy; %s invalidates by VA; %s reads new data?",
+			    yn, xn, yn);
+		}
+		if (!coh_do(x, OP_DEV_WRITE, now) || !coh_do(own ? y : x, OP_INVAL, 0) || coh_count(what, y, OP_READ, now, t) < 0) {
+			return false;
+		}
+	}
+	return true;
 }
 
 static void
 coh_main(__unused void *arg, __unused wait_result_t wr)
 {
-	int ncpu = (int)MIN(real_ncpus, COH_MAXCPU), a = -1, b = -1;
+	int ncpu = (int)MIN(real_ncpus, COH_MAXCPU), a55[COH_MAXCPU], m3[COH_MAXCPU], na55 = 0, nm3 = 0;
 	bool alive[COH_MAXCPU] = { false };
-	uint32_t failed = 0, checks = 0, tag = (coh_run + 1) << 8;
+	uint32_t runs = 0, bad = 0, done = 0, failed = 0, checks = 0;
+	struct coh_tally t;
 
 	say("cohtest: run %u of %u: %d processors\n", coh_run + 1, coh_runs, ncpu);
 	for (int i = 0; i < ncpu; i++) {
@@ -640,17 +786,19 @@ coh_main(__unused void *arg, __unused wait_result_t wr)
 	*coh_abort() = 0;
 	__asm__ volatile ("dsb sy" ::: "memory");
 	for (int i = 0; i < ncpu; i++) {
-		thread_t t;
+		thread_t th;
 
-		if (cpu_to_processor(i) == NULL || kernel_thread_start(coh_worker, (void *)(uintptr_t)i, &t) != KERN_SUCCESS) {
+		if (cpu_to_processor(i) == NULL || kernel_thread_start(coh_worker, (void *)(uintptr_t)i, &th) != KERN_SUCCESS) {
 			say("cohtest: cpu %d: no thread\n", i);
 			continue;
 		}
-		thread_deallocate(t);
+		thread_deallocate(th);
 	}
+	/* which cluster each one is in: by its MIDR (not by MPIDR's Aff1: the A55s number themselves in Aff1, patch 1504) */
 	for (int i = 0; i < ncpu; i++) {
 		volatile struct coh_ctl *c = coh_ctl(i);
 		uint64_t mpidr;
+		int kind;
 
 		(void)coh_send(i, OP_ID, 0);
 		if (!coh_wait(i, 1000)) {
@@ -659,114 +807,63 @@ coh_main(__unused void *arg, __unused wait_result_t wr)
 		}
 		alive[i] = true;
 		mpidr = c->r[0] & 0xffffff;
-		say("cohtest: cpu %d (ran on %llu): MPIDR 0x%llx MIDR 0x%llx CTR 0x%llx (D line %u, I line %u) CLIDR 0x%llx "
-		    "SCTLR 0x%llx (C %llu) TCR 0x%llx\n", i, c->r[6], mpidr, c->r[1], c->r[2], 4u << ((c->r[2] >> 16) & 0xf),
-		    4u << (c->r[2] & 0xf), c->r[3], c->r[4], (c->r[4] >> 2) & 1, c->r[5]);
-		if (((mpidr >> 8) & 0xff) == 0 && a < 0) {
-			a = i;
-		} else if (((mpidr >> 8) & 0xff) == 1 && b < 0) {
-			b = i;
+		kind = coh_kind(c->r[1]);
+		say("cohtest: cpu %d (ran on %llu): %s, MPIDR 0x%llx MIDR 0x%llx CTR 0x%llx (D line %u, I line %u) CLIDR 0x%llx "
+		    "SCTLR 0x%llx (C %llu) TCR 0x%llx\n", i, c->r[6], coh_kind_name[kind], mpidr, c->r[1], c->r[2],
+		    4u << ((c->r[2] >> 16) & 0xf), 4u << (c->r[2] & 0xf), c->r[3], c->r[4], (c->r[4] >> 2) & 1, c->r[5]);
+		if (kind == COH_A55) {
+			a55[na55++] = i;
+		} else if (kind == COH_M3) {
+			m3[nm3++] = i;
 		}
 	}
-	if (a < 0 || b < 0) {
-		say("cohtest: no %s running: nothing to compare (m3_prep=3 and cpus= with an M3)\n", a < 0 ? "A55" : "M3");
+	if (na55 == 0 || nm3 == 0) {
+		say("cohtest: %d A55s and %d M3s answered: nothing to compare (it needs m3_prep=3 and cpus= with an M3)\n", na55,
+		    nm3);
+		say("cohtest: summary: NOT RUN: no %s running\n", na55 == 0 ? "A55" : "M3");
 		goto out;
 	}
-	say("cohtest: A55 cpu %d (MPIDR 0x%llx) and M3 cpu %d (MPIDR 0x%llx); %u lines of 64 bytes a step\n", a,
-	    coh_ctl(a)->r[0] & 0xffffff, b, coh_ctl(b)->r[0] & 0xffffff, COH_LINES);
-	for (int i = 0; i < ncpu; i++) {
-		if (alive[i] && i != a && i != b) {
-			(void)coh_send(i, OP_EXIT, 0);
-			alive[i] = false;
-		}
-	}
+	say("cohtest: %d A55s and %d M3s: every pair, both ways (the first in full, then only what fails); %u lines of 64 "
+	    "bytes a step\n", na55, nm3, COH_LINES);
 
-	/* 0: the method */
-	if (!coh_do(a, OP_WRITE_CLEAN, tag + 0) || coh_count("0 the method (A55 writes, cleans; memory has it?)", a, OP_DEV_COUNT,
-	    tag + 0, &failed, &checks) < 0) {
-		goto out;
-	}
+	for (int j = 0; j < nm3; j++) {
+		for (int i = 0; i < na55; i++) {
+			for (int way = 0; way < 2; way++) {
+				int x = way ? m3[j] : a55[i], y = way ? a55[i] : m3[j];
+				uint32_t tag = ((coh_run + 1) << 16) | ((runs & 0xff) << 8);
+				bool finished;
 
-	/* 1: the ping-pong, on a line nobody has cached yet */
-	{
-		uint64_t *seq = (uint64_t *)(coh_va + COH_PING);
-		uint64_t *data = (uint64_t *)(coh_va + COH_PING + 64);
-		volatile struct coh_ctl *ca = coh_ctl(a), *cb = coh_ctl(b);
-		bool ok;
-
-		*seq = 0;
-		for (uint32_t i = 0; i < COH_WORDS; i++) {
-			data[i] = coh_pattern(0, i);
-		}
-		FlushPoC_DcacheRegion(coh_va + COH_PING, 4096);
-		(void)coh_send(b, OP_PING, 1);
-		(void)coh_send(a, OP_PING, 0);
-		ok = coh_wait(a, 5000) && coh_wait(b, 5000);
-		checks++;
-		if (!ok) {
-			*coh_abort() = 1;
-			failed++;
-			say("cohtest: 1 ping-pong: no end in 5 s: FAIL\n");
-		} else {
-			uint64_t rounds = ca->r[0] + cb->r[0], stale = ca->r[1] + cb->r[1], stuck = ca->r[2] + cb->r[2];
-			uint64_t ns = MAX(ca->r[6], cb->r[6]);
-			bool bad = stale != 0 || stuck != 0 || rounds != 2ull * COH_ROUNDS;
-
-			failed += bad;
-			say("cohtest: 1 ping-pong A55 <-> M3: %llu of %u rounds, %llu stale (first at count %llu), %llu stuck "
-			    "(seen %llu waiting for %llu), %llu ns a round trip: %s\n", rounds / 2, COH_ROUNDS, stale,
-			    ca->r[1] ? ca->r[5] : cb->r[5], stuck, ca->r[2] ? ca->r[3] : cb->r[3], ca->r[2] ? ca->r[4] : cb->r[4],
-			    rounds ? ns * 2 / rounds : 0, bad ? "FAIL" : "ok");
+				memset(&t, 0, sizeof(t));
+				t.loud = runs < 2;      /* the first pair, both ways */
+				finished = coh_pair(x, y, tag, &t);
+				runs++;
+				checks += t.checks;
+				failed += t.failed;
+				if (!finished) {
+					say("cohtest: %s stopped after %u checks (a processor did not answer): FAIL\n", t.pair, t.checks);
+					bad++;
+					goto summary;
+				}
+				done++;
+				bad += t.failed != 0;
+				/* the others asked something, so that none of them gives up waiting (20 s) before its turn */
+				for (int k = 0; k < ncpu; k++) {
+					if (alive[k] && k != x && k != y && !coh_do(k, OP_ID, 0)) {
+						alive[k] = false;
+					}
+				}
+				say("cohtest: %s %u of %u checks passed: %s\n", t.pair, t.checks - t.failed, t.checks,
+				    t.failed ? "FAIL" : "ok");
+			}
 		}
 	}
-
-	/* 2, 3: a dirty line in one cluster, read cached from the other */
-	if (!coh_do(b, OP_WRITE, tag + 2) || coh_count("2 M3 writes cached; A55 reads cached", a, OP_READ, tag + 2, &failed,
-	    &checks) < 0) {
-		goto out;
-	}
-	if (!coh_do(a, OP_WRITE, tag + 3) || coh_count("3 A55 writes cached; M3 reads cached", b, OP_READ, tag + 3, &failed,
-	    &checks) < 0) {
-		goto out;
-	}
-	/* 4, 5: written in one, cleaned by VA from the other: in memory? */
-	if (!coh_do(b, OP_WRITE, tag + 4) || !coh_do(a, OP_CLEAN, 0) ||
-	    coh_count("4 M3 writes; A55 cleans by VA; memory has it?", a, OP_DEV_COUNT, tag + 4, &failed, &checks) < 0) {
-		goto out;
-	}
-	if (!coh_do(a, OP_WRITE, tag + 5) || !coh_do(b, OP_CLEAN, 0) ||
-	    coh_count("5 A55 writes; M3 cleans by VA; memory has it?", a, OP_DEV_COUNT, tag + 5, &failed, &checks) < 0) {
-		goto out;
-	}
-	/* 6: written and cleaned in the M3 */
-	if (!coh_do(b, OP_WRITE_CLEAN, tag + 6) ||
-	    coh_count("6 M3 writes, cleans by VA itself; memory has it?", a, OP_DEV_COUNT, tag + 6, &failed, &checks) < 0) {
-		goto out;
-	}
-	/* 7: memory changed under the M3's cached copy; the A55 invalidates by VA (7), the M3 itself (7c) */
-	for (int own = 0; own < 2; own++) {
-		uint32_t old = tag + 0x70 + (uint32_t)own * 2, now = old + 1;
-
-		if (!coh_do(a, OP_CLEAN, 0) || !coh_do(a, OP_INVAL, 0) || !coh_do(b, OP_CLEAN, 0) || !coh_do(b, OP_INVAL, 0) ||
-		    !coh_do(a, OP_DEV_WRITE, old) || !coh_do(b, OP_INVAL, 0) ||
-		    !coh_do(b, OP_READ, old)) {
-			goto out;
-		}
-		if (coh_ctl(b)->r[0] != 0) {
-			say("cohtest: 7%s: (setting up) the M3 did not read what memory had even after its own invalidate: %llu lines "
-			    "(not counted; 7c says more)\n", own ? "c" : "", coh_ctl(b)->r[0]);
-		}
-		if (!coh_do(a, OP_DEV_WRITE, now) || !coh_do(own ? b : a, OP_INVAL, 0) ||
-		    coh_count(own ? "7c memory changed; M3 invalidates by VA itself; M3 reads new data? (control)" :
-		    "7 memory changed under the M3's copy; A55 invalidates by VA; M3 reads new data?", b, OP_READ, now, &failed,
-		    &checks) < 0) {
-			goto out;
-		}
-	}
-	if (failed == 0) {
-		say("cohtest: verdict: COHERENT: all %u checks passed (A55 cpu %d, M3 cpu %d)\n", checks, a, b);
+summary:
+	if (bad == 0) {
+		say("cohtest: summary: PASS: COHERENT: %u of %u directions (%d A55s x %d M3s, both ways), all %u checks passed\n",
+		    done, 2 * na55 * nm3, na55, nm3, checks);
 	} else {
-		say("cohtest: verdict: NOT COHERENT: %u of %u checks failed (A55 cpu %d, M3 cpu %d)\n", failed, checks, a, b);
+		say("cohtest: summary: FAIL: NOT COHERENT: %u of %u directions failed, %u of %u checks failed (%d A55s x %d M3s)\n",
+		    bad, 2 * na55 * nm3, failed, checks, na55, nm3);
 	}
 out:
 	for (int i = 0; i < ncpu; i++) {

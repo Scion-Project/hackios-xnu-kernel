@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **451 arguments**: 389 read by the kernel, 16 by the loader, 56 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **452 arguments**: 390 read by the kernel, 16 by the loader, 56 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -479,7 +479,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (60)
+## User space (61)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -520,6 +520,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `pan` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_PAN` |  |
 | `poster_retry` | U | `poster_retry.c` | `CONFIG_POSTER_RETRY` |  |
 | `root_apfs` | U | `init.c` | `CONFIG_ROOT_APFS` |  |
+| `rtc_pmic` | K | `hakios.s2mps18_rtc.c` | `CONFIG_RTC_PMIC` |  |
 | `sb_delay` | U | `inject_sb.c` |  | xl (XL_SB_DELAY) |
 | `sccam.addr` | K | `1400-avf-scion-camera.patch`, `hakios.sccam_torch.c` | `CONFIG_SCCAM_ADDR` |  |
 | `sccam.h` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_H` |  |

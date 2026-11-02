@@ -16,7 +16,7 @@
 | Part | State | |
 |---|---|---|
 | display | partly | the panel through UEFI's framebuffer (1440 x 2960 at 0xCC000000); brightness by gamma and AOR through DSIM0 (panel=1, kern.hakios.brightness; iOS's slider through hakios.backlight.cpp, backlight=1 logs what iOS sets): written, not yet seen |
-| cpu | partly | A55s 2 and 3 (cpus=2 bootcpu=2, the default): seen on the phone; with the four M3s, six cores running iOS (cpus=6 bootcpu=2 m3_prep=3 pan=0; isa_floor on by m3_prep=3): seen on the phone, 2 November; core 1 is parked by S-Boot (README.md, The cores); a check of the clusters' cache coherency (cohtest=N): written, not yet seen |
+| cpu | partly | A55s 2 and 3 (cpus=2 bootcpu=2, the default): seen on the phone; with the four M3s, six cores running iOS (cpus=6 bootcpu=2 m3_prep=3 pan=0; isa_floor on by m3_prep=3): seen on the phone, 2 November; core 1 is parked by S-Boot (README.md, The cores); a check of the clusters' cache coherency (cohtest=N, every A55 against every M3 both ways, the cores told apart by MIDR): its first version ran on the phone and found "no A55" (it looked at MPIDR); the fix written, not yet seen; the time of day from the S2MPS18's RTC, read only (rtc_pmic=1): written, not yet seen |
 | touch | partly | Samsung S6SY761 on USI03's HSI2C, ten fingers (s6sy761=1): written, not yet seen on the phone |
 | buttons | partly | power, volume, Bixby as home (exynos_keys=1): written, not yet seen on the phone |
 | storage | partly | UFS read through the loader and Silicium's UEFI (ufs=2); or by the kernel's own UFS driver, read only, as UEFI left the controller (ufs_native=4 ufs_native_soc=exynos9810, ufs_native_step=1..5): written, not yet seen on the phone |

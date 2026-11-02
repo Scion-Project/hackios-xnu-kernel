@@ -268,6 +268,7 @@ REGTRACE	arg	regtrace	CPU, memory and boot	k	(patch)
 RETURN_CPU	arg	return_cpu	CPU, memory and boot	k	loader_return.c	
 RETURN_PANIC	arg	return_panic	CPU, memory and boot	k	loader_return.c	
 ROOT_APFS	arg	root_apfs	User space	u	init.c	the root is to be the Darwin root volume on /dev/DEV -- the phone's flash, read only
+RTC_PMIC	arg	rtc_pmic	User space	k	hakios.s2mps18_rtc.c	read the clock at start-up (the kernel's first ask for the time of day), log it, use it when valid
 S6SY761	arg	s6sy761	Touch and buttons	k	hakios.s6sy761.c	every address below belongs to this phone
 S6SY761_IPCLK	arg	s6sy761_ipclk	Touch and buttons	k	hakios.s6sy761.c	the HSI2C's input clock, if step 1 says it is not the 200 MHz both other drivers assume
 S6SY761_LDO	arg	s6sy761_ldo	Touch and buttons	k	hakios.s6sy761.c	
