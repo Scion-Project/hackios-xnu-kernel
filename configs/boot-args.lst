@@ -139,6 +139,7 @@ fb_hz	k
 fb_measure	k
 fb_pri	k
 fb_queue	k
+fb_tcoal	k
 fb_threads	k
 fbheight	k
 fbscale	k
