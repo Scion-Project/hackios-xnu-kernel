@@ -162,6 +162,12 @@ chip_read(uint8_t cmd, uint8_t *answer, uint32_t len)
 
 /* ---- events ---- */
 
+extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation, void *parameter, integer_t priority,
+    thread_t *new_thread);
+
+/* s6sy761_trace=N: the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate */
+static uint32_t trace_left;
+
 static void
 all_up(void)
 {
@@ -187,6 +193,11 @@ handle_event(const uint8_t *e)
 			return;
 		}
 		id--;
+		if (trace_left > 0) {
+			trace_left--;
+			say("s6sy761: t %llu ms: finger %u %s at %u,%u\n", (unsigned long long)(mach_absolute_time() / 24000), id,
+			    state == 3 ? "up" : (finger_down[id] ? "moved" : "down"), x, y);
+		}
 		nx = x >= res_x - 1 ? 65535 : x * 65535 / (res_x - 1);
 		ny = y >= res_y - 1 ? 65535 : y * 65535 / (res_y - 1);
 		stats.events++;
@@ -439,7 +450,17 @@ hakios_s6sy761_init(void)
 	if (steps == 0 || bus.ipclk_mhz < 26 || bus.ipclk_mhz > 400) {
 		return;
 	}
-	if (kernel_thread_start(touch_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
-		thread_deallocate(thread);
+	PE_parse_boot_argn("s6sy761_trace", &trace_left, sizeof(trace_left));
+	{
+		/* s6sy761_pri=N: the polling thread's priority. Default 92 (BASEPRI_PREEMPT, as the display's presenter, fb_pri):
+		 * at the kernel's default it lost the processors to the window server under load on two cores, and a
+		 * finger's moves came in bursts (seen on the phone, 1 November: scrolling sticky, long presses by mistake). */
+		uint32_t pri = 92;
+
+		PE_parse_boot_argn("s6sy761_pri", &pri, sizeof(pri));
+		if (kernel_thread_start_priority((thread_continue_t)touch_thread, (void *)(uintptr_t)steps, (integer_t)pri,
+		    &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+		}
 	}
 }
