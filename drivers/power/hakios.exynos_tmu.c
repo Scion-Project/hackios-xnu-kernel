@@ -148,6 +148,21 @@ SYSCTL_INT(_kern_hakios_temp, OID_AUTO, reads, CTLFLAG_RD | CTLFLAG_LOCKED, &tem
 SYSCTL_INT(_kern_hakios_temp, OID_AUTO, battery_c, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_battery_c, 0,
     "the battery's temperature as the battery driver says it (-273: not known)");
 
+/*
+ * Every zone's last reading for other drivers (the CPU governor, drivers/power/hakios.exynos_cpufreq.c), whatever the step:
+ * the zones in tmu_zones' order (0 BIG, 1 LITTLE, 2 G3D, 3 ISP), millidegrees, NOT_READ_MC before the first reading.
+ * Asked directly: the governor read kern.hakios.temp.* through kernel_sysctlbyname at first, and got nothing on the phone.
+ */
+static volatile int32_t last_zone_mc[TMU_NZONES] = { NOT_READ_MC, NOT_READ_MC, NOT_READ_MC, NOT_READ_MC };
+
+int32_t hakios_exynos_tmu_zone_mc(unsigned zone);
+
+int32_t
+hakios_exynos_tmu_zone_mc(unsigned zone)
+{
+	return zone < TMU_NZONES ? last_zone_mc[zone] : NOT_READ_MC;
+}
+
 /* the POCO's names, kern.hakios.thermal_* and hakios_thermal_max_mc() (hakios.thermal_provider.c), read these at step 2 */
 static const struct hakios_thermal_provider provider = {
 	.name = "exynos_tmu",
@@ -308,6 +323,9 @@ look(void)
 		strlcat(list, item, sizeof(list));
 	}
 	reads++;
+	for (unsigned z = 0; z < TMU_NZONES; z++) {
+		last_zone_mc[z] = zone_mc[z] == INT32_MIN ? NOT_READ_MC : zone_mc[z];
+	}
 	if (steps >= 2) {
 		for (unsigned z = 0; z < TMU_NZONES; z++) {
 			temp_zone_mc[z] = zone_mc[z] == INT32_MIN ? NOT_READ_MC : zone_mc[z];

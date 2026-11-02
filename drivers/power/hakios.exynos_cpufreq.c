@@ -34,9 +34,12 @@
  * source, so this file has its own, in the same places: every second, a zone at its control point (83 BIG, 76 LITTLE)
  * or above loses one level of its cluster's ceiling, and gets one back once 5 degrees under it (the trips' hysteresis);
  * at 96 or above the cluster goes to its lowest level at once (the slowest at or above min-freq: never under what
- * Samsung's kernel uses). The temperatures are the TMU driver's
- * (kern.hakios.temp.big_mc and little_mc: tmu=2 or more). Without them (no tmu=, or not read yet) the M3s stay at or
- * below 1794000 whatever the online count. tmu=3 ends the run at 110 C as before; this changes nothing there.
+ * Samsung's kernel uses). The temperatures are the TMU driver's, asked of it directly (hakios_exynos_tmu_zone_mc(): its
+ * last reading of the BIG and LITTLE zones, with tmu=1 or more). They were read through kern.hakios.temp.big_mc and
+ * little_mc (kernel_sysctlbyname) at first, which on the phone gave nothing ("temp big - lit - C" all through main-1102
+ * while the TMU logged 90 C and more); the sysctl's answer is still logged once, beside the direct reading. Without
+ * temperatures (no tmu=, or not read yet) the M3s stay at or below 1794000 whatever the online count. tmu=3 ends the run
+ * at 110 C as before; this changes nothing there.
  *
  * The load. Every cpufreq_gov_ms (40 ms by default, 20 to 200) each core's idle time from the scheduler
  * (ml_cpu_idle_time, as cpuload= reads it); a cluster's load is its busiest core's share of the window it was not idle.
@@ -44,11 +47,19 @@
  * level. Up at once; down only after three windows in a row want less (about 120 ms). A core that has never been idle
  * since start is taken as not started (cores 0 and 1 are not the kernel's at all): it counts neither for the load nor as
  * online. Every change is read back from the APM (hakios_acpm_dvfs_get); a rate read back above the ceiling is logged
- * and the next level down asked for.
+ * and the next level down asked for. The APM of the S9 answers FREQ_GET with 0 for both CPU domains (main-1102 and the
+ * fixed-rate runs before it: "dvfs: the M3s (cpucl1): 0 kHz (0) -> asked 2106000 kHz (0) -> now 0 kHz (0)"; Samsung's
+ * own cpufreq driver reads its rate from the CAL's cache, never from the APM). Taken as a rate, that 0 stopped the
+ * governor dead: decide() skips a cluster whose rate is 0, so nothing after the first request was ever asked for, the
+ * thermal ceilings included. A 0 is therefore "not said": the rate asked for is the rate, the APM's answer to the
+ * request itself is logged (its four words, for the first changes), and the rate the cores really run at is measured
+ * once a log line (measure_mhz(): a chain of dependent additions, one a cycle on both the A55 and the M3, timed on a
+ * core of each cluster with interrupts off for a fraction of a millisecond).
  *
  * The log: at start the table, the limits and the rates found; then once a second (cpufreq_gov_log=SECONDS; 0: none)
- *   cpufreq_gov: 12 s: lit 1248 MHz load 31% (avg 22%, 1794 max) | big 1586 MHz load 64% (avg 58%, 4 online, 1794 max)
- *       | temp big 52.1 lit 48.0 C | 9 changes
+ *   cpufreq_gov: 12 s: lit 1248 MHz load 31% (avg 22%, 2 online, 1794 max, measured 1251) | big 1586 MHz load 64% (avg
+ *       58%, 4 online, 1794 max, measured 1590) | temp big 52.1 lit 48.0 C | 9 changes
+ * (a rate is "asked" when the APM does not say it, "?" measured when no core of the cluster could be measured)
  * to the loader's log (loader_log_line), which printf does not reach.
  *
  * Status: WRITTEN, NOT YET RUN on the phone. It builds; the level arithmetic is plain. Not known until the first run:
@@ -87,6 +98,11 @@
 extern void loader_log_line(const char *line);
 extern bool ml_cpu_idle_time(int cpu_id, uint64_t *idle);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+/* the TMU driver's last reading of a zone (0 BIG, 1 LITTLE), millidegrees; -273000 before one or without the driver */
+extern int32_t hakios_exynos_tmu_zone_mc(unsigned zone);
+extern void *cpu_to_processor(int cpu);
+extern void *thread_bind(void *processor);
+extern int thread_block(void *continuation);
 
 #define LEVELS_MOST     32
 #define TARGET_LOAD     75      /* percent: the busiest core's share wanted at the new rate */
@@ -95,6 +111,8 @@ extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, vo
 #define HOT_CUT_MC      96000   /* BIG's hotplug_out_threshold: the cluster to its lowest level */
 #define HYSTERESIS_MC   5000
 #define NO_TEMP_BIG_MAX 1794000 /* without temperatures, the M3s no faster than this */
+#define ANSWERS_LOGGED  8       /* changes whose APM answer is logged, per cluster */
+#define SPIN_LOOPS      8192    /* measure_mhz(): 32 additions each, 262144 cycles (0.1 to 0.6 ms) */
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -113,7 +131,8 @@ say(const char *format, ...)
 
 static struct cluster {
 	const char *name;               /* "lit", "big" */
-	const char *zone;               /* the TMU's sysctl */
+	const char *zone;               /* the TMU's sysctl (logged once, beside the direct reading) */
+	unsigned tmu_zone;              /* the TMU driver's zone: 0 BIG, 1 LITTLE */
 	uint32_t index;                 /* the ACPM DVFS domain */
 	uint32_t affinity;              /* MPIDR [15:8] of its cores */
 	int32_t control_mc;             /* where Samsung starts to cool it */
@@ -124,7 +143,9 @@ static struct cluster {
 	uint32_t n;
 	uint32_t floor, ceiling;        /* kHz: boot-args within the device tree's limits */
 	uint32_t thermal;               /* the thermal ceiling, a level index (0: none) */
-	uint32_t cur;                   /* kHz, as read back */
+	uint32_t cur;                   /* kHz, as read back, or as asked when the APM says 0 */
+	bool asked;                     /* cur is the rate asked for: the APM's FREQ_GET said 0 */
+	uint32_t measured;              /* MHz, measure_mhz()'s last (0: not measured) */
 	uint32_t load, online, low_windows;
 	uint32_t load_sum, windows;     /* this second's */
 	uint32_t lowest;                /* the slowest level at or above the device tree's min-freq: as low as the heat takes it */
@@ -143,6 +164,12 @@ static const uint32_t big_dt[] = {
 static uint32_t window_ms = 40, log_seconds = 1;
 static uint64_t idle_before[MAX_CPUS];
 static bool ever_idle[MAX_CPUS];
+
+static bool
+ever_idle_cpu(unsigned int i)
+{
+	return i < MAX_CPUS && ever_idle[i];
+}
 
 /* the M3s' limit for this many online (exynos-hotplug_governor.c get_hpgov_maxfreq with the device tree's values) */
 static uint32_t
@@ -192,36 +219,113 @@ ceiling_now(struct cluster *c)
 	return c->levels[level_at_most(c, max)];
 }
 
+/*
+ * One DVFS request, as hakios_acpm_dvfs_set() sends it (domain, kHz, FREQ_REQ 0, 0), with the APM's answer kept: its four
+ * words come back in place of the request's.
+ */
+static int
+dvfs_request(uint32_t index, uint32_t khz, uint32_t answer[4])
+{
+	answer[0] = index;
+	answer[1] = khz;
+	answer[2] = 0;
+	answer[3] = 0;
+	return hakios_acpm_request(HAKIOS_ACPM_CH_DVFS, answer);
+}
+
+/* the rate the APM says (FREQ_GET); 0 is "not said": the rate asked for stands */
+static void
+read_back(struct cluster *c, uint32_t asked)
+{
+	uint32_t got = 0;
+	int e = hakios_acpm_dvfs_get(c->index, &got);
+
+	if (e == 0 && got != 0) {
+		c->cur = got;
+		c->asked = false;
+		return;
+	}
+	if (!c->asked) {
+		say("cpufreq_gov: %s: the APM answers FREQ_GET with %u kHz (%d): the rate asked for, %u kHz, is taken as the "
+		    "rate (and measured once a log line)\n", c->name, got, e, asked);
+	}
+	c->cur = asked;
+	c->asked = true;
+}
+
 static void
 set_rate(struct cluster *c, uint32_t khz, uint32_t max)
 {
-	uint32_t got = 0;
-	int e1, e2;
+	uint32_t answer[4];
+	int e = dvfs_request(c->index, khz, answer);
 
-	e1 = hakios_acpm_dvfs_set(c->index, khz);
-	e2 = hakios_acpm_dvfs_get(c->index, &got);
-	if (e1 != 0 || e2 != 0) {
+	if (e != 0) {
 		if (c->errors++ < 5) {
-			say("cpufreq_gov: %s: asked %u kHz: set %d, get %d (%u kHz)\n", c->name, khz, e1, e2, got);
-		}
-		if (e2 == 0) {
-			c->cur = got;
+			say("cpufreq_gov: %s: asked %u kHz: the APM did not answer (%d); the rate stays %u kHz\n", c->name, khz, e,
+			    c->cur);
 		}
 		return;
 	}
+	if (c->changes < ANSWERS_LOGGED) {
+		say("cpufreq_gov: %s: %u -> %u kHz asked; the APM answered %08x %08x %08x %08x\n", c->name, c->cur, khz,
+		    answer[0], answer[1], answer[2], answer[3]);
+	}
 	c->changes++;
-	c->cur = got;
-	if (got > max) {
+	read_back(c, khz);
+	if (!c->asked && c->cur > max) {
 		uint32_t lower = level_at_most(c, khz);
 
 		lower = lower + 1 < c->n ? lower + 1 : lower;
-		say("cpufreq_gov: %s: asked %u kHz, the APM says %u, above %u: asking %u\n", c->name, khz, got, max,
+		say("cpufreq_gov: %s: asked %u kHz, the APM says %u, above %u: asking %u\n", c->name, khz, c->cur, max,
 		    c->levels[lower]);
-		(void)hakios_acpm_dvfs_set(c->index, c->levels[lower]);
-		if (hakios_acpm_dvfs_get(c->index, &got) == 0) {
-			c->cur = got;
+		if (dvfs_request(c->index, c->levels[lower], answer) == 0) {
+			read_back(c, c->levels[lower]);
 		}
 	}
+}
+
+/*
+ * The rate a core of the cluster really runs at, in MHz: this thread moved to the first of its cores the scheduler has
+ * (one that has been idle: cores 0 and 1 are not the kernel's), and a chain of 32 dependent additions run SPIN_LOOPS
+ * times with interrupts off -- one addition a cycle on both the A55 and the M3, the loop's own subtraction and branch
+ * beside them -- timed with mach_absolute_time. 0 when there is no such core. Back on any core afterwards.
+ */
+static bool ever_idle_cpu(unsigned int i);
+
+static uint32_t
+measure_mhz(const struct cluster *c)
+{
+	const ml_topology_info_t *topology = ml_get_topology_info();
+	uint64_t loops = SPIN_LOOPS, x = 0, began, took, ns;
+	boolean_t enabled;
+	int cpu = -1;
+
+	for (unsigned int i = 0; i < topology->num_cpus && i < MAX_CPUS; i++) {
+		if (((topology->cpus[i].phys_id >> 8) & 0xff) == c->affinity && ever_idle_cpu(i)) {
+			cpu = (int)topology->cpus[i].cpu_id;
+			break;
+		}
+	}
+	if (cpu < 0 || cpu_to_processor(cpu) == NULL) {
+		return 0;
+	}
+	(void)thread_bind(cpu_to_processor(cpu));
+	(void)thread_block(NULL);             /* over to it now */
+	enabled = ml_set_interrupts_enabled(FALSE);
+	began = mach_absolute_time();
+	__asm__ volatile (
+                "1:\n"
+                ".rept 32\n"
+                "add %0, %0, #1\n"
+                ".endr\n"
+                "subs %1, %1, #1\n"
+                "b.ne 1b\n"
+                : "+r" (x), "+r" (loops) : : "cc");
+	took = mach_absolute_time() - began;
+	(void)ml_set_interrupts_enabled(enabled);
+	(void)thread_bind(NULL);
+	absolutetime_to_nanoseconds(took, &ns);
+	return ns != 0 && x == 32ull * SPIN_LOOPS ? (uint32_t)(32ull * SPIN_LOOPS * 1000 / ns) : 0;
 }
 
 /* the cluster's busiest core's load over the window, and how many of its cores run */
@@ -278,16 +382,23 @@ decide(struct cluster *c)
 	}
 }
 
+/* the zone's temperature, from the TMU driver itself; the first time also what its sysctl says, for the log */
 static int32_t
-read_temp(const char *name)
+read_temp(struct cluster *c)
 {
-	int value = NOT_READ_MC;
-	size_t size = sizeof(value);
+	static bool compared[2];
+	int32_t mc = hakios_exynos_tmu_zone_mc(c->tmu_zone);
 
-	if (kernel_sysctlbyname(name, &value, &size, NULL, 0) != 0) {
-		return NOT_READ_MC;
+	if (!compared[c->tmu_zone] && mc != NOT_READ_MC) {
+		int value = NOT_READ_MC;
+		size_t size = sizeof(value);
+		int e = kernel_sysctlbyname(c->zone, &value, &size, NULL, 0);
+
+		compared[c->tmu_zone] = true;
+		say("cpufreq_gov: %s: the TMU driver reads %d mC; its sysctl %s says %d (error %d)\n", c->name, mc, c->zone, value,
+		    e);
 	}
-	return value;
+	return mc;
 }
 
 /* once a second: each zone's temperature moves its cluster's thermal ceiling by a level at most */
@@ -296,7 +407,7 @@ cool(struct cluster *c)
 {
 	uint32_t before = c->thermal;
 
-	c->temp_mc = read_temp(c->zone);
+	c->temp_mc = read_temp(c);
 	if (c->temp_mc == NOT_READ_MC) {
 		c->thermal = 0;
 	} else if (c->temp_mc >= HOT_CUT_MC) {
@@ -330,14 +441,19 @@ static void
 summary(uint64_t seconds)
 {
 	struct cluster *l = &clusters[0], *b = &clusters[1];
-	char tb[16], tl[16];
+	char tb[16], tl[16], ml[16], mb[16];
 
+	l->measured = measure_mhz(l);
+	b->measured = measure_mhz(b);
 	temp_text(tb, sizeof(tb), b->temp_mc);
 	temp_text(tl, sizeof(tl), l->temp_mc);
-	say("cpufreq_gov: %llu s: lit %u MHz load %u%% (avg %u%%, %u max) | big %u MHz load %u%% (avg %u%%, %u online, %u max) "
-	    "| temp big %s lit %s C | %u changes\n", seconds, l->cur / 1000, l->load, l->windows ? l->load_sum / l->windows : 0,
-	    ceiling_now(l) / 1000, b->cur / 1000, b->load, b->windows ? b->load_sum / b->windows : 0, b->online,
-	    ceiling_now(b) / 1000, tb, tl, l->changes + b->changes);
+	snprintf(ml, sizeof(ml), l->measured ? "%u" : "?", l->measured);
+	snprintf(mb, sizeof(mb), b->measured ? "%u" : "?", b->measured);
+	say("cpufreq_gov: %llu s: lit %u MHz%s load %u%% (avg %u%%, %u online, %u max, measured %s) | big %u MHz%s load %u%% "
+	    "(avg %u%%, %u online, %u max, measured %s) | temp big %s lit %s C | %u changes\n", seconds, l->cur / 1000,
+	    l->asked ? " asked" : "", l->load, l->windows ? l->load_sum / l->windows : 0, l->online, ceiling_now(l) / 1000, ml,
+	    b->cur / 1000, b->asked ? " asked" : "", b->load, b->windows ? b->load_sum / b->windows : 0, b->online,
+	    ceiling_now(b) / 1000, mb, tb, tl, l->changes + b->changes);
 	l->load_sum = l->windows = b->load_sum = b->windows = 0;
 }
 
@@ -425,10 +541,10 @@ hakios_exynos_cpufreq_gov_start(void)
 		say("cpufreq_gov: no ACPM: not started (and the fixed rates not set either)\n");
 		return true;
 	}
-	clusters[0] = (struct cluster){ .name = "lit", .zone = "kern.hakios.temp.little_mc", .index = 2, .affinity = 0,
+	clusters[0] = (struct cluster){ .name = "lit", .zone = "kern.hakios.temp.little_mc", .tmu_zone = 1, .index = 2, .affinity = 0,
 		                        .control_mc = 76000, .dt_min = 455000, .dt_max = 1950000, .dt_levels = lit_dt,
 		                        .n_dt_levels = sizeof(lit_dt) / sizeof(lit_dt[0]) };
-	clusters[1] = (struct cluster){ .name = "big", .zone = "kern.hakios.temp.big_mc", .index = 3, .affinity = 1,
+	clusters[1] = (struct cluster){ .name = "big", .zone = "kern.hakios.temp.big_mc", .tmu_zone = 0, .index = 3, .affinity = 1,
 		                        .control_mc = 83000, .dt_min = 650000, .dt_max = 2314000, .dt_levels = big_dt,
 		                        .n_dt_levels = sizeof(big_dt) / sizeof(big_dt[0]) };
 	cluster_setup(&clusters[0], lit_max, lit_min, 1794000, 1053000);
@@ -442,8 +558,8 @@ hakios_exynos_cpufreq_gov_start(void)
 		say("cpufreq_gov: %s (DVFS %u): %u to %u kHz, now %u kHz (%d)%s\n", c->name, c->index, c->floor, c->ceiling,
 		    c->cur, e, i == 1 ? "; and by M3s online: 1-2 2314000, 3-4 1794000; 1794000 without temperatures" : "");
 		if (c->cur == 0) {
-			c->cur = c->levels[level_at_most(c, c->ceiling)];
-			set_rate(c, c->cur, c->ceiling);
+			/* (not said: the ceiling is asked for, and from then on the rate is the one asked for) */
+			set_rate(c, c->levels[level_at_most(c, c->ceiling)], c->ceiling);
 		}
 	}
 	say("cpufreq_gov: every %u ms, the busiest core %u%% busy wanted, down after %u windows; cooling from %d C (big), %d C "

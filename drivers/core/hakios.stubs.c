@@ -66,6 +66,16 @@ hakios_exynos_cpufreq_gov_start(void)
 }
 #endif
 
+#ifndef HAKIOS_EXYNOS_TMU
+int32_t hakios_exynos_tmu_zone_mc(unsigned zone);
+/* no TMU driver: no temperature ("not read", as the driver says before its first reading) */
+int32_t
+hakios_exynos_tmu_zone_mc(__unused unsigned zone)
+{
+	return -273000;
+}
+#endif
+
 #ifndef HAKIOS_VIRTIO_INPUT
 void hakios_virtio_input_init(void) {}
 #endif
