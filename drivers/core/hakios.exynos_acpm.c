@@ -445,6 +445,23 @@ hakios_acpm_dvfs_set(uint32_t index, uint32_t khz)
 }
 
 /*
+ * The APM asked to stop, as Samsung's kernel does before every power-off and restart (exynos_acpm_reboot() ->
+ * acpm_enter_wfi(), drivers/soc/samsung/acpm/acpm.c:250-292): one request, word 0 the protocol's STOP bit (bit 22,
+ * ACPM_IPC_PROTOCOL_STOP in include/soc/samsung/acpm_ipc_ctrl.h), on the channel of the acpm node itself (4 in the S9's
+ * device tree; acpm_dvfs's is 5, s2mps18's 2). Samsung skips it on the 9810's first revision (EVT0) only. Its answer is
+ * waited for as any other's; after it the APM answers nothing more, so nothing may come after it but PS_HOLD or a restart.
+ */
+#define ACPM_STOP       (1u << 22)
+
+int
+hakios_acpm_stop(void)
+{
+	uint32_t cmd[4] = { ACPM_STOP, 0, 0, 0 };
+
+	return hakios_acpm_request(HAKIOS_ACPM_CH_ACPM, cmd);
+}
+
+/*
  * The Galaxy S9's CPU clocks through ACPM's DVFS (Samsung's cal_dfs_set_rate -> exynos_acpm_set_rate: domain index,
  * kHz, FREQ_REQ). acpm_dvfs_exynos9810.h: dvfs_cpucl0 (the A55s) is index 2, dvfs_cpucl1 (the M3s) index 3.
  * boot-args cpufreq_lit=kHz, cpufreq_big=kHz; nothing without them.

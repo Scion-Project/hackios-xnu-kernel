@@ -41,6 +41,12 @@ driver MAX77705
 
 driver EXYNOS_TMU
 	file    bsd/dev/hakios.exynos_tmu.c
+	requires EXYNOS_POWEROFF
 	help    the Galaxy S9's temperatures: the Exynos 9810's TMU (BIG, LITTLE, G3D, ISP), read with each sensor's fuses
 	help    (tmu=1), published as kern.hakios.temp.* and the POCO's kern.hakios.thermal_* (tmu=2), and the run ended or the
 	help    phone powered off when a zone or the battery is too hot (tmu=3; tmu_stop=, tmu_batt_stop=, tmu_off=1)
+
+driver EXYNOS_POWEROFF
+	file    bsd/dev/hakios.exynos_poweroff.c
+	help    the Galaxy S9 powered off: PS_HOLD let go in the Exynos 9810's PMU, for the TMU's tmu_off=1 and for a halt
+	help    (halt_off=1: the panel blanked first, DCS display-off and sleep-in through DSIM0; halt_off=2: the APM stopped too)

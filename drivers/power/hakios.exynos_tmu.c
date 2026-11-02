@@ -45,6 +45,7 @@
  *      sec_reboot.c:135, drivers/soc/samsung/exynos-reboot.c:83, 252), which loses the log (pstore is RAM), and if the
  *      phone still runs a second later (a charger holds it up; Samsung then reboots into charging), the loader's way.
  *      Samsung asks the APM to stop (exynos_acpm_reboot) before PS_HOLD; this does not, so tmu_off is the less sure way.
+ *      (PS_HOLD itself is hakios.exynos_poweroff.c's, which a halt with halt_off=N uses too.)
  * Off the steps: tmu_enable=1 starts a block whose CORE_EN the boot left clear, the way exynos9810_tmu_control() does
  * (VREF/SLOPE from TRIMINFO0/1, AVG_CON from TRIMINFO2, both COUNTER_VALUEs 0x028A, TRIM0 from TMU_TOP's TRIMINFO3/4/5,
  * then CORE_EN), every write read back, but WITHOUT THERM_TRIP_EN and without any threshold or interrupt: a hardware trip
@@ -89,7 +90,7 @@ extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_adsp_stop(void);
 extern int hakios_battery_temperature(void);  /* drivers/power/hakios.battery.c; a stand-in says -273 */
-extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+extern bool hakios_exynos_power_off(const char *who, int (*say)(const char *, ...));  /* hakios.exynos_poweroff.c */
 extern void delay(int usec);
 
 SYSCTL_DECL(_kern_hakios);
@@ -114,9 +115,6 @@ say(const char *format, ...)
 #define CMU_PERIS_TMU_QCH       0x3004u         /* :1675 QCH_CON_BUSIF_TMU_QCH */
 #define GATE_MANUAL             (1u << 20)      /* :7017 */
 #define GATE_CG_VAL             (1u << 21)      /* :7016 */
-#define PMU_PA                  0x14060000u     /* flexpmu_cal_system_exynos9810.h:39 */
-#define PMU_PS_HOLD_CONTROL     0x330Cu         /* sec_ext.h:33 */
-#define PS_HOLD_HIGH            (1u << 8)       /* sec_reboot.c:135, exynos-reboot.c:252 */
 #define NOT_READ_MC             (-273000)
 #define STRIKES                 3
 
@@ -229,32 +227,11 @@ describe(void)
 	}
 }
 
-static bool
-read_int(const char *name, int *value)
-{
-	size_t size = sizeof(*value);
-
-	return kernel_sysctlbyname(name, value, &size, NULL, 0) == 0 && size == sizeof(*value);
-}
-
 static void
 power_off_or_return(void)
 {
-	int charger = 1;
-
-	if (power_off && read_int("kern.hakios.battery_charger_present", &charger) && !charger) {
-		vm_offset_t pmu = ml_io_map(PMU_PA + (PMU_PS_HOLD_CONTROL & ~0xfffu), 0x1000);
-
-		if (pmu != 0) {
-			uint32_t off = PMU_PS_HOLD_CONTROL & 0xfffu, v = rd(pmu, off);
-
-			say("tmu: 3: PS_HOLD_CONTROL %08x: PS_HOLD low, the phone off (this log is lost with it)\n", v);
-			wr(pmu, off, v & ~PS_HOLD_HIGH);
-			delay(1000 * 1000);
-			say("tmu: 3: still running a second after PS_HOLD (%08x): the loader's way instead\n", rd(pmu, off));
-		}
-	} else if (power_off) {
-		say("tmu: 3: tmu_off=1, but a charger is attached or not known (%d): the loader's way\n", charger);
+	if (power_off) {
+		(void)hakios_exynos_power_off("tmu: 3", say);  /* returns only if the phone is not off (hakios.exynos_poweroff.c) */
 	}
 	hakios_var_save_on_return();
 	hakios_adreno_stop();

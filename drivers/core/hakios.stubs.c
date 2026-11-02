@@ -19,8 +19,10 @@
 #include <stdint.h>
 #include <sys/errno.h>
 #include <sys/types.h>
+#include <mach/boolean.h>
 #include <sys/hakios.audio.h>
 #include <sys/hakios.exynos_abox.h>
+#include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.exynos_pcie.h>
 #include <sys/hakios.input.h>
 #include <sys/hakios.max98512.h>
@@ -38,6 +40,8 @@ void hakios_ufs_quiesce(void);
 void hakios_var_save_on_return(void);
 void hakios_mic_quiesce(void);
 void HakiosWLANStart(const char *interface, const uint8_t *address);
+void hakios_exynos_halt_off(boolean_t reboot);          /* (machine_routines.c's halt_all_cpus(), patch 1510) */
+bool hakios_s6e3ha8_blank(int (*say)(const char *, ...));
 
 #ifndef HAKIOS_EXYNOS_ACPM
 void hakios_exynos_dvfs_start(void);
@@ -45,6 +49,9 @@ void
 hakios_exynos_dvfs_start(void)
 {
 }
+/* (hakios.exynos_poweroff.c asks for the APM's stop with halt_off=2: no ACPM, nothing to stop) */
+bool hakios_acpm_init(__unused int (*say)(const char *, ...)) { return false; }
+int hakios_acpm_stop(void) { return ENXIO; }
 #endif
 
 #ifndef HAKIOS_VIRTIO_INPUT
@@ -126,6 +133,11 @@ void hakios_max98512_quiesce(void) {}
 #endif
 #ifndef HAKIOS_S6E3HA8
 void hakios_s6e3ha8_init(void) {}
+bool hakios_s6e3ha8_blank(__unused int (*say)(const char *, ...)) { return false; }      /* "not blanked" */
+#endif
+
+#ifndef HAKIOS_EXYNOS_POWEROFF
+void hakios_exynos_halt_off(__unused boolean_t reboot) {}  /* a halt hands the phone to the loader, as it always did */
 #endif
 
 #ifndef HAKIOS_USB_GADGET

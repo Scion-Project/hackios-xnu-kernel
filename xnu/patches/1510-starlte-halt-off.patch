@@ -1,0 +1,20 @@
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+index 8cbef0d..9033812 100644
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -737,6 +737,7 @@ ml_get_machine_mem(void)
+ extern void loader_return(void);
+ extern void loader_exit_wanted(bool reset);    /* osfmk/arm64/loader_return.c */
+ extern void hakios_adreno_stop(void);
++extern void hakios_exynos_halt_off(boolean_t reboot);  /* drivers/power/hakios.exynos_poweroff.c (halt_off=N, the Galaxy S9) */
+ 
+ __attribute__((noreturn))
+ void
+@@ -751,6 +752,7 @@ halt_all_cpus(boolean_t reboot)
+ 	}
+ 	/* No platform driver powers the machine off: hand control (and the log) back to the loader. */
+ 	hakios_adreno_stop();
++	hakios_exynos_halt_off(reboot); /* a halt with halt_off=N on the S9: panel dark, PS_HOLD low; back here only if not off */
+ 	loader_exit_wanted(reboot);     /* without a loader: PSCI SYSTEM_RESET or SYSTEM_OFF */
+ 	loader_return();
+ 	while (1) {
