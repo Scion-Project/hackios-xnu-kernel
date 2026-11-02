@@ -99,6 +99,9 @@ void hakios_max77705_init(void) {}
 #ifndef HAKIOS_EXYNOS_CAMERA
 void hakios_exynos_camera_init(void) {}
 void hakios_exynos_camera_quiesce(void) {}
+/* the USB console's camshot (hakios.dwc3.c): no camera here */
+const char *hakios_exynos_camera_shot(uint32_t n, int pattern);
+const char *hakios_exynos_camera_shot(__unused uint32_t n, __unused int pattern) { return "this kernel has no Galaxy S9 camera driver (CONFIG_HAKIOS_EXYNOS_CAMERA)"; }
 #endif
 #ifndef HAKIOS_S2MPB02_TORCH
 void hakios_s2mpb02_torch_init(void) {}
@@ -182,6 +185,9 @@ uint32_t hakios_scanout_refreshes(void) { return 0; }
 
 #ifndef HAKIOS_USB_GADGET
 void hakios_usb_gadget_quiesce(void) {}
+/* a picture for the USB console (hakios.exynos_camera.c's camshot): no USB link here */
+int hakios_usb_picture(uintptr_t rgb, uint32_t width, uint32_t height, const char *what);
+int hakios_usb_picture(__unused uintptr_t rgb, __unused uint32_t width, __unused uint32_t height, __unused const char *what) { return -1; }
 #endif
 #ifndef HAKIOS_EXYNOS_M3
 int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);
