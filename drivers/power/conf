@@ -25,6 +25,13 @@ driver PMIC
 	file    bsd/dev/hakios.pmic.c
 	help    the blocks of the power-management chips the SPMI arbiter shows, and the PMIC's clock (pmic=1); read only
 
+driver S2MPS18_RTC
+	file    bsd/dev/hakios.s2mps18_rtc.c
+	requires EXYNOS_ACPM
+	default n
+	help    the Galaxy S9's real-time clock, the S2MPS18 PMIC's RTC read through ACPM at start-up (rtc_pmic=1): the
+	help    calendar starts at its time when it is valid and not behind epoch=; read only, nothing written to the PMIC
+
 driver BATTGUARD
 	file    bsd/dev/hakios.battguard.c
 	help    the run handed back to the loader before the battery is flat (battery_stop=<percent>)

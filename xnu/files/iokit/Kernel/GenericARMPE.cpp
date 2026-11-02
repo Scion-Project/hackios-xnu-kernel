@@ -312,8 +312,11 @@ GenericARMPE::start(IOService * provider)
  * says what time it was then -- the boot-arg epoch= (seconds since 1970, put there by the
  * host scripts) or, failing that, the property boot-epoch of /chosen (the loader, from the
  * firmware's clock) -- and the kernel's own timer counts from there. Without either the
- * calendar starts in 1970, as before.
+ * calendar starts in 1970, as before. A phone with a driver for its own real-time clock is asked
+ * last (hakios_rtc_boot_time: the Galaxy S9's S2MPS18, rtc_pmic=1); its clock wins when valid.
  */
+extern "C" uint64_t hakios_rtc_boot_time(uint64_t epoch);
+
 static long gBootEpoch;         /* the calendar time at which the system timer read zero */
 static bool gBootEpochKnown;
 
@@ -335,6 +338,7 @@ findBootEpoch(void)
 		}
 		OSSafeReleaseNULL(chosen);
 	}
+	epoch = hakios_rtc_boot_time(epoch);    /* the phone's own clock, when it has a driver and it is valid */
 	if (epoch != 0) {
 		clock_sec_t secs;
 		clock_usec_t usecs;

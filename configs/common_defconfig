@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 498 symbols in 19 groups; 51 are set, 42 of them drivers built in.
+# 500 symbols in 19 groups; 51 are set, 42 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (46)
+# Drivers built in (47)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -132,6 +132,9 @@ CONFIG_HAKIOS_THERMAL=y
 
 # the blocks of the power-management chips the SPMI arbiter shows, and the PMIC's clock (pmic=1); read only [hakios.pmic.c]
 CONFIG_HAKIOS_PMIC=y
+
+# the Galaxy S9's real-time clock, the S2MPS18 PMIC's RTC read through ACPM at start-up (rtc_pmic=1): the calendar ... [hakios.s2mps18_rtc.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_S2MPS18_RTC is not set
 
 # the run handed back to the loader before the battery is flat (battery_stop=<percent>) [hakios.battguard.c]
 CONFIG_HAKIOS_BATTGUARD=y
@@ -1357,7 +1360,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (59)
+# User space (60)
 #
 
 # read by inject_sb.c (user space)
@@ -1473,6 +1476,9 @@ CONFIG_MODEM_AGAIN=y
 
 # the root is to be the Darwin root volume on /dev/DEV -- the phone's flash, read only
 # CONFIG_ROOT_APFS is not set
+
+# read the clock at start-up (the kernel's first ask for the time of day), log it, use it when valid
+# CONFIG_RTC_PMIC is not set
 
 # read by 1400-avf-scion-camera.patch, hakios.sccam_torch.c (kernel)
 # CONFIG_SCCAM_ADDR is not set

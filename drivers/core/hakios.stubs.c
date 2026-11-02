@@ -47,6 +47,16 @@ hakios_exynos_dvfs_start(void)
 }
 #endif
 
+#ifndef HAKIOS_S2MPS18_RTC
+uint64_t hakios_rtc_boot_time(uint64_t epoch);
+/* the time of day at start-up (GenericARMPE.cpp): no clock of the phone's own, what the loader or epoch= said */
+uint64_t
+hakios_rtc_boot_time(uint64_t epoch)
+{
+	return epoch;
+}
+#endif
+
 #ifndef HAKIOS_VIRTIO_INPUT
 void hakios_virtio_input_init(void) {}
 #endif
