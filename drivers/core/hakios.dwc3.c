@@ -41,6 +41,13 @@
  *   stat              the link's counters
  *   uptime            seconds since boot
  *   sysctl NAME       a sysctl's value (an integer or a string)
+ *   sysctl NAME=N     an integer sysctl set to N, then read back. From here only a sysctl marked CTLFLAG_KERN can be
+ *                     read or set: XNU's sysctl_root() refuses the others to the kernel with EPERM (whatever user
+ *                     space may do), and the answer says so, with the error, instead of "no such name"
+ *   bl                the panel's brightness: kern.hakios.brightness (0-255; -1 never set)
+ *   bl N              the panel's brightness set to N (0-255) through hakios_panel_brightness(), as iOS's sets reach
+ *                     it, and what came back: sent, the DSIM refused it (EIO), or no panel driver (ENODEV). The
+ *                     Galaxy S9's driver also logs each set it sent ("s6e3ha8: brightness N sent ...", once a second)
  *   log               the kernel's log again from its start (what the kernel keeps of it: the first 256 KB)
  *   shot [N]          the panel's picture as it is now (what the display controller scans out: the boot framebuffer,
  *                     or with fb_dpp=1 / fb_flip=1 the presenter's buffer shown now, hakios_fb_scanned()), every
@@ -118,6 +125,7 @@ extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_adsp_stop(void);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+extern int hakios_panel_brightness(int level);  /* hakios.backlight.cpp (always built): ENODEV with no panel driver */
 extern void delay(int usec);
 extern struct vc_info vinfo;            /* the boot framebuffer: the panel's memory, as the display driver draws on it */
 /* the presenter's buffer scanned out now (MiniIOMobileFramebuffer.cpp): 2 fb_dpp, 1 fb_flip, 0 the boot framebuffer */
@@ -1041,6 +1049,107 @@ events(void)
 
 /* ---- the line console ---- */
 
+static const char *
+errno_name(int error)
+{
+	switch (error) {
+	case ENOENT: return "ENOENT: no such name";
+	case EPERM: return "EPERM: not marked CTLFLAG_KERN, so the kernel may not reach it (user space may)";
+	case EISDIR: return "EISDIR: a node, not a value";
+	case EINVAL: return "EINVAL: the value was refused";
+	case EIO: return "EIO: the hardware did not take it";
+	case ENODEV: return "ENODEV: no driver behind it";
+	case ENOMEM: return "ENOMEM: longer than 256 bytes";
+	default: return "error";
+	}
+}
+
+/* sysctl NAME: read; sysctl NAME=N: an integer set, then read back */
+static void
+console_sysctl(char *arg)
+{
+	union { char s[256]; int32_t i; int64_t q; } v;
+	size_t len = sizeof(v.s);
+	bool text = true;
+	char *equals = strchr(arg, '=');
+	int error;
+
+	if (equals != NULL) {
+		const char *p = equals + 1;
+		bool negative = *p == '-';
+		int32_t value = 0;
+
+		*equals = 0;
+		p += negative ? 1 : 0;
+		if (*p < '0' || *p > '9') {
+			con("usb: sysctl %s=%s: an integer is wanted\n", arg, equals + 1);
+			return;
+		}
+		while (*p >= '0' && *p <= '9' && value < 100000000) {
+			value = value * 10 + (*p++ - '0');
+		}
+		value = negative ? -value : value;
+		error = kernel_sysctlbyname(arg, NULL, NULL, &value, sizeof(value));
+		con("usb: sysctl %s=%d: %s (%d)\n", arg, value, error == 0 ? "set" : errno_name(error), error);
+		if (error != 0) {
+			return;
+		}
+	}
+	memset(&v, 0, sizeof(v));
+	if ((error = kernel_sysctlbyname(arg, &v, &len, NULL, 0)) != 0) {
+		con("usb: sysctl %s: %s (%d)\n", arg, errno_name(error), error);
+		return;
+	}
+	for (size_t i = 0; i < len; i++) {
+		if (v.s[i] == 0 && i + 1 == len) {
+			break;
+		}
+		if (v.s[i] < 32 || v.s[i] > 126) {
+			text = false;
+		}
+	}
+	if (text && len > 0) {
+		v.s[MIN(len, sizeof(v.s) - 1)] = 0;
+		con("usb: %s = %s\n", arg, v.s);
+	} else if (len == 4) {
+		con("usb: %s = %d\n", arg, v.i);
+	} else if (len == 8) {
+		con("usb: %s = %lld\n", arg, v.q);
+	} else {
+		con("usb: %s: %zu bytes, not shown\n", arg, len);
+	}
+}
+
+/* bl: the panel's brightness; bl N: set, straight to the panel driver (not through sysctl), and the answer */
+static void
+console_bl(const char *arg)
+{
+	int level = 0, error;
+	uint64_t t0, t1;
+
+	if (*arg == 0) {
+		console_sysctl((char *)(uintptr_t)"kern.hakios.brightness");
+		return;
+	}
+	if (*arg < '0' || *arg > '9') {
+		con("usb: bl %s: a level 0-255 is wanted\n", arg);
+		return;
+	}
+	while (*arg >= '0' && *arg <= '9' && level < 1000) {
+		level = level * 10 + (*arg++ - '0');
+	}
+	if (level > 255) {
+		con("usb: bl %d: 0-255\n", level);
+		return;
+	}
+	t0 = mach_absolute_time();
+	error = hakios_panel_brightness(level);
+	t1 = mach_absolute_time();
+	absolutetime_to_nanoseconds(t1 - t0, &t1);
+	con("usb: bl %d: %s (%d) in %llu us%s\n", level, error == 0 ? "sent: the panel driver took it and the DSIM took "
+	    "every packet" : errno_name(error), error, t1 / NSEC_PER_USEC, error == ENODEV ? " (panel=1 not given?)" : "");
+}
+
 static void
 console(char *line)
 {
@@ -1057,8 +1166,9 @@ console(char *line)
 	}
 	con("usb> %s%s%s\n", line, *arg ? " " : "", arg);
 	if (strcmp(line, "help") == 0) {
-		con("usb: help, stat, uptime, sysctl NAME, log (the kernel's log again from its start), shot [N] (the panel's picture, "
-		    "binary: tools/usb-shot.py), camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
+		con("usb: help, stat, uptime, sysctl NAME, sysctl NAME=N, bl (the panel's brightness), bl N (set it, 0-255), "
+		    "log (the kernel's log again from its start), shot [N] (the panel's picture, binary: tools/usb-shot.py), "
+		    "camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
 		    "return (end the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
 		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
@@ -1070,33 +1180,9 @@ console(char *line)
 		absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
 		con("usb: up %llu.%03llu s\n", ns / NSEC_PER_SEC, (ns / NSEC_PER_MSEC) % 1000);
 	} else if (strcmp(line, "sysctl") == 0 && *arg != 0) {
-		union { char s[256]; int32_t i; int64_t q; } v;
-		size_t len = sizeof(v.s);
-		bool text = true;
-
-		memset(&v, 0, sizeof(v));
-		if (kernel_sysctlbyname(arg, &v, &len, NULL, 0) != 0) {
-			con("usb: sysctl %s: no such name\n", arg);
-			return;
-		}
-		for (size_t i = 0; i < len; i++) {
-			if (v.s[i] == 0 && i + 1 == len) {
-				break;
-			}
-			if (v.s[i] < 32 || v.s[i] > 126) {
-				text = false;
-			}
-		}
-		if (text && len > 0) {
-			v.s[MIN(len, sizeof(v.s) - 1)] = 0;
-			con("usb: %s = %s\n", arg, v.s);
-		} else if (len == 4) {
-			con("usb: %s = %d\n", arg, v.i);
-		} else if (len == 8) {
-			con("usb: %s = %lld\n", arg, v.q);
-		} else {
-			con("usb: %s: %zu bytes, not shown\n", arg, len);
-		}
+		console_sysctl(arg);
+	} else if (strcmp(line, "bl") == 0) {
+		console_bl(arg);
 	} else if (strcmp(line, "log") == 0) {
 		con("usb: the kernel's log from its start:\n");
 		(void)loader_log_tap_set(tap, history);

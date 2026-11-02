@@ -90,7 +90,8 @@
  * S9's kernel, github.com/ExyHyperBrick/android_kernel_samsung_exynos9810, lineage-24.0 (GPL: read for these facts, not
  * copied).
  *
- * kern.hakios.brightness: 0-255, written to set it (read: what it was set to, -1 never). What iOS sets reaches the
+ * kern.hakios.brightness: 0-255, written to set it (read: what it was set to, -1 never). CTLFLAG_KERN, so that the USB
+ * console's "sysctl kern.hakios.brightness" reaches it too (XNU refuses the kernel any sysctl without it, EPERM). What iOS sets reaches the
  * panel through hakios.backlight.cpp, where this driver registers at start: the display service's "brightness", and with
  * backlight=2 AppleARMBacklight's. Each set the DSIM took is logged ("s6e3ha8: brightness N sent (..., AOR 0x....)"),
  * at most once a second, with how many were left out since the last line.
@@ -535,7 +536,8 @@ panel_sysctl_brightness(__unused struct sysctl_oid *oidp, __unused void *arg1, _
 	return panel_set(value);
 }
 
-SYSCTL_PROC(_kern_hakios, OID_AUTO, brightness, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_ANYBODY, NULL, 0,
+SYSCTL_PROC(_kern_hakios, OID_AUTO, brightness, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_ANYBODY | CTLFLAG_KERN,
+    NULL, 0,
     panel_sysctl_brightness, "I", "the panel's brightness, 0-255 (-1: never set); writing sets it (Galaxy S9, panel=1)");
 
 
