@@ -173,6 +173,8 @@ glshow_zoom	u
 glskip	u
 glslow	u
 glstill	u
+glsurfaces	u
+glsurfaces_mb	u
 glsync	u
 gltrace	u
 gltrace_at	u

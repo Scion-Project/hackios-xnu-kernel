@@ -164,6 +164,8 @@ GLSHOW_ZOOM	arg	glshow_zoom	GPU and display	u	eagl.c
 GLSKIP	arg	glskip	GPU and display	u	eagl.c	the draws of those programs are left out of the picture, which says what in it is their work
 GLSLOW	arg	glslow	GPU and display	u	eagl.c	
 GLSTILL	arg	glstill	GPU and display	u	eagl.c	
+GLSURFACES	arg	glsurfaces	GPU and display	u	eagl.c	
+GLSURFACES_MB	arg	glsurfaces_mb	GPU and display	u	eagl.c	
 GLSYNC	arg	glsync	GPU and display	u	eagl.c	
 GLTRACE	arg	gltrace	GPU and display	u	eagl.c	
 GLTRACE_AT	arg	gltrace_at	GPU and display	u	eagl.c	
