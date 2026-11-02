@@ -457,6 +457,8 @@ wifi_new	k
 wifi_nvram	k
 wifi_pause	k
 wifi_pcie	k
+wifi_pcie_coherent	k
+wifi_pcie_mmu_bypass	k
 wifi_pcie_tries	k
 wifi_pcie_ungate	k
 wifi_psk	k

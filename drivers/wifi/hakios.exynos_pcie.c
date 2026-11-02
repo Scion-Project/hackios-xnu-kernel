@@ -41,8 +41,10 @@
  * configuration space is not touched then: after brcmfmac's removal (which resets the chip through its watchdog) or a
  * panic the link may be down, and a request that never completes could keep the log from the loader. Nothing here writes a PMIC: the radio's supplies are the battery's and
  * always-on rails that Android does not switch either (the wlan node has no regulator).
- * Not done here, because stage 1 moves no data: the PCIe SysMMU (0x11420000, Android uses it), the I/O coherency bit of
- * SYSREG_FSYS1 (+0x700), MSI, the IA sequencer that retrains the CDR on an exit from L1.2 (and L1 substates themselves).
+ * Step 6 opens the radio's way to memory (dma_path_open(), below): the data path's gates, the PCIe SysMMU (0x11420000)
+ * clocked and passing addresses through, and with wifi_pcie_coherent=1 the I/O coherency bits of SYSREG_FSYS1 (+0x700).
+ * Not done here: translation by the SysMMU (Android's 1:1 table), MSI, the IA sequencer that retrains the CDR on an exit
+ * from L1.2 (and L1 substates themselves).
  *
  * What was checked: compiled; every register and value against the BSP files below (the PR has the table). It has
  * not run on the phone.
@@ -697,15 +699,41 @@ hakios_exynos_pcie_intx(bool on)
 }
 
 /*
- * What stands between the radio and memory, said (sys/hakios.exynos_pcie.h): the PCIe SysMMU (0x11420000; Android's
- * exynos-pcie-iommu.c turns it on with a 1:1 table, this kernel never does: CTRL 0 is the bypass, 5 translating, 7
- * blocking), its fault registers, SYSREG_FSYS1's shareability word (+0x700, bits 9:8 channel 0: 3 coherent, Android's
- * use-cache-coherency), the root port's and the endpoint's command/status (bit 29 of status: a master abort received,
- * bit 28 a target abort received, bit 27 one signalled, bit 30 SERR, bit 31 a parity error) and the PCIe device status
- * of both (bits 0-3: correctable, non-fatal, fatal, unsupported request).
+ * What stands between the radio and memory (sys/hakios.exynos_pcie.h). The radio's reads and writes of our memory leave
+ * the controller's master port (MSTR_ACLK) and cross FSYS1's data path to the bus: XIU_D_FSYS1, the PCIe SysMMU
+ * (0x11420000), PPMU_FSYS1, BTM_FSYS1 and LHS_ACEL_D_FSYS1. Their gates in CMU_FSYS1 are said at step 6 and, closed,
+ * forced open (MANUAL and CG_VAL): Android's exynos-pcie-iommu.c switches the SysMMU's clock on (clk_enable of "aclk")
+ * whatever it then does with it. Left off (wifi-a4: a read of the SysMMU's CTRL stopped the bus, "Kernel data abort",
+ * ESR 0x96000610, a synchronous external abort), nothing that crosses it would get through either.
+ *
+ * The SysMMU itself is read only while its gate is forced on here: CTRL 0 is the bypass (Android's disable), 5
+ * translating, 7 and 3 blocking. This kernel shows the radio memory at its physical addresses, so the SysMMU must pass
+ * them through: anything but 0 is set to 0 (wifi_pcie_mmu_bypass=0 leaves it). The fault registers are the ones of
+ * Samsung's exynos-pcie-iommu.h (AR 0x70/0x78, AW 0x80/0x88), nothing between.
+ *
+ * SYSREG_FSYS1 +0x700 (PCIE_SYSREG_SHARABILITY_CTRL, bits 9:8 for channel 0): 3 makes the radio's reads and writes
+ * shareable, so that they look in the processors' caches (Android's use-cache-coherency = "true",
+ * enable_cache_cohernecy()). wifi_pcie_coherent=1 sets it; the radio's memory is then the kernel's own cached memory
+ * (hakios_wifi_radio_coherent(), hakios.lx.c), not a second, uncached view of it. Without it (the default) the bits are
+ * left as they are and the radio's memory is uncached, which a radio whose writes do not look in the caches needs.
+ *
+ * Also said: the root port's and the endpoint's command/status (bit 29 of status: a master abort received, bit 28 a
+ * target abort received, bit 27 one signalled, bit 30 SERR, bit 31 a parity error) and the PCIe device status of both
+ * (bits 0-3: correctable, non-fatal, fatal, unsupported request).
  */
 #define SYSMMU_PA       0x11420000UL
 #define SYSREG_FSYS1_PA 0x11410000UL
+#define SHARABILITY     0x700
+#define SHARABLE_CH0    (3u << 8)
+#define GATE_SYSMMU     0x2098
+static const struct { uint16_t gate, qch; const char *name; } dma_path[] = {
+	{ 0x2040, 0x3034, "PCIE_GEN2 MSTR_ACLK" }, { 0x20ac, 0, "XIU_D_FSYS1" }, { GATE_SYSMMU, 0x306c, "SYSMMU_FSYS1" },
+	{ 0x2078, 0x3060, "PPMU_FSYS1" }, { 0x2018, 0x3014, "BTM_FSYS1" }, { 0x202c, 0x3024, "LHS_ACEL_D_FSYS1" },
+	{ 0x209c, 0x3070, "SYSREG_FSYS1" },
+};
+static vm_offset_t mmu, fsys1_sysreg;
+static bool mmu_clocked, coherent;
+
 static void
 say_kept(const char *format, ...) __printflike(1, 2);
 
@@ -722,27 +750,87 @@ say_kept(const char *format, ...)
 	say("%s", line);
 }
 
+/* step 6, before the hand-over: the data path's gates, the SysMMU passing addresses through, the shareability */
+static void
+dma_path_open(void)
+{
+	uint32_t bypass = 1, want_coherent = 0, v;
+
+	PE_parse_boot_argn("wifi_pcie_mmu_bypass", &bypass, sizeof(bypass));
+	PE_parse_boot_argn("wifi_pcie_coherent", &want_coherent, sizeof(want_coherent));
+	if (mmu == 0) {
+		mmu = ml_io_map(SYSMMU_PA, 0x1000);
+		fsys1_sysreg = ml_io_map(SYSREG_FSYS1_PA, 0x1000);
+	}
+	for (unsigned i = 0; i < sizeof(dma_path) / sizeof(dma_path[0]); i++) {
+		bool closed, force;
+
+		v = rd(cmu, dma_path[i].gate);
+		closed = (v & GATE_MANUAL) && !(v & GATE_CG_VAL);
+		/* the SysMMU's clock is switched on as Android does, closed or hardware-run: its registers are read below */
+		force = closed || dma_path[i].gate == GATE_SYSMMU;
+		say("exynos_pcie: 6: the data path: gate %s (+%#x) %08x%s, Q-channel %08x\n", dma_path[i].name,
+		    dma_path[i].gate, v, closed ? ": CLOSED" : "", dma_path[i].qch ? rd(cmu, dma_path[i].qch) : 0);
+		if (force) {
+			wr(cmu, dma_path[i].gate, v | GATE_MANUAL | GATE_CG_VAL);
+			v = rd(cmu, dma_path[i].gate);
+			say("exynos_pcie: 6: gate %s forced on: %08x\n", dma_path[i].name, v);
+		}
+		if (dma_path[i].gate == GATE_SYSMMU) {
+			mmu_clocked = (v & GATE_MANUAL) && (v & GATE_CG_VAL);
+		}
+	}
+	if (mmu != 0 && mmu_clocked) {
+		v = rd(mmu, 0x000);
+		say("exynos_pcie: 6: the PCIe SysMMU: CTRL %08x CFG %08x STATUS %08x VERSION %08x (CTRL 0: addresses passed through)\n",
+		    v, rd(mmu, 0x004), rd(mmu, 0x008), rd(mmu, 0x034));
+		if (v != 0 && bypass != 0) {
+			wr(mmu, 0x000, 0);
+			say("exynos_pcie: 6: the SysMMU set to pass addresses through: CTRL now %08x\n", rd(mmu, 0x000));
+		}
+	} else {
+		say("exynos_pcie: 6: the PCIe SysMMU's clock is not on: its registers are not read\n");
+	}
+	if (fsys1_sysreg != 0) {
+		v = rd(fsys1_sysreg, SHARABILITY);
+		say("exynos_pcie: 6: SYSREG_FSYS1 +0x700 (shareability) %08x: channel 0's %u (3: the radio's reads and writes "
+		    "look in the caches)\n", v, (v >> 8) & 3);
+		if (want_coherent != 0) {
+			wr(fsys1_sysreg, SHARABILITY, v | SHARABLE_CH0);
+			v = rd(fsys1_sysreg, SHARABILITY);
+			coherent = (v & SHARABLE_CH0) == SHARABLE_CH0;
+			say("exynos_pcie: 6: wifi_pcie_coherent=1: shareability now %08x: %s\n", v,
+			    coherent ? "coherent, the radio's memory is the kernel's cached memory" : "it did not take, uncached memory");
+		}
+	}
+}
+
+/* wifi_pcie_coherent=1 took (above): the radio's memory need not be uncached (hakios.lx.c) */
+bool
+hakios_wifi_radio_coherent(void)
+{
+	return coherent;
+}
+
 void
 hakios_exynos_pcie_say_dma(const char *when)
 {
-	static vm_offset_t mmu, fsys1_sysreg;
 	uint32_t ep_cap = 0, at;
 
 	if (!handed_over) {
 		return;
 	}
-	if (mmu == 0) {
-		mmu = ml_io_map(SYSMMU_PA, 0x1000);
-		fsys1_sysreg = ml_io_map(SYSREG_FSYS1_PA, 0x1000);
+	if (cmu != 0) {
+		say_kept("exynos_pcie: %s: SysMMU gate %08x Q-channel %08x\n", when, rd(cmu, GATE_SYSMMU), rd(cmu, 0x306c));
 	}
-	if (mmu != 0) {
+	if (mmu != 0 && mmu_clocked) {
 		say_kept("exynos_pcie: %s: SysMMU CTRL %08x CFG %08x STATUS %08x VERSION %08x INT_STATUS %08x; "
-		    "fault AR %08x:%08x (info %08x), AW %08x:%08x (info %08x)\n", when,
+		    "fault AR %08x (info %08x), AW %08x (info %08x)\n", when,
 		    rd(mmu, 0x000), rd(mmu, 0x004), rd(mmu, 0x008), rd(mmu, 0x034), rd(mmu, 0x060),
-		    rd(mmu, 0x074), rd(mmu, 0x070), rd(mmu, 0x078), rd(mmu, 0x084), rd(mmu, 0x080), rd(mmu, 0x088));
+		    rd(mmu, 0x070), rd(mmu, 0x078), rd(mmu, 0x080), rd(mmu, 0x088));
 	}
 	if (fsys1_sysreg != 0) {
-		say_kept("exynos_pcie: %s: SYSREG_FSYS1 +0x700 (shareability) %08x\n", when, rd(fsys1_sysreg, 0x700));
+		say_kept("exynos_pcie: %s: SYSREG_FSYS1 +0x700 (shareability) %08x\n", when, rd(fsys1_sysreg, SHARABILITY));
 	}
 	at = cfg_rd(0x34) & 0xfc;
 	for (unsigned n = 0; at >= 0x40 && n < 24; n++) {
@@ -779,6 +867,7 @@ hand_over(void)
 {
 	say("exynos_pcie: 6: 1:00.0's memory decoding on (command bit 1; bus mastering is the radio driver's to set)\n");
 	cfg_wr(0x04, (cfg_rd(0x04) & 0xffffu) | 0x2u);
+	dma_path_open();
 	say("exynos_pcie: 6: command/status now %08x; the endpoint handed to the radio's driver (brcmfmac=N)\n", cfg_rd(0x04));
 	handed_over = true;
 	hakios_brcmfmac_start();

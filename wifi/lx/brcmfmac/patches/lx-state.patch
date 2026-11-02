@@ -4,7 +4,7 @@ console's "wifi" (lx_os_wifi_state(), drivers/wifi/hakios.lx.c); brcmfmac_tcm_id
 the chip's RAM although the firmware offers to write them into ours by DMA.
 --- a/brcmfmac/pcie.c
 +++ b/brcmfmac/pcie.c
-@@ -50,6 +50,10 @@
+@@ -50,6 +50,11 @@
  void lx_brcmf_attached(struct device *dev);
  /* (HakiOS) which module the chip is, from its OTP, before the firmware is asked for (wifi/lx/brcmfmac/lx_brcmf.c) */
  void lx_brcmf_identify(void *ctx, u32 chip, u32 chiprev);
@@ -12,10 +12,11 @@ the chip's RAM although the firmware offers to write them into ours by DMA.
 +bool lx_brcmf_tcm_idx(void);
 +void lx_os_wifi_state(void (*say)(void));
 +void lx_os_pci_say_dma(const char *when);
++void lx_os_failure(bool on);
  
  enum brcmf_pcie_state {
  	BRCMFMAC_PCIE_STATE_DOWN,
-@@ -1656,6 +1660,12 @@
+@@ -1656,6 +1661,12 @@
  		else
  			devinfo->dma_idx_sz = sizeof(u32);
  	}
@@ -28,7 +29,7 @@ the chip's RAM although the firmware offers to write them into ours by DMA.
  
  	addr = sharedram_addr + BRCMF_SHARED_MAX_RXBUFPOST_OFFSET;
  	shared->max_rxbufpost = brcmf_pcie_read_tcm16(devinfo, addr);
-@@ -2157,7 +2167,59 @@
+@@ -2157,7 +2168,59 @@
  #define BRCMF_PCIE_FW_NVRAM	1
  #define BRCMF_PCIE_FW_CLM	2
  #define BRCMF_PCIE_FW_TXCAP	3
@@ -88,7 +89,7 @@ the chip's RAM although the firmware offers to write them into ours by DMA.
  static void brcmf_pcie_setup(struct device *dev, int ret,
  			     struct brcmf_fw_request *fwreq)
  {
-@@ -2171,6 +2233,8 @@
+@@ -2171,6 +2234,8 @@
  
  	bus = dev_get_drvdata(dev);
  	pcie_bus_dev = bus->bus_priv.pcie;
@@ -97,16 +98,18 @@ the chip's RAM although the firmware offers to write them into ours by DMA.
  	devinfo = pcie_bus_dev->devinfo;
  
  	/* check firmware loading result */
-@@ -2256,7 +2320,7 @@
+@@ -2256,7 +2321,9 @@
  
  fail:
  	brcmf_err(bus, "Dongle setup failed\n");
 -	brcmf_pcie_bus_console_read(devinfo, true);
++	lx_os_failure(true);	/* (HakiOS: kept apart, said again on the USB console) */
 +	lx_brcmf_say_state();	/* (HakiOS; it reads the console too) */
++	lx_os_failure(false);
  	brcmf_fw_crashed(dev);
  	device_release_driver(dev);
  }
-@@ -2620,6 +2684,8 @@
+@@ -2620,6 +2689,8 @@
  
  	devinfo = bus->bus_priv.pcie->devinfo;
  	brcmf_pcie_bus_console_read(devinfo, false);

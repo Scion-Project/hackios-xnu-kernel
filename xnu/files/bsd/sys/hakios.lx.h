@@ -25,6 +25,9 @@ void	 lx_os_free(void *memory, unsigned long size);
  * reading it slow. NULL when there is none; never given back.
  */
 void	*lx_os_radio_memory(unsigned long size, unsigned long long *address);
+/* true: the radio's reads and writes look in the processors' caches (the S9 with wifi_pcie_coherent=1), and its memory is
+ * then the kernel's own, cached; false (the default, weak, in hakios.lx.c): the uncached view above */
+bool	 hakios_wifi_radio_coherent(void);
 void	*lx_os_map_registers(unsigned long long physical, unsigned long size);	/* never unmapped */
 
 /* ---- saying things ---- */
@@ -32,6 +35,9 @@ void	 lx_os_print(const char *text);				/* for whoever looks for a fault: may be
 void	 lx_os_tell(const char *text);				/* for whoever runs the machine: always said */
 /* the driver's own account of itself, for the USB console's "wifi" (hakios_wifi_report()); NULL: no longer there */
 void	 lx_os_wifi_state(void (*say)(void));
+/* what is said between lx_os_failure(true) and (false) (the driver's state when its setup failed) is kept apart and
+ * said again with the rest of the radio's log, on the USB console's "wifi" and when the console is first up */
+void	 lx_os_failure(bool on);
 void	 lx_os_panic(const char *text) __attribute__((noreturn));
 
 /* ---- time, threads, sleeping ---- */

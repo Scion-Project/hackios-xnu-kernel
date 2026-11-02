@@ -423,6 +423,8 @@ WIFI_NEW	arg	wifi_new	Wi-Fi	k	hakios.wifi.c	steps K and later have not been seen
 WIFI_NVRAM	arg	wifi_nvram	Wi-Fi	k	hakios.brcmfmac.c	the NVRAM's name there (default: the module's, from the chip's OTP; else a guess, logged)
 WIFI_PAUSE	arg	wifi_pause	Wi-Fi	k	hakios.wifi.c	
 WIFI_PCIE	arg	wifi_pcie	Wi-Fi	k	hakios.exynos_pcie.c	a look, reading only: the PMU's isolation, CMU_FSYS1's gates and Q-channels, the five pins
+WIFI_PCIE_COHERENT	arg	wifi_pcie_coherent	Wi-Fi	k	hakios.exynos_pcie.c	
+WIFI_PCIE_MMU_BYPASS	arg	wifi_pcie_mmu_bypass	Wi-Fi	k	hakios.exynos_pcie.c	
 WIFI_PCIE_TRIES	arg	wifi_pcie_tries	Wi-Fi	k	hakios.exynos_pcie.c	
 WIFI_PCIE_UNGATE	arg	wifi_pcie_ungate	Wi-Fi	k	hakios.exynos_pcie.c	
 WIFI_PSK	arg	wifi_psk	Wi-Fi	k	hakios.brcmfmac.c	its passphrase, the same way (8 to 63 bytes); never logged, but the command line is the image's

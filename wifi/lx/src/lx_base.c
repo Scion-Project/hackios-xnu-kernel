@@ -860,9 +860,15 @@ lkpi_dma_unmap(struct device *dev, dma_addr_t address, size_t length, enum dma_d
 {
 }
 
+/*
+ * Nothing to clean or invalidate: the pool is uncached, or the radio's reads and writes look in the caches
+ * (hakios_wifi_radio_coherent()). What is left is order: the radio's writes seen before what is read after this, ours
+ * done before it is told.
+ */
 void
 linuxkpi_dma_sync(struct device *dev, dma_addr_t address, size_t length, bus_dmasync_op_t op)
 {
+	__asm__ volatile ("dsb sy" : : : "memory");
 }
 
 /* ---- socket buffers --------------------------------------------------------------------------- */
