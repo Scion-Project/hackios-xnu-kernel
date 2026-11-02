@@ -27,6 +27,7 @@
 #include <kern/thread_call.h>
 #include <kern/thread.h>
 #include <kern/clock.h>
+#include <mach/thread_policy.h>
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
@@ -178,6 +179,28 @@ static TUNABLE(uint32_t, gOnTheBeat, "fb_beat", 1);
  */
 static TUNABLE(uint32_t, gThreads, "fb_threads", 3);
 /*
+ * Boot-arg fb_tcoal=1: the kernel's timer coalescing left on. By default this driver turns it off when it starts
+ * (mach_timer_coalescing_enabled, the switch of sysctl kern.timer_coalescing_enabled). CoreAnimation draws a frame when a
+ * timer of its own fires, not when this driver's refresh notifications come (it never asks for them, see vsync()), and
+ * the kernel lets a timer fire late by as much as its thread's class allows: up to 100 ms for a thread in the background
+ * (DARWIN_BG; timer_coalesce_bg_ns_max), 75 ms and more for the low latency tiers, nothing only for real-time threads,
+ * which the window server's are on an iPhone. Here they are not, and on the S9 with fb_dpp=1 the frames came exactly
+ * 100 ms apart, ten a second whatever was on the screen (main-1102, 2 November: "fps: 10 presented, 10 drawn, 10 flips,
+ * 0 lost, 0 held; drawing 1600 us a frame; 60 refreshes", 58 seconds of 60): a frame took 1.6 ms here, so SwapEnd never
+ * held the render thread, and every frame waited for its timer. Drawn on the processor (14 ms a frame) the swaps were
+ * held (fb_queue) and woke the render thread themselves, 15 to 35 a second, and 10 when nothing held them. fps_log says
+ * which thread hands the swaps over and how the kernel classes it ("fps: the swaps come from ...").
+ */
+static TUNABLE(uint32_t, gTimerCoalescing, "fb_tcoal", 0);
+extern "C" boolean_t mach_timer_coalescing_enabled;
+extern "C" int proc_get_effective_thread_policy(thread_t thread, int flavor);
+extern "C" kern_return_t thread_policy_get(thread_t thread, thread_policy_flavor_t flavor, thread_policy_t policy_info,
+    mach_msg_type_number_t * count, boolean_t * get_default);
+#define POLICY_DARWIN_BG        0x21                    /* TASK_POLICY_DARWIN_BG (kern/policy_internal.h, IMP_TASK_POLICY_*) */
+#define POLICY_LATENCY_QOS      0x2F                    /* TASK_POLICY_LATENCY_QOS */
+/* the refresh notifications sent (vsync()), all user clients together: for fps_log */
+static volatile SInt32 gVSyncsTold;
+/*
  * Boot-arg fb_pri=N: the scheduling priority of the threads that put frames on the panel (the presenter and its
  * helpers); 0 is the kernel's default for its threads. By default 92 (BASEPRI_PREEMPT): at the kernel's they lost the
  * processors to the window server's own real-time threads under load, and a frame took 3.6 ms to put on the panel
@@ -246,6 +269,8 @@ void loader_log_line(const char * line);
 void flush_dcache64(addr64_t addr, unsigned count, int phys);
 vm_offset_t ml_vtophys(vm_offset_t vaddr);
 }
+
+static void scanSay(const char * format, ...) __printflike(1, 2);
 
 static inline uint64_t
 micros(uint64_t absolute)
@@ -412,6 +437,9 @@ public:
 	bool            fScanSaid;              /* the first frame into a scan-out buffer has been told of */
 	/* fps_log: this second's counts */
 	uint32_t        fFpsPresents, fFpsShown, fFpsFlips, fFpsLost, fFpsHeld, fFpsPartial, fFpsIdle, fFpsRefreshes;
+	thread_t        fSwapThread;            /* fps_log: the thread the last swap came from, and how the kernel classed it */
+	uint32_t        fSwapClass;
+	SInt32          fFpsVSyncs;
 	uint64_t        fFpsDraw, fFpsDrawMax, fFpsWait, fFpsWaitMax;
 	thread_call_t   fFpsCall;
 
@@ -444,6 +472,7 @@ public:
 	void drawLayers(const uint8_t * swap, MiniIOSurface ** surfaces);
 	static void fpsFired(thread_call_param_t self, thread_call_param_t unused);
 	void fpsLine(void);
+	void swapSource(void);
 };
 
 OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
@@ -621,6 +650,14 @@ IOMobileFramebuffer::start(IOService * provider)
 	fBootRowBytes = fRowBytes;
 	fScanFront = fScanPending = fScanTarget = NO_BUFFER;
 	scanSetup();
+	if (gTimerCoalescing == 0 && mach_timer_coalescing_enabled) {
+		mach_timer_coalescing_enabled = FALSE;
+		scanSay("MiniIOMobileFramebuffer: the kernel's timer coalescing turned off: the window server's frame timer fires "
+		    "when it is due, not up to 100 ms late (fb_tcoal=1 keeps it)\n");
+	} else {
+		scanSay("MiniIOMobileFramebuffer: the kernel's timer coalescing left %s (fb_tcoal=%u)\n",
+		    mach_timer_coalescing_enabled ? "on" : "off", gTimerCoalescing);
+	}
 	if (gFpsLog) {
 		uint64_t deadline;
 
@@ -1117,6 +1154,9 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	if (gTouchLat) {
 		hakios_tl("tl: s %u at %llu\n", swapWord(swap, SWAP_ID), micros(now));
 	}
+	if (gFpsLog) {
+		swapSource();
+	}
 	IOLockLock(fSwapLock);
 	fStatSwapsLate += fSwapTime != 0 && now - fSwapTime > period && now - fSwapTime < pause;
 	fSwapTime = now;
@@ -1143,6 +1183,37 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	fSwapsWaiting++;
 	IOLockWakeup(fSwapLock, fSwap, true);
 	IOLockUnlock(fSwapLock);
+}
+
+/*
+ * fps_log: which thread hands the swaps over, and how the kernel classes it for its timers (see fb_tcoal): real time or
+ * not, in the background (DARWIN_BG) or not, its latency tier. Said when it changes. (On the swapping thread, unlocked.)
+ */
+void
+IOMobileFramebuffer::swapSource(void)
+{
+	thread_t thread = current_thread();
+	thread_time_constraint_policy_data_t rt;
+	mach_msg_type_number_t count = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
+	boolean_t notRealTime = TRUE;
+	uint32_t bg, tier, cls;
+	char name[32] = "?";
+
+	if (thread_policy_get(thread, THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t) &rt, &count, &notRealTime) != KERN_SUCCESS) {
+		notRealTime = TRUE;
+	}
+	bg = proc_get_effective_thread_policy(thread, POLICY_DARWIN_BG) != 0;
+	tier = (uint32_t) proc_get_effective_thread_policy(thread, POLICY_LATENCY_QOS);
+	cls = (notRealTime ? 0 : 1) | bg << 1 | (tier & 0xff) << 2;
+	if (thread == fSwapThread && cls == fSwapClass) {
+		return;
+	}
+	fSwapThread = thread;
+	fSwapClass = cls;
+	proc_selfname(name, sizeof(name));
+	scanSay("fps: the swaps come from %s[%d], thread %#llx: %s, %s, latency tier %u; timer coalescing %s\n", name,
+	    proc_selfpid(), thread_tid(thread), notRealTime ? "not real-time" : "real-time", bg ? "in the background (DARWIN_BG)" :
+	    "not in the background", tier, mach_timer_coalescing_enabled ? "ON: its timers may fire late" : "off");
 }
 
 void
@@ -1517,12 +1588,14 @@ IOMobileFramebuffer::fpsLine(void)
 	IOLockUnlock(fLock);
 	refreshed = refreshes - fFpsRefreshes;
 	fFpsRefreshes = refreshes;
+	SInt32 vsyncs = gVSyncsTold, told = vsyncs - fFpsVSyncs;
+	fFpsVSyncs = vsyncs;
 	if (presents != 0 || shown != 0) {
 		fFpsIdle = 0;
 		snprintf(line, sizeof(line), "fps: %u presented, %u drawn, %u flips, %u lost, %u held; drawing %llu us a frame, "
-		    "%llu at most; waiting for the flip before %llu us, %llu at most; %u refreshes; %u partial; %s\n", presents,
-		    shown, flips, lost, held, shown ? micros(draw) / shown : 0, micros(drawMax), shown ? micros(wait) / shown : 0,
-		    micros(waitMax), refreshed, partial, mode);
+		    "%llu at most; waiting for the flip before %llu us, %llu at most; %u refreshes; %u partial; %d refresh "
+		    "notifications sent; %s\n", presents, shown, flips, lost, held, shown ? micros(draw) / shown : 0, micros(drawMax),
+		    shown ? micros(wait) / shown : 0, micros(waitMax), refreshed, partial, (int) told, mode);
 		loader_log_line(line);
 		IOLog("%s", line);
 	} else if (fFpsIdle++ == 0) {
@@ -1932,6 +2005,9 @@ IOMobileFramebufferUserClient::vsync(void)
 		 * (the send does not wait: a full queue drops the message)
 		 */
 		IOReturn sent = sendAsyncResult64WithOptions(ref, kIOReturnSuccess, args, 6, kIOUserNotifyOptionCanDrop);
+		if (sent == kIOReturnSuccess) {
+			OSIncrementAtomic(&gVSyncsTold);
+		}
 		if (gTouchLat) {
 			/* "tl: y COUNT due US at US SENT": the refresh told to the window server, when it was due, when it went, and
 			 * whether it went (0) or was dropped on a full queue -- for the window server's idle gaps (tools/frames.py) */
