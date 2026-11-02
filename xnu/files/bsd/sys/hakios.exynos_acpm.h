@@ -40,5 +40,12 @@ uint32_t hakios_acpm_dvfs_table(uint32_t index, uint32_t *khz, uint32_t *uv, uin
  * the fixed cpufreq_lit= and cpufreq_big= rates. True when it runs (it then owns both clusters' rates).
  */
 bool hakios_exynos_cpufreq_gov_start(void);
+/*
+ * The governor's boosts: a finger event of the touch screen (hakios.s6sy761.c) and a frame given to the display
+ * (MiniIOMobileFramebuffer.cpp). Any context that may call thread_wakeup: a stamp, a count, the governor's thread woken;
+ * nothing waited for. Nothing when the governor does not run (and stubs without CONFIG_HAKIOS_EXYNOS_CPUFREQ).
+ */
+void hakios_exynos_cpufreq_touch(void);
+void hakios_exynos_cpufreq_frame(void);
 
 #endif /* _SYS_HAKIOS_EXYNOS_ACPM_H_ */

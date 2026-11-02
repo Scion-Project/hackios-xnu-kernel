@@ -180,6 +180,13 @@ GLTRACE_SHADERS	arg	gltrace_shaders	GPU and display	u	eagl.c	the text of the sha
 GLTRACE_UNIFORMS	arg	gltrace_uniforms	GPU and display	u	eagl.c	what the program of a traced draw was given, by the names its shaders use (coord_arg, texmat0, ...)
 GLWAIT	arg	glwait	GPU and display	u	eagl.c	
 GLYES	arg	glyes	User space	u	inject.c	the renderer is made to answer that it has those functions after all
+GOV_BOOST_BIG	arg	gov_boost_big	User space	k	hakios.exynos_cpufreq.c	the M3s' floor while touched (1469000; 0: no touch boost for them)
+GOV_BOOST_LIT	arg	gov_boost_lit	User space	k	hakios.exynos_cpufreq.c	the A55s' floor while touched (1690000; 0: none)
+GOV_BOOST_MS	arg	gov_boost_ms	User space	k	hakios.exynos_cpufreq.c	how long the touch boost holds after the last finger event (300; 0: no touch boost)
+GOV_DOWN	arg	gov_down	User space	k	hakios.exynos_cpufreq.c	windows in a row that want less before the rate comes down (5; 1 to 50)
+GOV_FRAME_BIG	arg	gov_frame_big	User space	k	hakios.exynos_cpufreq.c	the M3s' floor while frames come (1261000; 0: no frame boost)
+GOV_FRAME_MS	arg	gov_frame_ms	User space	k	hakios.exynos_cpufreq.c	a frame this recent keeps the frame boost on (100; 20 to 1000)
+GOV_TARGET	arg	gov_target	User space	k	hakios.exynos_cpufreq.c	the busiest core's share wanted at the new rate (60; 30 to 95)
 GPU3D	arg	gpu3d	User space	k	hakios.vgpu3d_xnu.c	
 GPU3D_SIZE	arg	gpu3d_size	User space	k	hakios.vgpu3d_xnu.c	
 GPU_CACHED	arg	gpu_cached	GPU and display	k	hakios.gpu.cpp	

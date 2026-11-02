@@ -193,6 +193,8 @@ handle_event(const uint8_t *e)
 			return;
 		}
 		id--;
+		/* the CPU governor's touch boost (cpufreq_gov=1): a stamp and, at the first event, its thread woken; no wait */
+		hakios_exynos_cpufreq_touch();
 		if (trace_left > 0) {
 			trace_left--;
 			say("s6sy761: t %llu ms: finger %u %s at %u,%u\n", (unsigned long long)(mach_absolute_time() / 24000), id,

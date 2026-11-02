@@ -43,8 +43,24 @@
  *
  * The load. Every cpufreq_gov_ms (40 ms by default, 20 to 200) each core's idle time from the scheduler
  * (ml_cpu_idle_time, as cpuload= reads it); a cluster's load is its busiest core's share of the window it was not idle.
- * The rate wanted is the one at which that core would be 75% busy (the current rate times load / 75), rounded up to a
- * level. Up at once; down only after three windows in a row want less (about 120 ms). A core that has never been idle
+ * The rate wanted is the one at which that core would be 60% busy (the current rate times load / 60; gov_target=), rounded
+ * up to a level. Up at once, and a core 90% busy or more (its real need unknown: it had no time left to show it) goes at
+ * least to the cluster's touch-boost rate in one step (Android's interactive governor's hispeed_freq); down only after
+ * five windows in a row want less (about 200 ms; gov_down=). It was 75% and three windows: on the phone the
+ * M3s sat at 650 MHz with 20 to 40% load, and the display's presenter took 4.2 ms to copy a frame instead of 1.6 ms.
+ *
+ * The boosts. What the load cannot see coming, raised before the load shows it:
+ *   touch  every finger event of the touch screen (hakios.s6sy761.c, its polling thread, hakios_exynos_cpufreq_touch())
+ *          holds the M3s at 1469000 or more and the A55s at 1690000 or more until gov_boost_ms (300) after the last one;
+ *   frames while the display's presenter is given frames (MiniIOMobileFramebuffer.cpp present(),
+ *          hakios_exynos_cpufreq_frame()), a frame in the last 100 ms: the M3s at 1261000 or more (gov_frame_big=).
+ * The caller only stamps the time, counts, and wakes this file's thread (thread_wakeup) when no boost of its kind was
+ * running; it never asks the APM itself, never waits, never takes a lock. The thread, woken between its windows, raises
+ * whichever cluster is under its boost at once, then goes back to waiting out the window; the load is measured over the
+ * whole window as before. A boost is a floor only: it is clamped by everything that clamps the load's rate -- the
+ * ceiling, the online count's limit, 1794000 without temperatures, the thermal ceiling, the lowest level at 96 C -- and
+ * when it ends the rate comes down as the load's would (the down windows).
+ * A core that has never been idle
  * since start is taken as not started (cores 0 and 1 are not the kernel's at all): it counts neither for the load nor as
  * online. Every change is read back from the APM (hakios_acpm_dvfs_get); a rate read back above the ceiling is logged
  * and the next level down asked for. The APM of the S9 answers FREQ_GET with 0 for both CPU domains (main-1102 and the
@@ -58,13 +74,15 @@
  *
  * The log: at start the table, the limits and the rates found; then once a second (cpufreq_gov_log=SECONDS; 0: none)
  *   cpufreq_gov: 12 s: lit 1248 MHz load 31% (avg 22%, 2 online, 1794 max, measured 1251) | big 1586 MHz load 64% (avg
- *       58%, 4 online, 1794 max, measured 1590) | temp big 52.1 lit 48.0 C | 9 changes
- * (a rate is "asked" when the APM does not say it, "?" measured when no core of the cluster could be measured)
+ *       58%, 4 online, 1794 max, measured 1590) | temp big 52.1 lit 48.0 C | 9 changes | boost: 41 touch, 58 frames, 2
+ *       raised, touch on
+ * (a rate is "asked" when the APM does not say it, "?" measured when no core of the cluster could be measured; the boost
+ * part: the touch events and frames of that second, how many times a boost raised a cluster, which boosts hold now --
+ * "touch", "frames", both, or "off" -- so boosts are said once a second at most, never one line each)
  * to the loader's log (loader_log_line), which printf does not reach.
  *
- * Status: WRITTEN, NOT YET RUN on the phone. It builds; the level arithmetic is plain. Not known until the first run:
- * whether the APM's table is where Samsung's kernel finds it (its absence only means the device tree's levels are used),
- * and how the APM answers a request it would refuse (it is never sent one outside its table).
+ * Status: the load governor RUN on the phone (ACPM takes the requests, the measured MHz match them, the temperatures are
+ * read), but too slow to rise for the UI; the boosts, the 60% target and the five down windows are WRITTEN, NOT YET RUN.
  *
  * Boot-args:
  *   cpufreq_gov=1            run it (0, or none: the fixed rates of cpufreq_lit= and cpufreq_big=)
@@ -72,6 +90,13 @@
  *   cpufreq_gov_log=<s>      a summary line this often (0: none; 1)
  *   cpufreq_gov_lit_max=<kHz>, cpufreq_gov_big_max=<kHz>   the ceilings (at most 1950000 and the online count's limit)
  *   cpufreq_gov_lit_min=<kHz>, cpufreq_gov_big_min=<kHz>   the floors (at least 455000 and 650000)
+ *   gov_boost_big=<kHz>      the M3s' floor while touched (1469000; 0: no touch boost for them)
+ *   gov_boost_lit=<kHz>      the A55s' floor while touched (1690000; 0: none)
+ *   gov_boost_ms=<ms>        how long the touch boost holds after the last finger event (300; 0: no touch boost)
+ *   gov_frame_big=<kHz>      the M3s' floor while frames come (1261000; 0: no frame boost)
+ *   gov_frame_ms=<ms>        a frame this recent keeps the frame boost on (100; 20 to 1000)
+ *   gov_target=<percent>     the busiest core's share wanted at the new rate (60; 30 to 95)
+ *   gov_down=<windows>       windows in a row that want less before the rate comes down (5; 1 to 50)
  *
  * Sources (Samsung's kernel for the S9, Scion-Project/android_kernel_samsung_exynos9810, lineage-24.0 at e5906667068e,
  * and Silicium's Resources/DTBs/starlte.dts, the phone's own tree): arch/arm64/boot/dts/exynos/
@@ -103,10 +128,14 @@ extern int32_t hakios_exynos_tmu_zone_mc(unsigned zone);
 extern void *cpu_to_processor(int cpu);
 extern void *thread_bind(void *processor);
 extern int thread_block(void *continuation);
+/* (kern/sched_prim.h, not included: its thread_block and thread_bind are declared above as this file has used them) */
+extern wait_result_t assert_wait_deadline(event_t event, wait_interrupt_t interruptible, uint64_t deadline);
+extern kern_return_t thread_wakeup_prim(event_t event, boolean_t one_thread, wait_result_t result);
 
 #define LEVELS_MOST     32
-#define TARGET_LOAD     75      /* percent: the busiest core's share wanted at the new rate */
-#define DOWN_WINDOWS    3       /* windows in a row that want less before the rate comes down */
+#define TARGET_LOAD     60      /* percent: the busiest core's share wanted at the new rate (gov_target=) */
+#define DOWN_WINDOWS    5       /* windows in a row that want less before the rate comes down (gov_down=) */
+#define SATURATED       90      /* percent: a core this busy goes at least to its cluster's touch-boost rate at once */
 #define NOT_READ_MC     (-273000)
 #define HOT_CUT_MC      96000   /* BIG's hotplug_out_threshold: the cluster to its lowest level */
 #define HYSTERESIS_MC   5000
@@ -151,6 +180,8 @@ static struct cluster {
 	uint32_t lowest;                /* the slowest level at or above the device tree's min-freq: as low as the heat takes it */
 	uint32_t changes, errors;
 	int32_t temp_mc;
+	uint32_t touch_khz, frame_khz;  /* the boosts' floors (0: none), before the ceiling clamps them */
+	uint32_t boost_floor;           /* the last boost_floor() (kHz; 0: no boost on) */
 } clusters[2];
 
 static const uint32_t lit_dt[] = {
@@ -161,7 +192,59 @@ static const uint32_t big_dt[] = {
 	1261000, 1170000, 1066000, 962000, 858000, 741000, 650000, 598000,
 };
 
-static uint32_t window_ms = 40, log_seconds = 1;
+static uint32_t window_ms = 40, log_seconds = 1, target_load = TARGET_LOAD, down_windows = DOWN_WINDOWS;
+
+/*
+ * The boosts (see the head). The stamps and counts are written by the touch screen's thread and the display's presenter,
+ * read by this file's thread: plain 64- and 32-bit atomics, no lock. boost_event is what the thread waits on.
+ */
+static uint32_t boost_ms = 300, frame_ms = 100;
+static uint64_t boost_span, frame_span;         /* the same in mach_absolute_time units */
+static uint64_t touch_last, frame_last;         /* the last finger event's and frame's time (0: none yet) */
+static uint32_t touch_count, frame_count;       /* this second's, for the summary */
+static uint32_t boost_raises;                   /* this second's: times a boost raised a cluster's rate */
+static bool gov_running;
+static int boost_event;
+
+static bool
+boost_on(uint64_t last, uint64_t span, uint64_t now)
+{
+	return last != 0 && span != 0 && now - last <= span;
+}
+
+/* a finger event (hakios.s6sy761.c): the stamp, and the thread woken when the touch boost was not already on */
+void
+hakios_exynos_cpufreq_touch(void)
+{
+	uint64_t now, before;
+
+	if (!__atomic_load_n(&gov_running, __ATOMIC_ACQUIRE) || boost_span == 0) {
+		return;
+	}
+	now = mach_absolute_time();
+	before = __atomic_exchange_n(&touch_last, now, __ATOMIC_RELEASE);
+	__atomic_fetch_add(&touch_count, 1, __ATOMIC_RELAXED);
+	if (!boost_on(before, boost_span, now)) {
+		(void)thread_wakeup_prim((event_t)&boost_event, FALSE, THREAD_AWAKENED);
+	}
+}
+
+/* a frame given to the display (MiniIOMobileFramebuffer.cpp present()): the same, for the frame boost */
+void
+hakios_exynos_cpufreq_frame(void)
+{
+	uint64_t now, before;
+
+	if (!__atomic_load_n(&gov_running, __ATOMIC_ACQUIRE) || frame_span == 0) {
+		return;
+	}
+	now = mach_absolute_time();
+	before = __atomic_exchange_n(&frame_last, now, __ATOMIC_RELEASE);
+	__atomic_fetch_add(&frame_count, 1, __ATOMIC_RELAXED);
+	if (!boost_on(before, frame_span, now)) {
+		(void)thread_wakeup_prim((event_t)&boost_event, FALSE, THREAD_AWAKENED);
+	}
+}
 static uint64_t idle_before[MAX_CPUS];
 static bool ever_idle[MAX_CPUS];
 
@@ -217,6 +300,57 @@ ceiling_now(struct cluster *c)
 		max = MIN(max, c->levels[MIN(c->thermal, c->n - 1)]);
 	}
 	return c->levels[level_at_most(c, max)];
+}
+
+/* the floor the boosts on now give the cluster, a level, clamped by the ceiling now (0: no boost on) */
+static uint32_t
+boost_floor(struct cluster *c, uint64_t now)
+{
+	uint32_t khz = 0;
+
+	if (boost_on(__atomic_load_n(&touch_last, __ATOMIC_ACQUIRE), boost_span, now)) {
+		khz = MAX(khz, c->touch_khz);
+	}
+	if (boost_on(__atomic_load_n(&frame_last, __ATOMIC_ACQUIRE), frame_span, now)) {
+		khz = MAX(khz, c->frame_khz);
+	}
+	if (khz == 0) {
+		return 0;
+	}
+	return MIN(c->levels[level_at_least(c, khz)], ceiling_now(c));
+}
+
+static void set_rate(struct cluster *c, uint32_t khz, uint32_t max);
+
+/* the clusters under their boost floor raised to it now (between windows; nothing measured) */
+static void
+boost(uint64_t now)
+{
+	for (int i = 0; i < 2; i++) {
+		struct cluster *c = &clusters[i];
+		uint32_t floor = boost_floor(c, now);
+
+		c->boost_floor = floor;
+		if (c->cur != 0 && c->online != 0 && floor > c->cur) {
+			set_rate(c, floor, ceiling_now(c));
+			c->low_windows = 0;
+			__atomic_fetch_add(&boost_raises, 1, __ATOMIC_RELAXED);
+		}
+	}
+}
+
+/* a boost wanted that is not applied yet: the thread does not wait out its window then */
+static bool
+boost_due(uint64_t now)
+{
+	for (int i = 0; i < 2; i++) {
+		struct cluster *c = &clusters[i];
+
+		if (c->cur != 0 && c->online != 0 && boost_floor(c, now) > c->cur) {
+			return true;
+		}
+	}
+	return false;
 }
 
 /*
@@ -359,20 +493,26 @@ measure(uint64_t span)
 }
 
 static void
-decide(struct cluster *c)
+decide(struct cluster *c, uint64_t now)
 {
 	uint32_t max = ceiling_now(c), want, target;
 
 	c->load_sum += c->load;
 	c->windows++;
+	c->boost_floor = boost_floor(c, now);
 	if (c->online == 0 || c->cur == 0) {
 		return;
 	}
-	want = c->levels[level_at_least(c, (uint64_t)c->cur * c->load / TARGET_LOAD)];
+	want = c->levels[level_at_least(c, (uint64_t)c->cur * c->load / target_load)];
+	if (c->load >= SATURATED && c->touch_khz != 0) {
+		/* no time left over to say how much more it needs: the touch-boost rate at once, then the load's again */
+		want = MAX(want, c->levels[level_at_least(c, c->touch_khz)]);
+	}
 	target = MAX(want, c->floor);
+	target = MAX(target, c->boost_floor);
 	target = MIN(target, max);
 	if (target < c->cur && c->cur <= max) {
-		if (++c->low_windows < DOWN_WINDOWS) {
+		if (++c->low_windows < down_windows) {
 			return;
 		}
 	}
@@ -442,6 +582,9 @@ summary(uint64_t seconds)
 {
 	struct cluster *l = &clusters[0], *b = &clusters[1];
 	char tb[16], tl[16], ml[16], mb[16];
+	uint32_t touches, frames, raises;
+	uint64_t now;
+	bool touched, framed;
 
 	l->measured = measure_mhz(l);
 	b->measured = measure_mhz(b);
@@ -449,11 +592,19 @@ summary(uint64_t seconds)
 	temp_text(tl, sizeof(tl), l->temp_mc);
 	snprintf(ml, sizeof(ml), l->measured ? "%u" : "?", l->measured);
 	snprintf(mb, sizeof(mb), b->measured ? "%u" : "?", b->measured);
+	now = mach_absolute_time();
+	touched = boost_on(__atomic_load_n(&touch_last, __ATOMIC_ACQUIRE), boost_span, now);
+	framed = boost_on(__atomic_load_n(&frame_last, __ATOMIC_ACQUIRE), frame_span, now);
+	touches = __atomic_exchange_n(&touch_count, 0, __ATOMIC_RELAXED);
+	frames = __atomic_exchange_n(&frame_count, 0, __ATOMIC_RELAXED);
+	raises = __atomic_exchange_n(&boost_raises, 0, __ATOMIC_RELAXED);
 	say("cpufreq_gov: %llu s: lit %u MHz%s load %u%% (avg %u%%, %u online, %u max, measured %s) | big %u MHz%s load %u%% "
-	    "(avg %u%%, %u online, %u max, measured %s) | temp big %s lit %s C | %u changes\n", seconds, l->cur / 1000,
+	    "(avg %u%%, %u online, %u max, measured %s) | temp big %s lit %s C | %u changes | boost: %u touch, %u frames, %u "
+	    "raised, %s\n", seconds, l->cur / 1000,
 	    l->asked ? " asked" : "", l->load, l->windows ? l->load_sum / l->windows : 0, l->online, ceiling_now(l) / 1000, ml,
 	    b->cur / 1000, b->asked ? " asked" : "", b->load, b->windows ? b->load_sum / b->windows : 0, b->online,
-	    ceiling_now(b) / 1000, mb, tb, tl, l->changes + b->changes);
+	    ceiling_now(b) / 1000, mb, tb, tl, l->changes + b->changes, touches, frames, raises,
+	    touched && framed ? "touch and frames on" : touched ? "touch on" : framed ? "frames on" : "off");
 	l->load_sum = l->windows = b->load_sum = b->windows = 0;
 }
 
@@ -466,10 +617,28 @@ gov_thread(void *arg __unused, wait_result_t wr __unused)
 	log_every = second * log_seconds;
 	measure(1);     /* the idle times so far, and which cores have been idle: the first window starts here */
 	for (;;) {
-		uint64_t now, ns;
+		uint64_t now, ns, window, deadline;
+		bool tried = false;
 
-		delay_for_interval(window_ms, NSEC_PER_MSEC);
-		now = mach_absolute_time();
+		/*
+		 * The window waited out, but woken by a boost (hakios_exynos_cpufreq_touch/frame) to raise a cluster at once. The
+		 * wait is asserted before the check, so a wakeup between the two is not lost: it ends the wait at once.
+		 */
+		nanoseconds_to_absolutetime((uint64_t)window_ms * NSEC_PER_MSEC, &window);
+		deadline = then + window;
+		while ((now = mach_absolute_time()) < deadline) {
+			(void)assert_wait_deadline((event_t)&boost_event, THREAD_UNINT, deadline);
+			if (!tried && boost_due(now)) {
+				(void)thread_wakeup_prim((event_t)&boost_event, FALSE, THREAD_AWAKENED);
+			}
+			(void)thread_block(NULL);
+			now = mach_absolute_time();
+			if (boost_due(now)) {
+				/* (not woken by itself again this window: a request the APM refused waits for the next) */
+				tried = true;
+				boost(now);
+			}
+		}
 		measure(now - then > 0 ? now - then : 1);
 		then = now;
 		if (now - last_second >= second) {
@@ -477,8 +646,8 @@ gov_thread(void *arg __unused, wait_result_t wr __unused)
 			cool(&clusters[0]);
 			cool(&clusters[1]);
 		}
-		decide(&clusters[0]);
-		decide(&clusters[1]);
+		decide(&clusters[0], now);
+		decide(&clusters[1], now);
 		if (log_seconds != 0 && now - last_log >= log_every) {
 			last_log = now;
 			absolutetime_to_nanoseconds(now - start, &ns);
@@ -521,6 +690,7 @@ bool
 hakios_exynos_cpufreq_gov_start(void)
 {
 	uint32_t on = 0, value = 0, lit_max = 0, lit_min = 0, big_max = 0, big_min = 0;
+	uint32_t touch_big = 1469000, touch_lit = 1690000, frame_big = 1261000;
 	thread_t thread;
 
 	if (!PE_parse_boot_argn("cpufreq_gov", &on, sizeof(on)) || on == 0) {
@@ -537,6 +707,32 @@ hakios_exynos_cpufreq_gov_start(void)
 	(void)PE_parse_boot_argn("cpufreq_gov_lit_min", &lit_min, sizeof(lit_min));
 	(void)PE_parse_boot_argn("cpufreq_gov_big_max", &big_max, sizeof(big_max));
 	(void)PE_parse_boot_argn("cpufreq_gov_big_min", &big_min, sizeof(big_min));
+	(void)PE_parse_boot_argn("gov_boost_big", &touch_big, sizeof(touch_big));
+	(void)PE_parse_boot_argn("gov_boost_lit", &touch_lit, sizeof(touch_lit));
+	(void)PE_parse_boot_argn("gov_frame_big", &frame_big, sizeof(frame_big));
+	if (PE_parse_boot_argn("gov_boost_ms", &value, sizeof(value)) && value <= 5000) {
+		boost_ms = value;
+	}
+	if (PE_parse_boot_argn("gov_frame_ms", &value, sizeof(value)) && value >= 20 && value <= 1000) {
+		frame_ms = value;
+	}
+	if (PE_parse_boot_argn("gov_target", &value, sizeof(value)) && value >= 30 && value <= 95) {
+		target_load = value;
+	}
+	if (PE_parse_boot_argn("gov_down", &value, sizeof(value)) && value >= 1 && value <= 50) {
+		down_windows = value;
+	}
+	if (boost_ms == 0) {
+		touch_big = touch_lit = 0;
+	}
+	if (touch_big == 0 && touch_lit == 0) {
+		boost_ms = 0;
+	}
+	if (frame_big == 0) {
+		frame_ms = 0;
+	}
+	nanoseconds_to_absolutetime((uint64_t)boost_ms * NSEC_PER_MSEC, &boost_span);
+	nanoseconds_to_absolutetime((uint64_t)frame_ms * NSEC_PER_MSEC, &frame_span);
 	if (!hakios_acpm_init(say)) {
 		say("cpufreq_gov: no ACPM: not started (and the fixed rates not set either)\n");
 		return true;
@@ -549,6 +745,9 @@ hakios_exynos_cpufreq_gov_start(void)
 		                        .n_dt_levels = sizeof(big_dt) / sizeof(big_dt[0]) };
 	cluster_setup(&clusters[0], lit_max, lit_min, 1794000, 1053000);
 	cluster_setup(&clusters[1], big_max, big_min, 1794000, 650000);
+	clusters[0].touch_khz = touch_lit;
+	clusters[1].touch_khz = touch_big;
+	clusters[1].frame_khz = frame_big;
 	for (int i = 0; i < 2; i++) {
 		struct cluster *c = &clusters[i];
 		uint32_t found = 0;
@@ -563,12 +762,16 @@ hakios_exynos_cpufreq_gov_start(void)
 		}
 	}
 	say("cpufreq_gov: every %u ms, the busiest core %u%% busy wanted, down after %u windows; cooling from %d C (big), %d C "
-	    "(lit), the lowest level from %d C; a line every %u s\n", window_ms, TARGET_LOAD, DOWN_WINDOWS,
+	    "(lit), the lowest level from %d C; a line every %u s\n", window_ms, target_load, down_windows,
 	    clusters[1].control_mc / 1000, clusters[0].control_mc / 1000, HOT_CUT_MC / 1000, log_seconds);
+	say("cpufreq_gov: boosts: touch big %u lit %u kHz for %u ms after the last finger event; frames big %u kHz while one "
+	    "came in the last %u ms; %u%% busy or more: the touch-boost rate at once; all within the ceilings above\n",
+	    boost_ms ? touch_big : 0, boost_ms ? touch_lit : 0, boost_ms, frame_ms ? frame_big : 0, frame_ms, SATURATED);
 	if (kernel_thread_start(gov_thread, NULL, &thread) != KERN_SUCCESS) {
 		say("cpufreq_gov: no thread: the rates stay as they are\n");
 		return true;
 	}
 	thread_deallocate(thread);
+	__atomic_store_n(&gov_running, true, __ATOMIC_RELEASE);
 	return true;
 }
