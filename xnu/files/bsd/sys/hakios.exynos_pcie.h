@@ -31,6 +31,9 @@ bool     hakios_exynos_pcie_bar(unsigned bar, uint64_t *address, uint64_t *size)
 void     hakios_exynos_pcie_intx(bool on);
 uint32_t hakios_exynos_pcie_intx_ack(void);
 
+/* the SysMMU, SYSREG_FSYS1's shareability and both ends' status, said (a look, nothing changed) */
+void     hakios_exynos_pcie_say_dma(const char *when);
+
 /* the radio's driver, called once by wifi_pcie=6 when the link is handed over (a kernel without one has a stub) */
 void     hakios_brcmfmac_start(void);
 

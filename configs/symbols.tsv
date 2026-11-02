@@ -404,6 +404,7 @@ WIFI_ASK	arg	wifi_ask	Wi-Fi	k	hakios.wifi.c	step 14 also asks that service a que
 WIFI_BA	arg	wifi_ba	Wi-Fi	k	lx_80211.c	
 WIFI_CAL	arg	wifi_cal	Wi-Fi	k	hakios.wlfw.c	
 WIFI_DIRTY	arg	wifi_dirty	Wi-Fi	k	hakios.wifi.c	
+WIFI_DMA_AT	arg	wifi_dma_at	Wi-Fi	k	hakios.lx.c	
 WIFI_FILE	arg	wifi_file	Wi-Fi	k	hakios.wifi.c	with wifi=1: the network of fw/network is not joined at the start
 WIFI_FINE	arg	wifi_fine	Wi-Fi	k	hakios.wifi.c	such a step waits like that before every single write and call
 WIFI_FW	arg	wifi_fw	Wi-Fi	k	hakios.brcmfmac.c	the station firmware's bcmdhd name, in fw/ or VENDOR (default bcmdhd_sta.bin_b2 for B2)

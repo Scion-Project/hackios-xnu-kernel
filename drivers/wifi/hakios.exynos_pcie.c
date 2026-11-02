@@ -696,6 +696,53 @@ hakios_exynos_pcie_intx(bool on)
 	}
 }
 
+/*
+ * What stands between the radio and memory, said (sys/hakios.exynos_pcie.h): the PCIe SysMMU (0x11420000; Android's
+ * exynos-pcie-iommu.c turns it on with a 1:1 table, this kernel never does: CTRL 0 is the bypass, 5 translating, 7
+ * blocking), its fault registers, SYSREG_FSYS1's shareability word (+0x700, bits 9:8 channel 0: 3 coherent, Android's
+ * use-cache-coherency), the root port's and the endpoint's command/status (bit 29 of status: a master abort received,
+ * bit 28 a target abort received, bit 27 one signalled, bit 30 SERR, bit 31 a parity error) and the PCIe device status
+ * of both (bits 0-3: correctable, non-fatal, fatal, unsupported request).
+ */
+#define SYSMMU_PA       0x11420000UL
+#define SYSREG_FSYS1_PA 0x11410000UL
+void
+hakios_exynos_pcie_say_dma(const char *when)
+{
+	static vm_offset_t mmu, fsys1_sysreg;
+	uint32_t ep_cap = 0, at;
+
+	if (!handed_over) {
+		return;
+	}
+	if (mmu == 0) {
+		mmu = ml_io_map(SYSMMU_PA, 0x1000);
+		fsys1_sysreg = ml_io_map(SYSREG_FSYS1_PA, 0x1000);
+	}
+	if (mmu != 0) {
+		say("exynos_pcie: %s: SysMMU CTRL %08x CFG %08x STATUS %08x VERSION %08x INT_STATUS %08x; "
+		    "fault AR %08x:%08x (info %08x), AW %08x:%08x (info %08x)\n", when,
+		    rd(mmu, 0x000), rd(mmu, 0x004), rd(mmu, 0x008), rd(mmu, 0x034), rd(mmu, 0x060),
+		    rd(mmu, 0x074), rd(mmu, 0x070), rd(mmu, 0x078), rd(mmu, 0x084), rd(mmu, 0x080), rd(mmu, 0x088));
+	}
+	if (fsys1_sysreg != 0) {
+		say("exynos_pcie: %s: SYSREG_FSYS1 +0x700 (shareability) %08x\n", when, rd(fsys1_sysreg, 0x700));
+	}
+	at = cfg_rd(0x34) & 0xfc;
+	for (unsigned n = 0; at >= 0x40 && n < 24; n++) {
+		uint32_t cap = cfg_rd(at);
+
+		if ((cap & 0xff) == 0x10) {
+			ep_cap = at;
+			break;
+		}
+		at = (cap >> 8) & 0xfc;
+	}
+	say("exynos_pcie: %s: root port command/status %08x (device status %04x), endpoint %08x (device status %04x, "
+	    "control %04x), ELBI IRQ latch %08x\n", when, dbi_rd(DBI_COMMAND), dbi_rd(0x78) >> 16, cfg_rd(0x04),
+	    ep_cap ? cfg_rd(ep_cap + 8) >> 16 : 0xffff, ep_cap ? cfg_rd(ep_cap + 8) & 0xffff : 0xffff, rd(elbi, ELBI_IRQ_PULSE));
+}
+
 /* exynos_pcie_irq_handler()'s first two lines: what is latched, written back to clear it */
 uint32_t
 hakios_exynos_pcie_intx_ack(void)

@@ -1189,6 +1189,55 @@ explicit_bzero(void *memory, size_t size)
 	bzero(memory, size);
 }
 
+/*
+ * vsnprintf() with Linux's "%pV" (a struct va_format: a format and its arguments, printed in place), which the kernel's
+ * own does not know (it prints the pointer and a V). brcmfmac's errors are "%s: %pV" (__brcmf_err(), the firmware's
+ * console among them); what comes before the %pV may be %s only, which is all that is asked of it.
+ */
+void
+lx_vformat(char *line, size_t size, const char *format, va_list list)
+{
+	const char *pv = format;
+	size_t at = 0;
+
+	while (*pv != 0 && !(pv[0] == '%' && pv[1] == 'p' && pv[2] == 'V')) {
+		pv += pv[0] == '%' && pv[1] == '%' ? 2 : 1;
+	}
+	pv = *pv != 0 ? pv : NULL;
+	if (pv == NULL) {
+		vsnprintf(line, size, format, list);
+		return;
+	}
+	line[0] = 0;
+	for (const char *f = format; f < pv && at + 1 < size; f++) {
+		if (f[0] == '%' && f[1] == 's') {
+			const char *text = va_arg(list, const char *);
+
+			at += strlcpy(line + at, text != NULL ? text : "(null)", size - at);
+			f++;
+		} else if (f[0] == '%' && f[1] == '%') {
+			line[at++] = '%';
+			f++;
+		} else {
+			line[at++] = *f;
+		}
+		at = at < size ? at : size - 1;
+		line[at] = 0;
+	}
+	if (at + 1 < size) {
+		struct va_format *vaf = va_arg(list, struct va_format *);
+		va_list inner;
+
+		va_copy(inner, *vaf->va);
+		vsnprintf(line + at, size - at, vaf->fmt, inner);
+		va_end(inner);
+		at = strlen(line);
+		if (at + 1 < size) {
+			strlcpy(line + at, pv + 3, size - at);	/* (what follows the %pV: no conversions, in brcmfmac) */
+		}
+	}
+}
+
 /* FreeBSD's kernel log, which LinuxKPI's rate-limited messages go to. */
 void
 log(int level, const char *format, ...)
@@ -1197,7 +1246,7 @@ log(int level, const char *format, ...)
 	va_list list;
 
 	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
+	lx_vformat(line, sizeof(line), format, list);
 	va_end(list);
 	lx_os_print(line);
 }

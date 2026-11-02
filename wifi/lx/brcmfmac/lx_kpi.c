@@ -218,7 +218,7 @@ device_printf(device_t dev, const char *format, ...)
 	va_list list;
 
 	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
+	lx_vformat(line, sizeof(line), format, list);
 	va_end(list);
 	printf("brcmfmac: %s", line);
 	return (0);

@@ -67,6 +67,22 @@ lx_os_radio_memory(unsigned long size, unsigned long long *address)
 	uint64_t physical;
 
 	size = round_page(size);
+	physical = 0;
+	PE_parse_boot_argn("wifi_dma_at", &physical, sizeof(physical));
+	if (physical != 0) {
+		/*
+		 * wifi_dma_at=ADDRESS: a piece of DRAM the kernel does not have (a gap of the device tree's, e.g. 0xDC000000 on
+		 * the S9), below 4 GB, for a radio whose bus may not reach the kernel's own memory above it; mapped only once.
+		 */
+		physical = trunc_page(physical);
+		uncached = ml_io_map_unmappable(physical, size, VM_WIMG_WCOMB);
+		if (uncached == 0 || !hakios_wifi_radio_map(physical, size, address)) {
+			return NULL;
+		}
+		bzero((void *)uncached, size);
+		say("lx: the radio's %lu MB at %#llx, memory the kernel does not have (wifi_dma_at)\n", size >> 20, physical);
+		return (void *)uncached;
+	}
 	if (kmem_alloc_contig(kernel_map, &cached, size, 0, 0, 0, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
 	    KERN_SUCCESS) {
 		say("lx: no %lu bytes of memory in one piece\n", size);

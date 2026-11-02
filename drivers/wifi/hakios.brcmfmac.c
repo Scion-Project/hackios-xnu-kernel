@@ -598,6 +598,7 @@ lx_os_irq_line_attach(void (*function)(void *), void *argument)
 	}
 	gic_v3_spi_mask(INTX_INTID);
 	hakios_exynos_pcie_intx(true);
+	hakios_exynos_pcie_say_dma("the interrupt attached");
 	return 0;
 }
 
@@ -615,6 +616,7 @@ lx_os_irq_line_detach(void)
 	if (!line.attached) {
 		return;
 	}
+	hakios_exynos_pcie_say_dma("the interrupt let go");
 	hakios_exynos_pcie_intx(false);
 	gic_v3_spi_detach(INTX_INTID);
 	lck_mtx_lock(&line_lock);

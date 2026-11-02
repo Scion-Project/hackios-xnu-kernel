@@ -913,6 +913,9 @@ CONFIG_WIFI=y
 # read by hakios.wifi.c (kernel)
 # CONFIG_WIFI_DIRTY is not set
 
+# the radio's DMA memory at this physical address below 4 GB, which the kernel does not have, instead of the kernel's own (a test: the S9's gap 0xDC000000)
+# CONFIG_WIFI_DMA_AT is not set
+
 # with wifi=1: the network of fw/network is not joined at the start
 # CONFIG_WIFI_FILE is not set
 

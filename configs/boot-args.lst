@@ -438,6 +438,7 @@ wifi_ask	k
 wifi_ba	k
 wifi_cal	k
 wifi_dirty	k
+wifi_dma_at	k
 wifi_file	k
 wifi_fine	k
 wifi_fw	k
