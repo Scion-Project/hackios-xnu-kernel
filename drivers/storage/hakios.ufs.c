@@ -216,6 +216,7 @@ static bool ufs_nufs;                           /* ufs=3 asked for */
 static volatile bool ufs_nufs_on;               /* switched: this kernel's own driver has the controller */
 static bool ufs_nufs_ro;                        /* ufs_native_ro=1 */
 static uint32_t ufs_nufs_verify;                /* ufs_native_verify=1: every write read back and compared */
+static uint32_t ufs_nufs_soak;                  /* ufs_native_soak=N: N random reads of SYSTEM both ways before the switch */
 static uint64_t ufs_nufs_unmapped, ufs_nufs_verify_bad;
 static int ufs_nufs_failed(const char *name, uint64_t offset, int error);
 static void nufs_say(const char *format, ...) __printflike(1, 2);
@@ -228,7 +229,7 @@ static int ufs_nufs_write(uint32_t part, uint64_t offset, const uint8_t *src, ui
  */
 static struct {
 	uint32_t step;                  /* the last step begun (1-5); 0: not started */
-	int selftest, fences;           /* 0 not run, 1 passed, -1 failed */
+	int selftest, fences, soak;     /* 0 not run, 1 passed, -1 failed */
 	uint32_t fences_tried;
 	char why[240];                  /* why not native: the first reason given */
 	uint64_t reads_native, reads_loader, read_errors, read_bytes, refused;
@@ -2305,7 +2306,7 @@ ufs_own_init(uint32_t mode)
 		}
 		return;
 	}
-	ufs_own_table = kalloc_data(sizeof(struct loader_block), Z_WAITOK | Z_ZERO);
+	ufs_own_table = kalloc_data(sizeof(struct loader_block), Z_WAITOK);
 	if (ufs_own_table == NULL) {
 		return;
 	}
@@ -2542,9 +2543,9 @@ hakios_ufs_summary(const char *when, int how)
 		    nufs_sum.fences_tried);
 	}
 	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
-	nufs_summary_line(how, "ufs: nufs: summary (%s, up %llu s): step %u of 5 (%s); self-test %s; fence test %s; mode %s\n",
-	    when, ns / NSEC_PER_SEC, step, steps[step], nufs_sum.selftest == 0 ? "not run" : nufs_sum.selftest > 0 ?
-	    "passed" : "FAILED", fence, mode);
+	nufs_summary_line(how, "ufs: nufs: summary (%s, up %llu s): step %u of 5 (%s); self-test %s; soak %s; fence test %s; "
+	    "mode %s\n", when, ns / NSEC_PER_SEC, step, steps[step], nufs_sum.selftest == 0 ? "not run" : nufs_sum.selftest > 0 ?
+	    "passed" : "FAILED", nufs_sum.soak == 0 ? "not run" : nufs_sum.soak > 0 ? "passed" : "FAILED", fence, mode);
 	nufs_summary_line(how, "ufs: nufs: summary: reads %llu native, %llu through the loader (%llu MB), %llu failed; "
 	    "writes %llu (%llu MB), %llu failed; refused %llu\n", nufs_sum.reads_native, nufs_sum.reads_loader,
 	    nufs_sum.read_bytes >> 20, nufs_sum.read_errors, ufs_writes, ufs_write_bytes >> 20, ufs_write_errors,
@@ -3120,6 +3121,127 @@ nufs_abort(const char *why)
 	}
 }
 
+/*
+ * ufs_native_soak=N (at most NUFS_SOAK_MAX): N reads of SYSTEM at random blocks, 1 to 16 blocks each (so 1 to 16
+ * PRDT entries), first through the loader at step 1 (each one's FNV-1a kept), then through this kernel's own
+ * driver after the self-test, each compared with the loader's. Any read failing or different is a refusal: the
+ * controller given back, the run through the loader. Read only: nothing is written.
+ */
+#define NUFS_SOAK_MAX       2048u
+#define NUFS_SOAK_BLOCKS    16u
+
+struct nufs_soak {
+	uint64_t block;
+	uint32_t count;
+	uint64_t fnv;
+};
+
+static struct nufs_soak *nufs_soaks;
+static uint32_t nufs_soak_part = BLOCK_MAX_PARTS;
+
+static uint64_t
+nufs_soak_rand(uint64_t *x)
+{
+	*x ^= *x << 13;
+	*x ^= *x >> 7;
+	*x ^= *x << 17;
+	return *x;
+}
+
+static void
+nufs_soak_free(void)
+{
+	if (nufs_soaks != NULL) {
+		kfree_data(nufs_soaks, (vm_size_t)ufs_nufs_soak * sizeof(struct nufs_soak));
+		nufs_soaks = NULL;
+	}
+}
+
+/* step 1: the loader's reads. NULL, or why ufs=3 is not taken */
+static const char *
+nufs_soak_references(void)
+{
+	uint32_t part = ufs_entry("SYSTEM");
+	uint64_t seed = mach_absolute_time() | 1, x, blocks;
+	uint8_t *buf;
+
+	if (ufs_nufs_soak > NUFS_SOAK_MAX) {
+		ufs_nufs_soak = NUFS_SOAK_MAX;
+	}
+	if (part >= ufs_parts || nufs_unit_of(part) < 0 || ufs_page->part[part].block_size != 4096 ||
+	    (blocks = ufs_page->part[part].blocks) < NUFS_SOAK_BLOCKS) {
+		return "ufs_native_soak: no SYSTEM partition of 4 KB blocks on a unit of the loader's";
+	}
+	nufs_soaks = kalloc_data((vm_size_t)ufs_nufs_soak * sizeof(struct nufs_soak), Z_WAITOK);
+	buf = kalloc_data(NUFS_SOAK_BLOCKS * 4096, Z_WAITOK);
+	if (nufs_soaks == NULL || buf == NULL) {
+		if (buf != NULL) {
+			kfree_data(buf, NUFS_SOAK_BLOCKS * 4096);
+		}
+		nufs_soak_free();
+		return "ufs_native_soak: no memory";
+	}
+	nufs_soak_part = part;
+	x = seed;
+	for (uint32_t i = 0; i < ufs_nufs_soak; i++) {
+		struct nufs_soak *k = &nufs_soaks[i];
+
+		k->count = 1 + (uint32_t)(nufs_soak_rand(&x) % NUFS_SOAK_BLOCKS);
+		k->block = nufs_soak_rand(&x) % (blocks - k->count + 1);
+		if (ufs_read_mailbox(part, k->block * 4096, buf, (uint64_t)k->count * 4096) != 0) {
+			nufs_say("ufs: nufs: soak: SYSTEM blocks %llu..%llu could not be read through the loader\n", k->block,
+			    k->block + k->count - 1);
+			kfree_data(buf, NUFS_SOAK_BLOCKS * 4096);
+			nufs_soak_free();
+			return "ufs_native_soak: a read through the loader failed";
+		}
+		k->fnv = nufs_fnv(buf, (uint64_t)k->count * 4096);
+	}
+	kfree_data(buf, NUFS_SOAK_BLOCKS * 4096);
+	nufs_say("ufs: nufs: soak: %u random reads of SYSTEM (%llu blocks; 1 to %u blocks each, seed %llx) through the loader, "
+	    "kept to compare\n", ufs_nufs_soak, blocks, NUFS_SOAK_BLOCKS, seed);
+	return NULL;
+}
+
+/* after the self-test: the same reads through this kernel's own driver. NULL, or why not */
+static const char *
+nufs_soak_run(void)
+{
+	static char why[160];
+	uint64_t t0 = mach_absolute_time(), ns, bytes = 0;
+	uint8_t *buf = kalloc_data(NUFS_SOAK_BLOCKS * 4096, Z_WAITOK);
+
+	if (buf == NULL) {
+		return "ufs_native_soak: no memory";
+	}
+	why[0] = 0;
+	for (uint32_t i = 0; i < ufs_nufs_soak && why[0] == 0; i++) {
+		struct nufs_soak *k = &nufs_soaks[i];
+		uint64_t len = (uint64_t)k->count * 4096;
+		int e;
+
+		memset(buf, 0xa5, (size_t)len);
+		e = ufs_read_native(nufs_soak_part, k->block * 4096, buf, len);
+		if (e != 0) {
+			snprintf(why, sizeof(why), "soak: read %u of %u (SYSTEM blocks %llu..%llu) failed here (%d)", i + 1,
+			    ufs_nufs_soak, k->block, k->block + k->count - 1, e);
+		} else if (nufs_fnv(buf, len) != k->fnv) {
+			snprintf(why, sizeof(why), "soak: read %u of %u (SYSTEM blocks %llu..%llu) NOT the loader's (fnv %llx / %llx)",
+			    i + 1, ufs_nufs_soak, k->block, k->block + k->count - 1, nufs_fnv(buf, len), k->fnv);
+		}
+		bytes += len;
+	}
+	kfree_data(buf, NUFS_SOAK_BLOCKS * 4096);
+	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+	if (why[0] != 0) {
+		nufs_say("ufs: nufs: %s\n", why);
+		return why;
+	}
+	nufs_say("ufs: nufs: soak passed: %u random reads of SYSTEM (%llu KB) through this driver, every one the loader's, "
+	    "%llu ms\n", ufs_nufs_soak, bytes >> 10, ns / 1000000);
+	return NULL;
+}
+
 /* ufs=3: all of it, from hakios_ufs_init, before the devices answer anything (ufs_ready false) */
 static void
 ufs_nufs_start(void)
@@ -3134,6 +3256,7 @@ ufs_nufs_start(void)
 	(void)PE_parse_boot_arg_str("ufs_native_soc", soc, sizeof(soc));
 	PE_parse_boot_argn("ufs_native_ro", &ro, sizeof(ro));
 	PE_parse_boot_argn("ufs_native_verify", &ufs_nufs_verify, sizeof(ufs_nufs_verify));
+	PE_parse_boot_argn("ufs_native_soak", &ufs_nufs_soak, sizeof(ufs_nufs_soak));
 	ufs_nufs_ro = ro != 0;
 	if (ufs_nufs_ro && ufs_write_part >= 0) {
 		/* read only is read only: the loader's write path is not used either */
@@ -3147,6 +3270,9 @@ ufs_nufs_start(void)
 	nufs_say("ufs: nufs: step 1: references through the loader\n");
 	nufs_sum.step = 1;
 	why = nufs_references();
+	if (why == NULL && ufs_nufs_soak != 0) {
+		why = nufs_soak_references();
+	}
 	if (why != NULL) {
 		nufs_say("ufs: nufs: not taken: %s; through the loader (ufs=2), nothing changed\n", why);
 		nufs_why(why);
@@ -3192,6 +3318,15 @@ ufs_nufs_start(void)
 		nufs_abort(why);
 		goto out;
 	}
+	if (ufs_nufs_soak != 0) {
+		nufs_say("ufs: nufs: step 3: soak (ufs_native_soak=%u)\n", ufs_nufs_soak);
+		why = nufs_soak_run();
+		nufs_sum.soak = why == NULL ? 1 : -1;
+		if (why != NULL) {
+			nufs_abort(why);
+			goto out;
+		}
+	}
 	if (ufs_write_part >= 0) {
 		int k = nufs_unit_of((uint32_t)ufs_write_part);
 
@@ -3233,6 +3368,7 @@ ufs_nufs_start(void)
 	ufs_native_on = true;
 	ufs_nufs_on = true;
 out:
+	nufs_soak_free();
 	nufs_free_units();
 	if (ufs_nufs_spots != NULL) {
 		kfree_data(ufs_nufs_spots, NUFS_SPOTS_SIZE);

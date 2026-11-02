@@ -470,7 +470,7 @@ static volatile uint32_t *hc_own_list_in;               /* ufs=3: the loader's p
 static bool hc_usable;
 static uint32_t hc_leave;                       /* ufs_native_leave=1 (a test): the list left in at the end, for the loader */
 static volatile bool hc_in, hc_closed, hc_dead;
-static uint32_t hc_is_in, hc_cnr_in;            /* IS and UTRLCNR when this kernel's list went in */
+static uint32_t hc_is_in, hc_cnr_in, hc_iacr_in; /* IS, UTRLCNR, UTRIACR when this kernel's list went in */
 static uint64_t hc_requests, hc_errors, hc_bytes, hc_wait_us, hc_refused, hc_most_in_flight, hc_proofs;
 static uint64_t hc_switch_in_count, hc_switch_out_count;
 static uint32_t hc_in_flight;
@@ -1369,7 +1369,52 @@ static volatile uint32_t hc_waiting;            /* slots whose waiters sleep (hc
 static uint32_t hc_done;                        /* slots the poller has seen done, not yet collected (hc_lock) */
 static bool hc_poller_asleep;
 static uint32_t hc_spin_us = 40;                /* boot-arg ufs_native_spin */
-static uint64_t hc_sleeps, hc_poller_polls, hc_poller_rounds;
+static uint64_t hc_sleeps, hc_poller_polls, hc_poller_rounds, hc_unstuck;
+
+/*
+ * Own mode, the Exynos 9810 (seen on the phone, ufs-rw5): a request done -- its descriptor written back with
+ * an OCS, its response UPIU there for its task tag, IS's UTRCS set -- while its doorbell bit stays set, now
+ * and then, after writes began. Such a slot is taken as done: its bit is cleared with UTRLCLR (it holds
+ * nothing the controller still works on) and must clear within 10 ms, or it is not. hc_lock held.
+ */
+static bool
+hc_unstick(struct hc_slot *s)
+{
+	volatile const uint8_t *r;
+	uint32_t bit = 1u << s->number, ocs;
+	uint64_t t;
+
+	if (hc_mode != HC_OWN || (hc_read(UFSHC_UTRLDBR) & bit) == 0) {
+		return false;
+	}
+	hc_dma_sync(s->utrd, 32);
+	hc_dma_sync(s->ucd, hc_soc->rsp_offset + hc_soc->rsp_length);
+	ocs = s->utrd[2] & 0xff;
+	r = (volatile const uint8_t *)s->ucd + hc_soc->rsp_offset;
+	if (ocs == OCS_INVALID || r[3] != s->number || ((r[0] & 0x3f) != UPIU_RESPONSE && (r[0] & 0x3f) != UPIU_NOP_IN &&
+	    (r[0] & 0x3f) != UPIU_QUERY_RSP)) {
+		return false;
+	}
+	if (hc_read(UFSHC_UTRLBA) != hc_list_lo || hc_read(UFSHC_UTRLBAU) != hc_list_hi) {
+		return false;
+	}
+	hc_write(UFSHC_UTRLCLR, hc_soc->clear_with_ones ? bit : ~bit);
+	for (t = mach_absolute_time(); (hc_read(UFSHC_UTRLDBR) & bit) && hc_us_since(t) < 10000;) {
+		__builtin_arm_yield();
+	}
+	if (hc_read(UFSHC_UTRLDBR) & bit) {
+		hc_say("ufs: native: slot %u: done (OCS %x, response %02x) but its doorbell bit stays, and UTRLCLR did not clear "
+		    "it\n", s->number, ocs, r[0]);
+		return false;
+	}
+	hc_unstuck++;
+	if (hc_unstuck <= 8 || (hc_unstuck & (hc_unstuck - 1)) == 0) {
+		hc_say("ufs: native: slot %u: done (OCS %x, response %02x status %02x, IS %08x, UTRLCNR %08x) but its doorbell bit "
+		    "stayed: cleared with UTRLCLR and taken as done (%llu so far)\n", s->number, ocs, r[0], r[7],
+		    hc_read(UFSHC_IS), hc_read(UFSHC_UTRLCNR), hc_unstuck);
+	}
+	return true;
+}
 
 static void
 hc_poller(__unused void *arg, __unused wait_result_t wr)
@@ -1394,6 +1439,7 @@ hc_poller(__unused void *arg, __unused wait_result_t wr)
 		done = waiting & ~db;
 		if (done != 0) {
 			lck_mtx_lock(&hc_lock);
+			done &= hc_waiting;     /* (a waiter that took its slot as done itself, hc_unstick, or gave up, waits no more) */
 			hc_done |= done;
 			hc_waiting &= ~done;
 			for (uint32_t m = done; m != 0; m &= m - 1) {
@@ -1419,7 +1465,7 @@ hc_wait(struct hc_slot *s, const char *what, bool count)
 		__builtin_arm_yield();
 	}
 	if (hc_read(UFSHC_UTRLDBR) & bit) {
-		struct timespec second = { 1, 0 };
+		struct timespec second = { 0, 100 * 1000 * 1000 };      /* (a tick: a done slot whose bit stays, hc_unstick) */
 
 		lck_mtx_lock(&hc_lock);
 		hc_sleeps++;
@@ -1444,6 +1490,10 @@ hc_wait(struct hc_slot *s, const char *what, bool count)
 			}
 			(void)msleep(s, &hc_lock, PRIBIO, "ufshc-io", &second);
 			us = hc_us_since(started);
+			if ((hc_done & bit) == 0 && hc_unstick(s)) {
+				hc_waiting &= ~bit;
+				break;
+			}
 			if ((hc_done & bit) == 0 && us > TIMEOUT_MS * 1000ULL) {
 				hc_waiting &= ~bit;
 				lck_mtx_unlock(&hc_lock);
@@ -1994,7 +2044,7 @@ hc_prove(void)
 }
 
 struct hc_put_back_result {
-	uint32_t db_before, db_after_clear, lo, hi, rsr, db, is, cnr, cnr_ours;
+	uint32_t db_before, db_after_clear, lo, hi, rsr, db, is, cnr, cnr_ours, is_ours, iacr;
 	bool cleared, ok;
 };
 
@@ -2036,6 +2086,11 @@ hc_put_back(struct hc_put_back_result *r)
 		if (hc_soc->give_back != NULL) {
 			hc_soc->give_back();
 		}
+		/* the completion status this kernel's requests left, cleared (UEFI found none); error bits stay as evidence */
+		r->is_ours = hc_read(UFSHC_IS) & ~hc_is_in & IS_UTRCS;
+		if (r->is_ours != 0) {
+			hc_write(UFSHC_IS, r->is_ours);
+		}
 		hc_write(UFSHC_IE, hc_uefi_ie);
 	}
 	if (run) {
@@ -2047,6 +2102,7 @@ hc_put_back(struct hc_put_back_result *r)
 	r->db = hc_read(UFSHC_UTRLDBR);
 	r->is = hc_read(UFSHC_IS);
 	r->cnr = hc_read(UFSHC_UTRLCNR);
+	r->iacr = hc_read(UFSHC_UTRIACR);
 	r->ok = r->lo == hc_loader.uefi_lo && r->hi == hc_loader.uefi_hi && (!run || (r->rsr & 1));
 	if (r->ok && hc_mode == HC_SHARED) {
 		*hc_loader.list_in = 0;
@@ -2071,9 +2127,11 @@ hc_put_back_print(const char *why, const struct hc_put_back_result *r, bool late
 		    "then %08x\n", why, r->db_before, r->db_after_clear);
 	}
 	say("ufs: native: %s: transfer list %s UEFI's %08x:%08x (run %u, doorbell %08x; IS %08x, at the switch %08x; "
-	    "completion %08x after clearing this kernel's %08x, at the switch %08x%s)\n", why, r->ok ? "back to" :
+	    "completion %08x after clearing this kernel's %08x, at the switch %08x%s; IS's UTRCS this kernel left %s; "
+	    "aggregation %08x, at the switch %08x; %llu done slots unstuck)\n", why, r->ok ? "back to" :
 	    "NOT BACK TO", r->hi, r->lo, r->rsr, r->db, r->is, hc_is_in, r->cnr, r->cnr_ours, hc_cnr_in,
-	    r->cnr == hc_cnr_in ? ", as it was" : ", NOT AS IT WAS");
+	    r->cnr == hc_cnr_in ? ", as it was" : ", NOT AS IT WAS", r->is_ours ? "cleared" : "none", r->iacr, hc_iacr_in,
+	    hc_unstuck);
 }
 
 /*
@@ -2123,6 +2181,7 @@ ufshc_switch_in(bool prove)
 
 		hc_is_in = hc_read(UFSHC_IS);
 		hc_cnr_in = hc_read(UFSHC_UTRLCNR);
+		hc_iacr_in = hc_read(UFSHC_UTRIACR);
 		hc_write(UFSHC_UTRLRSR, 0);
 		for (t = mach_absolute_time(); (hc_read(UFSHC_UTRLRSR) & 1) && hc_us_since(t) < 5000;) {
 			__builtin_arm_yield();
@@ -3355,6 +3414,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	/* UEFI's list out, this kernel's in (interrupts masked: completions are polled) */
 	hc_is_in = hc_read(UFSHC_IS);
 	hc_cnr_in = hc_read(UFSHC_UTRLCNR);
+	hc_iacr_in = hc_read(UFSHC_UTRIACR);
 	if (hc_own_list_in != NULL) {
 		/* (ufs=3) the loader's page says so before the controller does: the loader asks UEFI for nothing now */
 		*hc_own_list_in = 1;
