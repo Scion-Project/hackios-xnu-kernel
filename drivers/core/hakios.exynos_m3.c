@@ -40,6 +40,8 @@
  *      another reading of the state
  * Below 3 an M3 the kernel was given (cpus=3 or more) is refused, not started.
  *
+ * Also here: cohtest=N, a check of the clusters' cache coherency once the M3s run (at the end of this file).
+ *
  * Sources: Samsung's kernel for the S9 (lineage-24.0, android_kernel_samsung_exynos9810):
  * drivers/soc/samsung/cal-if/exynos9810/flexpmu_cal_system_exynos9810.h (pmucal_lpm_init: the six writes),
  * flexpmu_cal_cpu_exynos9810.h (the CLUSTERn_CPUm and NONCPU status registers), cal-if/pmucal_system.c and cal-if.c
@@ -56,6 +58,13 @@ extern void hakios_esslog_start(void);
 #include <stdbool.h>
 #include <stdint.h>
 #include <kern/clock.h>
+#include <kern/startup.h>
+#include <kern/thread_call.h>
+#include <mach/mach_time.h>
+#include <os/atomic_private.h>
+#include <sys/param.h>
+#include <vm/vm_kern.h>
+#include <vm/memory_types.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
@@ -263,3 +272,557 @@ hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr)
 	say("m3: 3: CPU_ON for cpu %d (MPIDR 0x%x) next\n", cpu, mpidr);
 	return 0;
 }
+
+/*
+ * cohtest=N: is the big cluster in the same coherency domain as the A55s once it is started? (off by default)
+ *
+ * Why. With the M3s up the screen shows tearing, picture errors and text that is blank for a while and then comes back,
+ * with no fault and no GPU error; with the two A55s alone it does not. The picture is drawn on one core (Mesa's
+ * software side in backboardd, wherever the scheduler puts it), copied by another, scaled onto the panel by the
+ * fb_threads presenters and read by the GPU: if a write made on one cluster is not seen, or not cleaned to memory, from
+ * the other, this is what it would look like.
+ *
+ * What the source says (Samsung's kernel for the S9; no line of it here): nothing in it turns the big cluster's snooping
+ * on. There is no CCI or DSU driver and no snoop register for the 9810: the cluster's power-up is the APM firmware's
+ * (cal-if/exynos9810/flexpmu_cal_cpu_exynos9810.h: cluster1_on is one write of MAILBOX_APM2AP bit 24; the CPU entries
+ * only unmask PMU interrupts), the core's own start is EL3's PSCI CPU_ON (the dt's psci node, cpu_on 0xC4000003), and
+ * exynos-powermode.c only asks for cluster power-down through cal_cluster_disable. The 8895's pmucal (cal-if/exynos8895)
+ * shows what that firmware does there: clocks, Q-channels and CLUSTER1_CPUSEQUENCER_OPTION, nothing called snoop. So
+ * on a Samsung boot the cluster joins the coherent interconnect inside EL3/APM, and Linux runs both clusters as one
+ * Outer Shareable domain (XNU's own normal memory is Outer Shareable too, proc_reg.h SH_OUTER_MEMORY). Whether that
+ * happened here, after CPU_ON on a boot whose PMU fields were written by m3_prep rather than by Samsung's kernel, is
+ * what this measures. That this kernel does not fall over (its locks, its run queues and TLB maintenance are shared
+ * between the clusters) argues for coherency; a fault in the paths that only the picture uses, cache maintenance by VA
+ * and memory written outside the caches, would not crash anything.
+ *
+ * How. One thread is bound to each processor; each says its MPIDR, MIDR, CTR_EL0 (the line sizes), CLIDR, SCTLR (the
+ * caches on) and TCR. Then one A55 (MPIDR Aff1 0) and one M3 (Aff1 1) are given these in turn. Every command and answer
+ * goes through a Device-memory (uncached) alias of the test's pages, so a failure of coherency cannot hide or hang the
+ * test itself, and "memory has" is read through the same alias. Each step has a time limit; nothing waits for ever.
+ *   0  the method: the A55 writes cached, cleans by VA to the point of coherency itself; memory has it
+ *   1  ping-pong: the two take turns 100000 times on a cached line; each round a counter and 256 bytes of data
+ *      (four lines) written with a store-release, read with a load-acquire. Stale data under a new counter, or a counter
+ *      that is not seen in 500 ms, is incoherence
+ *   2  the M3 writes cached, nothing more; the A55 reads cached (the snoop the other way: is a dirty line seen?)
+ *   3  the same, the other way round
+ *   4  the M3 writes cached; the A55 cleans by VA (DC CVAC, broadcast); does memory have it? (a picture drawn on an M3,
+ *      made ready for the GPU or the display from an A55)
+ *   5  the same, the other way round
+ *   6  the M3 writes cached and cleans by VA itself; does memory have it?
+ *   7  memory changed under the M3's cached copy (a GPU's write); the A55 invalidates by VA (DC IVAC, broadcast); does
+ *      the M3 read the new data? (7c, the control: the M3 invalidates itself)
+ * Each step is said with the number of 64-byte lines (or rounds) that were wrong, then a verdict line.
+ *
+ * Boot-args: cohtest=N runs it N times (1-10; 0 or none: never), the first cohtest_delay seconds after start-up (30,
+ * when the screen is drawing), then every 30 s. It uses 16 KB and two processors for a second or so.
+ *
+ * Expected on a coherent phone (the numbers are examples; with bootcpu=2 the A55s are MPIDR 0x2 and 0x3):
+ *   cohtest: cohtest=1: the clusters' coherency is measured 30 s after start-up
+ *   cohtest: 16 KB at 0x..., cached at 0x... and uncached (Device) at 0x...
+ *   cohtest: run 1 of 1: 6 processors
+ *   cohtest: cpu 2 (ran on 2): MPIDR 0x100 MIDR 0x... CTR 0x... (D line 64, I line 64) CLIDR 0x... SCTLR 0x... (C 1) TCR 0x...
+ *            (one such line a processor: the line sizes and SCTLR.C of an M3 next to an A55's)
+ *   cohtest: A55 cpu 0 (MPIDR 0x2) and M3 cpu 2 (MPIDR 0x100); 128 lines of 64 bytes a step
+ *   cohtest: 0 the method (A55 writes, cleans; memory has it?): 0 of 128 lines wrong: ok
+ *   cohtest: 1 ping-pong A55 <-> M3: 100000 of 100000 rounds, 0 stale (first at count 0), 0 stuck (seen 0 waiting
+ *            for 0), 900 ns a round trip: ok
+ *   cohtest: 2 M3 writes cached; A55 reads cached: 0 of 128 lines wrong: ok
+ *   ... 3, 4, 5, 6, 7 and 7c the same
+ *   cohtest: verdict: COHERENT: all 9 checks passed (A55 cpu 0, M3 cpu 2)
+ * and when not, FAIL on the steps that failed and "cohtest: verdict: NOT COHERENT: n of 9 checks failed". Reading it:
+ * 1, 2 or 3 failing is the clusters not snooping each other at all (the kernel itself would be in trouble soon); 4 or
+ * 5 alone, cleaning by VA not broadcast to the other cluster; 6 alone, the M3's clean not reaching memory; 7 alone
+ * (7c passing), invalidation by VA not broadcast: a picture the GPU wrote read stale on an M3. Any of 4-7 fits the
+ * screen's symptoms without any crash.
+ */
+
+extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
+extern uint64_t kvtophys(vm_offset_t va);
+extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);
+extern kern_return_t kernel_thread_start(thread_continue_t continuation, void *parameter, thread_t *new_thread);
+extern void thread_deallocate(thread_t thread);
+extern void *cpu_to_processor(int cpu);
+extern void *thread_bind(void *processor);
+extern int thread_block(void *continuation);
+extern int cpu_number(void);
+extern unsigned int real_ncpus;
+extern void delay(int usec);
+
+#define COH_PAGES       4
+#define COH_SIZE        (COH_PAGES * 4096)
+#define COH_CTL         0x0000          /* the commands: Device alias only */
+#define COH_PING        0x1000          /* the ping-pong line and its data */
+#define COH_BUF         0x2000          /* 8 KB for the other steps */
+#define COH_BUF_SIZE    0x2000
+#define COH_LINES       (COH_BUF_SIZE / 64)
+#define COH_WORDS       32              /* the ping-pong's data: 256 bytes, four lines */
+#define COH_ROUNDS      100000u
+#define COH_MAXCPU      8
+
+enum { OP_NONE, OP_ID, OP_PING, OP_WRITE, OP_WRITE_CLEAN, OP_CLEAN, OP_INVAL, OP_READ, OP_DEV_WRITE, OP_DEV_COUNT, OP_EXIT };
+
+struct coh_ctl {                        /* one per processor, 256 bytes apart, in the Device alias */
+	uint32_t seq, op, arg, done;
+	uint64_t r[8];
+};
+
+static uint32_t coh_runs, coh_delay = 30, coh_run;
+static vm_offset_t coh_va;              /* cached */
+static volatile uint8_t *coh_dev;       /* the same pages, Device memory */
+static thread_call_t coh_call;
+
+static inline volatile struct coh_ctl *
+coh_ctl(int cpu)
+{
+	return (volatile struct coh_ctl *)(coh_dev + COH_CTL + 256 * (unsigned)cpu);
+}
+
+static inline volatile uint32_t *
+coh_abort(void)
+{
+	return (volatile uint32_t *)(coh_dev + COH_CTL + 256 * COH_MAXCPU);
+}
+
+static inline uint64_t
+coh_pattern(uint64_t v, uint32_t i)
+{
+	return (v * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)i << 3) ^ 0x5a5a;
+}
+
+static inline uint32_t
+coh_line(void)
+{
+	return 4u << ((__builtin_arm_rsr64("CTR_EL0") >> 16) & 0xf);   /* DminLine on this core */
+}
+
+static void
+coh_dc(int op, vm_offset_t va, size_t len)
+{
+	uint32_t line = coh_line();
+
+	__asm__ volatile ("dsb sy" ::: "memory");
+	for (vm_offset_t a = va & ~(vm_offset_t)(line - 1); a < va + len; a += line) {
+		if (op == OP_CLEAN) {
+			__asm__ volatile ("dc cvac, %0" :: "r"(a) : "memory");
+		} else {
+			__asm__ volatile ("dc ivac, %0" :: "r"(a) : "memory");
+		}
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+}
+
+static inline bool
+coh_late(uint64_t start, uint64_t ms)
+{
+	uint64_t ns;
+
+	absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+	return ns > ms * NSEC_PER_MSEC;
+}
+
+/* the ping-pong: role 0 writes the odd counts, role 1 the even ones */
+static void
+coh_ping(int role, volatile struct coh_ctl *c)
+{
+	uint64_t *seq = (uint64_t *)(coh_va + COH_PING);
+	volatile uint64_t *data = (volatile uint64_t *)(coh_va + COH_PING + 64);
+	uint64_t next = role == 0 ? 1 : 2, stale = 0, stuck = 0, first = 0, start = mach_absolute_time();
+	uint32_t rounds = 0;
+
+	while (next <= 2ull * COH_ROUNDS && *coh_abort() == 0) {
+		uint64_t wait = mach_absolute_time(), now;
+		bool late = false;
+
+		while ((now = os_atomic_load(seq, acquire)) != next - 1) {
+			if (*coh_abort() != 0) {
+				break;
+			}
+			if (coh_late(wait, 500)) {
+				late = true;
+				break;
+			}
+		}
+		if (now != next - 1) {
+			if (!late) {
+				break;          /* the other one gave up */
+			}
+			stuck++;
+			*coh_abort() = 1;
+			__asm__ volatile ("dsb sy" ::: "memory");
+			c->r[3] = now;
+			c->r[4] = next - 1;
+			break;
+		}
+		for (uint32_t i = 0; i < COH_WORDS; i++) {
+			if (data[i] != coh_pattern(next - 1, i)) {
+				if (stale++ == 0) {
+					first = next - 1;
+				}
+				break;
+			}
+		}
+		for (uint32_t i = 0; i < COH_WORDS; i++) {
+			data[i] = coh_pattern(next, i);
+		}
+		os_atomic_store(seq, next, release);
+		rounds++;
+		next += 2;
+	}
+	c->r[0] = rounds;
+	c->r[1] = stale;
+	c->r[2] = stuck;
+	c->r[5] = first;
+	absolutetime_to_nanoseconds(mach_absolute_time() - start, &c->r[6]);
+}
+
+static void
+coh_worker(void *arg, __unused wait_result_t wr)
+{
+	int cpu = (int)(uintptr_t)arg;
+	volatile struct coh_ctl *c = coh_ctl(cpu);
+	uint32_t last = 0;
+	uint64_t idle = mach_absolute_time();
+
+	(void)thread_bind(cpu_to_processor(cpu));
+	(void)thread_block(NULL);
+	for (;;) {
+		uint32_t seq = c->seq;
+		uint32_t op, tag;
+		uint64_t wrong = 0;
+
+		if (seq == last) {
+			if (coh_late(idle, 20000)) {
+				return;         /* the controller is gone: nothing more for this processor */
+			}
+			delay(50);      /* a sleep, not a spin: the others (and the controller) may run here */
+			continue;
+		}
+		__asm__ volatile ("dsb sy" ::: "memory");
+		last = seq;
+		op = c->op;
+		tag = c->arg;
+		switch (op) {
+		case OP_ID:
+			c->r[0] = __builtin_arm_rsr64("MPIDR_EL1");
+			c->r[1] = __builtin_arm_rsr64("MIDR_EL1");
+			c->r[2] = __builtin_arm_rsr64("CTR_EL0");
+			c->r[3] = __builtin_arm_rsr64("CLIDR_EL1");
+			c->r[4] = __builtin_arm_rsr64("SCTLR_EL1");
+			c->r[5] = __builtin_arm_rsr64("TCR_EL1");
+			c->r[6] = (uint64_t)cpu_number();
+			break;
+		case OP_PING:
+			coh_ping((int)tag, c);
+			break;
+		case OP_WRITE:
+		case OP_WRITE_CLEAN:
+			for (uint32_t i = 0; i < COH_BUF_SIZE / 8; i++) {
+				((volatile uint64_t *)(coh_va + COH_BUF))[i] = coh_pattern(tag, i);
+			}
+			__asm__ volatile ("dsb sy" ::: "memory");
+			if (op == OP_WRITE_CLEAN) {
+				coh_dc(OP_CLEAN, coh_va + COH_BUF, COH_BUF_SIZE);
+			}
+			break;
+		case OP_CLEAN:
+		case OP_INVAL:
+			coh_dc((int)op, coh_va + COH_BUF, COH_BUF_SIZE);
+			break;
+		case OP_READ:
+		case OP_DEV_COUNT:
+			for (uint32_t l = 0; l < COH_LINES; l++) {
+				for (uint32_t w = 0; w < 8; w++) {
+					uint32_t i = l * 8 + w;
+					uint64_t v = op == OP_READ ? ((volatile uint64_t *)(coh_va + COH_BUF))[i] :
+					    ((volatile uint64_t *)(coh_dev + COH_BUF))[i];
+
+					if (v != coh_pattern(tag, i)) {
+						wrong++;
+						break;
+					}
+				}
+			}
+			c->r[0] = wrong;
+			break;
+		case OP_DEV_WRITE:
+			for (uint32_t i = 0; i < COH_BUF_SIZE / 8; i++) {
+				((volatile uint64_t *)(coh_dev + COH_BUF))[i] = coh_pattern(tag, i);
+			}
+			__asm__ volatile ("dsb sy" ::: "memory");
+			break;
+		default:
+			break;
+		}
+		__asm__ volatile ("dsb sy" ::: "memory");
+		c->done = seq;
+		__asm__ volatile ("dsb sy" ::: "memory");
+		idle = mach_absolute_time();
+		if (op == OP_EXIT) {
+			return;
+		}
+	}
+}
+
+/* a command to one processor's thread, and its answer within ms; false: none came */
+static bool
+coh_send(int cpu, uint32_t op, uint32_t arg)
+{
+	volatile struct coh_ctl *c = coh_ctl(cpu);
+	uint32_t seq = c->seq + 1;
+
+	c->op = op;
+	c->arg = arg;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	c->seq = seq;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	return true;
+}
+
+static bool
+coh_wait(int cpu, uint64_t ms)
+{
+	volatile struct coh_ctl *c = coh_ctl(cpu);
+	uint64_t start = mach_absolute_time();
+
+	while (c->done != c->seq) {
+		if (coh_late(start, ms)) {
+			return false;
+		}
+		delay(50);
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+	return true;
+}
+
+static bool
+coh_do(int cpu, uint32_t op, uint32_t arg)
+{
+	(void)coh_send(cpu, op, arg);
+	if (!coh_wait(cpu, 1000)) {
+		say("cohtest: cpu %d did not answer command %u in 1 s\n", cpu, op);
+		return false;
+	}
+	return true;
+}
+
+/* one step: memory or a cache set up by the others, then the count of wrong lines from `reader` */
+static int
+coh_count(const char *what, int reader, uint32_t op, uint32_t tag, uint32_t *failed, uint32_t *checks)
+{
+	uint64_t wrong;
+
+	if (!coh_do(reader, op, tag)) {
+		return -1;
+	}
+	wrong = coh_ctl(reader)->r[0];
+	(*checks)++;
+	if (wrong != 0) {
+		(*failed)++;
+	}
+	say("cohtest: %s: %llu of %u lines wrong: %s\n", what, wrong, COH_LINES, wrong ? "FAIL" : "ok");
+	return wrong != 0;
+}
+
+static void
+coh_main(__unused void *arg, __unused wait_result_t wr)
+{
+	int ncpu = (int)MIN(real_ncpus, COH_MAXCPU), a = -1, b = -1;
+	bool alive[COH_MAXCPU] = { false };
+	uint32_t failed = 0, checks = 0, tag = (coh_run + 1) << 8;
+
+	say("cohtest: run %u of %u: %d processors\n", coh_run + 1, coh_runs, ncpu);
+	for (int i = 0; i < ncpu; i++) {
+		volatile struct coh_ctl *c = coh_ctl(i);
+
+		c->seq = c->done = 0;
+		c->op = OP_NONE;
+	}
+	*coh_abort() = 0;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	for (int i = 0; i < ncpu; i++) {
+		thread_t t;
+
+		if (cpu_to_processor(i) == NULL || kernel_thread_start(coh_worker, (void *)(uintptr_t)i, &t) != KERN_SUCCESS) {
+			say("cohtest: cpu %d: no thread\n", i);
+			continue;
+		}
+		thread_deallocate(t);
+	}
+	for (int i = 0; i < ncpu; i++) {
+		volatile struct coh_ctl *c = coh_ctl(i);
+		uint64_t mpidr;
+
+		(void)coh_send(i, OP_ID, 0);
+		if (!coh_wait(i, 1000)) {
+			say("cohtest: cpu %d: no answer (not running?)\n", i);
+			continue;
+		}
+		alive[i] = true;
+		mpidr = c->r[0] & 0xffffff;
+		say("cohtest: cpu %d (ran on %llu): MPIDR 0x%llx MIDR 0x%llx CTR 0x%llx (D line %u, I line %u) CLIDR 0x%llx "
+		    "SCTLR 0x%llx (C %llu) TCR 0x%llx\n", i, c->r[6], mpidr, c->r[1], c->r[2], 4u << ((c->r[2] >> 16) & 0xf),
+		    4u << (c->r[2] & 0xf), c->r[3], c->r[4], (c->r[4] >> 2) & 1, c->r[5]);
+		if (((mpidr >> 8) & 0xff) == 0 && a < 0) {
+			a = i;
+		} else if (((mpidr >> 8) & 0xff) == 1 && b < 0) {
+			b = i;
+		}
+	}
+	if (a < 0 || b < 0) {
+		say("cohtest: no %s running: nothing to compare (m3_prep=3 and cpus= with an M3)\n", a < 0 ? "A55" : "M3");
+		goto out;
+	}
+	say("cohtest: A55 cpu %d (MPIDR 0x%llx) and M3 cpu %d (MPIDR 0x%llx); %u lines of 64 bytes a step\n", a,
+	    coh_ctl(a)->r[0] & 0xffffff, b, coh_ctl(b)->r[0] & 0xffffff, COH_LINES);
+	for (int i = 0; i < ncpu; i++) {
+		if (alive[i] && i != a && i != b) {
+			(void)coh_send(i, OP_EXIT, 0);
+			alive[i] = false;
+		}
+	}
+
+	/* 0: the method */
+	if (!coh_do(a, OP_WRITE_CLEAN, tag + 0) || coh_count("0 the method (A55 writes, cleans; memory has it?)", a, OP_DEV_COUNT,
+	    tag + 0, &failed, &checks) < 0) {
+		goto out;
+	}
+
+	/* 1: the ping-pong, on a line nobody has cached yet */
+	{
+		uint64_t *seq = (uint64_t *)(coh_va + COH_PING);
+		uint64_t *data = (uint64_t *)(coh_va + COH_PING + 64);
+		volatile struct coh_ctl *ca = coh_ctl(a), *cb = coh_ctl(b);
+		bool ok;
+
+		*seq = 0;
+		for (uint32_t i = 0; i < COH_WORDS; i++) {
+			data[i] = coh_pattern(0, i);
+		}
+		FlushPoC_DcacheRegion(coh_va + COH_PING, 4096);
+		(void)coh_send(b, OP_PING, 1);
+		(void)coh_send(a, OP_PING, 0);
+		ok = coh_wait(a, 5000) && coh_wait(b, 5000);
+		checks++;
+		if (!ok) {
+			*coh_abort() = 1;
+			failed++;
+			say("cohtest: 1 ping-pong: no end in 5 s: FAIL\n");
+		} else {
+			uint64_t rounds = ca->r[0] + cb->r[0], stale = ca->r[1] + cb->r[1], stuck = ca->r[2] + cb->r[2];
+			uint64_t ns = MAX(ca->r[6], cb->r[6]);
+			bool bad = stale != 0 || stuck != 0 || rounds != 2ull * COH_ROUNDS;
+
+			failed += bad;
+			say("cohtest: 1 ping-pong A55 <-> M3: %llu of %u rounds, %llu stale (first at count %llu), %llu stuck "
+			    "(seen %llu waiting for %llu), %llu ns a round trip: %s\n", rounds / 2, COH_ROUNDS, stale,
+			    ca->r[1] ? ca->r[5] : cb->r[5], stuck, ca->r[2] ? ca->r[3] : cb->r[3], ca->r[2] ? ca->r[4] : cb->r[4],
+			    rounds ? ns * 2 / rounds : 0, bad ? "FAIL" : "ok");
+		}
+	}
+
+	/* 2, 3: a dirty line in one cluster, read cached from the other */
+	if (!coh_do(b, OP_WRITE, tag + 2) || coh_count("2 M3 writes cached; A55 reads cached", a, OP_READ, tag + 2, &failed,
+	    &checks) < 0) {
+		goto out;
+	}
+	if (!coh_do(a, OP_WRITE, tag + 3) || coh_count("3 A55 writes cached; M3 reads cached", b, OP_READ, tag + 3, &failed,
+	    &checks) < 0) {
+		goto out;
+	}
+	/* 4, 5: written in one, cleaned by VA from the other: in memory? */
+	if (!coh_do(b, OP_WRITE, tag + 4) || !coh_do(a, OP_CLEAN, 0) ||
+	    coh_count("4 M3 writes; A55 cleans by VA; memory has it?", a, OP_DEV_COUNT, tag + 4, &failed, &checks) < 0) {
+		goto out;
+	}
+	if (!coh_do(a, OP_WRITE, tag + 5) || !coh_do(b, OP_CLEAN, 0) ||
+	    coh_count("5 A55 writes; M3 cleans by VA; memory has it?", a, OP_DEV_COUNT, tag + 5, &failed, &checks) < 0) {
+		goto out;
+	}
+	/* 6: written and cleaned in the M3 */
+	if (!coh_do(b, OP_WRITE_CLEAN, tag + 6) ||
+	    coh_count("6 M3 writes, cleans by VA itself; memory has it?", a, OP_DEV_COUNT, tag + 6, &failed, &checks) < 0) {
+		goto out;
+	}
+	/* 7: memory changed under the M3's cached copy; the A55 invalidates by VA (7), the M3 itself (7c) */
+	for (int own = 0; own < 2; own++) {
+		uint32_t old = tag + 0x70 + (uint32_t)own * 2, now = old + 1;
+
+		if (!coh_do(a, OP_CLEAN, 0) || !coh_do(a, OP_INVAL, 0) || !coh_do(b, OP_CLEAN, 0) || !coh_do(b, OP_INVAL, 0) ||
+		    !coh_do(a, OP_DEV_WRITE, old) || !coh_do(b, OP_INVAL, 0) ||
+		    !coh_do(b, OP_READ, old)) {
+			goto out;
+		}
+		if (coh_ctl(b)->r[0] != 0) {
+			say("cohtest: 7%s: (setting up) the M3 did not read what memory had even after its own invalidate: %llu lines "
+			    "(not counted; 7c says more)\n", own ? "c" : "", coh_ctl(b)->r[0]);
+		}
+		if (!coh_do(a, OP_DEV_WRITE, now) || !coh_do(own ? b : a, OP_INVAL, 0) ||
+		    coh_count(own ? "7c memory changed; M3 invalidates by VA itself; M3 reads new data? (control)" :
+		    "7 memory changed under the M3's copy; A55 invalidates by VA; M3 reads new data?", b, OP_READ, now, &failed,
+		    &checks) < 0) {
+			goto out;
+		}
+	}
+	if (failed == 0) {
+		say("cohtest: verdict: COHERENT: all %u checks passed (A55 cpu %d, M3 cpu %d)\n", checks, a, b);
+	} else {
+		say("cohtest: verdict: NOT COHERENT: %u of %u checks failed (A55 cpu %d, M3 cpu %d)\n", failed, checks, a, b);
+	}
+out:
+	for (int i = 0; i < ncpu; i++) {
+		if (alive[i]) {
+			(void)coh_send(i, OP_EXIT, 0);
+		}
+	}
+	if (++coh_run < coh_runs) {
+		uint64_t deadline;
+
+		clock_interval_to_deadline(30, NSEC_PER_SEC, &deadline);
+		thread_call_enter_delayed(coh_call, deadline);
+	}
+}
+
+static void
+coh_tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
+{
+	thread_t t;
+
+	if (coh_va == 0) {
+		vm_offset_t va = 0;
+
+		if (kmem_alloc_contig(kernel_map, &va, COH_SIZE, PAGE_MASK, 0, 0, KMA_KOBJECT | KMA_ZERO | KMA_DATA,
+		    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+			say("cohtest: no memory; off\n");
+			return;
+		}
+		FlushPoC_DcacheRegion(va, COH_SIZE);
+		coh_dev = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)kvtophys(va), COH_SIZE, VM_WIMG_IO);
+		if (coh_dev == NULL) {
+			say("cohtest: no uncached alias of its pages; off\n");
+			return;
+		}
+		coh_va = va;
+		say("cohtest: 16 KB at %#llx, cached at %#lx and uncached (Device) at %p\n", kvtophys(va), va, coh_dev);
+	}
+	if (kernel_thread_start(coh_main, NULL, &t) == KERN_SUCCESS) {
+		thread_deallocate(t);
+	}
+}
+
+__startup_func
+static void
+coh_init(void)
+{
+	uint64_t deadline;
+
+	if (!PE_parse_boot_argn("cohtest", &coh_runs, sizeof(coh_runs)) || coh_runs == 0) {
+		return;
+	}
+	coh_runs = MIN(coh_runs, 10u);
+	(void)PE_parse_boot_argn("cohtest_delay", &coh_delay, sizeof(coh_delay));
+	coh_call = thread_call_allocate(coh_tick, NULL);
+	say("cohtest: cohtest=%u: the clusters' coherency is measured %u s after start-up\n", coh_runs, coh_delay);
+	clock_interval_to_deadline(coh_delay, NSEC_PER_SEC, &deadline);
+	thread_call_enter_delayed(coh_call, deadline);
+}
+STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, coh_init);

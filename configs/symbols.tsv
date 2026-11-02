@@ -94,6 +94,8 @@ CAM_SHUTTER	arg	cam_shutter	Cameras	k	hakios.camera.c
 CAM_VBLANK	arg	cam_vblank	Cameras	k	hakios.camera.c	
 CAMTL	arg	camtl	User space	u	inject.c	
 CC_FADE	arg	cc_fade	User space	u	inject_sb.c	
+COHTEST	arg	cohtest	User space	k	hakios.exynos_m3.c	is the big cluster in the same coherency domain as the A55s once it is started? (off by default)
+COHTEST_DELAY	arg	cohtest_delay	User space	k	hakios.exynos_m3.c	
 CONSOLE_QUIET	arg	console_quiet	User space	k	1003-avf-console-quiet.patch	
 CPULOAD	arg	cpuload	CPU, memory and boot	k	hakios.cpufreq.c	every MS milliseconds, how busy each of our cores was meanwhile, in percent, to the loader's log (tools/frames.py shows it per gesture)
 CPUMASK	arg	cpumask	Loader	l	loader.c	
