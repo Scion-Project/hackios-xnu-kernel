@@ -183,6 +183,7 @@ haptic_effect	k
 hv_wdt_pet	k
 immediate_NMI	k
 ioaes	k
+isa_floor	k
 loader_return_after	kl
 m3_diag	k
 m3_flush	k
@@ -286,7 +287,9 @@ root_apfs	u
 s6sy761	k
 s6sy761_ipclk	k
 s6sy761_ldo	k
+s6sy761_pri	k
 s6sy761_steps	k
+s6sy761_trace	k
 sb_delay	u
 sccam.addr	k
 sccam.h	k
