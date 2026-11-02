@@ -392,7 +392,27 @@ struct hc_policy {
 	bool window;                            /* own mode: writes into [w_first, w_first + w_blocks) of w_lun */
 	uint8_t w_lun;
 	uint64_t w_first, w_blocks;
+	/*
+	 * ufs=3 (hakios.ufs.c): checked on every write and SYNCHRONIZE CACHE after the window's own
+	 * check, so that a window opened wrong can still not reach them. ro: no write at all
+	 * (ufs_native_ro=1); deny_luns: whole logical units never written (every unit but the one
+	 * USERDATA is on: the others hold the boot loaders); deny: ranges of blocks never written,
+	 * whatever the window says (LBA 0-5, both GPTs, EFS, RADIO, BOOT and the rest, by name).
+	 */
+	bool ro;
+	uint32_t deny_luns;
+	const struct hc_deny *deny;
+	uint32_t ndeny;
 };
+
+/* a range of blocks no write may touch (ufshc_deny) */
+struct hc_deny {
+	uint8_t lun;
+	uint64_t first, blocks;
+	char what[40];                          /* "protected: EFS", said in every refusal */
+};
+
+#define HC_DENY_MAX         96
 
 enum { HC_NONE, HC_SHARED, HC_OWN };
 
@@ -413,6 +433,9 @@ static uint32_t hc_nslots;                      /* the slots that carry reads (a
 static uint32_t hc_free;                        /* bit i: hc_slots[i] free */
 static uint32_t hc_slot_buffer = SLOT_BUFFER_DEFAULT;
 static struct hc_policy hc_pol = { .read_luns = 1 };    /* LUN 0, until hakios.ufs.c says */
+static struct hc_deny hc_denied[HC_DENY_MAX];           /* hc_pol.deny: only ever added to, under hc_lock */
+static bool hc_direct;                                  /* ufs=3: every line said into the loader's log as well */
+static volatile uint32_t *hc_own_list_in;               /* ufs=3: the loader's page's "the kernel's list is in" */
 static bool hc_usable;
 static uint32_t hc_leave;                       /* ufs_native_leave=1 (a test): the list left in at the end, for the loader */
 static volatile bool hc_in, hc_closed, hc_dead;
@@ -478,6 +501,10 @@ hc_say(const char *format, ...)
 	}
 	va_end(list);
 	printf("%s", line);
+	if (hc_direct) {
+		loader_log_line(line);  /* ufs=3: into the loader's log as it happens (printf does not reach it) */
+		return;
+	}
 	strlcpy(hc_kept[hc_kept_count++ % KEPT_LINES], line, sizeof(hc_kept[0]));
 }
 
@@ -718,6 +745,34 @@ exynos_give_back(void)
 
 /* ---- the whitelist: the one check every command passes before it goes into a slot ---- */
 
+/*
+ * ufs=3's second fence for a write (or SYNCHRONIZE CACHE, blocks 0): read only, a logical unit
+ * never written, or any block of a range never written -- each refused with its name. Written
+ * without sums that can wrap.
+ */
+static const char *
+hc_protected(const struct hc_policy *p, uint8_t lun, uint64_t lba, uint64_t blocks)
+{
+	if (p->ro) {
+		return "a write, and everything is read only (ufs_native_ro=1, or no write asked for)";
+	}
+	if (lun >= UFSHC_LUNS || (p->deny_luns & (1u << lun))) {
+		return "a write to a logical unit that is never written (a boot unit, or not USERDATA's)";
+	}
+	for (uint32_t i = 0; i < p->ndeny; i++) {
+		const struct hc_deny *d = &p->deny[i];
+
+		if (d->lun != lun) {
+			continue;
+		}
+		/* [lba, lba + blocks) and [first, first + blocks) meet; a write of no blocks still names its first */
+		if (lba >= d->first ? lba - d->first < d->blocks : d->first - lba < (blocks == 0 ? 1 : blocks)) {
+			return d->what;
+		}
+	}
+	return NULL;
+}
+
 static const char *
 hc_refusal(const uint8_t *upiu, uint32_t dw0, const struct hc_policy *p, bool any_command_type)
 {
@@ -728,6 +783,9 @@ hc_refusal(const uint8_t *upiu, uint32_t dw0, const struct hc_policy *p, bool an
 
 	if (dd == UTRD_DD_MASK) {
 		return "data direction 3";
+	}
+	if (p->ro && (dd == UTRD_DD_OUT || (type == UPIU_COMMAND && (flags & UPIU_FLAG_WRITE)))) {
+		return "data to the device, and everything is read only (ufs_native_ro=1, or no write asked for)";
 	}
 	if (!any_command_type && (dw0 & UTRD_CT_MASK) != UTRD_CT_UFS) {
 		return "not a UFS storage command type";
@@ -813,11 +871,14 @@ hc_refusal(const uint8_t *upiu, uint32_t dw0, const struct hc_policy *p, bool an
 		if (lba < p->w_first || lba - p->w_first >= p->w_blocks || blocks > p->w_blocks - (lba - p->w_first)) {
 			return "a write outside the window";
 		}
-		return NULL;
+		return hc_protected(p, lun, lba, blocks);
 	}
 	case 0x35:      /* SYNCHRONIZE CACHE(10) */
 		if (!p->window || lun != p->w_lun) {
 			return "SYNCHRONIZE CACHE outside the window's unit";
+		}
+		if (p->ro || (p->deny_luns & (1u << lun))) {
+			return "SYNCHRONIZE CACHE, and nothing is written (read only, or a unit never written)";
 		}
 		return dd == UTRD_DD_NONE && flags == 0 && expected == 0 ? NULL : "SYNCHRONIZE CACHE with data";
 	case 0x00:      /* TEST UNIT READY */
@@ -1014,11 +1075,44 @@ hc_whitelist_selftest(void)
 		{ 1, UPIU_COMMAND, UPIU_FLAG_READ, 0xc4, 0, { 0x28, 0, 0, 0, 0, 0, 0, 0, 1 }, 4096, UTRD_DD_IN, false, "READ(10) of the RPMB unit (own)" },
 		{ 1, UPIU_COMMAND, UPIU_FLAG_WRITE, 0xc4, 0, { 0xb5 }, 512, UTRD_DD_OUT, false, "SECURITY PROTOCOL OUT to RPMB (own)" },
 		{ 1, 0x04, 0, 0, 0, { 0 }, 0, UTRD_DD_NONE, false, "TASK MANAGEMENT (own)" },
+		/* ufs=3: the same window, blocks 1050..1059 of it protected, LUN 1 never written */
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x2a, 0, 0, 0, 0x03, 0xe8, 0, 0, 1 }, 4096, UTRD_DD_OUT, true, "WRITE(10) of block 1000 (ufs=3)" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x2a, 0, 0, 0, 0x04, 0x19, 0, 0, 1 }, 4096, UTRD_DD_OUT, true, "WRITE(10) of block 1049, beside the protected range" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x2a, 0, 0, 0, 0x04, 0x1a, 0, 0, 1 }, 4096, UTRD_DD_OUT, false, "WRITE(10) of block 1050, protected" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x2a, 0, 0, 0, 0x04, 0x23, 0, 0, 1 }, 4096, UTRD_DD_OUT, false, "WRITE(10) of block 1059, protected" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x2a, 0, 0, 0, 0x04, 0x24, 0, 0, 1 }, 4096, UTRD_DD_OUT, true, "WRITE(10) of block 1060, beside the protected range" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x8a, 0, 0, 0, 0, 0, 0, 0, 0x04, 0x15, 0, 0, 0, 8 }, 32768, UTRD_DD_OUT, false, "WRITE(16) of blocks 1045..1052, into the protected range" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x2a, 0, 0, 0, 0x04, 0x10, 0, 0, 40 }, 163840, UTRD_DD_OUT, false, "WRITE(10) of blocks 1040..1079, over the protected range" },
+		{ 3, UPIU_COMMAND, 0, 0, 0, { 0x35 }, 0, UTRD_DD_NONE, true, "SYNCHRONIZE CACHE(10) of the window's unit (ufs=3)" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x42 }, 24, UTRD_DD_OUT, false, "UNMAP (ufs=3)" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x04 }, 0, UTRD_DD_OUT, false, "FORMAT UNIT (ufs=3)" },
+		{ 3, UPIU_QUERY, 0, 0, QUERY_WRITE, { 0x02, 0x01 }, 0, UTRD_DD_NONE, false, "WRITE DESCRIPTOR (ufs=3)" },
+		{ 3, UPIU_QUERY, 0, 0, QUERY_WRITE, { 0x04, 0x01 }, 0, UTRD_DD_NONE, false, "WRITE ATTRIBUTE (ufs=3)" },
+		{ 3, UPIU_QUERY, 0, 0, QUERY_WRITE, { QOP_SET_FLAG, QFLAG_DEVICE_INIT }, 0, UTRD_DD_NONE, false, "SET FLAG fDeviceInit (ufs=3)" },
+		{ 3, UPIU_QUERY, 0, 0, QUERY_WRITE, { 0x07, 0x04 }, 0, UTRD_DD_NONE, false, "CLEAR FLAG (ufs=3)" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x3b }, 4096, UTRD_DD_OUT, false, "WRITE BUFFER (ufs=3)" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_WRITE, 0xc4, 0, { 0xb5 }, 512, UTRD_DD_OUT, false, "SECURITY PROTOCOL OUT to RPMB (ufs=3)" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_READ, 0, 0, { 0xa2 }, 512, UTRD_DD_IN, false, "SECURITY PROTOCOL IN (ufs=3)" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_READ, 0, 0, { 0xc0 }, 512, UTRD_DD_IN, false, "a vendor command (0xC0, ufs=3)" },
+		{ 3, UPIU_COMMAND, UPIU_FLAG_READ, 0, 0, { 0x28, 0, 0, 0, 0x04, 0x1a, 0, 0, 1 }, 4096, UTRD_DD_IN, true, "READ(10) of block 1050 (reads are not fenced)" },
+		/* read only: the same window, and nothing written */
+		{ 4, UPIU_COMMAND, UPIU_FLAG_WRITE, 0, 0, { 0x2a, 0, 0, 0, 0x03, 0xe8, 0, 0, 1 }, 4096, UTRD_DD_OUT, false, "WRITE(10) of block 1000 (read only)" },
+		{ 4, UPIU_COMMAND, 0, 0, 0, { 0x35 }, 0, UTRD_DD_NONE, false, "SYNCHRONIZE CACHE(10) (read only)" },
+		{ 4, UPIU_COMMAND, UPIU_FLAG_READ, 0, 0, { 0x28, 0, 0, 0, 0, 0, 0, 0, 1 }, 4096, UTRD_DD_IN, true, "READ(10) of LUN 0 (read only)" },
+		{ 4, UPIU_QUERY, 0, 0, QUERY_READ, { QOP_READ_DESC, QDESC_UNIT, 0 }, 0, UTRD_DD_NONE, true, "QUERY READ DESCRIPTOR (read only)" },
+		/* a window on a unit that is never written */
+		{ 5, UPIU_COMMAND, UPIU_FLAG_WRITE, 1, 0, { 0x2a, 0, 0, 0, 0x03, 0xe8, 0, 0, 1 }, 4096, UTRD_DD_OUT, false, "WRITE(10) of LUN 1, a unit never written" },
+		{ 5, UPIU_COMMAND, 0, 1, 0, { 0x35 }, 0, UTRD_DD_NONE, false, "SYNCHRONIZE CACHE(10) of LUN 1, a unit never written" },
 	};
-	struct hc_policy pol[3] = {
+	static const struct hc_deny test_deny[1] = { { .lun = 0, .first = 1050, .blocks = 10, .what = "protected: TEST" } };
+	struct hc_policy pol[6] = {
 		{ .read_luns = 1 },
 		{ .read_luns = 3, .control = true, .window = true, .w_lun = 0, .w_first = 1000, .w_blocks = 100 },
 		{ .read_luns = 3, .control = true, .device_init = true },
+		{ .read_luns = 3, .control = true, .window = true, .w_lun = 0, .w_first = 1000, .w_blocks = 100,
+		  .deny_luns = 2, .deny = test_deny, .ndeny = 1 },
+		{ .read_luns = 3, .control = true, .window = true, .w_lun = 0, .w_first = 1000, .w_blocks = 100, .ro = true },
+		{ .read_luns = 3, .control = true, .window = true, .w_lun = 1, .w_first = 1000, .w_blocks = 100, .deny_luns = 2 },
 	};
 	bool right = true;
 	unsigned passed_n = 0, refused_n = 0;
@@ -1899,6 +1993,10 @@ hc_put_back(struct hc_put_back_result *r)
 		*hc_loader.list_in = 0;
 		(*hc_loader.switched_out)++;
 	}
+	if (r->ok && r->db == 0 && hc_mode == HC_OWN && hc_own_list_in != NULL) {
+		*hc_own_list_in = 0;            /* (ufs=3) the loader may use UEFI's list again */
+		__asm__ volatile ("dsb sy" ::: "memory");
+	}
 	if (r->ok) {
 		hc_switch_out_count++;
 	}
@@ -2106,6 +2204,15 @@ ufshc_open_window(uint8_t lun, uint64_t first_lba, uint64_t blocks)
 		hc_say("ufs: own: no window on LUN %u: it is %s\n", lun, u->boot_lun_id ? "a boot unit" : "write protected");
 		return EROFS;
 	}
+	{
+		/* (ufs=3) not over anything protected, nor while everything is read only: refused whole */
+		const char *why = hc_protected(&hc_pol, lun, first_lba, blocks);
+
+		if (why != NULL) {
+			hc_say("ufs: own: no window on LUN %u blocks %llu..%llu: %s\n", lun, first_lba, first_lba + blocks - 1, why);
+			return EROFS;
+		}
+	}
 	lck_mtx_lock(&hc_lock);
 	hc_pol.w_lun = lun;
 	hc_pol.w_first = first_lba;
@@ -2129,6 +2236,124 @@ ufshc_selftest_refusal(uint8_t lun, uint64_t lba)
 
 	hc_make_rw(&c, lun, 2, lba, 1, true);
 	return ufshc_permitted(c.upiu, c.dw0) ? 0 : EPERM;
+}
+
+/* ---- ufs=3 (hakios.ufs.c): the fences, said into the loader's log ---- */
+
+void
+ufshc_log_direct(bool on)
+{
+	hc_direct = on;
+}
+
+/*
+ * Blocks [first, first + blocks) of lun never written from now on, whatever the window says.
+ * Ranges are only ever added; once the window is open none is (the fence is set before it).
+ */
+int
+ufshc_deny(uint8_t lun, uint64_t first, uint64_t blocks, const char *what)
+{
+	struct hc_deny *d;
+
+	if (lun >= UFSHC_LUNS || blocks == 0) {
+		return EINVAL;
+	}
+	lck_mtx_lock(&hc_lock);
+	if (hc_pol.window || hc_pol.ndeny >= HC_DENY_MAX) {
+		lck_mtx_unlock(&hc_lock);
+		/* no room: then nothing at all may be written */
+		hc_pol.ro = true;
+		hc_say("ufs: nufs: protection list full or set too late (%s): EVERYTHING READ ONLY\n", what);
+		return ENOSPC;
+	}
+	d = &hc_denied[hc_pol.ndeny];
+	d->lun = lun;
+	d->first = first;
+	d->blocks = blocks;
+	snprintf(d->what, sizeof(d->what), "protected: %s", what);
+	hc_pol.deny = hc_denied;
+	__asm__ volatile ("dmb ish" ::: "memory");
+	hc_pol.ndeny++;
+	lck_mtx_unlock(&hc_lock);
+	return 0;
+}
+
+void
+ufshc_deny_lun(uint8_t lun)
+{
+	if (lun < UFSHC_LUNS) {
+		lck_mtx_lock(&hc_lock);
+		hc_pol.deny_luns |= 1u << lun;
+		lck_mtx_unlock(&hc_lock);
+	}
+}
+
+/* nothing at all written for the rest of the run (there is no way back from it) */
+void
+ufshc_force_ro(void)
+{
+	lck_mtx_lock(&hc_lock);
+	hc_pol.ro = true;
+	lck_mtx_unlock(&hc_lock);
+}
+
+/*
+ * What the whitelist would say of a write of blocks at lba of lun: NULL if it would pass, the
+ * reason it is refused otherwise. Made and judged only, never placed in a slot, not counted.
+ */
+const char *
+ufshc_write_refusal(uint8_t lun, uint64_t lba, uint32_t blocks)
+{
+	struct hc_cmd c;
+
+	hc_make_rw(&c, lun, 2, lba, blocks, true);
+	return hc_refusal(c.upiu, c.dw0, &hc_pol, false);
+}
+
+/*
+ * ufs=3: own mode on the SoC named, as far as step (5: all), with the loader's page told
+ * (list_in) before this kernel's list goes into the controller and after UEFI's is back.
+ */
+static bool hc_own_probe(const char *name, uint32_t mode, uint32_t step);
+
+bool
+ufshc_take(const char *soc, uint32_t step, volatile uint32_t *list_in)
+{
+	hc_own_list_in = list_in;
+	return hc_own_probe(soc, 4, step);
+}
+
+/*
+ * ufs=3, the way back to the loader within a run: nothing more sent, what is in flight waited
+ * for (or cleared), UEFI's list, interrupt enable and nexus types put back and read back. true
+ * only if UEFI's list is in again and running as it was: only then may the loader be asked.
+ */
+bool
+ufshc_release(const char *why)
+{
+	struct hc_put_back_result r;
+
+	if (hc_mode != HC_OWN) {
+		return hc_own_list_in == NULL || *hc_own_list_in == 0;
+	}
+	lck_mtx_lock(&hc_lock);
+	hc_closed = true;               /* nothing more taken from here on */
+	wakeup(&hc_free);
+	lck_mtx_unlock(&hc_lock);
+	for (uint64_t t = mach_absolute_time(); hc_in_flight != 0 && hc_us_since(t) < 2000000;) {
+		IOSleep(1);
+	}
+	hc_put_back(&r);
+	hc_put_back_print(why, &r, false);
+	hc_in = false;
+	hc_usable = false;
+	hc_mode = HC_NONE;
+	hc_off();
+	if (!r.ok || r.db != 0) {
+		hc_say("ufs: nufs: %s: UEFI's list NOT back as it was: the loader must not be asked (it refuses anyway)\n", why);
+		return false;
+	}
+	return true;
 }
 
 static void
@@ -2726,8 +2951,20 @@ ufshc_own_stopped(void)
 bool
 ufshc_own_probe(void)
 {
-	uint32_t cap, hcs, hce, is, ie, base, baseu, db, rsr, tm_db, mode = 4, slots = 15, nfree = 0;
+	uint32_t mode = 4;
 	char name[32] = "pci";
+
+	PE_parse_boot_argn("ufs_native", &mode, sizeof(mode));
+	/* ufs_native_soc=NAME: the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810 */
+	(void)PE_parse_boot_arg_str("ufs_native_soc", name, sizeof(name));
+	return hc_own_probe(name, mode, 0);
+}
+
+/* step: 0, the controller's default unless ufs_native_step= says; 1-5, that unless ufs_native_step= says */
+static bool
+hc_own_probe(const char *name, uint32_t mode, uint32_t step)
+{
+	uint32_t cap, hcs, hce, is, ie, base, baseu, db, rsr, tm_db, slots = 15, nfree = 0;
 	const char *no = NULL;
 	uint64_t pa, list_pa, uefi_pa;
 	vm_offset_t list;
@@ -2736,9 +2973,6 @@ ufshc_own_probe(void)
 	if (!hc_whitelist_selftest()) {
 		return false;
 	}
-	PE_parse_boot_argn("ufs_native", &mode, sizeof(mode));
-	/* ufs_native_soc=NAME: the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810 */
-	(void)PE_parse_boot_arg_str("ufs_native_soc", name, sizeof(name));
 	hc_soc = NULL;
 	for (unsigned i = 0; i < sizeof(hc_socs) / sizeof(hc_socs[0]); i++) {
 		if (strcmp(name, hc_socs[i].name) == 0) {
@@ -2754,7 +2988,7 @@ ufshc_own_probe(void)
 	hc_slot_buffer = hc_soc->slot_buffer;
 	hc_boot_args();
 	/* ufs_native_step=N: own mode goes as far as step N: 1 look, 2 the link, 3 NOP OUT, 4 READ CAPACITY, 5 all (the GPTs) */
-	hc_step = hc_soc->default_step;
+	hc_step = step != 0 ? step : hc_soc->default_step;
 	PE_parse_boot_argn("ufs_native_step", &hc_step, sizeof(hc_step));
 	if (mode == 5 || hc_step < 1) {
 		hc_step = 1;
@@ -2919,12 +3153,23 @@ ufshc_own_probe(void)
 	/* UEFI's list out, this kernel's in (interrupts masked: completions are polled) */
 	hc_is_in = hc_read(UFSHC_IS);
 	hc_cnr_in = hc_read(UFSHC_UTRLCNR);
+	if (hc_own_list_in != NULL) {
+		/* (ufs=3) the loader's page says so before the controller does: the loader asks UEFI for nothing now */
+		*hc_own_list_in = 1;
+		__asm__ volatile ("dsb sy" ::: "memory");
+	}
 	hc_write(UFSHC_IE, 0);
 	if (rsr & 1) {
 		hc_write(UFSHC_UTRLRSR, 0);
 		if (!hc_poll(UFSHC_UTRLRSR, 1, 0, 100)) {
 			hc_write(UFSHC_IE, hc_uefi_ie);
-			hc_say("ufs: own: not used: UEFI's list did not stop\n");
+			hc_write(UFSHC_UTRLRSR, 1);
+			hc_say("ufs: own: not used: UEFI's list did not stop (run %08x, list %08x:%08x now)\n",
+			    hc_read(UFSHC_UTRLRSR), hc_read(UFSHC_UTRLBAU), hc_read(UFSHC_UTRLBA));
+			if (hc_own_list_in != NULL && hc_read(UFSHC_UTRLBA) == (uint32_t)uefi_pa &&
+			    hc_read(UFSHC_UTRLBAU) == (uint32_t)(uefi_pa >> 32) && (hc_read(UFSHC_UTRLRSR) & 1)) {
+				*hc_own_list_in = 0;    /* never left UEFI's: the loader may go on */
+			}
 			hc_mode = HC_NONE;
 			return false;
 		}

@@ -83,6 +83,7 @@
 #include <sys/uio.h>
 #include <sys/hakios.input.h>
 #include <libkern/crc.h>
+#include <stdarg.h>
 #include <vm/memory_types.h>
 #include "hakios.ufshc.h"
 
@@ -210,6 +211,16 @@ static uint32_t ufs_native_luns;                /* how many units are mapped (LU
 static volatile bool ufs_native_on;
 static uint64_t ufs_native_fallbacks, ufs_mailbox_refused;
 
+/* ufs=3 (below: ufs_nufs_start) */
+static bool ufs_nufs;                           /* ufs=3 asked for */
+static volatile bool ufs_nufs_on;               /* switched: this kernel's own driver has the controller */
+static bool ufs_nufs_ro;                        /* ufs_native_ro=1 */
+static uint32_t ufs_nufs_verify;                /* ufs_native_verify=1: every write read back and compared */
+static uint64_t ufs_nufs_unmapped, ufs_nufs_verify_bad;
+static int ufs_nufs_failed(const char *name, uint64_t offset, int error);
+static void nufs_say(const char *format, ...) __printflike(1, 2);
+static int ufs_nufs_write(uint32_t part, uint64_t offset, const uint8_t *src, uint64_t len);
+
 /* own mode (ufs_native=4): the table is this kernel's, the loader serves nothing */
 static bool ufs_own;
 static int ufs_own_write_part = -1;             /* the partition ufs_native_write= names; -1: none */
@@ -217,6 +228,7 @@ static struct loader_block *ufs_own_table;
 
 static LCK_GRP_DECLARE(ufs_lck_grp, "hakios-ufs");
 static LCK_MTX_DECLARE(ufs_lock, &ufs_lck_grp);
+static LCK_MTX_DECLARE(ufs_nufs_mtx, &ufs_lck_grp);      /* ufs=3: one giving back at a time */
 /* One writer at a time; never held while the mailbox is, nor while user memory is touched. */
 static LCK_MTX_DECLARE(ufs_write_mtx, &ufs_lck_grp);
 
@@ -616,6 +628,25 @@ ufs_read(uint32_t part, uint64_t offset, uint8_t *dst, uint64_t len)
 	if (ufs_own) {
 		return ufs_read_native(part, offset, dst, len);         /* the only way there is */
 	}
+	if (ufs_nufs_on) {
+		/* ufs=3: this kernel's own driver has the controller; the loader is not asked while it does */
+		int error = ufs_lun[part] == 0xff ? ENXIO : ufs_read_native(part, offset, dst, len);
+
+		if (error == 0) {
+			return 0;
+		}
+		if (ufs_lun[part] == 0xff) {
+			if (ufs_nufs_unmapped++ < 4) {
+				nufs_say("ufs: nufs: %s: on a unit this kernel's driver does not read: not read\n",
+				    (const char *)ufs_page->part[part].name);
+			}
+			return ENXIO;
+		}
+		if (ufs_nufs_failed((const char *)ufs_page->part[part].name, offset, error) != 0) {
+			return EIO;
+		}
+		return ufs_read_mailbox(part, offset, dst, len);
+	}
 	if (ufs_native_on && ufs_lun[part] != 0xff) {
 		int error = ufs_read_native(part, offset, dst, len);
 
@@ -667,6 +698,16 @@ ufs_write(uint32_t op, uint32_t part, uint64_t offset, const uint8_t *src, uint6
 	}
 	per = ufs_buffer_size / nbs;
 	lck_mtx_lock(&ufs_write_mtx);
+	if (ufs_nufs_on) {
+		/* ufs=3: through this kernel's own driver, into USERDATA's window only; never the loader's way as well */
+		error = ufs_nufs_write(part, offset, src, len);
+		lck_mtx_unlock(&ufs_write_mtx);
+		return error;
+	}
+	if (ufs_nufs && !ufs_nufs_on && ufs_dead) {
+		lck_mtx_unlock(&ufs_write_mtx);
+		return EIO;
+	}
 	/*
 	 * The list goes out once, at the first write, and comes back when the device is closed: a
 	 * whole data volume is written a bufferful at a time, and switching the controller's list
@@ -754,6 +795,13 @@ ufs_data_flush(void)
 {
 	int error;
 
+	if (ufs_nufs_on) {
+		/* ufs=3: the device's cache, through this kernel's own driver (SYNCHRONIZE CACHE to USERDATA's unit) */
+		lck_mtx_lock(&ufs_write_mtx);
+		error = ufshc_sync();
+		lck_mtx_unlock(&ufs_write_mtx);
+		return error;
+	}
 	if (ufs_data_op() != BLOCK_OP_WRITE_FAST) {
 		return 0;               /* every write was flushed already */
 	}
@@ -2272,6 +2320,772 @@ ufs_own_init(uint32_t mode)
 	}
 }
 
+/*
+ * ---- ufs=3: this kernel's own UFS driver takes the controller, the loader's service its reference and fallback ----
+ *
+ * The loader serves the storage as with ufs=2 (it takes ufs=3 for ufs=2, and refuses every request while the page
+ * says this kernel's list is in: xnuloader/loader.c, block_poll). Here, before anything else of the run reads:
+ *
+ *   1. through the loader, the references: every unit's head (protective MBR, GPT header, table) and its backup GPT,
+ *      and the first, middle and last block of every partition;
+ *   2. own mode on the SoC (ufs_native_soc=, the S9's exynos9810 by default) to step 5, as UEFI left the controller
+ *      (hakios.ufshc.c): looked at, this kernel's list in, NOP OUT, the units' descriptors and capacities;
+ *   3. the self-test: each of the loader's units is the one logical unit whose capacity is the same and whose head
+ *      reads the same here, byte for byte; its GPT read here is right (header and table CRCs) and holds every
+ *      partition of the loader's table at the same blocks, of the same size; the backup GPT and every partition's
+ *      three blocks read the same both ways;
+ *   4. the fences, before any window: LBA 0-5 and both GPTs of every unit, every partition on the protected list
+ *      (EFS, SEC_EFS, CPEFS, RADIO, CP_DEBUG, PERSISTENT, KEYSTORAGE, PARAM, UP_PARAM, STEADY, BOTA0-2, DTB, DTBO,
+ *      BOOT, RECOVERY, NAD_REFER, OMR, HIDDEN and the rest of ufs_never_written, any name with "efs" in it), every
+ *      logical unit but USERDATA's (the others hold the boot loaders), and everything of USERDATA's unit outside
+ *      USERDATA. hakios.ufshc.c's whitelist refuses any write or SYNCHRONIZE CACHE that touches one, after its own
+ *      window check, and says which; query writes, UNMAP, FORMAT UNIT, WRITE BUFFER, security protocols and vendor
+ *      commands are not on its list at all;
+ *   5. the window: USERDATA, and only with ufs_write=1 (the loader's offer, checked as for ufs=2), never with
+ *      ufs_native_ro=1 (which also takes the loader's write path away for the run); otherwise everything is read
+ *      only, in the whitelist itself;
+ *   6. the switch: reads (and the data volume's writes) through this kernel's driver; the loader is asked nothing.
+ *
+ * Anything wrong before 6 gives the controller back (UEFI's list, interrupt enable and nexus types, read back) and
+ * the run goes on through the loader as with ufs=2. A read that fails after 6 does the same, if the controller can
+ * be given back; if it cannot, the storage is off for the run (nothing is asked of UEFI's driver behind a list that
+ * is not its own). A write that fails is an error, never retried the other way. Every step is said into the
+ * loader's log (loader_log_line), where the run's log is read.
+ */
+
+extern void loader_log_line(const char *line);
+
+static void
+nufs_say(const char *format, ...) __printflike(1, 2);
+static void
+nufs_say(const char *format, ...)
+{
+	char line[320];
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(line, sizeof(line), format, list);
+	va_end(list);
+	if (strlen(line) == sizeof(line) - 1) {
+		line[sizeof(line) - 2] = '\n';
+	}
+	printf("%s", line);
+	loader_log_line(line);
+}
+
+/* The partitions that are never written, whatever is asked (and ufs_never_written's besides) */
+static const char *const ufs_nufs_protected[] = {
+	"EFS", "SEC_EFS", "CPEFS", "RADIO", "CP_DEBUG", "PERSISTENT", "KEYSTORAGE", "PARAM", "UP_PARAM", "STEADY",
+	"BOTA0", "BOTA1", "BOTA2", "DTB", "DTBO", "BOOT", "RECOVERY", "NAD_REFER", "OMR", "HIDDEN",
+};
+
+static bool
+ufs_nufs_is_protected(const char *name)
+{
+	for (unsigned i = 0; i < sizeof(ufs_nufs_protected) / sizeof(ufs_nufs_protected[0]); i++) {
+		if (ufs_name_is(name, ufs_nufs_protected[i])) {
+			return true;
+		}
+	}
+	for (unsigned i = 0; i < sizeof(ufs_never_written) / sizeof(ufs_never_written[0]); i++) {
+		if (ufs_name_is(name, ufs_never_written[i])) {
+			return true;
+		}
+	}
+	for (const char *c = name; *c != 0; c++) {
+		if (strncasecmp(c, "efs", 3) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+#define NUFS_HEAD_MAX      64u                  /* blocks of a unit's head kept: MBR, header, table */
+#define NUFS_RAW_HEAD      6u                   /* a unit with no GPT: its blocks 0-5 */
+#define NUFS_SPOTS         3u                   /* first, middle, last block of each partition */
+
+struct nufs_unit {
+	uint32_t part;                          /* the loader's entry for the whole unit */
+	uint8_t lun;                            /* this kernel's logical unit; 0xff: none (not read, never written) */
+	bool gpt;
+	uint32_t head, backup;                  /* blocks kept: [0, head) and [alt_elba, alt] */
+	uint64_t elba, tblocks, alt, alt_elba, first, last;
+	uint32_t count;
+	uint8_t *ref, *bref;                    /* through the loader */
+};
+
+static struct nufs_unit ufs_nufs_units[BLOCK_MAX_UNITS];
+static uint32_t ufs_nufs_nunits;
+static uint8_t *ufs_nufs_spots;                 /* each partition's NUFS_SPOTS blocks through the loader */
+#define ufs_nufs_spot(part, s)  (ufs_nufs_spots + ((size_t)(part) * NUFS_SPOTS + (s)) * 4096)
+#define NUFS_SPOTS_SIZE         ((vm_size_t)BLOCK_MAX_PARTS * NUFS_SPOTS * 4096)
+
+/* the loader's unit (its index among the units) of a partition: ufs_nufs_units[] index, or -1 */
+static int
+nufs_unit_of(uint32_t part)
+{
+	for (uint32_t k = 0; k < ufs_nufs_nunits; k++) {
+		if (ufs_page->part[ufs_nufs_units[k].part].unit == ufs_page->part[part].unit) {
+			return (int)k;
+		}
+	}
+	return -1;
+}
+
+static uint64_t
+nufs_fnv(const uint8_t *p, uint64_t n)
+{
+	return ufs_fnv(0xcbf29ce484222325ULL, p, n);
+}
+
+static void
+nufs_free_units(void)
+{
+	for (uint32_t k = 0; k < ufs_nufs_nunits; k++) {
+		struct nufs_unit *u = &ufs_nufs_units[k];
+
+		if (u->ref != NULL) {
+			kfree_data(u->ref, (vm_size_t)u->head * 4096);
+		}
+		if (u->bref != NULL) {
+			kfree_data(u->bref, (vm_size_t)u->backup * 4096);
+		}
+		u->ref = u->bref = NULL;
+	}
+}
+
+/* Step 1: a unit's head and backup GPT through the loader (UEFI's list in). NULL: kept; else why not. */
+static const char *
+nufs_reference_unit(struct nufs_unit *u)
+{
+	volatile struct loader_block_part *e = &ufs_page->part[u->part];
+	static uint8_t h[4096];         /* (bsd_init's thread alone: no 4 KB on its stack) */
+	uint64_t count, esize;
+
+	if (e->block_size != 4096 || e->blocks < 64) {
+		return "not 4096-byte blocks, or too small";
+	}
+	if (ufs_read_mailbox(u->part, 4096, h, 4096) != 0) {
+		return "its block 1 could not be read through the loader";
+	}
+	u->gpt = memcmp(h, "EFI PART", 8) == 0;
+	if (!u->gpt) {
+		u->head = NUFS_RAW_HEAD;
+	} else {
+		u->elba = ufs_le64(h + 72);
+		count = ufs_le32(h + 80);
+		esize = ufs_le32(h + 84);
+		u->alt = ufs_le64(h + 32);
+		u->first = ufs_le64(h + 40);
+		u->last = ufs_le64(h + 48);
+		u->count = (uint32_t)count;
+		if (esize != 128 || count == 0 || count > 1024 || u->elba < 2 || u->alt >= e->blocks || u->alt < 3) {
+			return "its GPT header's geometry (through the loader)";
+		}
+		u->tblocks = (count * esize + 4095) / 4096;
+		if (u->elba + u->tblocks > NUFS_HEAD_MAX) {
+			return "its GPT's table is further in than this keeps";
+		}
+		u->head = (uint32_t)(u->elba + u->tblocks);
+		if (u->head < NUFS_RAW_HEAD) {
+			u->head = NUFS_RAW_HEAD;
+		}
+	}
+	u->ref = kalloc_data((vm_size_t)u->head * 4096, Z_WAITOK);
+	if (u->ref == NULL || ufs_read_mailbox(u->part, 0, u->ref, (uint64_t)u->head * 4096) != 0) {
+		return "its head could not be read through the loader";
+	}
+	if (u->gpt) {
+		if (ufs_read_mailbox(u->part, u->alt * 4096, h, 4096) != 0 || memcmp(h, "EFI PART", 8) != 0) {
+			return "no backup GPT header where the primary says";
+		}
+		u->alt_elba = ufs_le64(h + 72);
+		if (u->alt_elba > u->alt || u->alt - u->alt_elba + 1 > NUFS_HEAD_MAX || u->alt_elba <= u->last) {
+			return "the backup GPT's geometry";
+		}
+		u->backup = (uint32_t)(u->alt - u->alt_elba + 1);
+		u->bref = kalloc_data((vm_size_t)u->backup * 4096, Z_WAITOK);
+		if (u->bref == NULL || ufs_read_mailbox(u->part, u->alt_elba * 4096, u->bref, (uint64_t)u->backup * 4096) != 0) {
+			return "the backup GPT could not be read through the loader";
+		}
+	}
+	return NULL;
+}
+
+/*
+ * Step 3, a unit: which of this kernel's logical units it is -- the one of the same capacity whose head reads
+ * the same, and no other. 0xff: none, or more than one.
+ */
+static uint8_t
+nufs_map_unit(struct nufs_unit *u, uint8_t *buf)
+{
+	uint8_t found = 0xff;
+	uint32_t matches = 0;
+
+	for (uint8_t lun = 0; lun < UFSHC_LUNS; lun++) {
+		const struct ufshc_unit *n = ufshc_unit(lun);
+
+		if (n == NULL || n->block_size != 4096 || n->blocks != ufs_page->part[u->part].blocks) {
+			continue;
+		}
+		if (ufshc_read(lun, 0, buf, (uint64_t)u->head * 4096) != 0) {
+			nufs_say("ufs: nufs: LUN %u: its head could not be read here\n", lun);
+			continue;
+		}
+		if (memcmp(buf, u->ref, (size_t)u->head * 4096) == 0) {
+			found = lun;
+			matches++;
+		}
+	}
+	return matches == 1 ? found : 0xff;
+}
+
+/* Step 3, a mapped unit with a GPT: the GPT read here is right and has the loader's partitions. NULL: it does */
+static const char *
+nufs_check_gpt(const struct nufs_unit *u, const uint8_t *head, const uint8_t *backup)
+{
+	uint8_t h[512];
+	uint32_t hsize, crc;
+
+	memcpy(h, head + 4096, sizeof(h));
+	hsize = ufs_le32(h + 12);
+	crc = ufs_le32(h + 16);
+	if (memcmp(h, "EFI PART", 8) != 0 || ufs_le32(h + 8) != 0x00010000 || hsize < 92 || hsize > sizeof(h) ||
+	    ufs_le64(h + 24) != 1) {
+		return "the GPT header (signature, revision, size, own LBA)";
+	}
+	*(uint32_t *)(h + 16) = 0;
+	if (crc32(0, h, hsize) != crc) {
+		return "the GPT header's CRC";
+	}
+	if (crc32(0, head + u->elba * 4096, (size_t)u->count * 128) != ufs_le32(h + 88)) {
+		return "the GPT table's CRC";
+	}
+	/* the backup: its header at alt, saying the same table */
+	memcpy(h, backup + (u->alt - u->alt_elba) * 4096, sizeof(h));
+	if (memcmp(h, "EFI PART", 8) != 0 || ufs_le64(h + 24) != u->alt || ufs_le64(h + 32) != 1 ||
+	    crc32(0, backup, (size_t)u->count * 128) != ufs_le32(h + 88)) {
+		return "the backup GPT (its header's own LBA, the primary's, its table's CRC)";
+	}
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		volatile struct loader_block_part *e = &ufs_page->part[i];
+		bool found = false;
+
+		if ((e->flags & BLOCK_PART_UNIT) || e->unit != ufs_page->part[u->part].unit) {
+			continue;
+		}
+		for (uint32_t j = 0; j < u->count && !found; j++) {
+			const uint8_t *g = head + u->elba * 4096 + 128 * j;
+			char name[36];
+			uint32_t n = 0;
+
+			for (; n < 35 && (g[56 + 2 * n] | g[57 + 2 * n]) != 0; n++) {
+				uint16_t ch = (uint16_t)(g[56 + 2 * n] | g[57 + 2 * n] << 8);
+
+				name[n] = ch < 0x80 ? (char)ch : '?';
+			}
+			name[n] = 0;
+			if (strncmp(name, (const char *)e->name, sizeof(name)) != 0) {
+				continue;
+			}
+			found = true;
+			if (ufs_le64(g + 32) != e->start_lba || ufs_le64(g + 40) - ufs_le64(g + 32) + 1 != e->blocks) {
+				nufs_say("ufs: nufs: %s: the GPT read here says blocks %llu..%llu, the loader's table %llu..%llu\n",
+				    name, ufs_le64(g + 32), ufs_le64(g + 40), e->start_lba, e->start_lba + e->blocks - 1);
+				return "a partition is not where the loader's table has it";
+			}
+		}
+		if (!found) {
+			nufs_say("ufs: nufs: %s: not in the GPT read here\n", (const char *)e->name);
+			return "a partition of the loader's table is not in the GPT read here";
+		}
+	}
+	return NULL;
+}
+
+/* Step 3: everything the loader read, read again here and compared. NULL: the same; else what differs */
+static const char *
+nufs_selftest(void)
+{
+	uint8_t *buf = kalloc_data(NUFS_HEAD_MAX * 4096, Z_WAITOK), *mine = NULL;
+	uint64_t spots = 0, bytes = 0;
+	const char *why = NULL;
+	bool main_unit = false;
+
+	if (buf == NULL) {
+		return "no memory";
+	}
+	for (uint32_t k = 0; why == NULL && k < ufs_nufs_nunits; k++) {
+		struct nufs_unit *u = &ufs_nufs_units[k];
+		volatile struct loader_block_part *e = &ufs_page->part[u->part];
+
+		u->lun = nufs_map_unit(u, buf);
+		if (u->lun == 0xff) {
+			nufs_say("ufs: nufs: the loader's unit %u (%llu blocks%s): no one logical unit here reads the same: not read, "
+			    "never written\n", e->unit, e->blocks, u->gpt ? ", a GPT" : ", no GPT");
+			if (e->unit == 0) {
+				why = "the loader's first unit (SYSTEM's, USERDATA's) is no logical unit here";
+			}
+			continue;
+		}
+		main_unit |= e->unit == 0;
+		/* (buf holds its head as read here, the same as the loader's) */
+		nufs_say("ufs: nufs: the loader's unit %u is LUN %u: blocks 0..%u read both ways, the same (fnv %llx)\n",
+		    e->unit, u->lun, u->head - 1, nufs_fnv(u->ref, (uint64_t)u->head * 4096));
+		bytes += (uint64_t)u->head * 4096;
+		if (!u->gpt) {
+			continue;
+		}
+		if (ufshc_read(u->lun, u->alt_elba * 4096, buf, (uint64_t)u->backup * 4096) != 0) {
+			why = "the backup GPT could not be read here";
+			break;
+		}
+		if (memcmp(buf, u->bref, (size_t)u->backup * 4096) != 0) {
+			why = "the backup GPT read here is not what the loader read";
+			break;
+		}
+		bytes += (uint64_t)u->backup * 4096;
+		nufs_say("ufs: nufs: LUN %u: backup GPT (blocks %llu..%llu) the same both ways\n", u->lun, u->alt_elba, u->alt);
+		why = nufs_check_gpt(u, u->ref, u->bref);
+		if (why == NULL) {
+			nufs_say("ufs: nufs: LUN %u: GPT right (header and table CRCs, backup at %llu) and every partition of the "
+			    "loader's table in it at the same blocks\n", u->lun, u->alt);
+		}
+	}
+	if (why == NULL && !main_unit) {
+		why = "the loader lists no first unit";
+	}
+	/* each partition of a unit found here: its logical unit, and where it begins there */
+	for (uint32_t i = 0; why == NULL && i < ufs_parts; i++) {
+		int k = nufs_unit_of(i);
+
+		ufs_lun[i] = 0xff;
+		if (k >= 0 && ufs_nufs_units[k].lun != 0xff && ufs_page->part[i].block_size == 4096) {
+			ufs_lun[i] = ufs_nufs_units[k].lun;
+			ufs_lun_offset[i] = (ufs_page->part[i].flags & BLOCK_PART_UNIT) ? 0 : ufs_page->part[i].start_lba * 4096;
+		}
+	}
+	/* every partition's first, middle and last block, both ways */
+	mine = kalloc_data(4096, Z_WAITOK);
+	if (why == NULL && mine == NULL) {
+		why = "no memory";
+	}
+	for (uint32_t i = 0; why == NULL && i < ufs_parts; i++) {
+		volatile struct loader_block_part *e = &ufs_page->part[i];
+		int k = nufs_unit_of(i);
+		uint64_t at[NUFS_SPOTS];
+
+		if ((e->flags & BLOCK_PART_UNIT) || k < 0 || ufs_nufs_units[k].lun == 0xff || e->block_size != 4096 ||
+		    e->blocks == 0) {
+			continue;
+		}
+		at[0] = 0;
+		at[1] = e->blocks / 2;
+		at[2] = e->blocks - 1;
+		for (uint32_t s = 0; why == NULL && s < NUFS_SPOTS; s++) {
+			if (s > 0 && at[s] == at[s - 1]) {
+				continue;
+			}
+			if (ufs_read_native(i, at[s] * 4096, mine, 4096) != 0) {
+				why = "a partition's block could not be read here";
+			} else if (memcmp(mine, ufs_nufs_spot(i, s), 4096) != 0) {
+				nufs_say("ufs: nufs: %s block %llu (LUN %u block %llu): NOT what the loader read\n", (const char *)e->name,
+				    at[s], ufs_nufs_units[k].lun, e->start_lba + at[s]);
+				why = "a partition's block reads differently here";
+			}
+			spots++;
+		}
+	}
+	if (why == NULL) {
+		nufs_say("ufs: nufs: self-test passed: %u unit(s), %llu KB of heads and GPTs and %llu partition blocks read both "
+		    "ways, all the same\n", ufs_nufs_nunits, bytes >> 10, spots);
+	}
+	kfree_data(buf, NUFS_HEAD_MAX * 4096);
+	if (mine != NULL) {
+		kfree_data(mine, 4096);
+	}
+	return why;
+}
+
+/* Step 1: the references, through the loader (the caller holds nothing; UEFI's list is in) */
+static const char *
+nufs_references(void)
+{
+	uint64_t spots = 0;
+
+	ufs_nufs_nunits = 0;
+	for (uint32_t i = 0; i < ufs_parts && ufs_nufs_nunits < BLOCK_MAX_UNITS; i++) {
+		volatile struct loader_block_part *e = &ufs_page->part[i];
+		struct nufs_unit *u;
+		const char *why;
+
+		if ((e->flags & BLOCK_PART_UNIT) == 0 || e->unit >= UFSHC_LUNS) {
+			continue;
+		}
+		u = &ufs_nufs_units[ufs_nufs_nunits++];
+		bzero(u, sizeof(*u));
+		u->part = i;
+		u->lun = 0xff;
+		why = nufs_reference_unit(u);
+		if (why != NULL) {
+			nufs_say("ufs: nufs: the loader's unit %u (%s): %s\n", e->unit, (const char *)e->name, why);
+			if (e->unit == 0) {
+				return "the first unit's head or GPT could not be read through the loader";
+			}
+			/* (another unit: kept out; it is not read here and never written) */
+			if (u->ref != NULL) {
+				kfree_data(u->ref, (vm_size_t)u->head * 4096);
+			}
+			if (u->bref != NULL) {
+				kfree_data(u->bref, (vm_size_t)u->backup * 4096);
+			}
+			ufs_nufs_nunits--;
+			continue;
+		}
+		nufs_say("ufs: nufs: the loader's unit %u (%s, %llu blocks): %s; blocks 0..%u read through the loader (fnv %llx)%s\n",
+		    e->unit, (const char *)e->name, e->blocks, u->gpt ? "a GPT" : "no GPT", u->head - 1,
+		    nufs_fnv(u->ref, (uint64_t)u->head * 4096), u->gpt ? ", and its backup GPT" : "");
+	}
+	ufs_nufs_spots = kalloc_data(NUFS_SPOTS_SIZE, Z_WAITOK);
+	if (ufs_nufs_spots == NULL) {
+		return "no memory";
+	}
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		volatile struct loader_block_part *e = &ufs_page->part[i];
+		uint64_t at[NUFS_SPOTS];
+
+		if ((e->flags & BLOCK_PART_UNIT) || nufs_unit_of(i) < 0 || e->block_size != 4096 || e->blocks == 0) {
+			continue;
+		}
+		at[0] = 0;
+		at[1] = e->blocks / 2;
+		at[2] = e->blocks - 1;
+		for (uint32_t s = 0; s < NUFS_SPOTS; s++) {
+			if (s > 0 && at[s] == at[s - 1]) {
+				continue;
+			}
+			if (ufs_read_mailbox(i, at[s] * 4096, ufs_nufs_spot(i, s), 4096) != 0) {
+				nufs_say("ufs: nufs: %s block %llu could not be read through the loader\n", (const char *)e->name, at[s]);
+				return "a partition's block could not be read through the loader";
+			}
+			spots++;
+		}
+	}
+	nufs_say("ufs: nufs: references through the loader: %u unit(s), %llu partition blocks\n", ufs_nufs_nunits, spots);
+	return NULL;
+}
+
+/* Step 4: the fences (before any window). false: one could not be set, and then everything stays read only. */
+static bool
+nufs_fences(int data_unit_lun)
+{
+	uint32_t named = 0;
+	bool all = true;
+
+	/* every logical unit but USERDATA's, the ones this kernel cannot tell (boot units) among them */
+	for (uint8_t lun = 0; lun < UFSHC_LUNS; lun++) {
+		if ((int)lun != data_unit_lun) {
+			ufshc_deny_lun(lun);
+		}
+	}
+	for (uint32_t k = 0; k < ufs_nufs_nunits; k++) {
+		const struct nufs_unit *u = &ufs_nufs_units[k];
+
+		if (u->lun == 0xff) {
+			continue;
+		}
+		all &= ufshc_deny(u->lun, 0, 6, "LBA 0-5") == 0;
+		if (u->gpt) {
+			all &= ufshc_deny(u->lun, 0, u->elba + u->tblocks, "the GPT") == 0;
+			all &= ufshc_deny(u->lun, u->alt_elba, u->alt - u->alt_elba + 1, "the backup GPT") == 0;
+		}
+	}
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		volatile struct loader_block_part *e = &ufs_page->part[i];
+
+		if ((e->flags & BLOCK_PART_UNIT) || ufs_lun[i] == 0xff || !ufs_nufs_is_protected((const char *)e->name)) {
+			continue;
+		}
+		all &= ufshc_deny(ufs_lun[i], e->start_lba, e->blocks, (const char *)e->name) == 0;
+		named++;
+	}
+	/* and on USERDATA's unit everything outside USERDATA */
+	if (data_unit_lun >= 0 && ufs_write_part >= 0) {
+		volatile struct loader_block_part *d = &ufs_page->part[ufs_write_part];
+		const struct ufshc_unit *n = ufshc_unit((uint8_t)data_unit_lun);
+
+		all &= ufshc_deny((uint8_t)data_unit_lun, 0, d->start_lba, "before USERDATA") == 0;
+		if (n != NULL && d->start_lba + d->blocks < n->blocks) {
+			all &= ufshc_deny((uint8_t)data_unit_lun, d->start_lba + d->blocks, n->blocks - d->start_lba - d->blocks,
+			    "after USERDATA") == 0;
+		}
+	}
+	nufs_say("ufs: nufs: fences set: every logical unit but %s never written; LBA 0-5 and both GPTs of every unit; %u "
+	    "protected partitions by name (EFS, RADIO, BOOT, PARAM ...); %s\n", data_unit_lun >= 0 ? "USERDATA's" : "none",
+	    named, all ? "all of them in the whitelist" : "ONE COULD NOT BE SET: everything read only");
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		volatile struct loader_block_part *e = &ufs_page->part[i];
+
+		if ((e->flags & BLOCK_PART_UNIT) == 0 && ufs_lun[i] != 0xff && ufs_nufs_is_protected((const char *)e->name)) {
+			nufs_say("ufs: nufs: protected: %-12s LUN %u blocks %llu..%llu\n", (const char *)e->name, ufs_lun[i],
+			    e->start_lba, e->start_lba + e->blocks - 1);
+		}
+	}
+	if (!all) {
+		ufshc_force_ro();
+	}
+	return all;
+}
+
+/*
+ * Step 4 again, proved: writes the whitelist must refuse, made and judged, never sent -- LBA 0, the GPTs, every
+ * protected partition's first and last block, another unit, past USERDATA -- and USERDATA's first block, which
+ * passes only with the window open. false: one was not refused, or USERDATA's did not do what it should.
+ */
+static bool
+nufs_prove_fences(int data_unit_lun, bool window)
+{
+	uint32_t tried = 0;
+	bool right = true;
+
+	for (uint32_t k = 0; k < ufs_nufs_nunits; k++) {
+		const struct nufs_unit *u = &ufs_nufs_units[k];
+		const uint64_t lbas[4] = { 0, 1, u->elba, u->alt };
+
+		for (uint32_t j = 0; u->lun != 0xff && j < (u->gpt ? 4u : 1u); j++) {
+			const char *why = ufshc_write_refusal(u->lun, lbas[j], 1);
+
+			tried++;
+			if (why == NULL) {
+				nufs_say("ufs: nufs: fence test: a write of LUN %u block %llu WOULD PASS\n", u->lun, lbas[j]);
+				right = false;
+			}
+		}
+	}
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		volatile struct loader_block_part *e = &ufs_page->part[i];
+		const char *why0, *why1;
+
+		if ((e->flags & BLOCK_PART_UNIT) || ufs_lun[i] == 0xff || (int)i == ufs_write_part) {
+			continue;
+		}
+		why0 = ufshc_write_refusal(ufs_lun[i], e->start_lba, 1);
+		why1 = ufshc_write_refusal(ufs_lun[i], e->start_lba + e->blocks - 1, 1);
+		tried += 2;
+		if (why0 == NULL || why1 == NULL) {
+			nufs_say("ufs: nufs: fence test: a write into %s WOULD PASS\n", (const char *)e->name);
+			right = false;
+		} else if (ufs_nufs_is_protected((const char *)e->name)) {
+			nufs_say("ufs: nufs: fence test: %s refused (%s)\n", (const char *)e->name, why0);
+		}
+	}
+	for (uint8_t lun = 0; lun < UFSHC_LUNS; lun++) {
+		if ((int)lun != data_unit_lun && ufshc_unit(lun) != NULL) {
+			tried++;
+			if (ufshc_write_refusal(lun, 100, 1) == NULL) {
+				nufs_say("ufs: nufs: fence test: a write of LUN %u WOULD PASS\n", lun);
+				right = false;
+			}
+		}
+	}
+	if (ufs_write_part >= 0 && data_unit_lun >= 0) {
+		volatile struct loader_block_part *d = &ufs_page->part[ufs_write_part];
+		const char *first = ufshc_write_refusal((uint8_t)data_unit_lun, d->start_lba, 1);
+		const char *past = ufshc_write_refusal((uint8_t)data_unit_lun, d->start_lba + d->blocks - 1, 2);
+		const char *before = d->start_lba == 0 ? "(it begins at block 0)" :
+		    ufshc_write_refusal((uint8_t)data_unit_lun, d->start_lba - 1, 2);
+
+		tried += 3;
+		nufs_say("ufs: nufs: fence test: USERDATA's first block %s (%s); its last and the next refused (%s); the block "
+		    "before it and its first refused (%s)\n", first == NULL ? "would pass" : "refused", first == NULL ? "the window" :
+		    first, past == NULL ? "WOULD PASS" : past, before == NULL ? "WOULD PASS" : before);
+		right &= past != NULL && before != NULL && ((first == NULL) == window);
+	}
+	nufs_say("ufs: nufs: fence test: %u writes made and judged, none sent: %s\n", tried, right ? "every one as it should be" :
+	    "NOT AS IT SHOULD BE");
+	return right;
+}
+
+/* The controller back to UEFI, and the run on through the loader if that worked; said either way */
+static void
+nufs_abort(const char *why)
+{
+	bool back;
+
+	nufs_say("ufs: nufs: ABORTED: %s\n", why);
+	ufs_nufs_on = false;
+	ufs_native_on = false;
+	memset(ufs_lun, 0xff, sizeof(ufs_lun));
+	back = ufshc_release("ufs=3 aborted");
+	if (back) {
+		nufs_say("ufs: nufs: UEFI's list is back as it was: the storage goes through the loader for this run (ufs=2)\n");
+	} else {
+		ufs_dead = true;
+		nufs_say("ufs: nufs: THE CONTROLLER COULD NOT BE GIVEN BACK: no storage in this run (the loader refuses while "
+		    "the page says this kernel's list is in, and it is not asked)\n");
+	}
+}
+
+/* ufs=3: all of it, from hakios_ufs_init, before the devices answer anything (ufs_ready false) */
+static void
+ufs_nufs_start(void)
+{
+	char soc[32] = "exynos9810";
+	uint32_t ro = 0, step = 5;
+	const char *why;
+	int data_lun = -1;
+	bool window = false;
+
+	ufshc_log_direct(true);
+	(void)PE_parse_boot_arg_str("ufs_native_soc", soc, sizeof(soc));
+	PE_parse_boot_argn("ufs_native_ro", &ro, sizeof(ro));
+	PE_parse_boot_argn("ufs_native_verify", &ufs_nufs_verify, sizeof(ufs_nufs_verify));
+	ufs_nufs_ro = ro != 0;
+	if (ufs_nufs_ro && ufs_write_part >= 0) {
+		/* read only is read only: the loader's write path is not used either */
+		ufs_write_part = -1;
+		nufs_say("ufs: nufs: ufs_native_ro=1: nothing takes writes this run, through either way\n");
+	}
+	nufs_say("ufs: nufs: ufs=3: this kernel's own UFS driver (%s) takes the controller after a self-test against the "
+	    "loader's reads; %s; the loader's block service is the reference and the fallback\n", soc, ufs_nufs_ro ?
+	    "READ ONLY (ufs_native_ro=1)" : ufs_write_part >= 0 ? "USERDATA writable (ufs_write=1)" : "read only (no ufs_write=1)");
+
+	nufs_say("ufs: nufs: step 1: references through the loader\n");
+	why = nufs_references();
+	if (why != NULL) {
+		nufs_say("ufs: nufs: not taken: %s; through the loader (ufs=2), nothing changed\n", why);
+		goto out;
+	}
+	nufs_say("ufs: nufs: step 2: the controller taken as UEFI left it (own mode, step %u)\n", step);
+	if (ufs_nufs_ro || ufs_write_part < 0) {
+		ufshc_force_ro();       /* (the whitelist's own fence, from before this kernel's list is in) */
+	}
+	lck_mtx_lock(&ufs_lock);        /* no request of the loader's in flight, nor any started meanwhile */
+	if (!ufshc_take(soc, step, &ufs_page->kernel_native.list_in)) {
+		lck_mtx_unlock(&ufs_lock);
+		if (ufshc_release("not taken")) {
+			nufs_say("ufs: nufs: not taken (above); UEFI's list is in: through the loader (ufs=2)\n");
+		} else {
+			ufs_dead = true;
+			nufs_say("ufs: nufs: not taken, and UEFI's list is NOT back: no storage in this run\n");
+		}
+		goto out;
+	}
+	lck_mtx_unlock(&ufs_lock);
+	nufs_say("ufs: nufs: step 3: self-test\n");
+	why = nufs_selftest();
+	if (why != NULL) {
+		nufs_abort(why);
+		goto out;
+	}
+	if (ufs_write_part >= 0) {
+		int k = nufs_unit_of((uint32_t)ufs_write_part);
+
+		data_lun = k >= 0 ? ufs_nufs_units[k].lun : 0xff;
+		if (data_lun == 0xff || strncmp((const char *)ufs_page->part[ufs_write_part].name, UFS_DATA_PART,
+		    sizeof(UFS_DATA_PART)) != 0) {
+			data_lun = -1;
+		}
+	}
+	nufs_say("ufs: nufs: step 4: the fences\n");
+	if (!nufs_fences(ufs_nufs_ro ? -1 : data_lun)) {
+		ufs_write_part = -1;
+	}
+	if (!ufs_nufs_ro && ufs_write_part >= 0 && data_lun >= 0) {
+		volatile struct loader_block_part *d = &ufs_page->part[ufs_write_part];
+
+		window = ufshc_open_window((uint8_t)data_lun, d->start_lba, d->blocks) == 0;
+		if (!window) {
+			nufs_say("ufs: nufs: USERDATA's window could not be opened: everything read only\n");
+			ufshc_force_ro();
+			ufs_write_part = -1;
+		}
+	} else {
+		ufshc_force_ro();
+		if (ufs_write_part >= 0) {
+			nufs_say("ufs: nufs: USERDATA is not where it should be: everything read only\n");
+			ufs_write_part = -1;
+		}
+	}
+	if (!nufs_prove_fences(data_lun, window)) {
+		nufs_abort("the fences did not refuse what they must");
+		goto out;
+	}
+	nufs_say("ufs: nufs: step 5: switched: every read%s through this kernel's own driver from now on; the loader is asked "
+	    "for nothing (core 0 stays the loader's)\n", window ? ", and USERDATA's writes," : "");
+	ufs_native_mapped = true;
+	ufs_native_on = true;
+	ufs_nufs_on = true;
+out:
+	nufs_free_units();
+	if (ufs_nufs_spots != NULL) {
+		kfree_data(ufs_nufs_spots, NUFS_SPOTS_SIZE);
+		ufs_nufs_spots = NULL;
+	}
+}
+
+/*
+ * A read through this kernel's own driver failed after the switch: the controller back to UEFI and the loader from
+ * now on, if it can be given back; no storage otherwise. 0: the loader may be asked.
+ */
+static int
+ufs_nufs_failed(const char *name, uint64_t offset, int error)
+{
+	int e = 0;
+
+	lck_mtx_lock(&ufs_nufs_mtx);
+	if (ufs_nufs_on) {
+		nufs_say("ufs: nufs: %s: a read at byte %llu failed here (%d): giving the controller back\n", name, offset, error);
+		lck_mtx_lock(&ufs_write_mtx);           /* no write of ours in the middle */
+		nufs_abort("a read failed after the switch");
+		lck_mtx_unlock(&ufs_write_mtx);
+	}
+	if (ufs_dead) {
+		e = EIO;
+	}
+	lck_mtx_unlock(&ufs_nufs_mtx);
+	return e;
+}
+
+/* USERDATA's whole blocks, through the window (the whitelist refuses anything else again); ufs_write_mtx held */
+static int
+ufs_nufs_write(uint32_t part, uint64_t offset, const uint8_t *src, uint64_t len)
+{
+	int e;
+
+	if (ufs_lun[part] == 0xff) {
+		return EROFS;
+	}
+	e = ufshc_write(ufs_lun[part], ufs_lun_offset[part] + offset, src, len);
+	if (e == 0 && ufs_nufs_verify != 0) {
+		uint8_t *back = kalloc_data((vm_size_t)len, Z_WAITOK);
+
+		if (back == NULL || ufshc_read(ufs_lun[part], ufs_lun_offset[part] + offset, back, len) != 0) {
+			e = EIO;
+		} else if (memcmp(back, src, (size_t)len) != 0) {
+			if (ufs_nufs_verify_bad++ < 8) {
+				nufs_say("ufs: nufs: %s bytes %llu..%llu read back DIFFERENT\n", (const char *)ufs_page->part[part].name,
+				    offset, offset + len - 1);
+			}
+			e = EIO;
+		}
+		if (back != NULL) {
+			kfree_data(back, (vm_size_t)len);
+		}
+	}
+	if (e != 0) {
+		ufs_write_errors++;
+		if (ufs_write_errors <= 8) {
+			nufs_say("ufs: nufs: %s: a write of bytes %llu..%llu failed (%d); not tried the other way\n",
+			    (const char *)ufs_page->part[part].name, offset, offset + len - 1, e);
+		}
+		return e;
+	}
+	ufs_writes++;
+	ufs_write_bytes += len;
+	return 0;
+}
+
 /* ---- bringing it up ---- */
 
 /* the block and character device of every partition (not of the units): how many were made */
@@ -2313,7 +3127,16 @@ hakios_ufs_init(void)
 	vm_offset_t base;
 
 	PE_parse_boot_argn("ufs_native", &native, sizeof(native));
+	/* ufs=3: the loader serves as with ufs=2, and this kernel's own driver takes over after its self-test */
+	check = 0;
+	ufs_nufs = PE_parse_boot_argn("ufs", &check, sizeof(check)) && check == 3;
+	check = 0;
+	ufs_nufs_ro = PE_parse_boot_argn("ufs_native_ro", &check, sizeof(check)) && check != 0;
 	if (!PE_parse_boot_argn("ufs_shared_pa", &pa, sizeof(pa)) || pa == 0) {
+		if (ufs_nufs) {
+			nufs_say("ufs: nufs: ufs=3, but the loader published no page (a loader older than ufs=3?): no storage\n");
+			return;
+		}
 		/* the loader was not asked for ufs=2: nothing to read through, unless this kernel has the controller */
 		if (native == 4 || native == 5) {
 			ufs_own_init(native);
@@ -2323,6 +3146,10 @@ hakios_ufs_init(void)
 	if (native == 4 || native == 5) {
 		printf("ufs: ufs_native=%u refused: the loader serves the storage (ufs=2), and the two would drive one "
 		    "controller; through the loader\n", native);
+		native = 0;
+	}
+	if (ufs_nufs && native != 0) {
+		nufs_say("ufs: nufs: ufs_native=%u ignored: ufs=3 is its own way of taking the controller\n", native);
 		native = 0;
 	}
 	base = ml_io_map_unmappable((vm_offset_t)(pa & ~(UFS_PAGE - 1)),
@@ -2358,7 +3185,11 @@ hakios_ufs_init(void)
 	 * of it: the loader's offer has to say block 0 and this name, and nothing else is taken.
 	 */
 	check = 0;
-	if (PE_parse_boot_argn("ufs_write", &check, sizeof(check)) && check == 1) {
+	if (PE_parse_boot_argn("ufs_write", &check, sizeof(check)) && check == 1 && ufs_nufs && ufs_nufs_ro) {
+		nufs_say("ufs: nufs: ufs_write=1 ignored: ufs_native_ro=1 makes the whole run read only\n");
+		check = 0;
+	}
+	if (check == 1) {
 		uint32_t offered = ufs_page->write_part_plus_one;
 
 		if (offered == 0 || offered > ufs_parts) {
@@ -2410,6 +3241,13 @@ hakios_ufs_init(void)
 		} else {
 			printf("ufs: nothing takes writes: neither darwin nor " UFS_DATA_PART " is offered as it should be\n");
 		}
+	}
+
+	if (ufs_nufs) {
+		/* (nothing answers from the devices meanwhile: the loader's mailbox and the controller change hands here) */
+		ufs_ready = false;
+		ufs_nufs_start();
+		ufs_ready = true;
 	}
 
 	/*

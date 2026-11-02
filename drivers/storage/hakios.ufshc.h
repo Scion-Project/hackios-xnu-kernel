@@ -162,6 +162,15 @@ int ufshc_write(uint8_t lun, uint64_t offset, const uint8_t *src, uint64_t len);
 int ufshc_sync(void);
 int ufshc_selftest_refusal(uint8_t lun, uint64_t lba);
 
+/* ufs=3 (hakios.ufs.c): own mode on the S9 with the loader's block service as reference and fallback */
+bool ufshc_take(const char *soc, uint32_t step, volatile uint32_t *list_in);
+bool ufshc_release(const char *why);
+void ufshc_log_direct(bool on);
+int ufshc_deny(uint8_t lun, uint64_t first, uint64_t blocks, const char *what);
+void ufshc_deny_lun(uint8_t lun);
+void ufshc_force_ro(void);
+const char *ufshc_write_refusal(uint8_t lun, uint64_t lba, uint32_t blocks);
+
 /* both */
 bool ufshc_available(void);
 void ufshc_set_luns(uint32_t mask);

@@ -380,7 +380,7 @@ touch_poll_us	k
 touch_rate	k
 touch_spi_hz	k
 touchscreen	k
-ufs	l
+ufs	kl
 ufs_bench	k
 ufs_check	k
 ufs_native	kl
@@ -389,11 +389,13 @@ ufs_native_buffer	k
 ufs_native_check	k
 ufs_native_hang	k
 ufs_native_leave	k
+ufs_native_ro	k
 ufs_native_slots	k
 ufs_native_soc	k
 ufs_native_spin	k
 ufs_native_step	k
 ufs_native_test	k
+ufs_native_verify	k
 ufs_native_write	k
 ufs_probe	l
 ufs_shared_pa	k
