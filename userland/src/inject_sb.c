@@ -24,6 +24,8 @@
  *     SpringBoard was busy waking the display: see lock_long_press().
  *   - A long press on the lock screen's wallpaper does not open the poster switcher, which the
  *     window server here shows as a black screen: see poster_switcher_allowed().
+ *   - With brightness_bridge=1 the brightness the user sets reaches the panel, which CoreBrightness
+ *     alone never does here: see brightness_bridge().
  *   - Darwin notifications as a remote control, for scripts (rwtouch notify NAME):
  *       com.hakios.unlock      what the lock screen does after "swipe up to open"
  *       com.hakios.layers      write down the layers SpringBoard has on the screen: see layers()
@@ -37,6 +39,7 @@
 #include <IOKit/IOKitLib.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <mach-o/dyld.h>
 #include <mach/mach_time.h>
@@ -1461,6 +1464,159 @@ caenv(void)
 	}
 }
 
+/*
+ * Boot-arg brightness_bridge=1: the brightness the user sets (Control Center's slider, Settings) is
+ * taken to the panel. CoreBrightness in backboardd keeps the level but never reaches a display
+ * here (no AppleARMBacklight it knows, no ambient light sensor), so nothing it decides is applied.
+ * This asks for the level four times a second -- BKSDisplayBrightnessGetCurrent() of
+ * BackBoardServices, what -[UIScreen brightness] asks, or failing that CoreBrightness's own
+ * BrightnessSystemClient (property DisplayBrightness) -- and writes it to the panel driver's
+ * sysctl kern.hakios.brightness (0-255; the Galaxy S9's hakios.s6e3ha8.c) on a square curve with a
+ * floor, so a slider at zero is dim and never black:
+ *     level = 8 + 247 * b * b      (b = 0.0 ... 1.0)
+ * brightness_bridge=2 also takes the panel to 0 (its lowest level, still lit) while SpringBoard
+ * says the screen is blanked (notification state com.apple.springboard.hasBlankedScreen), and back
+ * to the slider's level as soon as it is not. A change is said on the console at most once a
+ * second ("hakios: brightness: ..."). Whatever is not found is said once and only that part is
+ * left out; nothing here can stop SpringBoard.
+ */
+#define BRIGHTNESS_FLOOR 8
+
+static float (*bks_brightness_get)(void);
+static id brightness_client;            /* a BrightnessSystemClient, when BackBoardServices has not the function */
+static int brightness_blanked_token = NOTIFY_TOKEN_INVALID;
+static int brightness_written = -2, brightness_said = -2, brightness_writes;
+static float brightness_last_value = -1;
+static uint64_t brightness_said_at;
+
+static bool
+brightness_read(float *value)
+{
+	if (bks_brightness_get != NULL) {
+		*value = bks_brightness_get();
+		return true;
+	}
+	if (brightness_client != nil) {
+		CFTypeRef property = ((CFTypeRef (*)(id, SEL, CFStringRef))objc_msgSend)(brightness_client,
+		    sel_registerName("copyPropertyForKey:"), CFSTR("DisplayBrightness"));
+		bool found = false;
+
+		if (property != NULL && CFGetTypeID(property) == CFDictionaryGetTypeID()) {
+			CFTypeRef inner = CFDictionaryGetValue((CFDictionaryRef)property, CFSTR("Brightness"));
+
+			if (inner != NULL && CFGetTypeID(inner) == CFNumberGetTypeID()) {
+				found = CFNumberGetValue((CFNumberRef)inner, kCFNumberFloatType, value);
+			}
+		} else if (property != NULL && CFGetTypeID(property) == CFNumberGetTypeID()) {
+			found = CFNumberGetValue((CFNumberRef)property, kCFNumberFloatType, value);
+		}
+		if (property != NULL) {
+			CFRelease(property);
+		}
+		return found;
+	}
+	return false;
+}
+
+static void
+brightness_tick(void)
+{
+	float value = brightness_last_value;
+	uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000;
+	int level, blanked = 0;
+	uint64_t state = 0;
+
+	if (brightness_read(&value)) {
+		if (!(value >= 0.0f)) {                 /* (and a NaN) */
+			value = 0.0f;
+		} else if (value > 1.0f) {
+			value = 1.0f;
+		}
+		brightness_last_value = value;
+	}
+	if (value < 0.0f) {
+		return;                                 /* nothing read yet: the panel keeps what it has */
+	}
+	if (brightness_blanked_token != NOTIFY_TOKEN_INVALID &&
+	    notify_get_state(brightness_blanked_token, &state) == NOTIFY_STATUS_OK && state != 0) {
+		blanked = 1;
+	}
+	level = blanked ? 0 : BRIGHTNESS_FLOOR + (int)((255 - BRIGHTNESS_FLOOR) * value * value + 0.5f);
+	if (!blanked && level < BRIGHTNESS_FLOOR) {
+		level = BRIGHTNESS_FLOOR;
+	}
+	if (level != brightness_written) {
+		int error = sysctlbyname("kern.hakios.brightness", NULL, NULL, &level, sizeof(level)) == 0 ? 0 : errno;
+
+		if (error != 0) {
+			if (brightness_written != -3) {
+				say("hakios: brightness: kern.hakios.brightness=%d refused (%s); is the panel driver on (panel=1)?\n",
+				    level, strerror(error));
+			}
+			brightness_written = -3;
+			return;
+		}
+		brightness_written = level;
+		brightness_writes++;
+	}
+	if (brightness_written != brightness_said && now - brightness_said_at >= 1000000) {
+		say("hakios: brightness: slider %.3f%s -> kern.hakios.brightness=%d (%d writes)\n", value,
+		    blanked ? ", screen blanked" : "", brightness_written, brightness_writes);
+		brightness_said = brightness_written;
+		brightness_said_at = now;
+		brightness_writes = 0;
+	}
+}
+
+static void
+brightness_bridge(const char *arguments)
+{
+	const char *arg = strstr(arguments, "brightness_bridge=");
+	int mode;
+	void *library;
+	dispatch_source_t timer;
+
+	while (arg != NULL && arg != arguments && arg[-1] != ' ') {
+		arg = strstr(arg + 1, "brightness_bridge=");
+	}
+	if (arg == NULL || (mode = atoi(arg + 18)) <= 0) {
+		return;
+	}
+	library = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
+	bks_brightness_get = library ? (float (*)(void))dlsym(library, "BKSDisplayBrightnessGetCurrent") : NULL;
+	if (bks_brightness_get == NULL) {
+		Class cls;
+
+		dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_LAZY);
+		cls = objc_getClass("BrightnessSystemClient");
+		if (cls != Nil && class_getInstanceMethod(cls, sel_registerName("copyPropertyForKey:")) != NULL) {
+			brightness_client = ((id (*)(id, SEL))objc_msgSend)(((id (*)(Class, SEL))objc_msgSend)(cls,
+			    sel_registerName("alloc")), sel_registerName("init"));
+		}
+	}
+	if (bks_brightness_get == NULL && brightness_client == nil) {
+		say("hakios: brightness: brightness_bridge=%d, but neither BKSDisplayBrightnessGetCurrent nor "
+		    "BrightnessSystemClient is here; the panel keeps its level\n", mode);
+		return;
+	}
+	if (mode >= 2 && notify_register_check("com.apple.springboard.hasBlankedScreen", &brightness_blanked_token) !=
+	    NOTIFY_STATUS_OK) {
+		brightness_blanked_token = NOTIFY_TOKEN_INVALID;
+	}
+	say("hakios: brightness: brightness_bridge=%d: the level from %s to kern.hakios.brightness (now %d), "
+	    "floor %d%s\n", mode, bks_brightness_get ? "BKSDisplayBrightnessGetCurrent" : "BrightnessSystemClient",
+	    sysctl_int("kern.hakios.brightness"), BRIGHTNESS_FLOOR,
+	    brightness_blanked_token != NOTIFY_TOKEN_INVALID ? ", 0 while the screen is blanked" : "");
+	timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+	    dispatch_queue_create("com.hakios.brightness", DISPATCH_QUEUE_SERIAL));
+	dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), 250 * NSEC_PER_MSEC,
+	    50 * NSEC_PER_MSEC);
+	dispatch_source_set_event_handler(timer, ^{
+		brightness_tick();
+	});
+	dispatch_resume(timer);
+}
+
 __attribute__((constructor))
 static void
 hakios_springboard_init(void)
@@ -1643,6 +1799,14 @@ hakios_springboard_init(void)
 	notify_register_dispatch("com.hakios.switcher", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		switcher();
 	});
+	{
+		char args[1024] = "";
+		size_t size = sizeof(args) - 1;
+
+		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0) {
+			brightness_bridge(args);
+		}
+	}
 	/*
 	 * Belt-and-suspenders unlock. The user can always swipe up to open the home screen -- that
 	 * works fine when the touch driver is doing its job. But if touch is still probing, has
