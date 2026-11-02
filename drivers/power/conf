@@ -32,6 +32,13 @@ driver BATTGUARD
 standard bsd/dev/hakios.scfb_battery.c
 	help    the phone's battery under AVF, as the Scion app writes it into the shared framebuffer (scfb.addr=)
 
+driver EXYNOS_CPUFREQ
+	file    bsd/dev/hakios.exynos_cpufreq.c
+	requires EXYNOS_ACPM
+	default n
+	help    the Galaxy S9's CPU frequency governor (cpufreq_gov=1): both clusters' rates moved with the load through ACPM's
+	help    DVFS, within the limits of Samsung's device tree for the M3s online, and lowered when the TMU reads them hot
+
 driver MAX77705
 	file    bsd/dev/hakios.max77705.c
 	requires EXYNOS_HSI2C BATTERY

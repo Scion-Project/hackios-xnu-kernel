@@ -445,9 +445,120 @@ hakios_acpm_dvfs_set(uint32_t index, uint32_t khz)
 }
 
 /*
+ * A DVFS domain's levels as the APM holds them, read only: its rate and voltage per level, the fastest first. Samsung's
+ * kernel reads the same "fvmap" once at start (cal-if/fvmap.c fvmap_copy_from_sram, from acpm/acpm.c plugins_init) and
+ * only reads it: the voltages in it are the ones the APM itself applies with each rate (ASV already applied by the boot;
+ * Linux adds a margin to them only when its command line asks). A DVFS request names a rate, never a voltage.
+ *   initdata +0x00   where the APM's plugins are (an offset into the SRAM), +0x04 how many (acpm_framework, framework.h)
+ *   a plugin         0x30 bytes (struct plugin, fw_header/common.h, as the 32-bit APM lays it out): +0x04 its base (bit 0
+ *                    a flag), +0x20 attached (a byte), +0x24 its size, +0x28 stays attached (a byte), +0x2C its name
+ *   the DVFS plugin  the one whose name has "dvfs" in it; its map at base + the acpm node's fvmap_offset (0x6700 in the
+ *                    phone's device tree) when the boot left it attached, at base + size when Linux loads it itself
+ *   the map          a 24-byte header per domain, in the order of the DVFS indexes (struct fvmap_header, fvmap.h): +0x01
+ *                    how many levels, +0x14 (16 bits) where they are from the map's start; a level is two words, the
+ *                    rate (kHz) and the voltage (uV)
+ * Returns how many levels it read into khz[] and uv[] (at most `most`), 0 when the map is not found or does not look
+ * like one (each step said with `say`).
+ */
+#define ID_PLUGINS      0x00
+#define ID_NPLUGINS     0x04
+#define PL_SIZE         0x30
+#define PL_BASE         0x04
+#define PL_ATTACHED     0x20
+#define PL_FWSIZE       0x24
+#define PL_STAYS        0x28
+#define PL_NAME         0x2C
+#define FVMAP_OFFSET    0x6700          /* the device tree's acpm { fvmap_offset = <26368>; } */
+#define FV_HEADER       24
+#define FV_NUM_LV       0x01
+#define FV_O_RATEVOLT   0x14
+
+static uint32_t
+srd8(uint32_t off)
+{
+	return (srd(off & ~3u) >> (8 * (off & 3))) & 0xff;
+}
+
+static uint32_t
+srd16(uint32_t off)
+{
+	return (srd(off & ~3u) >> (8 * (off & 2))) & 0xffff;
+}
+
+static bool
+names_dvfs(const char *name)
+{
+	for (const char *p = name; p[0] && p[1] && p[2] && p[3]; p++) {
+		if ((p[0] | 0x20) == 'd' && (p[1] | 0x20) == 'v' && (p[2] | 0x20) == 'f' && (p[3] | 0x20) == 's') {
+			return true;
+		}
+	}
+	return false;
+}
+
+uint32_t
+hakios_acpm_dvfs_table(uint32_t index, uint32_t *khz, uint32_t *uv, uint32_t most, int (*say)(const char *, ...))
+{
+	uint32_t plugins, count, map = 0, header, levels, at;
+	char name[24];
+
+	if (!acpm_ready) {
+		return 0;
+	}
+	plugins = srd(INITDATA + ID_PLUGINS);
+	count = srd(INITDATA + ID_NPLUGINS);
+	if (count == 0 || count > 32 || !sram_ok(plugins, count * PL_SIZE)) {
+		say("acpm: fvmap: the plugins' table (+%#x, %u of them) is not where it may be read\n", plugins, count);
+		return 0;
+	}
+	for (uint32_t i = 0; i < count && map == 0; i++) {
+		uint32_t p = plugins + i * PL_SIZE, at_name = srd(p + PL_NAME), base = srd(p + PL_BASE) & ~1u;
+		uint32_t attached = srd8(p + PL_ATTACHED), stays = srd8(p + PL_STAYS), size = srd(p + PL_FWSIZE);
+
+		if (at_name == 0 || !sram_ok(at_name & ~3u, sizeof(name) + 4) || !printable(at_name, sizeof(name) - 1)) {
+			continue;
+		}
+		copy_string(at_name, name, sizeof(name));
+		if (!names_dvfs(name)) {
+			continue;
+		}
+		map = base + (attached ? FVMAP_OFFSET : size);
+		say("acpm: fvmap: plugin %u \"%s\": base +%#x, attached %u, stays %u, size %#x: the map at +%#x\n", i, name,
+		    base, attached, stays, size, map);
+	}
+	if (map == 0) {
+		say("acpm: fvmap: no plugin named for DVFS among %u\n", count);
+		return 0;
+	}
+	header = map + index * FV_HEADER;
+	if (!sram_ok(header & ~3u, FV_HEADER + 4)) {
+		say("acpm: fvmap: domain %u's header (+%#x) is not where it may be read\n", index, header);
+		return 0;
+	}
+	levels = srd8(header + FV_NUM_LV);
+	at = map + srd16(header + FV_O_RATEVOLT);
+	if (levels == 0 || levels > most || !sram_ok(at, levels * 8)) {
+		say("acpm: fvmap: domain %u: %u levels at +%#x: not a table (at most %u, inside the SRAM)\n", index, levels, at,
+		    most);
+		return 0;
+	}
+	for (uint32_t l = 0; l < levels; l++) {
+		khz[l] = srd(at + 8 * l);
+		uv[l] = srd(at + 8 * l + 4);
+		if (khz[l] < 100000 || khz[l] > 4000000 || uv[l] < 300000 || uv[l] > 1500000 || (l > 0 && khz[l] >= khz[l - 1])) {
+			say("acpm: fvmap: domain %u: level %u reads %u kHz %u uV: not a table (the fastest first, kHz and uV)\n",
+			    index, l, khz[l], uv[l]);
+			return 0;
+		}
+	}
+	return levels;
+}
+
+/*
  * The Galaxy S9's CPU clocks through ACPM's DVFS (Samsung's cal_dfs_set_rate -> exynos_acpm_set_rate: domain index,
  * kHz, FREQ_REQ). acpm_dvfs_exynos9810.h: dvfs_cpucl0 (the A55s) is index 2, dvfs_cpucl1 (the M3s) index 3.
- * boot-args cpufreq_lit=kHz, cpufreq_big=kHz; nothing without them.
+ * boot-args cpufreq_lit=kHz, cpufreq_big=kHz; nothing without them. With cpufreq_gov=1 the governor
+ * (drivers/power/hakios.exynos_cpufreq.c) sets both clusters' rates instead, and these two are not used.
  */
 extern void loader_log_line(const char *line);
 void hakios_exynos_dvfs_start(void);
@@ -458,6 +569,9 @@ hakios_exynos_dvfs_start(void)
 		{ "cpufreq_lit", "the A55s (cpucl0)", 2 }, { "cpufreq_big", "the M3s (cpucl1)", 3 },
 	};
 
+	if (hakios_exynos_cpufreq_gov_start()) {
+		return;
+	}
 	for (uint32_t i = 0; i < sizeof(doms) / sizeof(doms[0]); i++) {
 		uint32_t want = 0, before = 0, after = 0;
 		int e1, e2, e3;

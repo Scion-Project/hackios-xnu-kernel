@@ -30,5 +30,15 @@ int hakios_acpm_pmic_update(uint32_t type, uint32_t reg, uint8_t value, uint8_t 
 /* A DVFS domain's rate (its index: the low bits of the CAL id, 4 for G3D, 9 for AUD), in kHz. */
 int hakios_acpm_dvfs_get(uint32_t index, uint32_t *khz);
 int hakios_acpm_dvfs_set(uint32_t index, uint32_t khz);
+/*
+ * A DVFS domain's levels as the APM holds them (its "fvmap"), read only: rates in kHz and the voltages the APM applies
+ * with them, the fastest first, at most `most`. How many were read; 0 when there is no such table (said with `say`).
+ */
+uint32_t hakios_acpm_dvfs_table(uint32_t index, uint32_t *khz, uint32_t *uv, uint32_t most, int (*say)(const char *, ...));
+/*
+ * The Galaxy S9's CPU frequency governor (drivers/power/hakios.exynos_cpufreq.c): started with cpufreq_gov=1, in place of
+ * the fixed cpufreq_lit= and cpufreq_big= rates. True when it runs (it then owns both clusters' rates).
+ */
+bool hakios_exynos_cpufreq_gov_start(void);
 
 #endif /* _SYS_HAKIOS_EXYNOS_ACPM_H_ */

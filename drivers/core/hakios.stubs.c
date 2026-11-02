@@ -47,6 +47,15 @@ hakios_exynos_dvfs_start(void)
 }
 #endif
 
+#ifndef HAKIOS_EXYNOS_CPUFREQ
+bool hakios_exynos_cpufreq_gov_start(void);
+bool
+hakios_exynos_cpufreq_gov_start(void)
+{
+	return false;
+}
+#endif
+
 #ifndef HAKIOS_VIRTIO_INPUT
 void hakios_virtio_input_init(void) {}
 #endif

@@ -109,6 +109,13 @@ cohtest	k
 cohtest_delay	k
 console_quiet	k
 cpufreq	k
+cpufreq_gov	k
+cpufreq_gov_big_max	k
+cpufreq_gov_big_min	k
+cpufreq_gov_lit_max	k
+cpufreq_gov_lit_min	k
+cpufreq_gov_log	k
+cpufreq_gov_ms	k
 cpuload	k
 cpumask	l
 cpus	l
