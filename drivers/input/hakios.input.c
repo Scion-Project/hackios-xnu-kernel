@@ -217,7 +217,7 @@ static const struct cdevsw touch_cdevsw = {
 };
 
 extern void hakios_esslog_start(void);
-extern void hakios_exynos_dvfs_start(void);   /* drivers/core/hakios.exynos_acpm.c */   /* osfmk/arm64/loader_return.c, patch 1507 */
+extern void hakios_exynos_dvfs_start(void);   /* drivers/core/hakios.exynos_acpm.c */
 void
 hakios_input_init(void)
 {
