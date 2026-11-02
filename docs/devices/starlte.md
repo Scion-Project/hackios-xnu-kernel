@@ -28,7 +28,7 @@
 | cellular | no |  |
 | haptic | partly | the MAX77705's haptic block and a PWM of the SoC, for iOS (max77705_haptic=1): written, not yet felt |
 | thermal | partly | the Exynos 9810's TMU read by the kernel (BIG, LITTLE, G3D, ISP with their fuses), kern.hakios.temp, and the run ended at 110 C or the battery at 60 C (tmu=N, 3 steps; tmu_off=1 powers off): written, not yet seen; nothing slows the cores or the GPU |
-| camera | partly | the front camera's S5K3H1, stage 1: its supplies on the S2MPB02, reset, MCLK and its model ID over I2C (cam_s9=1 a look, 2 power up, read, power down; CAMERA.md has the plan to raw frames through CSIS1's DMA, no ISP firmware): written, not yet seen |
+| camera | partly | the front camera's S5K3H1, stages 1 to 3: its supplies on the S2MPB02, reset, MCLK and its model ID over I2C; the ISPPRE domain, CSIS1, its D-PHY and VC0's DMA; one frame of the CSIS's test pattern, then one of the sensor's, 1632 x 1224 RAW10, into memory (cam_s9=1 a look, 2 the ID, 3 the domain, 4 the pattern, 5 the sensor's frame; no ISP firmware; CAMERA.md): written, not yet seen |
 | torch | partly | the S2MPB02's flash block, lit by a pin (torch=1 a look, 3 for iOS): written, not yet seen |
 | usb | partly | the port as a USB serial device: the kernel's whole log live and a line console (usb_gadget=N, 5 steps; DWC3 in device mode, CDC-ACM 1209:0001, the 2.0 PHY by the BSP's CAL sequence): written, not yet seen |
 

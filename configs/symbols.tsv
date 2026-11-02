@@ -88,8 +88,11 @@ CAM_GAIN	arg	cam_gain	Cameras	k	hakios.camera.c
 CAM_KEEP_MB	arg	cam_keep_mb	Cameras	k	hakios.camera.c	
 CAM_MODE	arg	cam_mode	Cameras	k	hakios.camera.c	
 CAM_PATTERN	arg	cam_pattern	Cameras	k	hakios.camera.c	
-CAM_S9	arg	cam_s9	Cameras	k	hakios.exynos_camera.c,hakios.s2mpb02_torch.c	a look, reading only (but for the S2MPB02's bus, set up as the flashlight's driver sets it up): the pins
+CAM_S9	arg	cam_s9	Cameras	k	hakios.exynos_camera.c,hakios.s2mpb02_torch.c	the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1
+CAM_S9_EXP	arg	cam_s9_exp	Cameras	k	hakios.exynos_camera.c	the exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
+CAM_S9_GAIN	arg	cam_s9_gain	Cameras	k	hakios.exynos_camera.c	the analog gain of step 5's frame, 0x20 being 1x (default 0x40, at most 0x200)
 CAM_S9_IPCLK	arg	cam_s9_ipclk	Cameras	k	hakios.exynos_camera.c	
+CAM_S9_PACK12	arg	cam_s9_pack12	Cameras	k	hakios.exynos_camera.c	
 CAM_SENSOR	arg	cam_sensor	Cameras	k	hakios.camera.c	
 CAM_SETTLE	arg	cam_settle	Cameras	k	hakios.camera.c	
 CAM_SHUTTER	arg	cam_shutter	Cameras	k	hakios.camera.c	
