@@ -26,6 +26,7 @@ changes to it; the scripts named fetch the release and put the changes on.
 ## 2026-11-01
 
 - graphics: the wallpaper on a slow phone (the Galaxy S9, two cores): once the start-up rush is over, PosterBoard is restarted if launchd killed its posters at the 5 s check-in deadline (`poster_retry`, in the default job list; `poster_retry=0` turns it off)
+- diagnostics: the layer dump (`com.hakios.layers`) also lists the CoreAnimation contexts that have no window, so chronod, where the home screen's widgets are drawn, can be asked what a blank widget holds; `RC_JOBS=rc.jobs.widgets` is the recipe
 
 ## 2026-10-30
 
