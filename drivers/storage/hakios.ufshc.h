@@ -163,7 +163,8 @@ int ufshc_sync(void);
 int ufshc_selftest_refusal(uint8_t lun, uint64_t lba);
 
 /* ufs=3 (hakios.ufs.c): own mode on the S9 with the loader's block service as reference and fallback */
-bool ufshc_take(const char *soc, uint32_t step, volatile uint32_t *list_in);
+bool ufshc_take(const char *soc, uint32_t step, volatile uint32_t *list_in, const uint8_t *ref, uint32_t ref_blocks);
+const char *ufshc_take_why(void);       /* why it was not taken (the first reason), or NULL */
 bool ufshc_release(const char *why);
 void ufshc_log_direct(bool on);
 int ufshc_deny(uint8_t lun, uint64_t first, uint64_t blocks, const char *what);

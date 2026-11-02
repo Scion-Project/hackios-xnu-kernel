@@ -230,7 +230,7 @@ static struct {
 	uint32_t step;                  /* the last step begun (1-5); 0: not started */
 	int selftest, fences;           /* 0 not run, 1 passed, -1 failed */
 	uint32_t fences_tried;
-	char why[128];                  /* why not native: the first reason given */
+	char why[240];                  /* why not native: the first reason given */
 	uint64_t reads_native, reads_loader, read_errors, read_bytes, refused;
 	char refusal[3][100];           /* the first three refusals */
 } nufs_sum;
@@ -2470,7 +2470,7 @@ nufs_summary_line(int how, const char *format, ...) __printflike(2, 3);
 static void
 nufs_summary_line(int how, const char *format, ...)
 {
-	char line[400];
+	char line[600];
 	va_list list;
 
 	va_start(list, format);
@@ -2501,7 +2501,7 @@ hakios_ufs_summary(const char *when, int how)
 {
 	static const char *const steps[] = { "not started", "references through the loader", "the controller taken",
 		                             "self-test", "the fences", "switched" };
-	char mode[192], fence[64];
+	char mode[320], fence[64];
 	uint64_t ns;
 	uint32_t step = nufs_sum.step;
 
@@ -3149,15 +3149,28 @@ ufs_nufs_start(void)
 		ufshc_force_ro();       /* (the whitelist's own fence, from before this kernel's list is in) */
 	}
 	lck_mtx_lock(&ufs_lock);        /* no request of the loader's in flight, nor any started meanwhile */
-	if (!ufshc_take(soc, step, &ufs_page->kernel_native.list_in)) {
+	/*
+	 * The loader's blocks 0.. of its first unit (LUN 0 on the S9): the reference own mode's layout read
+	 * (READ(10) of LUN 0's blocks 0-1 through its own descriptor) must match byte for byte.
+	 */
+	if (!ufshc_take(soc, step, &ufs_page->kernel_native.list_in, ufs_nufs_nunits > 0 ? ufs_nufs_units[0].ref : NULL,
+	    ufs_nufs_nunits > 0 ? ufs_nufs_units[0].head : 0)) {
+		const char *taken = ufshc_take_why();
+		char reason[sizeof(nufs_sum.why)];
+
 		lck_mtx_unlock(&ufs_lock);
 		if (ufshc_release("not taken")) {
-			nufs_say("ufs: nufs: not taken (above); UEFI's list is in: through the loader (ufs=2)\n");
-			nufs_why("the controller could not be taken (step 2; the lines before say why)");
+			snprintf(reason, sizeof(reason), "the controller could not be taken (step 2: %s)", taken != NULL ? taken :
+			    "the lines before say why");
+			nufs_say("ufs: nufs: not taken (%s); UEFI's list is in: through the loader (ufs=2)\n", taken != NULL ?
+			    taken : "above");
+			nufs_why(reason);
 		} else {
 			ufs_dead = true;
+			snprintf(reason, sizeof(reason), "the controller could not be taken (%s), and UEFI's list is NOT back",
+			    taken != NULL ? taken : "above");
 			nufs_say("ufs: nufs: not taken, and UEFI's list is NOT back: no storage in this run\n");
-			nufs_why("the controller could not be taken, and UEFI's list is NOT back");
+			nufs_why(reason);
 		}
 		goto out;
 	}

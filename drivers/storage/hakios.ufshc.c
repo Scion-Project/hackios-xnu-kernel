@@ -144,12 +144,18 @@
  *       HCI_SW_RST (vendor's 0x50) resets UniPro and the link, and is never written here. [ML]
  *       found transfers stalling with the controller's clock gating on and leaves it off; this
  *       driver writes neither HCI_CLKSTOP_CTRL nor HCI_FORCE_HCS, it prints what UEFI left
- *     Before its list goes out, UEFI's own descriptors are read: a read UEFI made must be laid out
- *     as these facts allow (offsets in bytes; entries of 128 or 16 bytes whose lengths add up to the
- *     UPIU's expected length, the size then taken for this driver's), or the S9 is not taken. Only
- *     a slot holding a UFS storage command is followed, and only to a command descriptor in DRAM
- *     below 4 GB: Silicium's UfsDxe uses two slots (UFS_NUTRS 2, its UfsDxe.h) and leaves the rest
- *     of its page as it found it, which is no descriptor to map and read.
+ *     Before its list goes out, UEFI's own descriptors are read: a read UEFI left in its list must be
+ *     laid out as these facts allow (offsets in bytes; entries of 128 or 16 bytes whose lengths add
+ *     up to the UPIU's expected length, the size then taken for this driver's), or the S9 is not
+ *     taken. Only a slot holding a UFS storage command (command type 1, or 0 as Silicium's UfsDxe
+ *     leaves it) is followed, and only to a command descriptor in DRAM below 4 GB: Silicium's
+ *     UfsDxe uses two slots (UFS_NUTRS 2, its UfsDxe.h) and leaves the rest of its page as it found
+ *     it, which is no descriptor to map and read. UEFI reuses its slots, so there may be no read of
+ *     its left: then the entries are 16 bytes, the size that is harmless if wrong. Either way the
+ *     layout is proven before anything else carrying data is sent: after NOP OUT, ONE READ(10) of
+ *     LUN 0's blocks 0-1 (two 4 KB PRDT entries) through this driver's own descriptor, into a page
+ *     filled with a pattern, must be byte for byte the loader's reads of the same blocks (ufs=3's
+ *     references); otherwise UEFI's list is put back and the run goes through the loader.
  *     ufs_native=5 shows all of it and changes nothing.
  *   The blocks beside the controller, which this kernel reads at step 1 and 2 and never writes:
  *     - UniPro is at 0x11110000 (32 KB): the ufs node's third reg in [BSP]'s device tree (reg =
@@ -452,6 +458,9 @@ static uint32_t hc_uefi_ie, hc_uefi_rsr;
 static struct ufshc_unit hc_units[UFSHC_LUNS];
 static uint32_t hc_step = 5, hc_stopped_at;     /* ufs_native_step=: how far own mode goes; where it stopped as asked */
 static uint64_t hc_writes, hc_write_bytes, hc_protocol_errors;
+static char hc_take_why[160];                   /* ufs=3: why own mode was not taken (ufshc_take_why) */
+static const uint8_t *hc_layout_ref;            /* ufs=3: the loader's blocks 0.. of its unit 0 (ufshc_take) */
+static uint32_t hc_layout_ref_blocks;
 
 static LCK_GRP_DECLARE(hc_lck_grp, "hakios-ufshc");
 static LCK_MTX_DECLARE(hc_lock, &hc_lck_grp);
@@ -2318,9 +2327,12 @@ ufshc_write_refusal(uint8_t lun, uint64_t lba, uint32_t blocks)
 static bool hc_own_probe(const char *name, uint32_t mode, uint32_t step);
 
 bool
-ufshc_take(const char *soc, uint32_t step, volatile uint32_t *list_in)
+ufshc_take(const char *soc, uint32_t step, volatile uint32_t *list_in, const uint8_t *ref, uint32_t ref_blocks)
 {
 	hc_own_list_in = list_in;
+	hc_layout_ref = ref;
+	hc_layout_ref_blocks = ref_blocks;
+	hc_take_why[0] = 0;
 	return hc_own_probe(soc, 4, step);
 }
 
@@ -2768,8 +2780,20 @@ hc_look_uefi(uint64_t list_pa, uint32_t nutrs)
 		 * controller has (Silicium's UfsDxe: two), and what lies in the rest of its page is not
 		 * a descriptor: an address there must not be mapped and read.
 		 */
-		if (ucd == 0 || (ucd & 0x7f) || pmap_valid_address(ucd) || (d[0] & UTRD_CT_MASK) != UTRD_CT_UFS ||
-		    (soc->dma_hi != 0 && (ucd < soc->dma_lo || ucd + 2 * PAGE_SIZE > soc->dma_hi))) {
+		/*
+		 * The command type: UFS storage (1) as UFSHCI 2.1 has it, or 0 -- Silicium's UfsDxe leaves the
+		 * field 0 (its slot 0 on the S9: 05000000, interrupt and device-to-host only), and the Exynos
+		 * controller runs it. The UPIU's own transaction type is checked below either way.
+		 */
+		if (ucd == 0 || (d[0] & UTRD_CT_MASK) == UTRD_CT_MASK) {
+			continue;
+		}
+		if ((ucd & 0x7f) || pmap_valid_address(ucd) || ((d[0] & UTRD_CT_MASK) != UTRD_CT_UFS &&
+		    (d[0] & UTRD_CT_MASK) != 0) || (soc->dma_hi != 0 && (ucd < soc->dma_lo || ucd + 2 * PAGE_SIZE > soc->dma_hi))) {
+			hc_say("ufs: own: UEFI's slot %u: not followed (%s)\n", i, (ucd & 0x7f) ? "its command descriptor is "
+			    "not aligned" : pmap_valid_address(ucd) ? "its command descriptor is memory this kernel manages" :
+			    ((d[0] & UTRD_CT_MASK) != UTRD_CT_UFS && (d[0] & UTRD_CT_MASK) != 0) ? "not a UFS storage command" :
+			    "its command descriptor is not where the SoC's DMA reaches");
 			continue;
 		}
 		map = ml_io_map_unmappable((vm_offset_t)(ucd & ~(uint64_t)PAGE_MASK), 2 * PAGE_SIZE, VM_WIMG_WCOMB);
@@ -2780,6 +2804,8 @@ hc_look_uefi(uint64_t list_pa, uint32_t nutrs)
 		    u[22], u[23], u[24], u[25]);
 		if ((d[2] & 0xff) != OCS_SUCCESS || (d[0] & UTRD_DD_MASK) != UTRD_DD_IN || (u[0] & 0x3f) != UPIU_COMMAND ||
 		    expected == 0) {
+			hc_say("ufs: own: UEFI's slot %u: not a completed read (OCS %x, direction %u, UPIU %02x, %u bytes)\n", i,
+			    d[2] & 0xff, (d[0] & UTRD_DD_MASK) >> 25, u[0], expected);
 			continue;
 		}
 		rsp_off = d[6] >> 16;
@@ -2961,6 +2987,84 @@ ufshc_own_probe(void)
 	return hc_own_probe(name, mode, 0);
 }
 
+/* own mode not taken: said, and kept for ufs=3's summary (the first reason) */
+static void
+hc_not_used(const char *why)
+{
+	hc_say("ufs: own: not used: %s\n", why);
+	if (hc_take_why[0] == 0) {
+		strlcpy(hc_take_why, why, sizeof(hc_take_why));
+	}
+}
+
+const char *
+ufshc_take_why(void)
+{
+	return hc_take_why[0] != 0 ? hc_take_why : NULL;
+}
+
+/*
+ * The layout read (SoCs whose layout is taken from their kernel's source, the S9's): ONE READ(10)
+ * of blocks 0 and 1 of LUN 0 through this kernel's own descriptor -- two blocks, so two PRDT
+ * entries of 4 KB, the second where the entry size says -- into slot 0's page, filled with a
+ * pattern first; then byte for byte against the loader's reads of the same blocks (ufs=3's
+ * step 1). TEST UNIT READY before it (a unit attention is answered by trying again). Only a
+ * read that comes back GOOD and the same lets own mode go on; anything else is a refusal and
+ * the caller gives the controller back. Nothing else carrying data is sent before it.
+ */
+static const char *
+hc_layout_read(void)
+{
+	static const uint8_t tur[6] = { 0 };
+	static const uint8_t read10[10] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 2, 0 };    /* LBA 0, 2 blocks */
+	static uint8_t got[2 * BLOCK];
+	struct hc_slot *s = &hc_slots[SLOT_CONTROL];
+	uint32_t saved = hc_pol.read_luns, first = 0, diff = 0;
+	int e = EIO;
+
+	if (hc_layout_ref == NULL || hc_layout_ref_blocks < 2) {
+		return "no reference read of the loader's to check this driver's layout against";
+	}
+	if (s->data_size < sizeof(got)) {
+		return "slot 0's page is too small for the layout read";
+	}
+	hc_pol.read_luns = 1;                   /* LUN 0 only, for this one read */
+	for (int tries = 0; tries < 20 && e != 0 && !hc_dead; tries++) {
+		e = hc_scsi0(0, tur, sizeof(tur), 0, NULL, "LUN 0's TEST UNIT READY (layout read)", true);
+		if (e == EAGAIN || e == EIO) {
+			IOSleep(10);
+		} else if (e != 0) {
+			break;
+		}
+	}
+	if (e != 0) {
+		hc_pol.read_luns = saved;
+		return "LUN 0 does not answer TEST UNIT READY: no layout read";
+	}
+	memset(s->data, 0xa5, sizeof(got));     /* (what a read that wrote nothing would leave: never the reference) */
+	memset(got, 0x5a, sizeof(got));
+	e = hc_scsi0(0, read10, sizeof(read10), sizeof(got), got, "the layout read (READ(10), LUN 0, LBA 0-1)", false);
+	hc_pol.read_luns = saved;
+	if (e != 0) {
+		hc_say("ufs: own: layout read: READ(10) of LUN 0's blocks 0-1 failed (%d; OCS %x, doorbell %08x, IS %08x)\n", e,
+		    hc_slots[SLOT_CONTROL].utrd[2] & 0xff, hc_read(UFSHC_UTRLDBR), hc_read(UFSHC_IS));
+		return "the layout read (READ(10) of LUN 0, LBA 0-1, this driver's descriptor) failed";
+	}
+	for (uint32_t i = 0; i < sizeof(got); i++) {
+		if (got[i] != hc_layout_ref[i]) {
+			if (diff++ == 0) {
+				first = i;
+			}
+		}
+	}
+	hc_say("ufs: own: layout read: LUN 0's blocks 0-1 through this driver's descriptor (PRDT entries of %u bytes, "
+	    "offsets in %s): %s the loader's (%u of %u bytes differ%s%u; here %02x %02x %02x %02x ... %02x %02x at 510)\n",
+	    hc_soc->prd_entry, hc_soc->prdt_bytes ? "bytes" : "dwords", diff == 0 ? "THE SAME as" : "NOT THE SAME as", diff,
+	    (uint32_t)sizeof(got), diff ? ", the first at " : "", diff ? first : 0, got[0], got[1], got[2], got[3], got[510],
+	    got[511]);
+	return diff == 0 ? NULL : "the layout read (LUN 0, LBA 0-1) through this driver's descriptor is not the loader's";
+}
+
 /* step: 0, the controller's default unless ufs_native_step= says; 1-5, that unless ufs_native_step= says */
 static bool
 hc_own_probe(const char *name, uint32_t mode, uint32_t step)
@@ -3051,17 +3155,33 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 		if (no == NULL) {
 			int verdict = hc_look_uefi(uefi_pa, hc_nutrs);
 
-			if (hc_soc->prdt_bytes && verdict != 1) {
-				/* this SoC's layout is taken from its kernel's source: UEFI's own reads must agree */
-				no = verdict < 0 ? "UEFI's own read is not laid out as this driver would lay out its own" :
-				    "no read of UEFI's to check this driver's layout against";
+			if (hc_soc->prdt_bytes && verdict < 0) {
+				/* this SoC's layout is taken from its kernel's source: UEFI's own reads must not disagree */
+				no = "UEFI's own read is not laid out as this driver would lay out its own";
+			} else if (hc_soc->prdt_bytes && verdict == 0) {
+				/*
+				 * No read of UEFI's left to tell the entry size by (UEFI reuses its slots): 16 bytes,
+				 * the one that is harmless if wrong -- two 16-byte entries (32 bytes) are no whole
+				 * 128-byte entry, so a controller on 128 has no entry to write into and the layout
+				 * read fails; one on 16 reads. The layout read before anything else decides.
+				 */
+				hc_soc_own.prd_entry = 16;
+				if (hc_layout_ref == NULL && hc_step >= 4) {
+					no = "no read of UEFI's to check this driver's layout against, and no reference to read against";
+				} else {
+					hc_say("ufs: own: no read of UEFI's to check this driver's layout against: PRDT entries of 16 "
+					    "bytes, to be proven by the layout read before anything else is read\n");
+				}
+			} else if (hc_soc->prdt_bytes) {
+				hc_say("ufs: own: UEFI's own read agrees with this driver's layout (PRDT entries of %u bytes): the layout "
+				    "read checks it once more\n", hc_soc->prd_entry);
 			}
 		}
 	} else if (!hc_soc->may_enable) {
 		no = "not enabled, and on this SoC its PHY, clocks and power are UEFI's to set up, not this kernel's";
 	}
 	if (no != NULL) {
-		hc_say("ufs: own: not used: %s\n", no);
+		hc_not_used(no);
 		return false;
 	}
 	if (hc_step == 1) {
@@ -3091,7 +3211,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 		hc_say("ufs: own: the controller is not enabled (UEFI has no driver for it): enabling it here\n");
 		no = hc_enable_from_reset();
 		if (no != NULL) {
-			hc_say("ufs: own: not used: %s\n", no);
+			hc_not_used(no);
 			hc_write(UFSHC_HCE, 0);
 			return false;
 		}
@@ -3107,7 +3227,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	hc_ucd_size = (hc_soc->prdt_offset + hc_soc->prd_entry * (hc_slot_buffer / hc_soc->prd_max + 1) + 127) & ~127u;
 	list = hc_dma_alloc(PAGE_SIZE + SLOTS * hc_ucd_size + PAGE_SIZE, &list_pa, dma32);
 	if (list == 0) {
-		hc_say("ufs: own: not used: no memory for the list%s\n", dma32 ? " below 4 GB" : "");
+		hc_not_used(dma32 ? "no memory for the list below 4 GB" : "no memory for the list");
 		return false;
 	}
 	PE_parse_boot_argn("ufs_native_slots", &slots, sizeof(slots));
@@ -3145,7 +3265,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	}
 	hc_nslots = nfree;
 	if (nfree == 0 || !hc_start_poller()) {
-		hc_say("ufs: own: not used: no slots, or no poller thread\n");
+		hc_not_used("no slots, or no poller thread");
 		hc_mode = HC_NONE;
 		return false;
 	}
@@ -3165,6 +3285,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 		if (!hc_poll(UFSHC_UTRLRSR, 1, 0, 100)) {
 			hc_write(UFSHC_IE, hc_uefi_ie);
 			hc_write(UFSHC_UTRLRSR, 1);
+			strlcpy(hc_take_why, "UEFI's list did not stop", sizeof(hc_take_why));
 			hc_say("ufs: own: not used: UEFI's list did not stop (run %08x, list %08x:%08x now)\n",
 			    hc_read(UFSHC_UTRLRSR), hc_read(UFSHC_UTRLBAU), hc_read(UFSHC_UTRLBA));
 			if (hc_own_list_in != NULL && hc_read(UFSHC_UTRLBA) == (uint32_t)uefi_pa &&
@@ -3189,7 +3310,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	if (no != NULL) {
 		struct hc_put_back_result r;
 
-		hc_say("ufs: own: not used: %s\n", no);
+		hc_not_used(no);
 		hc_put_back(&r);
 		hc_put_back_print("undoing", &r, false);
 		hc_mode = HC_NONE;
@@ -3217,7 +3338,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 			}
 		}
 		if (e != 0) {
-			hc_say("ufs: own: the device does not answer NOP OUT: this path is off\n");
+			hc_not_used("the device does not answer NOP OUT");
 			hc_off();
 			return false;
 		}
@@ -3254,6 +3375,15 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 				(void)hc_scsi0(LUN_DEVICE, ssu, sizeof(ssu), 0, NULL, "START STOP UNIT", false);
 				IOSleep(50);
 			}
+		}
+	}
+	if (hc_soc->prdt_bytes && !hc_enabled_here) {
+		const char *why = hc_layout_read();
+
+		if (why != NULL) {
+			hc_not_used(why);
+			hc_off();
+			return false;           /* (hc_mode HC_OWN: the caller gives UEFI's list back, ufshc_release) */
 		}
 	}
 	hc_find_units();
