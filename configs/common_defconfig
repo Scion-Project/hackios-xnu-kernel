@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 500 symbols in 19 groups; 51 are set, 42 of them drivers built in.
+# 508 symbols in 19 groups; 51 are set, 42 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (47)
+# Drivers built in (48)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -138,6 +138,9 @@ CONFIG_HAKIOS_PMIC=y
 
 # the run handed back to the loader before the battery is flat (battery_stop=<percent>) [hakios.battguard.c]
 CONFIG_HAKIOS_BATTGUARD=y
+
+# the Galaxy S9's CPU frequency governor (cpufreq_gov=1): both clusters' rates moved with the load through ACPM's ... [hakios.exynos_cpufreq.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_EXYNOS_CPUFREQ is not set
 
 # the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's HSI2C and ... [hakios.max77705.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C, CONFIG_HAKIOS_BATTERY]
 CONFIG_HAKIOS_MAX77705=y
@@ -1360,7 +1363,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (60)
+# User space (67)
 #
 
 # read by inject_sb.c (user space)
@@ -1410,6 +1413,27 @@ CONFIG_MODEM_AGAIN=y
 
 # read by 1003-avf-console-quiet.patch (kernel)
 # CONFIG_CONSOLE_QUIET is not set
+
+# run it (0, or none: the fixed rates of cpufreq_lit= and cpufreq_big=)
+# CONFIG_CPUFREQ_GOV is not set
+
+# read by hakios.exynos_cpufreq.c (kernel)
+# CONFIG_CPUFREQ_GOV_BIG_MAX is not set
+
+# read by hakios.exynos_cpufreq.c (kernel)
+# CONFIG_CPUFREQ_GOV_BIG_MIN is not set
+
+# read by hakios.exynos_cpufreq.c (kernel)
+# CONFIG_CPUFREQ_GOV_LIT_MAX is not set
+
+# read by hakios.exynos_cpufreq.c (kernel)
+# CONFIG_CPUFREQ_GOV_LIT_MIN is not set
+
+# a summary line this often (0: none; 1)
+# CONFIG_CPUFREQ_GOV_LOG is not set
+
+# the load window (20 to 200; 40)
+# CONFIG_CPUFREQ_GOV_MS is not set
 
 # read by 1002-avf-security-level.patch (kernel)
 # CONFIG_CS_RELAX_PLATFORM_TASK_PORTS is not set
