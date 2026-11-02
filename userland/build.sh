@@ -271,6 +271,8 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		$DYN -framework IOKit -o obj/mali_test src/mali_test.c
 		# which processes take the processors, every few seconds (src/cputop.c; rc.jobs.cputop)
 		$DYN -o obj/cputop src/cputop.c
+		# the wallpaper's second chance on a phone too slow for launchd's 5 s check-in (src/poster_retry.c; rc.jobs)
+		$DYN -o obj/poster_retry src/poster_retry.c
 		$DYN -framework CoreFoundation -framework IOSurface -o obj/cow_test src/cow_test.c
 		$DYN -framework CoreFoundation -framework CoreGraphics -framework IOSurface -o obj/cg_test src/cg_test.c
 		# what Darwin here believes about Metal, and what CoreImage does without it (src/metal_test.m);
@@ -465,6 +467,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/mali_test ] && cp obj/mali_test root/bin/      # (likewise)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
 	[ -f obj/cputop ] && cp obj/cputop root/bin/
+	[ -f obj/poster_retry ] && cp obj/poster_retry root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
 	[ -f obj/cg_test ] && cp obj/cg_test root/bin/
 	[ -f obj/metal_dev ] && cp obj/metal_dev root/bin/

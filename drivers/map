@@ -36,6 +36,7 @@ gpu      iokit/Kernel/hakios.mali.cpp
 camera   bsd/dev/hakios.camera.c
 camera   bsd/dev/hakios.torch.c
 camera   bsd/dev/hakios.s2mpb02_torch.c
+camera   bsd/dev/hakios.exynos_camera.c
 
 haptic   bsd/dev/hakios.haptic.c
 
@@ -79,6 +80,7 @@ core     bsd/dev/hakios.platform.c
 core     bsd/dev/hakios.stubs.c
 core     bsd/dev/hakios.exynos_hsi2c.c
 core     bsd/dev/hakios.exynos_acpm.c
+core     bsd/dev/hakios.exynos_m3.c
 core     bsd/dev/hakios.dwc3.c
 core     bsd/dev/hakios.usb_acm.h
 core     bsd/dev/hakios.usb_glue.h

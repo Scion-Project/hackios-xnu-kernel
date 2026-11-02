@@ -16,7 +16,7 @@
 | Part | State | |
 |---|---|---|
 | display | partly | the panel through UEFI's framebuffer (1440 x 2960 at 0xCC000000); brightness by gamma and AOR through DSIM0 (panel=1, kern.hakios.brightness; iOS's slider through hakios.backlight.cpp, backlight=1 logs what iOS sets): written, not yet seen |
-| cpu | partly | A55s 2 and 3 (cpus=2 bootcpu=2, the default): seen on the phone; core 1 is parked by S-Boot and the M3s' CPU_ON never returns (README.md, The cores) |
+| cpu | partly | A55s 2 and 3 (cpus=2 bootcpu=2, the default): seen on the phone; with the four M3s, six cores running iOS (cpus=6 bootcpu=2 m3_prep=3 pan=0; isa_floor on by m3_prep=3): seen on the phone, 2 November; core 1 is parked by S-Boot (README.md, The cores) |
 | touch | partly | Samsung S6SY761 on USI03's HSI2C, ten fingers (s6sy761=1): written, not yet seen on the phone |
 | buttons | partly | power, volume, Bixby as home (exynos_keys=1): written, not yet seen on the phone |
 | storage | partly | UFS read through the loader and Silicium's UEFI (ufs=2); or by the kernel's own UFS driver, read only, as UEFI left the controller (ufs_native=4 ufs_native_soc=exynos9810, ufs_native_step=1..5): written, not yet seen on the phone |
@@ -28,6 +28,7 @@
 | cellular | no |  |
 | haptic | partly | the MAX77705's haptic block and a PWM of the SoC, for iOS (max77705_haptic=1): written, not yet felt |
 | thermal | partly | the Exynos 9810's TMU read by the kernel (BIG, LITTLE, G3D, ISP with their fuses), kern.hakios.temp, and the run ended at 110 C or the battery at 60 C (tmu=N, 3 steps; tmu_off=1 powers off): written, not yet seen; nothing slows the cores or the GPU |
+| camera | partly | the front camera's S5K3H1, stage 1: its supplies on the S2MPB02, reset, MCLK and its model ID over I2C (cam_s9=1 a look, 2 power up, read, power down; CAMERA.md has the plan to raw frames through CSIS1's DMA, no ISP firmware): written, not yet seen |
 | torch | partly | the S2MPB02's flash block, lit by a pin (torch=1 a look, 3 for iOS): written, not yet seen |
 | usb | partly | the port as a USB serial device: the kernel's whole log live and a line console (usb_gadget=N, 5 steps; DWC3 in device mode, CDC-ACM 1209:0001, the 2.0 PHY by the BSP's CAL sequence): written, not yet seen |
 

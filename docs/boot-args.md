@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **434 arguments**: 373 read by the kernel, 16 by the loader, 55 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **446 arguments**: 384 read by the kernel, 16 by the loader, 56 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -266,7 +266,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `speaker_probe` | K | `hakios.speaker.c` | `CONFIG_SPEAKER_PROBE` |  |
 | `virtio_sound` | K | `hakios.virtio_sound.c` | `CONFIG_VIRTIO_SOUND` |  |
 
-## Cameras (13)
+## Cameras (15)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -279,12 +279,14 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_keep_mb` | K | `hakios.camera.c` | `CONFIG_CAM_KEEP_MB` |  |
 | `cam_mode` | K | `hakios.camera.c` | `CONFIG_CAM_MODE` |  |
 | `cam_pattern` | K | `hakios.camera.c` | `CONFIG_CAM_PATTERN` |  |
+| `cam_s9` | K | `hakios.exynos_camera.c`, `hakios.s2mpb02_torch.c` | `CONFIG_CAM_S9` |  |
+| `cam_s9_ipclk` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_IPCLK` |  |
 | `cam_sensor` | K | `hakios.camera.c` | `CONFIG_CAM_SENSOR` |  |
 | `cam_settle` | K | `hakios.camera.c` | `CONFIG_CAM_SETTLE` |  |
 | `cam_shutter` | K | `hakios.camera.c` | `CONFIG_CAM_SHUTTER` |  |
 | `cam_vblank` | K | `hakios.camera.c` | `CONFIG_CAM_VBLANK` |  |
 
-## Touch and buttons (15)
+## Touch and buttons (17)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -296,7 +298,9 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `s6sy761` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761` |  |
 | `s6sy761_ipclk` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_IPCLK` |  |
 | `s6sy761_ldo` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_LDO` |  |
+| `s6sy761_pri` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_PRI` |  |
 | `s6sy761_steps` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_STEPS` |  |
+| `s6sy761_trace` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_TRACE` |  |
 | `touch_flip` | K | `hakios.goodix.c` | `CONFIG_TOUCH_FLIP` |  |
 | `touch_poll_us` | K | `hakios.goodix.c` | `CONFIG_TOUCH_POLL_US` |  |
 | `touch_rate` | K | `hakios.goodix.c` | `CONFIG_TOUCH_RATE` |  |
@@ -472,7 +476,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (50)
+## User space (58)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -491,7 +495,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `console_quiet` | K | `1003-avf-console-quiet.patch` | `CONFIG_CONSOLE_QUIET` |  |
 | `cs_relax_platform_task_ports` | K | `1002-avf-security-level.patch` | `CONFIG_CS_RELAX_PLATFORM_TASK_PORTS` |  |
 | `early_log` | K | `1503-early-log-and-panic.patch` | `CONFIG_EARLY_LOG` |  |
-| `esslog` | K | `1507-esslog-exynos-snapshot.patch` | `CONFIG_ESSLOG` |  |
+| `esslog` | K | `1507-esslog-exynos-snapshot.patch`, `1509-m3-diag-and-pan-off.patch` | `CONFIG_ESSLOG` |  |
 | `gl` | U | `inject.c`, `inject_sb.c` | `CONFIG_GL` |  |
 | `glcompile` | U | `inject.c` | `CONFIG_GLCOMPILE` |  |
 | `glno` | U | `inject.c` | `CONFIG_GLNO` |  |
@@ -499,9 +503,17 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `glyes` | U | `inject.c` | `CONFIG_GLYES` |  |
 | `gpu3d` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D` |  |
 | `gpu3d_size` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D_SIZE` |  |
+| `immediate_NMI` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_IMMEDIATE_NMI` |  |
 | `ioaes` | K | `MiniIOAESAccelerator.cpp` | `CONFIG_IOAES` |  |
+| `isa_floor` | K | `1510-isa-floor.patch` | `CONFIG_ISA_FLOOR` |  |
+| `m3_diag` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_DIAG` |  |
+| `m3_flush` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_FLUSH` |  |
+| `m3_ids` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_IDS` |  |
+| `m3_prep` | K | `1510-isa-floor.patch`, `hakios.exynos_m3.c` | `CONFIG_M3_PREP` |  |
 | `md0` | K | `1101-virtio-disk-as-md0.patch` | `CONFIG_MD0` |  |
 | `metal_profile` | U | `hakiosmetal_air.m` | `CONFIG_METAL_PROFILE` |  |
+| `pan` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_PAN` |  |
+| `poster_retry` | U | `poster_retry.c` | `CONFIG_POSTER_RETRY` |  |
 | `root_apfs` | U | `init.c` | `CONFIG_ROOT_APFS` |  |
 | `sb_delay` | U | `inject_sb.c` |  | xl (XL_SB_DELAY) |
 | `sccam.addr` | K | `1400-avf-scion-camera.patch`, `hakios.sccam_torch.c` | `CONFIG_SCCAM_ADDR` |  |

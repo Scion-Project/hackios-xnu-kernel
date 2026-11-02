@@ -9,4 +9,7 @@
 # the Galaxy S9's GPU from a program (says one line and stops where there is no HakiosMali: anywhere but mali=9)
 /redwood/bin/mali_test
 /redwood/bin/vk_test
+# the wallpaper: once SpringBoard's start-up rush is over, PosterBoard is restarted if launchd killed its posters
+# at the 5 s check-in deadline (the Galaxy S9, on two cores); nothing is done where they came up (src/poster_retry.c)
+/redwood/bin/poster_retry &
 /redwood/bin/cpu_test 240 &

@@ -88,6 +88,8 @@ CAM_GAIN	arg	cam_gain	Cameras	k	hakios.camera.c
 CAM_KEEP_MB	arg	cam_keep_mb	Cameras	k	hakios.camera.c	
 CAM_MODE	arg	cam_mode	Cameras	k	hakios.camera.c	
 CAM_PATTERN	arg	cam_pattern	Cameras	k	hakios.camera.c	
+CAM_S9	arg	cam_s9	Cameras	k	hakios.exynos_camera.c,hakios.s2mpb02_torch.c	a look, reading only (but for the S2MPB02's bus, set up as the flashlight's driver sets it up): the pins
+CAM_S9_IPCLK	arg	cam_s9_ipclk	Cameras	k	hakios.exynos_camera.c	
 CAM_SENSOR	arg	cam_sensor	Cameras	k	hakios.camera.c	
 CAM_SETTLE	arg	cam_settle	Cameras	k	hakios.camera.c	
 CAM_SHUTTER	arg	cam_shutter	Cameras	k	hakios.camera.c	
@@ -103,7 +105,7 @@ DDR_REST	arg	ddr_rest	CPU, memory and boot	k	hakios.cpufreq.c
 DDR_VOTE	arg	ddr_vote	CPU, memory and boot	k	hakios.cpufreq.c	
 DISPLAY_PROBE	arg	display_probe	GPU and display	k	hakios.adreno.c	before any step: read what the firmware left the display controller doing (display_probe() below; two clocks are turned on, nothing else written)
 EARLY_LOG	arg	early_log	User space	k	1503-early-log-and-panic.patch	
-ESSLOG	arg	esslog	User space	k	1507-esslog-exynos-snapshot.patch	
+ESSLOG	arg	esslog	User space	k	1507-esslog-exynos-snapshot.patch,1509-m3-diag-and-pan-off.patch	
 EXYNOS_KEYS	arg	exynos_keys	Touch and buttons	k	hakios.exynos_keys.c	
 FB_BEAT	arg	fb_beat	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_CA_HZ	arg	fb_ca_hz	GPU and display	k	MiniIOMobileFramebuffer.cpp	the refresh rate told to CoreAnimation (IOMFBDisplayRefresh) when it is not to be fb_hz's
@@ -166,7 +168,13 @@ GPU_LOG	arg	gpu_log	GPU and display	k	hakios.adreno.c
 GPU_RECOVER	arg	gpu_recover	GPU and display	k	hakios.adreno.c	a submission the core never finishes does not cost the rest of the run
 GPU_VA	arg	gpu_va	GPU and display	k	hakios.adreno.c	
 HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c	
+IMMEDIATE_NMI	arg	immediate_NMI	User space	k	1509-m3-diag-and-pan-off.patch	
 IOAES	arg	ioaes	User space	k	MiniIOAESAccelerator.cpp	no IOAESAccelerator at all, as the kernel was before this driver
+ISA_FLOOR	arg	isa_floor	User space	k	1510-isa-floor.patch	
+M3_DIAG	arg	m3_diag	User space	k	1509-m3-diag-and-pan-off.patch	
+M3_FLUSH	arg	m3_flush	User space	k	1509-m3-diag-and-pan-off.patch	
+M3_IDS	arg	m3_ids	User space	k	1509-m3-diag-and-pan-off.patch	
+M3_PREP	arg	m3_prep	User space	k	1510-isa-floor.patch,hakios.exynos_m3.c	
 MACHINE_NAME	arg	machine_name	CPU, memory and boot	k	GenericARMPE.cpp	
 MALI	arg	mali	GPU and display	k	hakios.mali.c	the first N of the GPU's nine steps of bring-up (9: all, then served); 0 or none: left alone
 MALI_ACPM	arg	mali_acpm	GPU and display	k	hakios.mali.c	the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
@@ -231,11 +239,13 @@ MODEM_SIM_SWITCH_OFF	arg	modem_sim_switch_off	Cellular	k	hakios.mpss.c
 MODEM_STEP	arg	modem_step	Cellular	k	hakios.mpss.c	the steps once the root is there, then back to the loader if modem_return=1 says so
 MODEM_WAIT	arg	modem_wait	Cellular	k	hakios.mpss.c	
 MODEM_WDA_OFF	arg	modem_wda_off	Cellular	k	hakios.mpss.c	
+PAN	arg	pan	User space	k	1509-m3-diag-and-pan-off.patch	
 PANEL	arg	panel	GPU and display	k	hakios.s6e3ha8.c	the driver: without it nothing here runs
 PANEL_BRIGHTNESS	arg	panel_brightness	GPU and display	k	hakios.s6e3ha8.c	a brightness of 0-255 set once at start
 PANEL_GAMMA	arg	panel_gamma	GPU and display	k	hakios.s6e3ha8.c	gamma and AOR sent (the default)
 PANEL_GAMMA_LOG	arg	panel_gamma_log	GPU and display	k	hakios.s6e3ha8.c	all 74 rows in the log, as Android's kernel prints them at start ("gamma[nits] : ...") to set beside Android's log of the same phone
 PMIC_LIST	arg	pmic_list	Chip, thermal and PMIC	k	hakios.pmic.c	only the clock, not the inventory of every block
+POSTER_RETRY	arg	poster_retry	User space	u	poster_retry.c	
 PRESS_POWER	arg	press_power	Touch and buttons	k	hakios.buttons.c	a short press of the power key that many seconds after boot, and another ten seconds later, given to Darwin as the key's own are (hakios_touch_post):
 PRESS_POWER_MS	arg	press_power_ms	Touch and buttons	k	hakios.buttons.c	
 PRIVS	arg	privs	Security stand-ins	k	kern_minimac.c	
@@ -256,7 +266,9 @@ ROOT_APFS	arg	root_apfs	User space	u	init.c	the root is to be the Darwin root vo
 S6SY761	arg	s6sy761	Touch and buttons	k	hakios.s6sy761.c	every address below belongs to this phone
 S6SY761_IPCLK	arg	s6sy761_ipclk	Touch and buttons	k	hakios.s6sy761.c	the HSI2C's input clock, if step 1 says it is not the 200 MHz both other drivers assume
 S6SY761_LDO	arg	s6sy761_ldo	Touch and buttons	k	hakios.s6sy761.c	
+S6SY761_PRI	arg	s6sy761_pri	Touch and buttons	k	hakios.s6sy761.c	the polling thread's priority. Default 92 (BASEPRI_PREEMPT, as the display's presenter, fb_pri)
 S6SY761_STEPS	arg	s6sy761_steps	Touch and buttons	k	hakios.s6sy761.c	
+S6SY761_TRACE	arg	s6sy761_trace	Touch and buttons	k	hakios.s6sy761.c	the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate
 SCCAM_ADDR	arg	sccam.addr	User space	k	1400-avf-scion-camera.patch,hakios.sccam_torch.c	
 SCCAM_H	arg	sccam.h	User space	k	1400-avf-scion-camera.patch	
 SCCAM_SIZE	arg	sccam.size	User space	k	1400-avf-scion-camera.patch	
