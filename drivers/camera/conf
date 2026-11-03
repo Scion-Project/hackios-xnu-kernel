@@ -25,9 +25,10 @@ driver EXYNOS_CAMERA
 	help    the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and
 	help    MCLK, its model ID over I2C; the ISPPRE domain, CSIS1, its D-PHY and VC0's WDMA; one frame of the CSIS's test
 	help    pattern, then one of the sensor's, 1632 x 1224 RAW10, into memory (1 a look, 2 the ID, 3 the domain, 4 the
-	help    pattern, 5 the sensor's frame, 6 that and then the USB console's camshot: a frame debayered and sent as a
-	help    picture, tools/usb-shot.py --cam; devices/starlte/CAMERA.md has the plan). Its buffer is physical memory at
-	help    0xD8000000, below 4 GB and outside XNU's RAM, mapped through IOKit
+	help    pattern, 5 the sensor's frame, auto-exposed, 6 that and then the USB console's camshot: a frame demosaiced
+	help    and sent as a picture, tools/usb-shot.py --cam; 7 the sensor streaming into a ring of four frames for the
+	help    run, /dev/hakios-camera for user space; devices/starlte/CAMERA.md has the plan). Its memory is 32 MB of
+	help    physical memory at 0xD8000000, below 4 GB and outside XNU's RAM, mapped through IOKit
 
 standard bsd/dev/hakios.sccam_torch.c
 	help    the phone's flashlight under AVF, through the Scion app's camera block (patch 1402)

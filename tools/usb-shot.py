@@ -16,11 +16,12 @@ and writes it as a PNG (zlib only, no PIL). N (1-16, default 4) keeps every Nth 
   --log FILE   append the log text read before and after the picture to FILE (to stand in for a log reader)
   --raw FILE   also write the raw pixels as they came
   --timeout S  give up after S seconds without the picture (default 20; 40 with --cam)
-  --cam        the Galaxy S9's front camera instead of the screen ("camshot N": boot-arg cam_s9=6,
-               drivers/camera/hakios.exynos_camera.c). The kernel powers the camera up, takes one RAW10 frame,
-               powers it down and debayers it: each 2 x 2 cell one pixel, 816x612 at N=1 (the default with --cam),
-               every Nth cell for N > 1. A first look: a grey-world balance, no colour correction, the picture as
-               the sensor sees it (mirrored). The camera's log lines come first and are printed here
+  --cam        the Galaxy S9's front camera instead of the screen ("camshot N": boot-arg cam_s9=6 or 7,
+               drivers/camera/hakios.exynos_camera.c). The kernel powers the camera up, exposes it to 18 % grey,
+               takes one RAW10 frame, powers it down (cam_s9=7: the newest frame of its stream) and demosaics it:
+               the whole 1632x1224 at N=1 (the default with --cam, 6 MB), every Nth pixel for N > 1. A grey-world
+               balance, a saturation, no colour matrix of the module's, the picture as the sensor sees it
+               (mirrored). The camera's log lines come first and are printed here
   --tp         with --cam: CSIS1's test pattern instead of the sensor (the DMA and the debayer without the sensor)
   --repeat S   ask again S seconds after each picture, into the same -o file, until ^C: with --cam, a slow preview
                (each camshot powers the camera up and down again; an image viewer that reloads the file shows it)

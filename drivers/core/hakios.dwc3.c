@@ -56,9 +56,10 @@
  *                     The log is held back meanwhile (what came before the command is sent first, what comes during
  *                     it after END), so the picture is never mixed with it. tools/usb-shot.py asks for one and writes
  *                     a PNG. The panel is read while the display may be drawing it: a shot can catch half a frame
- *   camshot [N] [tp]  a picture from the Galaxy S9's front camera (hakios.exynos_camera.c, boot-arg cam_s9=6): the
- *                     camera's thread powers it up, takes one RAW10 frame through CSIS1's WDMA, powers it down,
- *                     debayers it (each 2 x 2 cell one pixel, 816 x 612, then every Nth: 1-16, 1 when not given) and
+ *   camshot [N] [tp]  a picture from the Galaxy S9's front camera (hakios.exynos_camera.c, boot-arg cam_s9=6 or 7):
+ *                     the camera's thread powers it up, meters and exposes, takes one RAW10 frame through CSIS1's WDMA,
+ *                     powers it down (cam_s9=7: the newest frame of the stream, nothing powered up or down), demosaics
+ *                     it (the whole 1632 x 1224 at N = 1, every Nth pixel for N of 2-16; 1 when not given) and
  *                     hands it here; it goes out framed as a shot's does, after the camera's log lines. "tp": CSIS1's
  *                     test pattern instead of the sensor. A capture that fails says "usb: camshot failed: ..." with
  *                     the link's and the WDMA's status registers instead. tools/usb-shot.py --cam
@@ -895,7 +896,7 @@ camshot_begin(const char *arg)
 		n = 1;
 	}
 	if (n > 16 || *arg != 0) {
-		con("usb: camshot failed: camshot [N] [tp]: N from 1 to 16 (1: 816 x 612), tp the test pattern\n");
+		con("usb: camshot failed: camshot [N] [tp]: N from 1 to 16 (1: the whole 1632 x 1224, 2: 816 x 612), tp the test pattern\n");
 		return;
 	}
 	if (os_atomic_load(&shot.phase, acquire) != SHOT_OFF) {
