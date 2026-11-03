@@ -30,6 +30,7 @@
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <math.h>
 #include <fcntl.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -788,6 +789,8 @@ struct service {
 	volatile bool opened;
 	volatile bool taken;            /* backboardd took it as its touch screen: it set "QuantizationDPI" */
 	volatile bool judged;           /* backboardd has decided about it: it set "TouchDetectionMode" */
+	IOHIDEventRef last;             /* a sensor's last event, for copyEvent (CoreBrightness asks for the light's) */
+	uint32_t last_type;
 };
 
 /* touch_fault=1: the touch screen first made answers no "PrimaryUsagePage" (tests the remake) */
@@ -878,9 +881,12 @@ service_notification(__unused void *target, __unused void *refcon, __unused IOHI
 {
 }
 
+static IOHIDEventRef service_copy_event(void *target, void *refcon, IOHIDServiceClientRef service, uint32_t type,
+    IOHIDEventRef matching, uint32_t options);
+
 static const struct virtual_service_callbacks service_callbacks = {
 	.version = 2, .notification = service_notification, .setProperty = service_set_property,
-	.copyProperty = service_copy_property,
+	.copyProperty = service_copy_property, .copyEvent = service_copy_event,
 };
 
 /*
@@ -895,8 +901,8 @@ static const struct virtual_service_callbacks service_callbacks = {
  * the service is made again until the server has opened it.
  */
 static IOHIDServiceClientRef
-make_service(IOHIDEventSystemClientRef client, const char *product, int page, int usage, bool display,
-    struct service **made_out)
+make_service_with(IOHIDEventSystemClientRef client, const char *product, int page, int usage, bool display,
+    CFDictionaryRef extra, struct service **made_out)
 {
 	struct service *made = calloc(1, sizeof(*made));
 	IOHIDServiceClientRef service = NULL;
@@ -925,6 +931,18 @@ make_service(IOHIDEventSystemClientRef client, const char *product, int page, in
 	if (display) {
 		CFDictionarySetValue(properties, CFSTR("DisplayIntegrated"), kCFBooleanTrue);
 	}
+	if (extra != NULL) {
+		CFIndex n = CFDictionaryGetCount(extra);
+		const void *keys[8], *values[8];
+
+		if (n > 8) {
+			n = 8;
+		}
+		CFDictionaryGetKeysAndValues(extra, keys, values);
+		for (CFIndex i = 0; i < n; i++) {
+			CFDictionarySetValue(properties, keys[i], values[i]);
+		}
+	}
 	/* the dictionary stays: it is what service_copy_property() answers from */
 	made->properties = properties;
 	for (int attempt = 1; attempt <= 20; attempt++) {
@@ -948,6 +966,13 @@ make_service(IOHIDEventSystemClientRef client, const char *product, int page, in
 		*made_out = made;
 	}
 	return service;
+}
+
+static IOHIDServiceClientRef
+make_service(IOHIDEventSystemClientRef client, const char *product, int page, int usage, bool display,
+    struct service **made_out)
+{
+	return make_service_with(client, product, page, usage, display, NULL, made_out);
 }
 
 /*
@@ -1076,6 +1101,397 @@ micros(uint64_t absolute)
 	return absolute * timebase.numer / timebase.denom / 1000;
 }
 
+/* ---- backboardd: the sensors ---------------------------------------------------------------------------- */
+
+/*
+ * The phone's sensors (the Galaxy S9's sensor hub, drivers/input/hakios.ssp.c with shub=6) come as samples on
+ * /dev/hakios-sensors (sys/hakios.sensors.h). iOS's own consumers want them as HID events from built-in services of
+ * Apple's vendor page (what iOS 16.5 reads, from its binaries: the kernel's devices/starlte/SENSORS.md):
+ *
+ *   accelerometer  0xFF00/0x03, type 13 events in g, iOS's axes (x right, y up, z out of the screen; at rest the axis
+ *                  that points up reads -1 g): backboardd's BKAccelerometer clients and CoreMotion (backboardd,
+ *                  locationd). Android's sign is the other: every axis is turned around
+ *   ambient light  0xFF00/0x04, type 12 events with the Illuminance field (0xC000B) in lux: CoreBrightness, which also
+ *                  asks for the last one (copyEvent)
+ *   proximity      0xFF00/0x08 with Placement = 1 (backboardd ignores a proximity sensor that is not "top"), type 14
+ *                  events, the Receiver bit (0x40) set while something is near: the screen blanked in calls
+ *   gyroscope      0xFF00/0x09, type 20, rad/s; magnetometer 0xFF00/0x0A, type 21, uT: CoreMotion (locationd)
+ *
+ * Rotation is not among them: in 16.5 backboardd takes the device's orientation from CoreMotion's
+ * CMDeviceOrientationManager, which on this model (iPhone10,3) asks Apple's motion coprocessor for it, a device no
+ * virtual service stands in for. So the manager's three methods are replaced here (as brightness_fixes() does for
+ * BLControl), and the orientation is worked out from the accelerometer: the axis gravity is on (more than 0.75 g of
+ * the filtered sample), held for 300 ms. backboardd says "Updating device orientation from CoreMotion to: ..." when it
+ * takes one.
+ */
+#include <Block.h>
+#include "hakios.sensors.h"
+
+extern IOHIDEventRef IOHIDEventCreateAccelerometerEvent(CFAllocatorRef allocator, uint64_t time, double x, double y, double z,
+    uint32_t options);
+extern IOHIDEventRef IOHIDEventCreateGyroEvent(CFAllocatorRef allocator, uint64_t time, double x, double y, double z,
+    uint32_t options);
+extern IOHIDEventRef IOHIDEventCreateCompassEvent(CFAllocatorRef allocator, uint64_t time, double x, double y, double z,
+    uint32_t options);
+extern IOHIDEventRef IOHIDEventCreateAmbientLightSensorEvent(CFAllocatorRef allocator, uint64_t time, uint32_t level,
+    uint32_t options);
+extern IOHIDEventRef IOHIDEventCreateProximtyEvent(CFAllocatorRef allocator, uint64_t time, uint32_t mask, uint32_t options);
+extern void IOHIDEventSetFloatValue(IOHIDEventRef event, uint32_t field, double value);
+
+#define HID_PAGE_APPLE_VENDOR           0xff00
+#define HID_USAGE_ACCELEROMETER         0x03
+#define HID_USAGE_AMBIENT_LIGHT         0x04
+#define HID_USAGE_PROXIMITY             0x08
+#define HID_USAGE_GYRO                  0x09
+#define HID_USAGE_COMPASS               0x0a
+#define HID_EVENT_ALS                   12
+#define HID_EVENT_ACCELEROMETER         13
+#define HID_EVENT_PROXIMITY             14
+#define FIELD_ALS_ILLUMINANCE           0xc000b
+#define PROXIMITY_RECEIVER              0x40
+
+/*
+ * The hub's units (SENSORS.md): the accelerometer's counts are 32768 to its range in g (8 g: 4096 to 1 g, seen: 4085
+ * lying flat). The gyroscope's and the magnetometer's are inferred from the phone at rest (3 November, phone 2): the
+ * gyroscope's bias reads 36000/-67000/-52000, about 2 to 4 degrees a second if a count is a thousandth of the LSM6DSL's
+ * 2000 dps step (16.4 to a degree); the magnetometer's field reads 3404 counts, 51 uT at 0.015 uT a count (a tenth of
+ * the AK09916's 0.15 uT step), and the earth's field here is about 49 uT. Neither is checked by a turn of the phone.
+ */
+#define GYRO_DPS_PER_COUNT      (1.0 / 16400)   /* to rad/s below */
+#define MAG_UT_PER_COUNT        0.015
+
+static IOHIDEventSystemClientRef hid_client;    /* input_thread()'s, once the touch screen is made */
+
+static struct {
+	IOHIDServiceClientRef accel, light, proximity, gyro, compass;
+	struct service *light_made;
+} sensor;
+
+/* the orientation, worked out here and handed to backboardd through CMDeviceOrientationManager */
+static volatile int orientation;                /* UIDeviceOrientation: 0 unknown, 1-6 */
+static id orientation_queue;                    /* the manager's handler and the queue it wants it run on */
+static void (^orientation_handler)(id, id);
+static pthread_mutex_t orientation_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static IOHIDEventRef
+service_copy_event(__unused void *target, void *refcon, __unused IOHIDServiceClientRef service, uint32_t type,
+    __unused IOHIDEventRef matching, __unused uint32_t options)
+{
+	struct service *made = refcon;
+	IOHIDEventRef event = NULL;
+
+	pthread_mutex_lock(&orientation_lock);
+	if (made != NULL && made->last != NULL && made->last_type == type) {
+		event = (IOHIDEventRef)CFRetain(made->last);
+	}
+	pthread_mutex_unlock(&orientation_lock);
+	return event;
+}
+
+static void
+sensor_send(IOHIDServiceClientRef service, struct service *made, IOHIDEventRef event, uint32_t type)
+{
+	IOHIDEventSetIntegerValue(event, FIELD_IS_BUILT_IN, 1);
+	IOHIDVirtualServiceClientDispatchEvent(service, event);
+	if (made != NULL) {
+		pthread_mutex_lock(&orientation_lock);
+		if (made->last != NULL) {
+			CFRelease(made->last);
+		}
+		made->last = (IOHIDEventRef)CFRetain(event);
+		made->last_type = type;
+		pthread_mutex_unlock(&orientation_lock);
+	}
+	CFRelease(event);
+}
+
+static id
+make_orientation(int value)
+{
+	Class cls = objc_getClass("CMDeviceOrientation");
+	id object = cls ? ((id (*)(id, SEL))objc_msgSend)((id)cls, sel_registerName("alloc")) : nil;
+
+	if (object == nil) {
+		return nil;
+	}
+	return ((id (*)(id, SEL, int, double))objc_msgSend)(object, sel_registerName("initWithOrientation:andTimestamp:"), value,
+	    CFAbsoluteTimeGetCurrent());
+}
+
+/* the new orientation to backboardd, on the queue it gave */
+static void
+orientation_changed(int value)
+{
+	id queue;
+	void (^handler)(id, id);
+
+	pthread_mutex_lock(&orientation_lock);
+	orientation = value;
+	queue = orientation_queue;
+	handler = orientation_handler ? Block_copy(orientation_handler) : NULL;
+	pthread_mutex_unlock(&orientation_lock);
+	say("hakios: sensors: orientation %d (%s)\n", value, value == 1 ? "portrait" : value == 2 ? "upside down" :
+	    value == 3 ? "home button right" : value == 4 ? "home button left" : value == 5 ? "face up" :
+	    value == 6 ? "face down" : "unknown");
+	if (handler == NULL || queue == nil) {
+		if (handler != NULL) {
+			Block_release(handler);
+		}
+		return;
+	}
+	((void (*)(id, SEL, void (^)(void)))objc_msgSend)(queue, sel_registerName("addOperationWithBlock:"), ^{
+		id o = make_orientation(value);
+
+		handler(o, nil);
+		if (o != nil) {
+			((void (*)(id, SEL))objc_msgSend)(o, sel_registerName("release"));
+		}
+		Block_release(handler);
+	});
+}
+
+static void
+my_start_orientation(__unused id self, __unused SEL selector, id queue, void (^handler)(id, id))
+{
+	int now;
+
+	pthread_mutex_lock(&orientation_lock);
+	if (orientation_handler != NULL) {
+		Block_release(orientation_handler);
+	}
+	if (orientation_queue != nil) {
+		((void (*)(id, SEL))objc_msgSend)(orientation_queue, sel_registerName("release"));
+	}
+	orientation_handler = handler ? Block_copy(handler) : NULL;
+	orientation_queue = queue ? ((id (*)(id, SEL))objc_msgSend)(queue, sel_registerName("retain")) : nil;
+	now = orientation;
+	pthread_mutex_unlock(&orientation_lock);
+	say("hakios: sensors: backboardd asks for the orientation (now %d)\n", now);
+	if (now != 0) {
+		orientation_changed(now);
+	}
+}
+
+static void
+my_stop_orientation(__unused id self, __unused SEL selector)
+{
+	pthread_mutex_lock(&orientation_lock);
+	if (orientation_handler != NULL) {
+		Block_release(orientation_handler);
+		orientation_handler = NULL;
+	}
+	if (orientation_queue != nil) {
+		((void (*)(id, SEL))objc_msgSend)(orientation_queue, sel_registerName("release"));
+		orientation_queue = nil;
+	}
+	pthread_mutex_unlock(&orientation_lock);
+}
+
+static id
+my_orientation_blocking(__unused id self, __unused SEL selector)
+{
+	id o = make_orientation(orientation);
+
+	return o ? ((id (*)(id, SEL))objc_msgSend)(o, sel_registerName("autorelease")) : nil;
+}
+
+static BOOL
+my_orientation_available(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
+/* CMDeviceOrientationManager's methods replaced; only when the sensors are there (the kernel made the device) */
+static void
+orientation_fixes(void)
+{
+	static const struct { const char *name; IMP imp; } methods[] = {
+		{ "startDeviceOrientationUpdatesToQueue:withHandler:", (IMP)my_start_orientation },
+		{ "stopDeviceOrientationUpdates", (IMP)my_stop_orientation },
+		{ "deviceOrientationBlocking", (IMP)my_orientation_blocking },
+		{ "isDeviceOrientationAvailable", (IMP)my_orientation_available },
+	};
+	Class cls = objc_getClass("CMDeviceOrientationManager");
+	unsigned replaced = 0;
+
+	if (cls == NULL) {
+		say("hakios: sensors: no CMDeviceOrientationManager here: the orientation is not taken over\n");
+		return;
+	}
+	for (unsigned i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
+		Method method = class_getInstanceMethod(cls, sel_registerName(methods[i].name));
+
+		if (method != NULL) {
+			method_setImplementation(method, methods[i].imp);
+			replaced++;
+		}
+	}
+	say("hakios: sensors: %u of CMDeviceOrientationManager's methods replaced: the orientation comes from the "
+	    "accelerometer of /dev/hakios-sensors\n", replaced);
+}
+
+/* the orientation from a sample (g, iOS's axes), filtered; a change is said after it held for 300 ms */
+static void
+orientation_from(double x, double y, double z, uint64_t now_us)
+{
+	static double fx, fy, fz;
+	static int candidate;
+	static uint64_t since_us;
+	static bool primed;
+	double ax, ay, az;
+	int o = 0;
+
+	if (!primed) {
+		fx = x, fy = y, fz = z;
+		primed = true;
+	}
+	fx += 0.2 * (x - fx);
+	fy += 0.2 * (y - fy);
+	fz += 0.2 * (z - fz);
+	ax = fx < 0 ? -fx : fx;
+	ay = fy < 0 ? -fy : fy;
+	az = fz < 0 ? -fz : fz;
+	if (ay >= ax && ay >= az && ay > 0.75) {
+		o = fy < 0 ? 1 : 2;
+	} else if (ax >= ay && ax >= az && ax > 0.75) {
+		o = fx < 0 ? 3 : 4;
+	} else if (az > 0.75) {
+		o = fz < 0 ? 5 : 6;
+	}
+	if (o == 0) {
+		return;
+	}
+	if (o != candidate) {
+		candidate = o;
+		since_us = now_us;
+		return;
+	}
+	if (o != orientation && now_us - since_us >= 300000) {
+		orientation_changed(o);
+	}
+}
+
+/* the services, on the touch screen's client; ambient light first, for CoreBrightness's start */
+static void
+make_sensor_services(void)
+{
+	CFMutableDictionaryRef proximity = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+	    &kCFTypeDictionaryValueCallBacks);
+	CFNumberRef one = number(1);
+
+	CFDictionarySetValue(proximity, CFSTR("Placement"), one);
+	sensor.light = make_service_with(hid_client, "HakiOS ambient light sensor", HID_PAGE_APPLE_VENDOR,
+	    HID_USAGE_AMBIENT_LIGHT, false, NULL, &sensor.light_made);
+	sensor.accel = make_service_with(hid_client, "HakiOS accelerometer", HID_PAGE_APPLE_VENDOR, HID_USAGE_ACCELEROMETER,
+	    false, NULL, NULL);
+	sensor.proximity = make_service_with(hid_client, "HakiOS proximity sensor", HID_PAGE_APPLE_VENDOR,
+	    HID_USAGE_PROXIMITY, false, proximity, NULL);
+	sensor.gyro = make_service_with(hid_client, "HakiOS gyroscope", HID_PAGE_APPLE_VENDOR, HID_USAGE_GYRO, false, NULL,
+	    NULL);
+	sensor.compass = make_service_with(hid_client, "HakiOS magnetometer", HID_PAGE_APPLE_VENDOR, HID_USAGE_COMPASS, false,
+	    NULL, NULL);
+	say("hakios: sensors: services: light %p, accelerometer %p, proximity %p, gyroscope %p, magnetometer %p\n",
+	    (void *)sensor.light, (void *)sensor.accel, (void *)sensor.proximity, (void *)sensor.gyro, (void *)sensor.compass);
+	CFRelease(one);
+	CFRelease(proximity);
+}
+
+static void *
+sensors_thread(void *arg)
+{
+	int device = (int)(intptr_t)arg;
+	struct hakios_sensor_sample s;
+	uint64_t count[8] = { 0 };
+	int near = -1;
+	uint32_t lux_sent = UINT32_MAX;
+	uint64_t lux_at = 0;
+
+	pthread_setname_np("redwood sensors");
+	while (hid_client == NULL) {
+		usleep(100000);
+	}
+	make_sensor_services();
+	while (read(device, &s, sizeof(s)) == (ssize_t)sizeof(s)) {
+		uint64_t now_us = micros(s.time);
+		IOHIDEventRef event;
+
+		if (s.type < 8 && count[s.type]++ == 0) {
+			say("hakios: sensors: the first sample of type %u: %d %d %d %d (scale %d)\n", s.type, s.v[0], s.v[1], s.v[2],
+			    s.v[3], s.scale);
+		}
+		switch (s.type) {
+		case HAKIOS_SENSOR_ACCEL: {
+			double k = (s.scale > 0 ? s.scale : 8) / 32768.0;
+			double x = -s.v[0] * k, y = -s.v[1] * k, z = -s.v[2] * k;  /* Android's sign to iOS's */
+
+			orientation_from(x, y, z, now_us);
+			if (sensor.accel != NULL) {
+				sensor_send(sensor.accel, NULL, IOHIDEventCreateAccelerometerEvent(NULL, s.time, x, y, z, 0),
+				    HID_EVENT_ACCELEROMETER);
+			}
+			break;
+		}
+		case HAKIOS_SENSOR_GYRO:
+			if (sensor.gyro != NULL) {
+				double k = GYRO_DPS_PER_COUNT * M_PI / 180;
+
+				sensor_send(sensor.gyro, NULL, IOHIDEventCreateGyroEvent(NULL, s.time, s.v[0] * k, s.v[1] * k,
+				    s.v[2] * k, 0), 20);
+			}
+			break;
+		case HAKIOS_SENSOR_MAG:
+			if (sensor.compass != NULL) {
+				sensor_send(sensor.compass, NULL, IOHIDEventCreateCompassEvent(NULL, s.time, s.v[0] * MAG_UT_PER_COUNT,
+				    s.v[1] * MAG_UT_PER_COUNT, s.v[2] * MAG_UT_PER_COUNT, 0), 21);
+			}
+			break;
+		case HAKIOS_SENSOR_LIGHT: {
+			uint32_t lux = (uint32_t)(s.v[0] < 0 ? 0 : s.v[0]);
+			uint32_t diff = lux > lux_sent ? lux - lux_sent : lux_sent - lux;
+
+			/* on a change of more than 5 % (or 2 lux), and once a second anyway */
+			if (sensor.light != NULL && (lux_sent == UINT32_MAX || diff * 20 > lux_sent || diff > 2 ||
+			    now_us - lux_at > 1000000)) {
+				event = IOHIDEventCreateAmbientLightSensorEvent(NULL, s.time, lux, 0);
+				IOHIDEventSetFloatValue(event, FIELD_ALS_ILLUMINANCE, (double)lux);
+				sensor_send(sensor.light, sensor.light_made, event, HID_EVENT_ALS);
+				lux_sent = lux;
+				lux_at = now_us;
+			}
+			break;
+		}
+		case HAKIOS_SENSOR_PROXIMITY:
+			if (sensor.proximity != NULL && (s.v[0] != 0) != near) {
+				near = s.v[0] != 0;
+				say("hakios: sensors: proximity %s\n", near ? "near" : "far");
+				sensor_send(sensor.proximity, NULL, IOHIDEventCreateProximtyEvent(NULL, s.time, near ?
+				    PROXIMITY_RECEIVER : 0, 0), HID_EVENT_PROXIMITY);
+			}
+			break;
+		default:
+			break;
+		}
+	}
+	say("hakios: sensors: %s: %s\n", HAKIOS_SENSORS_DEVICE, strerror(errno));
+	return NULL;
+}
+
+/* only when the kernel has a sensor hub running (shub=6): otherwise nothing of this happens */
+static void
+sensors_start(void)
+{
+	pthread_t thread;
+	int device = open(HAKIOS_SENSORS_DEVICE, O_RDONLY);
+
+	if (device < 0) {
+		return;
+	}
+	orientation_fixes();
+	if (pthread_create(&thread, NULL, sensors_thread, (void *)(intptr_t)device) == 0) {
+		pthread_detach(thread);
+	}
+}
+
 static void *
 input_thread(__unused void *arg)
 {
@@ -1122,6 +1538,7 @@ input_thread(__unused void *arg)
 		buttons = make_service(client, "HakiOS buttons", HID_PAGE_CONSUMER, HID_USAGE_CONSUMER_CONTROL, false, NULL);
 	}
 	say("hakios: input: touch screen service %p, buttons %p\n", (void *)screen, (void *)buttons);
+	hid_client = client;            /* the sensors' services are made on it too (sensors_thread()) */
 	dispatch_semaphore_signal(input_services_made); /* see wait_for_als_arrival() */
 	if (screen == NULL) {
 		return NULL;
@@ -1330,6 +1747,7 @@ hakios_init(void)
 		 * survive; not tried again since, and until it is, the five seconds stay.)
 		 */
 		input_start();
+		sensors_start();
 	} else if (strncmp(name, "containermanagerd", 17) == 0) {
 		container_manager_fixes();
 	}

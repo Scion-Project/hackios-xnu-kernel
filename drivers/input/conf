@@ -28,3 +28,13 @@ driver S6SY761
 	requires EXYNOS_HSI2C EXYNOS_ACPM
 	help    the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this
 	help    file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz)
+
+driver SSP
+	file    bsd/dev/hakios.ssp.c
+	requires EXYNOS_SPI EXYNOS_ACPM
+	default n
+	help    the Galaxy S9's sensors behind its sensor hub, the MCU of the BCM4775 GNSS chip on USI_CHUB00's SPI: powered,
+	help    its firmware loaded through the chip's ROM, Samsung's sensor protocol (SSP), the accelerometer, gyroscope,
+	help    magnetometer, barometer, light and proximity sensors read into /dev/hakios-sensors (shub=N, 6 steps: 1 a look,
+	help    2 powered, 3 the ROM's version, 4 the firmware, 5 SSP, 6 the sensors on). Needs fw/bcm_sensorhub_a1.bin
+	help    (devices/starlte/firmware/sensorhub/) for step 4

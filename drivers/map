@@ -14,6 +14,8 @@ input    bsd/dev/hakios.input.c
 input    bsd/dev/hakios.buttons.c
 input    bsd/dev/hakios.exynos_keys.c
 input    bsd/dev/hakios.s6sy761.c
+input    bsd/dev/hakios.ssp.c
+input    bsd/dev/hakios.bcm_shub.h
 input    bsd/dev/hakios.virtio_input.c
 
 storage  bsd/dev/hakios.ufs.c
