@@ -119,6 +119,8 @@ cc_fade	u
 cohtest	k
 cohtest_delay	k
 console_quiet	k
+core0	kl
+core1	l
 cpufreq	k
 cpufreq_gov	k
 cpufreq_gov_big_max	k
@@ -244,6 +246,7 @@ max98512	k
 max98512_gain	k
 md0	k
 membench	k
+memmap	l
 metal	ku
 metal_profile	u
 mic	k

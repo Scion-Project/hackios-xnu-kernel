@@ -113,6 +113,8 @@ CC_FADE	arg	cc_fade	User space	u	inject_sb.c
 COHTEST	arg	cohtest	User space	k	hakios.exynos_m3.c	is the big cluster in the same coherency domain as the A55s once it is started? (off by default)
 COHTEST_DELAY	arg	cohtest_delay	User space	k	hakios.exynos_m3.c	
 CONSOLE_QUIET	arg	console_quiet	User space	k	1003-avf-console-quiet.patch	
+CORE0	arg	core0	Loader	kl	1511-psci-loader-core.patch,loader.c	this core -- the one the loader stays on while the kernel runs on others (bootcpu=) -- given to the kernel
+CORE1	arg	core1	Loader	l	loader.c	core 1, which S-Boot parks, listed for the kernel to try (seen: CPU_ON answers 0, it never comes)
 CPUFREQ_GOV	arg	cpufreq_gov	User space	k	hakios.exynos_cpufreq.c	run it (0, or none: the fixed rates of cpufreq_lit= and cpufreq_big=)
 CPUFREQ_GOV_BIG_MAX	arg	cpufreq_gov_big_max	User space	k	hakios.exynos_cpufreq.c	
 CPUFREQ_GOV_BIG_MIN	arg	cpufreq_gov_big_min	User space	k	hakios.exynos_cpufreq.c	
@@ -230,6 +232,7 @@ MAX98512	arg	max98512	Audio and battery	k	hakios.max98512.c	a look: the bus brou
 MAX98512_GAIN	arg	max98512_gain	Audio and battery	k	hakios.max98512.c	the bottom speaker's gain at start, 1 to 5 (+3 to +15 dB; 1); the top one's is always 1
 MD0	arg	md0	User space	k	1101-virtio-disk-as-md0.patch	
 MEMBENCH	arg	membench	CPU, memory and boot	k	hakios.cpufreq.c	
+MEMMAP	arg	memmap	Loader	l	loader.c	the firmware's whole memory map in the run's log as well (as "oem memmap" gives it)
 METAL	arg	metal	GPU and display	ku	MiniIOMobileFramebuffer.cpp,hakios_metal_shown.c	say where Metal's device is (docs/metal-plan.md, step 1)
 METAL_PROFILE	arg	metal_profile	User space	u	hakiosmetal_air.m	
 MIC_ADC	arg	mic_adc	Audio and battery	k	hakios.mic.c	
