@@ -54,8 +54,9 @@
  * What it never does: write a PMIC, a threshold, an interrupt enable, the emulation register, or a clock rate. The writes
  * there are: tmu_ungate's CG_VAL, tmu_enable's TMU configuration, and tmu_off's PS_HOLD.
  *
- * Status: WRITTEN, NOT YET RUN on the phone, nor in QEMU (it has no such block: tmu= must not be given there). The kernel
- * builds with it in and out; the arithmetic is checked on the host (tools/exynos-tmu-test.sh) against the BSP's own
+ * Status: run on the phone with tmu=3 since 1 November (the zones read, kern.hakios.temp; the S9's default); the stop at
+ * 110 C not yet reached there. Not in QEMU (it has no such block: tmu= must not be given there). The kernel builds with
+ * it in and out; the arithmetic is checked on the host (tools/exynos-tmu-test.sh) against the BSP's own
  * formulas and the dt's constants. Not known: whether S-Boot leaves the TMU running and its PCLK open (step 1 says), whether
  * the APM, which owns the TMU under Android, changes its registers while HakiOS runs, and the BIG zone's "balance" mode.
  *

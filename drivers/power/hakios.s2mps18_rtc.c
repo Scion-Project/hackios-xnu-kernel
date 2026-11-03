@@ -1,7 +1,8 @@
 /*
  * The Galaxy S9's real-time clock: the RTC block of its S2MPS18 PMIC, read once at start-up so that the kernel's calendar
  * starts at the phone's own time instead of the time the image was built (epoch=). READ ONLY: nothing is written to
- * the PMIC. Only with boot-arg rtc_pmic=1 (off by default: not yet seen on the phone).
+ * the PMIC. Only with boot-arg rtc_pmic=1, the S9's default (devices/starlte/configs/starlte.config): its read seen
+ * working on the phone, 2 November.
  *
  * The way. The S2MPS18 is on SPEEDY, which the APM owns: the AP reaches its registers only by asking the APM through
  * ACPM (drivers/core/hakios.exynos_acpm.c, channel 2, the same path the GPU's and the touch screen's supplies take, and
