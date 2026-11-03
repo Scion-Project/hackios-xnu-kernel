@@ -39,6 +39,8 @@
  *
  * Boot-args:
  *   abox=N             the first N of ABOX's eight steps (1 only looks, 7 plays a tone, 8 serves iOS); 0 or none: left alone
+ *   abox_tone=1        with abox=8, step 7's tone as well before iOS has the stream (none: step 7 is passed over, so that
+ *                      the phone does not beep at every boot; abox=7 always plays it, and "abox tone" on the console does)
  *   abox_secs=S        how long step 7 plays its tone, 1 to 10 seconds (3)
  *   abox_route=0       UAIF1 from SIFS0, the mixer (SPUS_CTRL0 OUT 1, MIXP_FORMAT, ROUTE_CTRL0 [7:4] = 1), instead of SIFS1
  *                      (SPUS OUT0 straight, SPUS_CTRL1 [18:16] = 0, ROUTE_CTRL0 [7:4] = 2). On the phone the mixer's way
@@ -1136,6 +1138,7 @@ static void follow_input(void);
 static void follow_headphones(void);
 static volatile bool hp_on;                     /* iOS's sound goes to UAIF0 (the codec, the headphones), not to UAIF1 */
 static uint32_t mic_for_ios;                    /* abox_mic: /dev/hakios-mic, fed through WDMA1 while iOS listens */
+static uint32_t boot_tone;                      /* abox_tone: with abox=8, step 7's tone at boot too */
 
 static bool
 stream_start(void)
@@ -1942,6 +1945,11 @@ abox_thread_run(void)
 	}
 	for (step = 1; step <= steps && step <= STEPS; step++) {
 		say("abox: %u: %s\n", step, step_names[step]);
+		if (step == 7 && steps >= 8 && !boot_tone) {
+			/* (step 8 starts the same stream itself: the tone was only a test, heard at every boot) */
+			say("abox: 7: no test tone on the way to step 8 (abox_tone=1 plays it)\n");
+			continue;
+		}
 		if (step == 8) {
 			step_sink();            /* returns only when the stream could not start or has failed */
 			say("abox: 8: the stream has stopped\n");
@@ -2022,6 +2030,7 @@ hakios_exynos_abox_init(void)
 	PE_parse_boot_argn("abox_rdma_fmt", &rdma_fmt, sizeof(rdma_fmt));
 	PE_parse_boot_argn("abox_ring_pa", &ring_pa, sizeof(ring_pa));
 	PE_parse_boot_argn("abox_mic", &mic_for_ios, sizeof(mic_for_ios));
+	PE_parse_boot_argn("abox_tone", &boot_tone, sizeof(boot_tone));
 	busy = 1;
 	if (kernel_thread_start(abox_thread, NULL, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
