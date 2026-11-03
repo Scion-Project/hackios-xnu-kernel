@@ -1,0 +1,121 @@
+What brcmfmac's control messages are, said (HakiOS): the first completions on the control ring as they are, and
+the first ioctls (what was asked, where the response buffer was, how long the response was and its first bytes),
+so a setup that stops at the first ioctl says why; then a line for each ioctl and each of the firmware's events.
+--- a/brcmfmac/msgbuf.c
++++ b/brcmfmac/msgbuf.c
+@@ -291,6 +291,31 @@
+ 
+ static void brcmf_msgbuf_rxbuf_ioctlresp_post(struct brcmf_msgbuf *msgbuf);
+ 
++/*
++ * (HakiOS) the first control messages, said as they are (lx-msgbuf.patch): the chip's completions on the control
++ * ring, raw, and the first ioctls' responses (where the chip wrote them, how long, their first bytes). LX_MSGBUF_SAY
++ * of each, then quiet.
++ */
++#define LX_MSGBUF_SAY	12
++#define LX_MSGBUF_SAY_SHORT	160	/* (then a line each, without the bytes) */
++static u32 lx_msgbuf_ctl_said, lx_msgbuf_ioctl_said, lx_msgbuf_events_said;
++
++static void lx_msgbuf_hex(const char *what, const void *data, u32 len)
++{
++	static const char digits[] = "0123456789abcdef";
++	const u8 *p = data;
++	char line[3 * 64 + 1];
++	u32 i, n = 0;
++
++	for (i = 0; i < len && i < 64; i++) {
++		line[n++] = digits[p[i] >> 4];
++		line[n++] = digits[p[i] & 15];
++		line[n++] = (i & 3) == 3 ? ' ' : '.';
++	}
++	line[n] = 0;
++	pr_err("lx: msgbuf: %s (%u bytes): %s\n", what, len, line);
++}
++
+ 
+ static struct brcmf_msgbuf_pktids *
+ brcmf_msgbuf_init_pktids(u32 nr_array_entries,
+@@ -466,6 +491,13 @@
+ 		memcpy(msgbuf->ioctbuf, buf, buf_len);
+ 	else
+ 		memset(msgbuf->ioctbuf, 0, buf_len);
++	if (lx_msgbuf_ioctl_said < LX_MSGBUF_SAY) {	/* (HakiOS) */
++		pr_err("lx: msgbuf: ioctl %u (trans %u) on interface %d, %u bytes in, %u out; buffer at %#x%08x; "
++		       "%u response and %u event buffers posted\n", cmd, msgbuf->reqid, ifidx, buf_len, len,
++		       msgbuf->ioctbuf_phys_hi, msgbuf->ioctbuf_phys_lo, msgbuf->cur_ioctlrespbuf, msgbuf->cur_eventbuf);
++		lx_msgbuf_hex("ioctl request", request, sizeof(*request));
++		lx_msgbuf_hex("ioctl data", msgbuf->ioctbuf, buf_len);
++	}
+ 
+ 	err = brcmf_commonring_write_complete(commonring);
+ 	brcmf_commonring_unlock(commonring);
+@@ -507,8 +539,40 @@
+ 	timeout = brcmf_msgbuf_ioctl_resp_wait(msgbuf);
+ 	if (!timeout) {
+ 		bphy_err(drvr, "Timeout on response for query command\n");
++		/* (HakiOS) */
++		pr_err("lx: msgbuf: ioctl %u (trans %u) unanswered; completed %d; %u response and %u event buffers posted\n",
++		       cmd, msgbuf->reqid, msgbuf->ctl_completed, msgbuf->cur_ioctlrespbuf, msgbuf->cur_eventbuf);
+ 		return -EIO;
+ 	}
++	if (lx_msgbuf_ioctl_said >= LX_MSGBUF_SAY && lx_msgbuf_ioctl_said < LX_MSGBUF_SAY_SHORT) {	/* (HakiOS) */
++		char name[17];
++		u32 n;
++
++		lx_msgbuf_ioctl_said++;
++		for (n = 0; buf != NULL && (cmd == 262 || cmd == 263) && n < len && n < sizeof(name) - 1 &&
++		     ((char *)buf)[n] >= 0x20 && ((char *)buf)[n] < 0x7f; n++)
++			name[n] = ((char *)buf)[n];
++		name[n] = 0;
++		pr_err("lx: msgbuf: ioctl %u%s%s answered: status %d, %u bytes\n", cmd, n ? " " : "", name,
++		       msgbuf->ioctl_resp_status, msgbuf->ioctl_resp_ret_len);
++	}
++	if (lx_msgbuf_ioctl_said < LX_MSGBUF_SAY) {	/* (HakiOS) */
++		struct brcmf_msgbuf_pktids *ids = msgbuf->rx_pktids;
++		u32 id = msgbuf->ioctl_resp_pktid;
++
++		lx_msgbuf_ioctl_said++;
++		pr_err("lx: msgbuf: ioctl %u answered: status %d, %u bytes, buffer id %u\n", cmd,
++		       msgbuf->ioctl_resp_status, msgbuf->ioctl_resp_ret_len, id);
++		if (id < ids->array_size && ids->array[id].skb != NULL) {
++			struct sk_buff *rs = ids->array[id].skb;
++
++			pr_err("lx: msgbuf: its buffer at %#llx (the radio's), %u bytes long, data offset %u\n",
++			       (unsigned long long)ids->array[id].physaddr, rs->len, ids->array[id].data_offset);
++			lx_msgbuf_hex("the response", rs->data, msgbuf->ioctl_resp_ret_len);
++		} else {
++			pr_err("lx: msgbuf: buffer id %u is none of the %u posted\n", id, ids->array_size);
++		}
++	}
+ 
+ 	skb = brcmf_msgbuf_get_pktid(msgbuf->drvr->bus_if->dev,
+ 				     msgbuf->rx_pktids,
+@@ -1135,6 +1199,14 @@
+ 	}
+ 
+ 	skb->protocol = eth_type_trans(skb, ifp->ndev);
++	if (lx_msgbuf_events_said < LX_MSGBUF_SAY_SHORT && skb->len >= 40) {	/* (HakiOS) */
++		const u8 *e = skb->data + 14 + 10;	/* (the Ethernet header, Broadcom's, then the event's) */
++
++		lx_msgbuf_events_said++;
++		pr_err("lx: msgbuf: event %u on interface %u: status %u, reason %u, %u bytes (type %#06x)\n",
++		       get_unaligned_be32(e + 4), event->msg.ifidx, get_unaligned_be32(e + 8), get_unaligned_be32(e + 12),
++		       skb->len, be16_to_cpu(skb->protocol));
++	}
+ 
+ 	brcmf_fweh_process_skb(ifp->drvr, skb, 0, GFP_KERNEL);
+ 
+@@ -1291,6 +1363,13 @@
+ 	struct msgbuf_common_hdr *msg;
+ 
+ 	msg = (struct msgbuf_common_hdr *)buf;
++	if (msg->msgtype != MSGBUF_TYPE_RX_CMPLT && msg->msgtype != MSGBUF_TYPE_TX_STATUS &&
++	    lx_msgbuf_ctl_said < LX_MSGBUF_SAY) {	/* (HakiOS) */
++		char what[48];
++
++		snprintf(what, sizeof(what), "completion %u, type %#x", lx_msgbuf_ctl_said++, msg->msgtype);
++		lx_msgbuf_hex(what, buf, sizeof(struct msgbuf_ioctl_resp_hdr));
++	}
+ 	switch (msg->msgtype) {
+ 	case MSGBUF_TYPE_GEN_STATUS:
+ 		brcmf_dbg(MSGBUF, "MSGBUF_TYPE_GEN_STATUS\n");

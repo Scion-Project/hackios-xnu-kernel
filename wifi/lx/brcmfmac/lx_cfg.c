@@ -183,11 +183,16 @@ lx_netif_carrier_ok(struct net_device *ndev)
 	return (ndev == c.ndev && c.carrier);
 }
 
-/* Linux's takes the Ethernet header off; this one leaves it, for netif_rx() below, and says the frame's type */
+/*
+ * Linux's takes the Ethernet header off; this one leaves it, for netif_rx() below, and says the frame's type. The
+ * MAC header is where the frame begins, as Linux's sets it: brcmf_fweh_process_skb() finds the firmware's events
+ * there (skb_mac_header()), and dropped every one of them while it pointed elsewhere (wifi-a8's scan heard nothing).
+ */
 __be16
 lx_eth_type_trans(struct sk_buff *skb, struct net_device *ndev)
 {
 	skb->dev = ndev;
+	skb_reset_mac_header(skb);
 	if (skb->len < ETH_HLEN) {
 		return (0);
 	}

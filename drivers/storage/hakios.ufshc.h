@@ -162,11 +162,29 @@ int ufshc_write(uint8_t lun, uint64_t offset, const uint8_t *src, uint64_t len);
 int ufshc_sync(void);
 int ufshc_selftest_refusal(uint8_t lun, uint64_t lba);
 
+/* ufs=3 (hakios.ufs.c): own mode on the S9 with the loader's block service as reference and fallback */
+bool ufshc_take(const char *soc, uint32_t step, volatile uint32_t *list_in, const uint8_t *ref, uint32_t ref_blocks);
+const char *ufshc_take_why(void);       /* why it was not taken (the first reason), or NULL */
+bool ufshc_release(const char *why);
+void ufshc_log_direct(bool on);
+int ufshc_deny(uint8_t lun, uint64_t first, uint64_t blocks, const char *what);
+void ufshc_deny_lun(uint8_t lun);
+void ufshc_force_ro(void);
+const char *ufshc_write_refusal(uint8_t lun, uint64_t lba, uint32_t blocks);
+
 /* both */
 bool ufshc_available(void);
 void ufshc_set_luns(uint32_t mask);
 int ufshc_read(uint8_t lun, uint64_t offset, uint8_t *dst, uint64_t len);
 void ufshc_report(const char *when);
+bool ufshc_speed(char *buf, size_t size);    /* own mode: MB/s over the last 30 s and the requests' latency, one line */
 void hakios_ufs_quiesce(void);
+
+/* ufs=3's summary (hakios.ufs.c): how it is said */
+#define HAKIOS_UFS_SAY_LOG        1     /* the loader's log, and so the USB console */
+#define HAKIOS_UFS_SAY_PRINTF     2     /* the kernel's log (dmesg, last_kmsg) */
+#define HAKIOS_UFS_SAY_NUFS_ONLY  4     /* nothing unless ufs=3 was asked */
+void hakios_ufs_summary(const char *when, int how);
+void hakios_ufs_refused(const char *why);
 
 #endif

@@ -17,6 +17,8 @@
  * another network -- as Darwin itself rejoins the networks it knows. If that other network cannot
  * be joined (a wrong passphrase), the standing one is joined again.
  */
+#include <stdarg.h>
+#include <kern/clock.h>
 #include <kern/kalloc.h>
 #include <kern/locks.h>
 #include <kern/sched_prim.h>
@@ -29,6 +31,8 @@
 #include <sys/systm.h>
 
 extern void thread_set_thread_name(thread_t thread, const char *name);
+extern void loader_log_line(const char *line);
+extern kern_return_t thread_terminate(thread_t thread);
 
 #define HEARD_MOST      128
 #define CHANNELS_MOST   96
@@ -368,4 +372,91 @@ hakios_sta_address(uint8_t *address)
 		memcpy(address, ops->address, 6);
 	}
 	return ops != NULL;
+}
+
+/* ---- the USB console's "wifi scan" ------------------------------------------------------------------------ */
+
+static volatile bool console_scanning;
+
+static void
+console_say(const char *format, ...)
+{
+	char line[200];
+	va_list ap;
+
+	va_start(ap, format);
+	vsnprintf(line, sizeof(line), format, ap);
+	va_end(ap);
+	loader_log_line(line);
+}
+
+/* what is asked of the station and what it heard, as anybody asks: power if it is off, a scan of every channel */
+static void
+console_scan_runs(__unused void *parameter, __unused wait_result_t result)
+{
+	static struct hakios_sta_scan what;
+	static struct hakios_sta_bss bss;
+	unsigned waited, i;
+	int error;
+
+	if (!hakios_sta_present()) {
+		console_say("usb: wifi scan: no station offered (the radio's driver did not get to brcmfmac=7)\n");
+		goto out;
+	}
+	if (!hakios_sta_powered()) {
+		console_say("usb: wifi scan: the radio is off: it is turned on first\n");
+		if ((error = hakios_sta_ask_power(true)) != 0) {
+			console_say("usb: wifi scan: turning it on fails: %d\n", error);
+			goto out;
+		}
+		for (waited = 0; hakios_sta_busy() && waited < 200; waited++) {
+			delay_for_interval(100, NSEC_PER_MSEC);
+		}
+	}
+	bzero(&what, sizeof(what));		/* (no name, every channel, asking) */
+	if ((error = hakios_sta_ask_scan(&what)) != 0) {
+		console_say("usb: wifi scan: the station refuses the scan: %d\n", error);
+		goto out;
+	}
+	console_say("usb: wifi scan: asked; the answer in a few seconds\n");
+	for (waited = 0; hakios_sta_busy() && waited < 300; waited++) {
+		delay_for_interval(100, NSEC_PER_MSEC);
+	}
+	console_say("usb: wifi scan: %s after %u.%u s; heard:\n", hakios_sta_busy() ? "STILL UNDER WAY" : "over", waited / 10,
+	    waited % 10);
+	for (i = 0; hakios_sta_heard(i, &bss); i++) {
+		char name[33];
+		unsigned n;
+
+		for (n = 0; n < bss.ssid_length && n < 32; n++) {
+			name[n] = bss.ssid[n] >= 0x20 && bss.ssid[n] < 0x7f ? (char)bss.ssid[n] : '?';
+		}
+		name[n] = 0;
+		console_say("usb: wifi scan: %2u  %02x:%02x:%02x:%02x:%02x:%02x  %4u MHz  %4d dBm  \"%s\"\n", i, bss.bssid[0],
+		    bss.bssid[1], bss.bssid[2], bss.bssid[3], bss.bssid[4], bss.bssid[5], bss.frequency, bss.rssi,
+		    n != 0 ? name : "(hidden)");
+	}
+	console_say("usb: wifi scan: %u access points\n", i);
+out:
+	console_scanning = false;
+	thread_terminate(current_thread());
+}
+
+void
+hakios_sta_console_scan(void)
+{
+	thread_t thread;
+
+	if (console_scanning) {
+		console_say("usb: wifi scan: one is under way\n");
+		return;
+	}
+	console_scanning = true;
+	if (kernel_thread_start(console_scan_runs, NULL, &thread) != KERN_SUCCESS) {
+		console_scanning = false;
+		console_say("usb: wifi scan: no thread for it\n");
+		return;
+	}
+	thread_set_thread_name(thread, "sta-console-scan");
+	thread_deallocate(thread);
 }

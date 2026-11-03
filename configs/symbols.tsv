@@ -66,17 +66,21 @@ AVF_EXIT	arg	avf_exit	User space	k	1001-avf-psci-system-off.patch
 BACKLIGHT	arg	backlight	GPU and display	k	hakios.backlight.cpp	
 BATTERY	arg	battery	Audio and battery	kl	hakios.adsp.c,hakios.battery.c,hakios.scfb_battery.c,loader.c	
 BATTMGR	arg	battmgr	Audio and battery	k	hakios.adsp.c	every property once, for the log (which number is which on this phone's firmware)
-BRCMFMAC	arg	brcmfmac	Wi-Fi	k	hakios.brcmfmac.c,lx_brcmf.c	brcmfmac's probe: its PCI device table, BAR0 and BAR1 mapped, bus mastering on, the chip's ID
+BRCMFMAC	arg	brcmfmac	Wi-Fi	k	hakios.bcm4361_bt.c,hakios.brcmfmac.c,lx_brcmf.c	brcmfmac's probe: its PCI device table, BAR0 and BAR1 mapped, bus mastering on, the chip's ID
 BRCMFMAC_DEBUG	arg	brcmfmac_debug	Wi-Fi	k	lx_brcmf.c	
 BRCMFMAC_POLL	arg	brcmfmac_poll	Wi-Fi	k	lx_pci.c	
 BRCMFMAC_POLL_MS	arg	brcmfmac_poll_ms	Wi-Fi	k	lx_pci.c	
+BRCMFMAC_TCM_IDX	arg	brcmfmac_tcm_idx	Wi-Fi	k	lx_brcmf.c	the rings' indices stay in the chip's RAM, not written into ours by its DMA (lx-state.patch)
 BRIGHTNESS_BRIDGE	arg	brightness_bridge	User space	u	inject_sb.c	the brightness the user sets (Control Center's slider, Settings) is taken to the panel
 BT	arg	bt	User space	k	hakios.bcm4361_bt.c,hakios.bt.c	
 BT_AGAIN	arg	bt_again	User space	k	hakios.bt.c	the second look this many seconds later (0: no second look; 30)
 BT_EXPANDER_RESET	arg	bt_expander_reset	User space	k	hakios.bcm4361_bt.c	at bt=2 and up, take the expander out of reset if it is held there
-BT_HCD	arg	bt_hcd	User space	k	hakios.bcm4361_bt.c	the patch file's name in fw/ (default bcm4361B2.hcd)
+BT_HCD	arg	bt_hcd	User space	k	hakios.bcm4361_bt.c	the patch file's name in fw/ (default bcm4361B2.hcd); without it, the phone's own from VENDOR
 BT_KEEP	arg	bt_keep	User space	k	hakios.bcm4361_bt.c	leave the chip powered at the end (default: BT_EN and BT_WAKE low once the steps are done or one fails)
+BT_MODULE	arg	bt_module	User space	k	hakios.bcm4361_bt.c	murata or semco: which patch (bcm4361B2_<m>.hcd; default: the module Wi-Fi read in OTP, else a guess)
 BT_UART_MHZ	arg	bt_uart_mhz	User space	k	hakios.bcm4361_bt.c	UART_BT's clock in MHz, if bt=1 shows the divider or mux not as Android leaves them (default 200)
+BT_VENDOR	arg	bt_vendor	User space	k	hakios.bcm4361_bt.c	never read the patch from the phone's VENDOR partition (default: read it there with ufs=2)
+BT_VENDOR_PART	arg	bt_vendor_part	User space	k	hakios.bcm4361_bt.c	the partition the patch is read from (default VENDOR)
 BUTTONS	arg	buttons	Touch and buttons	k	hakios.buttons.c	
 BUTTONS_STEPS	arg	buttons_steps	Touch and buttons	k	hakios.buttons.c	
 CA_VBL	arg	ca_vbl	User space	u	inject.c	CoreAnimation's frame clock from the display driver's refresh notifications
@@ -142,7 +146,7 @@ FBHEIGHT	arg	fbheight	GPU and display	k	MiniIOMobileFramebuffer.cpp
 FBSCALE	arg	fbscale	GPU and display	k	MiniIOMobileFramebuffer.cpp	the same 375 x 812 points drawn at two pixels a point instead of three
 FBTRACE	arg	fbtrace	GPU and display	k	MiniIOMobileFramebuffer.cpp	log the first N calls of every selector (default 3)
 FBWIDTH	arg	fbwidth	GPU and display	k	MiniIOMobileFramebuffer.cpp	
-FPS_LOG	arg	fps_log	GPU and display	k	MiniIOMobileFramebuffer.cpp	a line a second while frames come ("fps: ...", in the loader's log and the kernel's): swaps
+FPS_LOG	arg	fps_log	GPU and display	k	MiniIOMobileFramebuffer.cpp,hakios.ufs.c	a line a second while frames come ("fps: ...", in the loader's log and the kernel's): swaps
 GAMUT	arg	gamut	Loader	l	loader.c	
 GL	arg	gl	User space	u	inject.c,inject_sb.c	not even with a GPU; gl=1: also without one, by Mesa's software driver (slow; for working on eagl.c in QEMU)
 GLBLIT	arg	glblit	GPU and display	u	eagl.c	the surface's memory, as before
@@ -184,6 +188,13 @@ GLTRACE_SHADERS	arg	gltrace_shaders	GPU and display	u	eagl.c	the text of the sha
 GLTRACE_UNIFORMS	arg	gltrace_uniforms	GPU and display	u	eagl.c	what the program of a traced draw was given, by the names its shaders use (coord_arg, texmat0, ...)
 GLWAIT	arg	glwait	GPU and display	u	eagl.c	
 GLYES	arg	glyes	User space	u	inject.c	the renderer is made to answer that it has those functions after all
+GOV_BOOST_BIG	arg	gov_boost_big	User space	k	hakios.exynos_cpufreq.c	the M3s' floor while touched (1469000; 0: no touch boost for them)
+GOV_BOOST_LIT	arg	gov_boost_lit	User space	k	hakios.exynos_cpufreq.c	the A55s' floor while touched (1690000; 0: none)
+GOV_BOOST_MS	arg	gov_boost_ms	User space	k	hakios.exynos_cpufreq.c	how long the touch boost holds after the last finger event (300; 0: no touch boost)
+GOV_DOWN	arg	gov_down	User space	k	hakios.exynos_cpufreq.c	windows in a row that want less before the rate comes down (5; 1 to 50)
+GOV_FRAME_BIG	arg	gov_frame_big	User space	k	hakios.exynos_cpufreq.c	the M3s' floor while frames come (1261000; 0: no frame boost)
+GOV_FRAME_MS	arg	gov_frame_ms	User space	k	hakios.exynos_cpufreq.c	a frame this recent keeps the frame boost on (100; 20 to 1000)
+GOV_TARGET	arg	gov_target	User space	k	hakios.exynos_cpufreq.c	the busiest core's share wanted at the new rate (60; 30 to 95)
 GPU3D	arg	gpu3d	User space	k	hakios.vgpu3d_xnu.c	
 GPU3D_SIZE	arg	gpu3d_size	User space	k	hakios.vgpu3d_xnu.c	
 GPU_CACHED	arg	gpu_cached	GPU and display	k	hakios.gpu.cpp	
@@ -192,10 +203,12 @@ GPU_KEEP	arg	gpu_keep	GPU and display	k	hakios.gpu.cpp
 GPU_LOG	arg	gpu_log	GPU and display	k	hakios.adreno.c	
 GPU_RECOVER	arg	gpu_recover	GPU and display	k	hakios.adreno.c	a submission the core never finishes does not cost the rest of the run
 GPU_VA	arg	gpu_va	GPU and display	k	hakios.adreno.c	
+HALT_OFF	arg	halt_off	Chip, thermal and PMIC	k	hakios.exynos_poweroff.c	what a halt does: 0 the loader's way (the default), 1 panel off and PS_HOLD, 2 also the APM stopped first
 HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c	
 IMMEDIATE_NMI	arg	immediate_NMI	User space	k	1509-m3-diag-and-pan-off.patch	
 IOAES	arg	ioaes	User space	k	MiniIOAESAccelerator.cpp	no IOAESAccelerator at all, as the kernel was before this driver
 ISA_FLOOR	arg	isa_floor	User space	k	1510-isa-floor.patch	
+LOADER_PLATFORM	arg	loader_platform	Loader	l	loader.c	
 M3_DIAG	arg	m3_diag	User space	k	1509-m3-diag-and-pan-off.patch	
 M3_FLUSH	arg	m3_flush	User space	k	1509-m3-diag-and-pan-off.patch	
 M3_IDS	arg	m3_ids	User space	k	1509-m3-diag-and-pan-off.patch	
@@ -364,11 +377,15 @@ UFS_NATIVE_BUFFER	hex	ufs_native_buffer	Storage and APFS	k	hakios.ufshc.c
 UFS_NATIVE_CHECK	arg	ufs_native_check	Storage and APFS	k	hakios.ufs.c	what this kernel's own driver reads is what the loader reads, byte for byte
 UFS_NATIVE_HANG	arg	ufs_native_hang	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_LEAVE	arg	ufs_native_leave	Storage and APFS	k	hakios.ufshc.c	
+UFS_NATIVE_LOG	arg	ufs_native_log	Storage and APFS	k	hakios.ufs.c	
+UFS_NATIVE_RO	arg	ufs_native_ro	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE_SLOTS	arg	ufs_native_slots	Storage and APFS	k	hakios.ufshc.c	
-UFS_NATIVE_SOC	arg	ufs_native_soc	Storage and APFS	k	hakios.ufshc.c	the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810
+UFS_NATIVE_SOAK	arg	ufs_native_soak	Storage and APFS	k	hakios.ufs.c	
+UFS_NATIVE_SOC	arg	ufs_native_soc	Storage and APFS	k	hakios.ufs.c,hakios.ufshc.c	the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810
 UFS_NATIVE_SPIN	arg	ufs_native_spin	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_STEP	arg	ufs_native_step	Storage and APFS	k	hakios.ufshc.c	own mode goes as far as step N: 1 look, 2 the link, 3 NOP OUT, 4 READ CAPACITY, 5 all (the GPTs)
 UFS_NATIVE_TEST	arg	ufs_native_test	Storage and APFS	k	hakios.ufs.c	own mode's test at start: the refusals, and writes put back (2: one block left written)
+UFS_NATIVE_VERIFY	arg	ufs_native_verify	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE_WRITE	arg	ufs_native_write	Storage and APFS	k	hakios.ufs.c	own mode: the one partition that takes writes, through /dev/rufs_NAME (never EFS, BOOT, PARAM ...)
 UFS_PROBE	arg	ufs_probe	Loader	l	loader.c	
 USB_GADGET	arg	usb_gadget	USB	k	hakios.dwc3.c	the steps (0, or none: nothing)
@@ -407,8 +424,10 @@ WIFI_ASK	arg	wifi_ask	Wi-Fi	k	hakios.wifi.c	step 14 also asks that service a que
 WIFI_BA	arg	wifi_ba	Wi-Fi	k	lx_80211.c	
 WIFI_CAL	arg	wifi_cal	Wi-Fi	k	hakios.wlfw.c	
 WIFI_DIRTY	arg	wifi_dirty	Wi-Fi	k	hakios.wifi.c	
+WIFI_DMA_AT	arg	wifi_dma_at	Wi-Fi	k	hakios.lx.c	
 WIFI_FILE	arg	wifi_file	Wi-Fi	k	hakios.wifi.c	with wifi=1: the network of fw/network is not joined at the start
 WIFI_FINE	arg	wifi_fine	Wi-Fi	k	hakios.wifi.c	such a step waits like that before every single write and call
+WIFI_FW	arg	wifi_fw	Wi-Fi	k	hakios.brcmfmac.c	the station firmware's bcmdhd name, in fw/ or VENDOR (default bcmdhd_sta.bin_b2 for B2)
 WIFI_HOLD	arg	wifi_hold	Wi-Fi	k	lx_bus.c	
 WIFI_IRQ	arg	wifi_irq	Wi-Fi	k	lx_bus.c	
 WIFI_JOIN	arg	wifi_join	Wi-Fi	k	lx_bus.c	
@@ -420,18 +439,26 @@ WIFI_LX_STEP	arg	wifi_lx_step	Wi-Fi	k	lx_base.c
 WIFI_MAC	arg	wifi_mac	Wi-Fi	k	hakios.brcmfmac.c,hakios.wifi.c	the radio's own address for the driver (hakios_wifi_radio_address() below; xl takes it from a file that is not in the repository)
 WIFI_MISSION	arg	wifi_mission	Wi-Fi	k	hakios.wlfw.c	
 WIFI_NEW	arg	wifi_new	Wi-Fi	k	hakios.wifi.c	steps K and later have not been seen to work (default: the last one)
+WIFI_NVRAM	arg	wifi_nvram	Wi-Fi	k	hakios.brcmfmac.c	the NVRAM's name there (default: the module's, from the chip's OTP; else a guess, logged)
 WIFI_PAUSE	arg	wifi_pause	Wi-Fi	k	hakios.wifi.c	
 WIFI_PCIE	arg	wifi_pcie	Wi-Fi	k	hakios.exynos_pcie.c	a look, reading only: the PMU's isolation, CMU_FSYS1's gates and Q-channels, the five pins
+WIFI_PCIE_COHERENT	arg	wifi_pcie_coherent	Wi-Fi	k	hakios.exynos_pcie.c	
+WIFI_PCIE_MMU_BYPASS	arg	wifi_pcie_mmu_bypass	Wi-Fi	k	hakios.exynos_pcie.c	
+WIFI_PCIE_MMU_PROBE	arg	wifi_pcie_mmu_probe	Wi-Fi	k	hakios.exynos_pcie.c	
 WIFI_PCIE_TRIES	arg	wifi_pcie_tries	Wi-Fi	k	hakios.exynos_pcie.c	
 WIFI_PCIE_UNGATE	arg	wifi_pcie_ungate	Wi-Fi	k	hakios.exynos_pcie.c	
+WIFI_PSK	arg	wifi_psk	Wi-Fi	k	hakios.brcmfmac.c	its passphrase, the same way (8 to 63 bytes); never logged, but the command line is the image's
 WIFI_QUIET	arg	wifi_quiet	Wi-Fi	k	lx_bus.c	
 WIFI_RADIO_READ	arg	wifi_radio_read	Wi-Fi	k	hakios.wifi.c	step 16 does read (2: whatever mode the firmware is in)
 WIFI_READY	arg	wifi_ready	Wi-Fi	k	hakios.wlfw.c	
 WIFI_RETURN	arg	wifi_return	Wi-Fi	k	hakios.wifi.c	when all is over, go back to the loader instead of starting the system
 WIFI_SCAN	arg	wifi_scan	Wi-Fi	k	lx_bus.c	
 WIFI_SMMU	arg	wifi_smmu	Wi-Fi	k	hakios.wifi.c	before any step: read what the boot chain has set up in the SMMU for the radio's stream (smmu_look() below; nothing is written)
+WIFI_SSID	arg	wifi_ssid	Wi-Fi	k	hakios.brcmfmac.c	brcmfmac=8 without fw/network: the network's name, a byte as %XX (a space is %20)
 WIFI_STATION	arg	wifi_station	Wi-Fi	k	lx_bus.c	
 WIFI_STEP	arg	wifi_step	Wi-Fi	k	hakios.wifi.c	
+WIFI_VENDOR	arg	wifi_vendor	Wi-Fi	k	hakios.brcmfmac.c	never read the radio's files from the phone's VENDOR partition (default: read them there, ufs=2)
+WIFI_VENDOR_PART	arg	wifi_vendor_part	Wi-Fi	k	hakios.brcmfmac.c	the partition the radio's files are read from (default VENDOR)
 WIFI_WAIT	arg	wifi_wait	Wi-Fi	k	hakios.wifi.c	how long step 11 watches for the DSP to say that it is up (default 10)
 WIFI_WATCH	arg	wifi_watch	Wi-Fi	k	hakios.wifi.c	
 WIFI_WIDE	arg	wifi_wide	Wi-Fi	k	lx_80211.c	

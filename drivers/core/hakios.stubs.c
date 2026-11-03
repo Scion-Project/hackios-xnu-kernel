@@ -19,8 +19,10 @@
 #include <stdint.h>
 #include <sys/errno.h>
 #include <sys/types.h>
+#include <mach/boolean.h>
 #include <sys/hakios.audio.h>
 #include <sys/hakios.exynos_abox.h>
+#include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.exynos_pcie.h>
 #include <sys/hakios.input.h>
 #include <sys/hakios.max98512.h>
@@ -38,6 +40,8 @@ void hakios_ufs_quiesce(void);
 void hakios_var_save_on_return(void);
 void hakios_mic_quiesce(void);
 void HakiosWLANStart(const char *interface, const uint8_t *address);
+void hakios_exynos_halt_off(boolean_t reboot);          /* (machine_routines.c's halt_all_cpus(), patch 1510) */
+bool hakios_s6e3ha8_blank(int (*say)(const char *, ...));
 
 #ifndef HAKIOS_EXYNOS_ACPM
 void hakios_exynos_dvfs_start(void);
@@ -45,6 +49,9 @@ void
 hakios_exynos_dvfs_start(void)
 {
 }
+/* (hakios.exynos_poweroff.c asks for the APM's stop with halt_off=2: no ACPM, nothing to stop) */
+bool hakios_acpm_init(__unused int (*say)(const char *, ...)) { return false; }
+int hakios_acpm_stop(void) { return ENXIO; }
 #endif
 
 #ifndef HAKIOS_S2MPS18_RTC
@@ -64,6 +71,11 @@ hakios_exynos_cpufreq_gov_start(void)
 {
 	return false;
 }
+/* the governor's boosts (hakios.s6sy761.c, MiniIOMobileFramebuffer.cpp): no governor, nothing to boost */
+void hakios_exynos_cpufreq_touch(void);
+void hakios_exynos_cpufreq_touch(void) {}
+void hakios_exynos_cpufreq_frame(void);
+void hakios_exynos_cpufreq_frame(void) {}
 #endif
 
 #ifndef HAKIOS_EXYNOS_TMU
@@ -116,6 +128,7 @@ void hakios_exynos_pcie_quiesce(void) {}
 #endif
 #ifndef HAKIOS_BRCMFMAC
 void hakios_brcmfmac_start(void) {}     /* wifi_pcie=6 in a kernel without the S9's radio driver: the link stays as it is */
+const char *hakios_bcm4361_module(void) { return NULL; }       /* nobody reads the module's OTP */
 #endif
 #if !defined(HAKIOS_WIFI) && !defined(HAKIOS_BRCMFMAC)
 extern int vprintf(const char *format, va_list ap) __printflike(1, 0);
@@ -162,6 +175,11 @@ void hakios_max98512_quiesce(void) {}
 #endif
 #ifndef HAKIOS_S6E3HA8
 void hakios_s6e3ha8_init(void) {}
+bool hakios_s6e3ha8_blank(__unused int (*say)(const char *, ...)) { return false; }      /* "not blanked" */
+#endif
+
+#ifndef HAKIOS_EXYNOS_POWEROFF
+void hakios_exynos_halt_off(__unused boolean_t reboot) {}  /* a halt hands the phone to the loader, as it always did */
 #endif
 #ifndef HAKIOS_EXYNOS_DPU
 /* the display's own scan-out (MiniIOMobileFramebuffer.cpp, fb_flip/fb_dpp/fps_log): none, frames go into the boot framebuffer */
@@ -205,7 +223,16 @@ void hakios_ufs_init(void) {}
 void hakios_ufs_report(__unused const char *when) {}
 bool hakios_ufs_dev(__unused dev_t dev) { return false; }
 void hakios_ufs_quiesce(void) {}
+void hakios_ufs_summary(const char *when, int how);
+void hakios_ufs_summary(__unused const char *when, __unused int how) {}      /* no flash driver: nothing to say */
 void hakios_var_save_on_return(void) {}         /* no flash, so no data volume to save into it */
+int hakios_partition_file(__unused const char *partition, __unused const char *mount, __unused const char *path,
+    __unused uint64_t max, const uint8_t **data, uint64_t *size)
+{
+	*data = NULL;
+	*size = 0;
+	return ENXIO;                           /* no flash: no partition's file (the drivers say so and go on without) */
+}
 #endif
 
 #ifndef HAKIOS_VIRTIO_BLK
@@ -251,6 +278,8 @@ errno_t hakios_apple80211_ioctl(__unused u_long command, __unused void *data) { 
 void HakiosWLANStart(__unused const char *interface, __unused const uint8_t *address) {}
 void hakios_sta_attach(__unused const struct hakios_sta_ops *ops) {}   /* (hakios.lx.c: a radio's station, nobody to give it to) */
 void hakios_sta_lost(__unused int error) {}
+extern void loader_log_line(const char *line);
+void hakios_sta_console_scan(void) { loader_log_line("usb: wifi scan: this kernel has no station (WIFI_STA)\n"); }
 #endif
 
 #ifndef HAKIOS_ADSP

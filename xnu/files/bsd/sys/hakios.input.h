@@ -47,6 +47,7 @@ void hakios_s6sy761_init(void);        /* boot-arg s6sy761=1: the Galaxy S9's to
 void hakios_s6e3ha8_init(void);        /* boot-arg panel=1: the Galaxy S9's panel brightness (kern.hakios.brightness) */
 void hakios_s2mpb02_torch_init(void);  /* boot-arg torch=N on the Galaxy S9: its flashlight (/dev/hakios-torch) */
 void hakios_exynos_pcie_init(void);    /* boot-arg wifi_pcie=N on the Galaxy S9: PCIe to the BCM4361, stage 1 */
+const char *hakios_bcm4361_module(void); /* the S9's radio module, "murata" or "semco", once Wi-Fi read its OTP; or NULL */
 void hakios_bcm4361_bt_init(void);     /* boot-arg bt=N on the Galaxy S9: the BCM4361's Bluetooth on UART_BT, stage 1 */
 void hakios_s2mpb02_torch_quiesce(void); /* loader_return(): the S9's flashlight off, if it is lit */
 void hakios_exynos_camera_init(void);   /* boot-arg cam_s9=N on the Galaxy S9: its front camera, stage 1 */
@@ -57,6 +58,9 @@ void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage
 void hakios_ufs_report(const char *when); /* where reading the storage has spent its time so far */
 bool hakios_ufs_dev(dev_t dev);           /* one of the storage's devices */
 int hakios_ufs_read_partition(const char *name, uint64_t offset, uint8_t *dst, uint64_t len, uint64_t *bytes); /* for drivers */
+/* a file of one of the phone's ext4 partitions, read only, kept for the run (drivers/storage/hakios.ext4.c): 0 or an errno */
+int hakios_partition_file(const char *partition, const char *mount, const char *path, uint64_t max, const uint8_t **data,
+    uint64_t *size);
 /* a file of one of the RAM disks (drivers/storage/hakios.image.c): fw/<name> is the firmware userland/build.sh put there */
 const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
 void hakios_battery_init(void);        /* boot-arg battery=1: Qualcomm UEFI charger state shared by xnuloader */
@@ -99,6 +103,10 @@ void hakios_mpss_init(void);           /* boot-arg modem=1: the phone's modem st
 void hakios_wifi_stop(void);           /* where a run ends in order: the Wi-Fi DSP, if it was started, shut down */
 int hakios_wifi_say(const char *format, ...) __printflike(1, 2);      /* a line of the Wi-Fi steps' log */
 int hakios_wifi_tell(const char *format, ...) __printflike(1, 2);     /* ... one that is said even with wifi=1 */
+/* the radio's log kept (hakios.lx.c: what the Linux driver and its bus said, the last 32 KB), and said again with what
+ * the driver says of itself now: the USB console's "wifi", and once when the console is first up */
+void hakios_wifi_report_add(const char *line);
+void hakios_wifi_report(bool first);
 uint32_t hakios_wifi_option(const char *name);                         /* a boot-arg's number, or what wifi=1 stands for */
 const uint8_t *hakios_wifi_file(const char *name, uint64_t *size);     /* a file of fw/ in the small image, in place */
 bool hakios_wlfw_exchange(uint32_t step);                              /* step 15 of wifi_step=N: hakios.wlfw.c */

@@ -50,6 +50,7 @@
 #include <mach/mach_types.h>
 #include <miscfs/devfs/devfs.h>
 #include <pexpert/pexpert.h>
+#include <pexpert/device_tree.h>
 #include <sys/conf.h>
 #include <sys/uio.h>
 #include <sys/hakios.exynos_hsi2c.h>
@@ -92,7 +93,6 @@ say(const char *format, ...)
 #define CHG_INT_OK      0xB2
 #define CHG_DTLS_01     0xB4
 
-#define DESIGN_MAH      2967            /* the device tree's fuelgauge,capacity */
 
 #define ADC_PA          0x14230000UL
 #define ADC_CON1        0x00
@@ -108,6 +108,39 @@ static const uint16_t temp_adc[] = { 275, 327, 385, 451, 535, 626, 737, 864, 101
 	                             2476, 2702, 2924, 3116, 3294, 3446, 3564, 3676 };
 static const int16_t temp_data[] = { 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150, 100,
 	                             50, 0, -50, -100, -150, -200 };
+
+/*
+ * The other phones of the Exynos 9810 with this chip at the same address, their batteries' own numbers: the Galaxy S9+
+ * (star2lte) and the Note9 (crownlte), told apart by the loader's platform (the device_type of /arm-io, which the loader
+ * writes from its loader_platform=). Same bus, same ADC channel; a bigger battery, and another thermistor curve. From
+ * Samsung's device trees of the BSP (exynos9810-star2lte_eur_open_26.dts and exynos9810-crownlte_eur_open_26.dts:
+ * max77705-fuelgauge capacity, battery temp_table_adc and _data). Written, not seen: nobody has run this on either phone.
+ * Anything else, the S9 included, keeps the S9's numbers above, exactly as before.
+ */
+static const uint16_t star2lte_temp_adc[] = { 275, 336, 415, 483, 551, 667, 764, 903, 1054, 1189, 1384, 1575, 1787, 2042,
+	                                      2263, 2492, 2723, 2937, 3127, 3309, 3463, 3578, 3678 };
+static const uint16_t crownlte_temp_adc[] = { 313, 357, 429, 488, 571, 677, 789, 890, 920, 945, 1037, 1078, 1114, 1194,
+	                                      1234, 1273, 1384, 1429, 1475, 1633, 1861, 2090, 2311, 2495, 2539, 2587, 2717,
+	                                      2737, 2808, 2933, 2969, 3006, 3132, 3165, 3201, 3336, 3481, 3693, 3765 };
+static const int16_t crownlte_temp_data[] = { 900, 850, 800, 750, 700, 650, 600, 560, 550, 540, 510, 500, 490, 460, 450,
+	                                      440, 410, 400, 390, 350, 300, 250, 200, 160, 150, 140, 110, 100, 90, 60, 50,
+	                                      40, 10, 0, -10, -50, -100, -200, -250 };
+static const struct battery_board {
+	const char *platform;           /* the loader's platform name, /arm-io's device_type */
+	uint32_t design_mah;            /* the device tree's fuelgauge,capacity */
+	const uint16_t *adc;
+	const int16_t *data;
+	unsigned n;
+} battery_boards[] = {
+	{ "starlte", 2967, temp_adc, temp_data, sizeof(temp_adc) / sizeof(temp_adc[0]) },
+	{ "star2lte", 3303, star2lte_temp_adc, temp_data, sizeof(star2lte_temp_adc) / sizeof(star2lte_temp_adc[0]) },
+	{ "crownlte", 3753, crownlte_temp_adc, crownlte_temp_data, sizeof(crownlte_temp_adc) / sizeof(crownlte_temp_adc[0]) },
+};
+_Static_assert(sizeof(star2lte_temp_adc) / sizeof(star2lte_temp_adc[0]) == sizeof(temp_data) / sizeof(temp_data[0]),
+    "the S9+'s table has the S9's temperatures");
+_Static_assert(sizeof(crownlte_temp_adc) / sizeof(crownlte_temp_adc[0]) ==
+    sizeof(crownlte_temp_data) / sizeof(crownlte_temp_data[0]), "the Note9's table is in pairs");
+static const struct battery_board *board = &battery_boards[0];
 static vm_offset_t adc;
 #define POLL_MS         5000
 
@@ -209,7 +242,9 @@ static int32_t
 battery_temperature(int *raw_out)
 {
 	int sample[5], low = 0, high = 0, sum = 0, raw;
-	unsigned n = sizeof(temp_adc) / sizeof(temp_adc[0]);
+	const uint16_t *temp_adc = board->adc;
+	const int16_t *temp_data = board->data;
+	unsigned n = board->n;
 
 	*raw_out = -1;
 	if (!adc) {
@@ -283,7 +318,7 @@ battery_read(struct hakios_battery_state *b)
 	}
 	b->charge_uah = (int32_t)cap * 1000;
 	b->full_uah = (int32_t)full * 1000;
-	b->design_uah = DESIGN_MAH * 1000;
+	b->design_uah = (int32_t)board->design_mah * 1000;
 	b->cycles = cycles / 100;
 	b->usb_type = b->external ? 2 : 0;
 	return true;
@@ -666,6 +701,23 @@ hakios_max77705_init(void)
 	PE_parse_boot_argn("max77705_ipclk", &bus.ipclk_mhz, sizeof(bus.ipclk_mhz));
 	if (steps == 0 || bus.ipclk_mhz < 26 || bus.ipclk_mhz > 400) {
 		return;
+	}
+	{
+		/* which phone's battery (battery_boards): /arm-io's device_type, the loader's platform; the S9's if no other's */
+		DTEntry node;
+		void const *prop;
+		unsigned int size;
+
+		if (SecureDTLookupEntry(NULL, "/arm-io", &node) == kSuccess &&
+		    SecureDTGetProperty(node, "device_type", &prop, &size) == kSuccess && size > 0) {
+			for (unsigned i = 1; i < sizeof(battery_boards) / sizeof(battery_boards[0]); i++) {
+				if (strncmp(prop, battery_boards[i].platform, size) == 0) {
+					board = &battery_boards[i];
+					say("max77705: the %s's battery: %u mAh, its own thermistor table (written, not yet seen on "
+					    "this phone)\n", board->platform, board->design_mah);
+				}
+			}
+		}
 	}
 	bus_lock = lck_mtx_alloc_init(lck_grp_alloc_init("max77705", LCK_GRP_ATTR_NULL), LCK_ATTR_NULL);
 	{

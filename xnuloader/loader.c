@@ -729,6 +729,7 @@ struct platform {
 	uint64_t payload_home;           /* not 0: the payload is moved here (or a 64 MiB step above) from PAYLOAD_BASE at the start */
 	struct { uint64_t base, size; const char *what; } keep_out[2];  /* RAM neither UEFI nor XNU may have: reserved at the start */
 	const char *data_part;           /* a port with no darwin: the one partition, by name, ufs_write=1 may write (block_is_data_part) */
+	const struct platform *sibling_of; /* not NULL: told apart from this one only by loader_platform= (platform_sibling) */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -840,6 +841,46 @@ static const struct platform platform_starlte = {
 	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
 };
 
+/*
+ * The Galaxy S9+ (SM-G965F, star2lte) and the Galaxy Note9 (SM-N960F, crownlte): the S9's SoC, board and memory map. Every
+ * address above is the same in their device trees (Samsung's BSP, exynos9810-star2lte_eur_open_26.dts and
+ * exynos9810-crownlte_eur_open_26.dts: the GIC, the timer, the PMU, both cluster watchdogs, reserved-memory's modem_if,
+ * cp_ram_logging, abox_rmem, exynos_ss and log_pstore, secure_camera), and the panel is 1440 x 2960 on all three, its buffer
+ * at 0xCC000000 (the S9+'s seen there by the WoA port for it, ntdevlabs/exynos9810-woa; the Note9's not seen by anyone).
+ * Their RAM (6 GB; the Note9 6 or 8 GB) is UEFI's to report: Silicium's RamManagerLib reads its size from what S-Boot
+ * left at NS_IRAM + 0x848, and the kernel's window is the largest free block, at most MAX_MEM_SIZE. So only the name
+ * differs, and with it what the drivers that look at /arm-io's device_type do (the MAX77705's battery). The framebuffer
+ * cannot tell them from the S9: the device's own image says which it is (loader_platform=, devices/<name>/mkimage.sh),
+ * and without that they run as the S9. Written, not seen: nobody has run this on an S9+ or a Note9.
+ */
+static const struct platform platform_star2lte = {
+	.name = "star2lte", .io_base = 0x10000000, .io_size = 0x10000000,
+	.gic_dist = 0x10101000, .gic_cpu = 0x10102000, .uart = 0,
+	.cores = 8, .core_mpidr = (const uint32_t[]){ 0x000, 0x001, 0x002, 0x003, 0x100, 0x101, 0x102, 0x103 },
+	.small_cores = 0x0f, .timer_hz = 26000000, .fb_base = 0xCC000000,
+	.ram_log = 0xFED14000, .ram_log_size = 0x4000, .ram_dump = 0xFED10000, .ram_dump_size = 0x4000,
+	.log_other_cpu = 1, .recovery_pmu = 0x14060000, .pmu_swreset = 0x400, .data_part = "USERDATA",
+	.exynos_wdt = 0x10060000, .exynos_wdt_other = 0x10050000, .exynos_wdt_pmu_bit = 23,
+	.parked_cores = 0x2, .affinity_unreliable = 1,
+	.payload_home = 0xD0000000,
+	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
+	.sibling_of = &platform_starlte,
+};
+
+static const struct platform platform_crownlte = {
+	.name = "crownlte", .io_base = 0x10000000, .io_size = 0x10000000,
+	.gic_dist = 0x10101000, .gic_cpu = 0x10102000, .uart = 0,
+	.cores = 8, .core_mpidr = (const uint32_t[]){ 0x000, 0x001, 0x002, 0x003, 0x100, 0x101, 0x102, 0x103 },
+	.small_cores = 0x0f, .timer_hz = 26000000, .fb_base = 0xCC000000,
+	.ram_log = 0xFED14000, .ram_log_size = 0x4000, .ram_dump = 0xFED10000, .ram_dump_size = 0x4000,
+	.log_other_cpu = 1, .recovery_pmu = 0x14060000, .pmu_swreset = 0x400, .data_part = "USERDATA",
+	.exynos_wdt = 0x10060000, .exynos_wdt_other = 0x10050000, .exynos_wdt_pmu_bit = 23,
+	.parked_cores = 0x2, .affinity_unreliable = 1,
+	.payload_home = 0xD0000000,
+	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
+	.sibling_of = &platform_starlte,
+};
+
 static const struct platform platform_frankel = {
 	/*
 	 * Google Pixel 10 (frankel), Tensor G5 ("laguna", lga), bare metal. There is no UEFI for this phone: Google's boot
@@ -904,6 +945,12 @@ static const struct platform *const platforms[] = {
 	&platform_qemu_lga,
 };
 
+/* ... and those the framebuffer does not tell apart from one of these, named on the payload's command line instead */
+static const struct platform *const sibling_platforms[] = {
+	&platform_star2lte,
+	&platform_crownlte,
+};
+
 /* Core N's MPIDR (its affinity fields), and the number of the core with that MPIDR (-1: none of the platform's) */
 static uint64_t
 core_mpidr(const struct platform *plat, int core)
@@ -920,6 +967,37 @@ core_number(const struct platform *plat, uint64_t mpidr)
 		}
 	}
 	return -1;
+}
+
+static int starts_with(const char *s, const char *prefix);
+
+/*
+ * loader_platform=NAME on the payload's command line: the platform of that name in place of `plat`, if it is one of
+ * plat's siblings (sibling_platforms: the same SoC, board and memory map, only the name differs), else `plat` as it was.
+ * Without the argument nothing changes.
+ */
+static const struct platform *
+platform_sibling(const struct platform *plat, const char *cmdline)
+{
+	for (const char *c = cmdline; c != NULL && *c; c++) {
+		if ((c != cmdline && c[-1] != ' ') || !starts_with(c, "loader_platform=")) {
+			continue;
+		}
+		const char *want = c + 16;
+		for (unsigned i = 0; i < sizeof(sibling_platforms) / sizeof(sibling_platforms[0]); i++) {
+			const char *n = sibling_platforms[i]->name;
+			unsigned k = 0;
+
+			while (n[k] != 0 && want[k] == n[k]) {
+				k++;
+			}
+			if (n[k] == 0 && (want[k] == 0 || want[k] == ' ') && sibling_platforms[i]->sibling_of == plat) {
+				return sibling_platforms[i];
+			}
+		}
+		return plat;
+	}
+	return plat;
 }
 
 /* QEMU virt started with gic-version=2 (qemu/run.sh, QEMU_GIC=2): its GICv2's two frames */
@@ -3044,7 +3122,10 @@ block_poll(void)
 		efi_block_io *bio = block_bios[part];
 
 		bytes = count * block_shared.part[part].block_size;
-		if (!hc_list_is_uefis()) {
+		/* the kernel says its own list is in (ufs=3, or ufs_native=1): it should not ask, and is not served */
+		flush_dcache((uint64_t)(uintptr_t)&block_shared.kernel_native,
+		    (uint64_t)(uintptr_t)&block_shared.kernel_native + sizeof(block_shared.kernel_native));
+		if (block_shared.kernel_native.list_in != 0 || !hc_list_is_uefis()) {
 			/* the kernel's own list is in: UEFI's driver must not ring now (the kernel should not ask) */
 			if (hc_refused_reads++ < 4) {
 				print("ufs: a read asked for while the kernel's own transfer list is in the controller: refused\n");
@@ -4196,7 +4277,12 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		torch_requested |= starts_with(c, "torch=") && (c == pi.cmdline || c[-1] == ' ') && c[6] >= '1' && c[6] <= '9';
 		camera_requested |= starts_with(c, "cam=5") && (c == pi.cmdline || c[-1] == ' ') && (c[5] == 0 || c[5] == ' ');
 		gamut_p3 |= starts_with(c, "gamut=p3") && (c == pi.cmdline || c[-1] == ' ');
-		if (starts_with(c, "ufs=") && (c == pi.cmdline || c[-1] == ' ') && c[4] >= '1' && c[4] <= '2' &&
+		/*
+		 * ufs=3: served as ufs=2. The kernel reads its references through this service, then its own driver takes
+		 * the controller (drivers/storage/hakios.ufs.c, ufs_nufs_start); while the page says its list is in, nothing
+		 * is asked of UEFI's driver here (block_poll).
+		 */
+		if (starts_with(c, "ufs=") && (c == pi.cmdline || c[-1] == ' ') && c[4] >= '1' && c[4] <= '3' &&
 		    (c[5] == 0 || c[5] == ' ')) {
 			ufs_requested = c[4] - '0';
 		}
@@ -4220,6 +4306,10 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	}
 	if (ufs_requested >= 2) {
 		hc_init();              /* (ufs_native=: UEFI's transfer list kept, before anything reads) */
+	}
+	if (ufs_requested == 3) {
+		print("ufs: ufs=3: the block service as ufs=2, for the kernel's own driver to check itself against and to fall "
+		    "back to; nothing asked of UEFI's driver while the kernel's list is in\n");
 	}
 	if (ufs_requested >= 1) {
 		ufs_survey();
@@ -4743,6 +4833,14 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	screen_quiet = screen_quiet_before_run;
 	wdt_set_ms(WDT_BITE_MS);
 	hc_take_back("the kernel came back");   /* before anything here touches the storage */
+	if (block_enabled) {
+		flush_dcache((uint64_t)(uintptr_t)&block_shared.kernel_native,
+		    (uint64_t)(uintptr_t)&block_shared.kernel_native + sizeof(block_shared.kernel_native));
+		if (block_shared.kernel_native.list_in != 0) {
+			/* (ufs=3) the kernel did not say UEFI's list is back: the storage is not used again until a restart */
+			print("ufs: the kernel left word that its own transfer list is in: the block service stays refused\n");
+		}
+	}
 	if (hc_known) {
 		flush_dcache((uint64_t)(uintptr_t)&block_shared.kernel_native,
 		    (uint64_t)(uintptr_t)&block_shared.kernel_native + sizeof(block_shared.kernel_native));
@@ -5701,6 +5799,12 @@ efi_main(efi_handle image, efi_system_table *st)
 	wdt_arm();
 
 	int have_payload = parse_payload(&pi, 0);
+	if (have_payload && platform_sibling(PLAT, pi.cmdline) != PLAT) {
+		/* the S9+ or the Note9 (loader_platform=): the S9's description in all but the name, so nothing above changes */
+		print("platform %s (loader_platform=), the description of %s with its own name\n",
+		    platform_sibling(PLAT, pi.cmdline)->name, PLAT->name);
+		PLAT = platform_sibling(PLAT, pi.cmdline);
+	}
 	exynos_wdt_start(have_payload ? pi.cmdline : "");   /* the Galaxy S9's hardware watchdog, and INFORM3 */
 	/*
 	 * The Galaxy S9: the payload out of the CP's region, which is then kept from UEFI and XNU. Here, under the watchdog

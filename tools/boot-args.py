@@ -69,7 +69,7 @@ GROUPS = [
     ("Network", r"hakios\.(net|virtio_net)\."),
     ("USB", r"hakios\.(dwc3|exynos_usb)\."),
     ("Haptics and torch", r"hakios\.(haptic|torch|s2mpb02_torch)\."),
-    ("Chip, thermal and PMIC", r"hakios\.(socinfo|thermal|pmic|exynos_tmu)\."),
+    ("Chip, thermal and PMIC", r"hakios\.(socinfo|thermal|pmic|exynos_tmu|exynos_poweroff)\."),
     ("Version", r"hakios\.version\."),
     ("CPU, memory and boot", r"hakios\.cpufreq\.|GenericARMPE|loader_return|\(patch\)"),
     ("Debugging", r"user_exception_trace"),

@@ -35,6 +35,7 @@ extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, u
 extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
 extern kern_return_t thread_terminate(thread_t thread);
 extern void thread_set_thread_name(thread_t thread, const char *name);
+extern void loader_log_line(const char *line);
 
 #define say hakios_wifi_say
 
@@ -55,10 +56,19 @@ lx_os_free(void *memory, unsigned long size)
 	kfree_data(memory, size);
 }
 
+/* The radio's reads and writes do not look in the processors' caches unless the machine says so (hakios.exynos_pcie.c) */
+__attribute__((weak)) bool
+hakios_wifi_radio_coherent(void)
+{
+	return false;
+}
+
 /*
  * In one physical piece, so that it can be mapped a second time without this processor's cache
  * in between (as hakios.adreno.c does with what it shares with the GPU); the first, cached
- * view is written out and never used again.
+ * view is written out and never used again. A radio whose reads and writes look in the caches
+ * (hakios_wifi_radio_coherent()) gets the cached view itself: an uncached second view would be
+ * wrong there, its writes going around lines the caches may still hold of the same memory.
  */
 void *
 lx_os_radio_memory(unsigned long size, unsigned long long *address)
@@ -67,6 +77,22 @@ lx_os_radio_memory(unsigned long size, unsigned long long *address)
 	uint64_t physical;
 
 	size = round_page(size);
+	physical = 0;
+	PE_parse_boot_argn("wifi_dma_at", &physical, sizeof(physical));
+	if (physical != 0) {
+		/*
+		 * wifi_dma_at=ADDRESS: a piece of DRAM the kernel does not have (a gap of the device tree's, e.g. 0xDC000000 on
+		 * the S9), below 4 GB, for a radio whose bus may not reach the kernel's own memory above it; mapped only once.
+		 */
+		physical = trunc_page(physical);
+		uncached = ml_io_map_unmappable(physical, size, VM_WIMG_WCOMB);
+		if (uncached == 0 || !hakios_wifi_radio_map(physical, size, address)) {
+			return NULL;
+		}
+		bzero((void *)uncached, size);
+		say("lx: the radio's %lu MB at %#llx, memory the kernel does not have (wifi_dma_at)\n", size >> 20, physical);
+		return (void *)uncached;
+	}
 	if (kmem_alloc_contig(kernel_map, &cached, size, 0, 0, 0, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) !=
 	    KERN_SUCCESS) {
 		say("lx: no %lu bytes of memory in one piece\n", size);
@@ -78,6 +104,13 @@ lx_os_radio_memory(unsigned long size, unsigned long long *address)
 		__asm__ volatile ("dc civac, %0" : : "r" (line));
 	}
 	__asm__ volatile ("dsb sy");
+	if (hakios_wifi_radio_coherent()) {
+		if (!hakios_wifi_radio_map(physical, size, address)) {
+			return NULL;
+		}
+		say("lx: the radio's memory is cached: its reads and writes look in the caches (wifi_pcie_coherent=1)\n");
+		return (void *)cached;
+	}
 	uncached = ml_io_map_unmappable(physical, size, VM_WIMG_WCOMB);
 	if (uncached == 0 || !hakios_wifi_radio_map(physical, size, address)) {
 		return NULL;
@@ -96,15 +129,154 @@ lx_os_map_registers(unsigned long long physical, unsigned long size)
 
 /* ---- saying things ----------------------------------------------------------------------------------- */
 
+/*
+ * The radio's log, kept: what the Linux driver and its bus say (lx_os_print(), lx_os_tell(), hakios_wifi_report_add()),
+ * the last REPORT_SIZE bytes of it, whole lines. The kernel's own log is a ring that the boot's chatter wraps before
+ * anyone is connected; this is said again on the USB console when it is first up and on its "wifi"
+ * (hakios_wifi_report()), with what the driver says of itself at that moment (lx_os_wifi_state()).
+ */
+#define REPORT_SIZE     (32u * 1024u)
+static LCK_GRP_DECLARE(report_group, "hakios-wifi-report");
+static LCK_SPIN_DECLARE(report_lock, &report_group);
+static char report[REPORT_SIZE];
+static uint32_t report_len;
+static void (*report_state)(void);
+/* what was said when the driver's setup failed (lx_os_failure()): apart, so that the rest of the log does not push it out */
+#define FAILURE_SIZE    (16u * 1024u)
+static char failure[FAILURE_SIZE];
+static uint32_t failure_len;
+static bool failure_on;
+static uint64_t failure_at;            /* when, in seconds since boot */
+
+void
+hakios_wifi_report_add(const char *line)
+{
+	size_t n = strlen(line);
+
+	if (n == 0) {
+		return;
+	}
+	if (n > REPORT_SIZE / 4) {
+		n = REPORT_SIZE / 4;
+	}
+	lck_spin_lock(&report_lock);
+	if (report_len + n > REPORT_SIZE) {
+		uint32_t drop = report_len + (uint32_t)n - REPORT_SIZE + REPORT_SIZE / 8;
+		char *nl;
+
+		drop = drop < report_len ? drop : report_len;
+		nl = memchr(report + drop, '\n', report_len - drop);
+		drop = nl != NULL ? (uint32_t)(nl + 1 - report) : report_len;
+		memmove(report, report + drop, report_len - drop);
+		report_len -= drop;
+	}
+	memcpy(report + report_len, line, n);
+	report_len += (uint32_t)n;
+	if (failure_on && failure_len < FAILURE_SIZE) {
+		uint32_t room = FAILURE_SIZE - failure_len;
+
+		memcpy(failure + failure_len, line, n < room ? n : room);
+		failure_len += (uint32_t)(n < room ? n : room);
+	}
+	lck_spin_unlock(&report_lock);
+}
+
+void
+lx_os_failure(bool on)
+{
+	uint64_t ns;
+
+	lck_spin_lock(&report_lock);
+	if (on) {
+		failure_len = 0;
+		absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+		failure_at = ns / NSEC_PER_SEC;
+	}
+	failure_on = on;
+	lck_spin_unlock(&report_lock);
+}
+
+/* lines of a copy of the kept log, one at a time to the loader's log (and so to the USB console) */
+static void
+report_lines(const char *copy, uint32_t len)
+{
+	char line[300];
+	uint32_t at = 0;
+
+	while (at < len) {
+		uint32_t n = 0;
+
+		while (at + n < len && n < sizeof(line) - 2 && copy[at + n] != '\n') {
+			n++;
+		}
+		memcpy(line, copy + at, n);
+		line[n] = '\n';
+		line[n + 1] = 0;
+		loader_log_line(line);
+		at += n + (at + n < len && copy[at + n] == '\n' ? 1 : 0);
+	}
+}
+
+void
+lx_os_wifi_state(void (*state)(void))
+{
+	report_state = state;
+}
+
+void
+hakios_wifi_report(bool first)
+{
+	char *copy, line[300];
+	uint32_t len, flen;
+	uint64_t fat;
+	void (*state)(void) = report_state;
+
+	if (first && report_len == 0) {
+		return;
+	}
+	copy = kalloc_data(REPORT_SIZE + FAILURE_SIZE, Z_WAITOK);
+	if (copy == NULL) {
+		return;
+	}
+	lck_spin_lock(&report_lock);
+	len = report_len;
+	memcpy(copy, report, len);
+	flen = failure_len;
+	memcpy(copy + REPORT_SIZE, failure, flen);
+	fat = failure_at;
+	lck_spin_unlock(&report_lock);
+	snprintf(line, sizeof(line), "wifi: the radio's log so far, %u bytes kept%s:\n", len,
+	    first ? " (said again now that the console is up; again with \"wifi\")" : "");
+	loader_log_line(line);
+	report_lines(copy, len);
+	loader_log_line("wifi: (end of what was kept)\n");
+	if (flen != 0) {
+		snprintf(line, sizeof(line), "wifi: what the driver said of itself when its setup failed, %llu s after boot (%u bytes):\n",
+		    fat, flen);
+		loader_log_line(line);
+		report_lines(copy + REPORT_SIZE, flen);
+		loader_log_line("wifi: (end of the failure's account)\n");
+	}
+	kfree_data(copy, REPORT_SIZE + FAILURE_SIZE);
+	if (state != NULL) {
+		loader_log_line("wifi: the driver now:\n");
+		state();
+	} else {
+		loader_log_line("wifi: no driver to ask now\n");
+	}
+}
+
 void
 lx_os_print(const char *text)
 {
+	hakios_wifi_report_add(text);
 	say("%s", text);
 }
 
 void
 lx_os_tell(const char *text)
 {
+	hakios_wifi_report_add(text);
 	hakios_wifi_tell("%s", text);
 }
 

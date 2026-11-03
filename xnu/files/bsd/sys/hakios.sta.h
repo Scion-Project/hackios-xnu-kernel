@@ -113,6 +113,8 @@ bool     hakios_sta_heard(unsigned index, struct hakios_sta_bss *bss);
 void     hakios_sta_state(struct hakios_sta_state *state);
 unsigned hakios_sta_channels(struct hakios_sta_channel *channels, unsigned most);
 bool     hakios_sta_address(uint8_t *address);
+/* the USB console's "wifi scan": the radio on if it is off, a scan of every channel, what it heard said (on a thread) */
+void     hakios_sta_console_scan(void);
 
 /* ---- the listener: drivers/wifi/hakios.apple80211.c ---- */
 void     hakios_apple80211_event(enum hakios_sta_event event, int status);

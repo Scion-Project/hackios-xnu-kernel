@@ -25,11 +25,19 @@ void	 lx_os_free(void *memory, unsigned long size);
  * reading it slow. NULL when there is none; never given back.
  */
 void	*lx_os_radio_memory(unsigned long size, unsigned long long *address);
+/* true: the radio's reads and writes look in the processors' caches (the S9 with wifi_pcie_coherent=1), and its memory is
+ * then the kernel's own, cached; false (the default, weak, in hakios.lx.c): the uncached view above */
+bool	 hakios_wifi_radio_coherent(void);
 void	*lx_os_map_registers(unsigned long long physical, unsigned long size);	/* never unmapped */
 
 /* ---- saying things ---- */
 void	 lx_os_print(const char *text);				/* for whoever looks for a fault: may be kept back */
 void	 lx_os_tell(const char *text);				/* for whoever runs the machine: always said */
+/* the driver's own account of itself, for the USB console's "wifi" (hakios_wifi_report()); NULL: no longer there */
+void	 lx_os_wifi_state(void (*say)(void));
+/* what is said between lx_os_failure(true) and (false) (the driver's state when its setup failed) is kept apart and
+ * said again with the rest of the radio's log, on the USB console's "wifi" and when the console is first up */
+void	 lx_os_failure(bool on);
 void	 lx_os_panic(const char *text) __attribute__((noreturn));
 
 /* ---- time, threads, sleeping ---- */
@@ -58,6 +66,8 @@ int	 lx_os_firmware(const char *name, const void **data, unsigned long *size);
 int	 lx_os_rproc_boot(void);
 /* the radio's own address (six bytes), if the machine has one for it: 1, or 0 and nothing written */
 int	 lx_os_radio_address(unsigned char *address);
+/* the BCM4361's CIS from its OTP (length bytes, chip ID, revision): which module it is, for the files it is given */
+void	 lx_os_radio_identity(const unsigned char *cis, unsigned long length, unsigned chip, unsigned revision);
 /*
  * The network the radio is to join, if the machine was given one: its name and its passphrase,
  * into buffers whose sizes come in and whose contents' lengths go out. 1, or 0.
@@ -103,6 +113,8 @@ unsigned lx_os_pci_config_read(unsigned offset);		/* a 32-bit word of its config
 void	 lx_os_pci_config_write(unsigned offset, unsigned value);
 /* where BAR n is (the processor's physical address, which is also the bus's) and how big: 1, or 0 if it has none */
 int	 lx_os_pci_bar(unsigned bar, unsigned long long *address, unsigned long long *size);
+/* what stands between the radio and memory (the SysMMU, the shareability, both ends' status), said and kept */
+void	 lx_os_pci_say_dma(const char *when);
 
 /* ---- the station: scanning and joining, for whoever asks the kernel (hakios.sta.h) ---- */
 void	 lx_os_station(const struct hakios_sta_ops *ops);	/* here it is, to be asked; NULL: no longer (returns when no call is under way) */

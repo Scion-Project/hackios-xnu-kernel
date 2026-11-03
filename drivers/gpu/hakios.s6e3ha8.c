@@ -1,7 +1,8 @@
 /*
  * The Galaxy S9's panel brightness (starlte, Exynos 9810): a Samsung S6E3HA8 AMOLED in MIPI command mode (4 lanes, DSC)
  * on DSIM0 (0x16080000), sent its brightness through the DSIM's command FIFO while the DECON keeps showing what the
- * boot loader set up. Only with boot-arg panel=1: every address below belongs to this phone.
+ * boot loader set up. Only with boot-arg panel=1 (and, to blank the panel for a halt that powers the phone off, halt_off=N):
+ * every address below belongs to this phone.
  *
  * The panel has no DCS "set brightness" (0x51) in Samsung's tables. Its brightness is Samsung's own: a gamma (CA), the
  * AOR (B1, the part of each frame the pixels are dark) and ELVSS, behind a level-2 key and taken by F7 03. The gamma of
@@ -20,9 +21,13 @@
  * Why each register sent is safe.
  *   F0           the level-2 key: opens Samsung's registers and closes them again. Samsung sends it around every change
  *                of brightness, and this driver did already.
- *   9F, FC       the level-1 and level-3 keys, only around the reads at start: Samsung's resource-init sequence opens
- *                all three for the same reads at every start of the panel (star_a3_s0_res_init_cmdtbl). A key changes
- *                nothing that is shown, and each is closed again whatever the reads gave.
+ *   28, 10       display off and sleep-in, only for a halt that powers the phone off (halt_off=N: hakios_s6e3ha8_blank(),
+ *                drivers/power/hakios.exynos_poweroff.c), each between the level-1 key as Samsung sends them; the
+ *                panel's supplies then go with PS_HOLD.
+ *   9F, FC       the level-1 and level-3 keys, only around the reads at start (and 9F around the halt's 28 and 10):
+ *                Samsung's resource-init sequence opens all three for the same reads at every start of the panel
+ *                (star_a3_s0_res_init_cmdtbl). A key changes nothing that is shown, and each is closed again whatever
+ *                the reads gave.
  *   CA           the gamma: each value is a step of one of the panel's voltage dividers, between voltages the panel
  *                makes itself (VREGOUT, VT, the next point), and is added to the panel's own calibration: it sets how
  *                bright a gray is, not a supply. Only rows worked out from this panel's MTP are sent, each value kept
@@ -539,6 +544,51 @@ panel_sysctl_brightness(__unused struct sysctl_oid *oidp, __unused void *arg1, _
 SYSCTL_PROC(_kern_hakios, OID_AUTO, brightness, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_ANYBODY | CTLFLAG_KERN,
     NULL, 0,
     panel_sysctl_brightness, "I", "the panel's brightness, 0-255 (-1: never set); writing sets it (Galaxy S9, panel=1)");
+
+
+/*
+ * The panel dark, for a halt that powers the phone off (drivers/power/hakios.exynos_poweroff.c, halt_off=N): Samsung's
+ * display-off sequence (9F A5 A5, 28, 9F 5A 5A: star_a3_s0_display_off_cmdtbl) and then its exit sequence's sleep-in
+ * (9F A5 A5, 10, 9F 5A 5A, and its 100 ms: star_a3_s0_exit_cmdtbl, star_a3_s0_wait_sleep_in), with a frame's time between
+ * the two, as when Android turns the screen off. Without panel=1 too: the DSIM is mapped here if the driver never started.
+ * The lock is only tried (a halt does not wait on a brightness change that never ends); taken or not, the packets go.
+ * True when the DSIM took all of them. After it the panel shows nothing and keeps nothing to show: nothing turns it on
+ * again but its own power-on sequence, which only a restart (S-Boot) sends.
+ */
+bool hakios_s6e3ha8_blank(int (*say_as)(const char *, ...));
+
+bool
+hakios_s6e3ha8_blank(int (*say_as)(const char *, ...))
+{
+	static const uint8_t key1_on[] = { 0x9F, 0xA5, 0xA5 }, key1_off[] = { 0x9F, 0x5A, 0x5A };
+	static const uint8_t display_off[] = { 0x28 }, sleep_in[] = { 0x10 };
+	bool locked = panel_lock != NULL && lck_mtx_try_lock(panel_lock), off, asleep;
+
+	if (dsim == 0) {
+		dsim = ml_io_map(DSIM_PA, 0x1000);
+	}
+	if (dsim == 0) {
+		say_as("s6e3ha8: blank: cannot map the DSIM at 0x%lx\n", DSIM_PA);
+		if (locked) {
+			lck_mtx_unlock(panel_lock);
+		}
+		return false;
+	}
+	off = dsim_send(key1_on, sizeof(key1_on)) && dsim_send(display_off, sizeof(display_off));
+	off = dsim_send(key1_off, sizeof(key1_off)) && off;
+	say_as("s6e3ha8: blank: display off (28) %s (FIFOCTRL %x, INTSRC %x)%s\n", off ? "sent" : "NOT SENT", rd(DSIM_FIFOCTRL),
+	    rd(DSIM_INTSRC), panel_lock == NULL ? "" : locked ? "" : "; the panel's lock was held: sent without it");
+	delay(20 * 1000);                       /* a frame and more at 60 Hz */
+	asleep = dsim_send(key1_on, sizeof(key1_on)) && dsim_send(sleep_in, sizeof(sleep_in));
+	asleep = dsim_send(key1_off, sizeof(key1_off)) && asleep;
+	delay(100 * 1000);                      /* Samsung's wait after sleep-in, before the supplies go */
+	say_as("s6e3ha8: blank: sleep-in (10) %s (FIFOCTRL %x, INTSRC %x)\n", asleep ? "sent" : "NOT SENT", rd(DSIM_FIFOCTRL),
+	    rd(DSIM_INTSRC));
+	if (locked) {
+		lck_mtx_unlock(panel_lock);
+	}
+	return off && asleep;
+}
 
 
 void

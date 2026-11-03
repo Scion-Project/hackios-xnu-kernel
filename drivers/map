@@ -19,6 +19,8 @@ input    bsd/dev/hakios.virtio_input.c
 storage  bsd/dev/hakios.ufs.c
 storage  bsd/dev/hakios.ufshc.c
 storage  bsd/dev/hakios.ufshc.h
+storage  iokit/Kernel/hakios.ufshc_mem.cpp
+storage  bsd/dev/hakios.ext4.c
 storage  bsd/dev/hakios.sparse.c
 storage  bsd/dev/hakios.image.c
 storage  bsd/dev/hakios.apfs_check.c
@@ -58,6 +60,7 @@ power    bsd/dev/hakios.max77705.c
 power    bsd/dev/hakios.exynos_cpufreq.c
 power    bsd/dev/hakios.exynos_tmu.c
 power    bsd/dev/hakios.exynos_tmu.h
+power    bsd/dev/hakios.exynos_poweroff.c
 power    bsd/dev/hakios.cpufreq.c
 
 wifi     bsd/dev/hakios.wifi.c
