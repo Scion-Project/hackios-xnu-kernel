@@ -64,6 +64,11 @@ hakios_exynos_cpufreq_gov_start(void)
 {
 	return false;
 }
+/* the governor's boosts (hakios.s6sy761.c, MiniIOMobileFramebuffer.cpp): no governor, nothing to boost */
+void hakios_exynos_cpufreq_touch(void);
+void hakios_exynos_cpufreq_touch(void) {}
+void hakios_exynos_cpufreq_frame(void);
+void hakios_exynos_cpufreq_frame(void) {}
 #endif
 
 #ifndef HAKIOS_EXYNOS_TMU

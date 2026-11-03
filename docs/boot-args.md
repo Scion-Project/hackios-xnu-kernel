@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **472 arguments**: 408 read by the kernel, 16 by the loader, 59 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **479 arguments**: 415 read by the kernel, 16 by the loader, 59 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -491,7 +491,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (69)
+## User space (76)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -526,6 +526,13 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `glno` | U | `inject.c` | `CONFIG_GLNO` |  |
 | `glsb3` | U | `inject.c` | `CONFIG_GLSB3` |  |
 | `glyes` | U | `inject.c` | `CONFIG_GLYES` |  |
+| `gov_boost_big` | K | `hakios.exynos_cpufreq.c` | `CONFIG_GOV_BOOST_BIG` |  |
+| `gov_boost_lit` | K | `hakios.exynos_cpufreq.c` | `CONFIG_GOV_BOOST_LIT` |  |
+| `gov_boost_ms` | K | `hakios.exynos_cpufreq.c` | `CONFIG_GOV_BOOST_MS` |  |
+| `gov_down` | K | `hakios.exynos_cpufreq.c` | `CONFIG_GOV_DOWN` |  |
+| `gov_frame_big` | K | `hakios.exynos_cpufreq.c` | `CONFIG_GOV_FRAME_BIG` |  |
+| `gov_frame_ms` | K | `hakios.exynos_cpufreq.c` | `CONFIG_GOV_FRAME_MS` |  |
+| `gov_target` | K | `hakios.exynos_cpufreq.c` | `CONFIG_GOV_TARGET` |  |
 | `gpu3d` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D` |  |
 | `gpu3d_size` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D_SIZE` |  |
 | `immediate_NMI` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_IMMEDIATE_NMI` |  |

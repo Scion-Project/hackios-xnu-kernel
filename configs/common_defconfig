@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 508 symbols in 19 groups; 51 are set, 42 of them drivers built in.
+# 524 symbols in 19 groups; 51 are set, 42 of them drivers built in.
 #
 
 #
@@ -61,7 +61,7 @@ CONFIG_HAKIOS_TORCH=y
 # the Galaxy S9's flashlight: the S2MPB02's flash block on PERIC1's HSI2C, lit by a pin (torch=N there, the same steps ... [hakios.s2mpb02_torch.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 CONFIG_HAKIOS_S2MPB02_TORCH=y
 
-# the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK, ... [hakios.exynos_camera.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
+# the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK, ... [hakios.exynos_camera.c, hakios.exynos_camera_mem.cpp; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 # CONFIG_HAKIOS_EXYNOS_CAMERA is not set
 
 # the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps ... [hakios.socinfo.c]
@@ -148,7 +148,7 @@ CONFIG_HAKIOS_MAX77705=y
 # the Galaxy S9's temperatures: the Exynos 9810's TMU (BIG, LITTLE, G3D, ISP), read with each sensor's fuses (tmu=1), ... [hakios.exynos_tmu.c]
 CONFIG_HAKIOS_EXYNOS_TMU=y
 
-# the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from ... [hakios.ufs.c, hakios.ufshc.c]
+# the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from ... [hakios.ufs.c, hakios.ufshc.c, hakios.ufshc_mem.cpp]
 CONFIG_HAKIOS_UFS=y
 
 # a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only [hakios.virtio_blk.c]
@@ -234,7 +234,7 @@ CONFIG_HAKIOS_BRCMFMAC=y
 # CONFIG_XPCPROXY_IDVERSION is not set
 
 #
-# Storage and APFS (49)
+# Storage and APFS (53)
 #
 
 # the phone's storage: 1 a survey, read only; 2 the loader's block service, through which the kernel reads it (the ...
@@ -357,8 +357,17 @@ CONFIG_UFS=2
 # read by hakios.ufshc.c (kernel)
 # CONFIG_UFS_NATIVE_LEAVE is not set
 
+# read by hakios.ufs.c (kernel)
+# CONFIG_UFS_NATIVE_LOG is not set
+
+# read by hakios.ufs.c (kernel)
+# CONFIG_UFS_NATIVE_RO is not set
+
 # read by hakios.ufshc.c (kernel)
 # CONFIG_UFS_NATIVE_SLOTS is not set
+
+# read by hakios.ufs.c (kernel)
+# CONFIG_UFS_NATIVE_SOAK is not set
 
 # the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810
 # CONFIG_UFS_NATIVE_SOC is not set
@@ -371,6 +380,9 @@ CONFIG_UFS=2
 
 # own mode's test at start: the refusals, and writes put back (2: one block left written)
 # CONFIG_UFS_NATIVE_TEST is not set
+
+# read by hakios.ufs.c (kernel)
+# CONFIG_UFS_NATIVE_VERIFY is not set
 
 # own mode: the one partition that takes writes, through /dev/rufs_NAME (never EFS, BOOT, PARAM ...)
 # CONFIG_UFS_NATIVE_WRITE is not set
@@ -440,7 +452,7 @@ CONFIG_TOUCHSCREEN=y
 # CONFIG_VIRTIO_INPUT is not set
 
 #
-# GPU and display (93)
+# GPU and display (96)
 #
 
 # rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone) [needs fw-gpu/ from the phone]
@@ -517,6 +529,9 @@ CONFIG_GPU=y
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_QUEUE is not set
+
+# the kernel's timer coalescing left on
+# CONFIG_FB_TCOAL is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_THREADS is not set
@@ -595,6 +610,12 @@ CONFIG_GPU=y
 
 # read by eagl.c (user space)
 # CONFIG_GLSTILL is not set
+
+# read by eagl.c (user space)
+# CONFIG_GLSURFACES is not set
+
+# read by eagl.c (user space)
+# CONFIG_GLSURFACES_MB is not set
 
 # read by eagl.c (user space)
 # CONFIG_GLSYNC is not set
@@ -1158,7 +1179,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_SOC_SMEM is not set
 
 #
-# Cameras (18)
+# Cameras (20)
 #
 
 # the cameras (5 is what the README uses) [needs fw-camera/ from the phone]
@@ -1191,6 +1212,9 @@ CONFIG_MODEM_AGAIN=y
 # the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1
 # CONFIG_CAM_S9 is not set
 
+# camshot's Bayer order: 0 RGGB, 1 GRBG (the default, the sensor's), 2 GBRG, 3 BGGR
+# CONFIG_CAM_S9_BAYER is not set
+
 # the exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
 # CONFIG_CAM_S9_EXP is not set
 
@@ -1202,6 +1226,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakios.exynos_camera.c (kernel)
 # CONFIG_CAM_S9_PACK12 is not set
+
+# camshot's bytes a line of the frame (default: 2040, MIPI's, or 2048 if the WDMA wrote more)
+# CONFIG_CAM_S9_STRIDE is not set
 
 # read by hakios.camera.c (kernel)
 # CONFIG_CAM_SENSOR is not set
@@ -1363,7 +1390,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (67)
+# User space (74)
 #
 
 # read by inject_sb.c (user space)
@@ -1458,6 +1485,27 @@ CONFIG_MODEM_AGAIN=y
 
 # the renderer is made to answer that it has those functions after all
 # CONFIG_GLYES is not set
+
+# the M3s' floor while touched (1469000; 0: no touch boost for them)
+# CONFIG_GOV_BOOST_BIG is not set
+
+# the A55s' floor while touched (1690000; 0: none)
+# CONFIG_GOV_BOOST_LIT is not set
+
+# how long the touch boost holds after the last finger event (300; 0: no touch boost)
+# CONFIG_GOV_BOOST_MS is not set
+
+# windows in a row that want less before the rate comes down (5; 1 to 50)
+# CONFIG_GOV_DOWN is not set
+
+# the M3s' floor while frames come (1261000; 0: no frame boost)
+# CONFIG_GOV_FRAME_BIG is not set
+
+# a frame this recent keeps the frame boost on (100; 20 to 1000)
+# CONFIG_GOV_FRAME_MS is not set
+
+# the busiest core's share wanted at the new rate (60; 30 to 95)
+# CONFIG_GOV_TARGET is not set
 
 # read by hakios.vgpu3d_xnu.c (kernel)
 # CONFIG_GPU3D is not set

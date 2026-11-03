@@ -189,6 +189,13 @@ gltrace_shaders	u
 gltrace_uniforms	u
 glwait	u
 glyes	u
+gov_boost_big	k
+gov_boost_lit	k
+gov_boost_ms	k
+gov_down	k
+gov_frame_big	k
+gov_frame_ms	k
+gov_target	k
 gpu	k
 gpu3d	k
 gpu3d_size	k
