@@ -87,13 +87,23 @@ SoC, then the phone, then the fragments you named.
 
 - **Types and ranges.** A bool is `y` or not set, a hex number starts with `0x`, `CONFIG_CPUS` is 1 to 8, `CONFIG_THERMAL_STOP`
   is 0 to 160. A typo in a name gets a suggestion (`no symbol CONFIG_GPUU (did you mean CONFIG_GPU?)`).
-- **Dependencies.** `CONFIG_VAR_STORE` requires `CONFIG_UFS_WRITE`, which requires `CONFIG_UFS=2`; `CONFIG_SOUND` requires
+- **Dependencies.** `CONFIG_VAR_STORE` requires `CONFIG_UFS_WRITE`, which requires `CONFIG_UFS=2` or `3`; `CONFIG_SOUND` requires
   `CONFIG_ADSP`; `CONFIG_THERMAL_STOP` requires `CONFIG_THERMAL`; the modem requires the storage service.
 - **Firmware.** `CONFIG_FIRMWARE="none"` is the open profile: *nothing of the phone's own is loaded.* The check refuses
   a configuration that says `none` and still asks for the GPU, Wi-Fi, audio, haptics, cameras or the modem, because each
   of those uses firmware pulled from the owner's own phone (`fw-*/`, never in this repository).
 - **The command line fits.** The kernel's boot line holds 607 characters, and a longer one loses its tail without an
-  error. The check counts the arguments, adds what a run adds itself (about 260) and refuses what cannot fit.
+  error. The check counts the arguments, adds what a run adds itself (about 260, the reference phone's with xl's; a device
+  whose runs add less says so with `CONFIG_CMDLINE_RUN`, the Galaxy S9's 170) and refuses what cannot fit.
+
+## A device's defaults
+
+A device's own fragment (`devices/<name>/configs/<name>.config`) is where its defaults are: what has been seen working on
+that phone, as `CONFIG_` symbols, which become the boot-arguments every image of it carries. The Galaxy S9's are the last
+part of `starlte.config` (devices/starlte/README.md, "Defaults"). A run's own arguments go over them by name, never just
+after them: `tools/hakios-config.py args --with "fps_log=1 wifi="` prints the configuration's arguments with `fps_log=1`
+added and `wifi=` taken out (`name=value` replaces the word of that name where it stands, `name=` removes it), which is
+what `devices/starlte/mkimage.sh` does with the arguments it is given (`-n`: those alone). Diagnostics are never defaults.
 
 ## `CONFIG_BOOTARGS`: Linux's `CONFIG_CMDLINE`
 

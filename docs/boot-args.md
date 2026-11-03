@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **515 arguments**: 450 read by the kernel, 17 by the loader, 59 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **515 arguments**: 450 read by the kernel, 17 by the loader, 60 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -132,7 +132,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `brcmfmac_poll` | K | `lx_pci.c` | `CONFIG_BRCMFMAC_POLL` |  |
 | `brcmfmac_poll_ms` | K | `lx_pci.c` | `CONFIG_BRCMFMAC_POLL_MS` |  |
 | `brcmfmac_tcm_idx` | K | `lx_brcmf.c` | `CONFIG_BRCMFMAC_TCM_IDX` |  |
-| `wifi` | K | `hakios.wifi.c` | `CONFIG_WIFI` |  |
+| `wifi` | KU | `hakios.wifi.c`, `net_test.m` | `CONFIG_WIFI` |  |
 | `wifi_again` | K | `hakios.wifi.c` | `CONFIG_WIFI_AGAIN` |  |
 | `wifi_ask` | K | `hakios.wifi.c` | `CONFIG_WIFI_ASK` |  |
 | `wifi_ba` | K | `lx_80211.c` | `CONFIG_WIFI_BA` | implied by wifi=1 |

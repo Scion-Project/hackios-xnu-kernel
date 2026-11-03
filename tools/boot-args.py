@@ -23,7 +23,7 @@ What is looked for:
                xnu/hakios.patch adds to Apple's files
   the loader   starts_with(c, "name=...") on the payload's command line, in xnuloader/
   user space   a name given to strstr()/strncmp() on sysctl kern.bootargs, in userland/src/ (seen: sb_delay=, touch_lat=1,
-               ca_vbl=1 ...)
+               ca_vbl=1 ...), or compared whole with a word of it (strcmp(word, "wifi=1"))
 """
 import argparse
 import collections
@@ -55,6 +55,8 @@ LOADER = re.compile(r'starts_with\((?:c|cmd|p|a|s), "([a-z][a-z0-9_.]*)=')
 # user space reads sysctl kern.bootargs into a buffer called arguments, args or argument, and looks in it with strstr:
 # strstr(arguments, "gltrace_at="), strstr(args, "touch_lat=1"): the name is what stands before the =
 USER = re.compile(r'strstr\(\s*(?:arguments|args|argument)\s*,\s*"([a-z][a-z0-9_]*)=')
+# ... or splits it into words and compares each whole: strcmp(word, "wifi=1") in net_test.m
+USER_WORD = re.compile(r'strcmp\(\s*word\s*,\s*"([a-z][a-z0-9_]*)=')
 
 # the group an argument is listed under: by the file that reads it (the first match decides)
 GROUPS = [
@@ -138,6 +140,8 @@ def scan(root, keep=None):
                 found[m.group(1)]["loader"].add(base)
         if f.startswith("userland/src/"):
             for m in USER.finditer(text):
+                found[m.group(1)]["user"].add(base)
+            for m in USER_WORD.finditer(text):
                 found[m.group(1)]["user"].add(base)
             if BOOT_ARG_DEF.search(text):
                 for m in BOOT_ARG_CALL.finditer(text):
