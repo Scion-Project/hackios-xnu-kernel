@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 584 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 587 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -1472,8 +1472,14 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_PRIVS is not set
 
 #
-# Debugging (6)
+# Debugging (8)
 #
+
+# read by user_exception_trace.c (kernel)
+# CONFIG_KSAMPLE is not set
+
+# read by user_exception_trace.c (kernel)
+# CONFIG_KSAMPLE_US is not set
 
 # read by user_exception_trace.c (kernel)
 # CONFIG_USTACKS is not set
@@ -1519,7 +1525,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (80)
+# User space (81)
 #
 
 # read by inject_sb.c (user space)
@@ -1698,6 +1704,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read the clock at start-up (the kernel's first ask for the time of day), log it, use it when valid
 # CONFIG_RTC_PMIC is not set
+
+# read by inject_sb.c (user space)
+# CONFIG_SB_FPS is not set
 
 # read by 1400-avf-scion-camera.patch, hakios.sccam_torch.c (kernel)
 # CONFIG_SCCAM_ADDR is not set

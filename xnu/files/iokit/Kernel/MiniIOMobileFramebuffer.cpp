@@ -174,6 +174,15 @@ static TUNABLE(uint32_t, gRefreshHz, "fb_hz", kFBRefreshHz);
  * the home screen 3 to 9 in about 115 frames, against 16 to 25 in 99 told 60; in all 17 to 24 in 390 frames of motion
  * against 43 to 53 in 355. What is left is where CoreAnimation goes to 30 a second by itself: the last 300 ms of a page's
  * slide (SpringBoard's commits 33.3 ms apart there).
+ * That 30 is SpringBoard's own choice, not CoreAnimation's judgement of this display: the crossfade of the page dots and
+ * the search pill that follows every slide is set up with CAFrameRateRangeMake(20, 30, 0) (-[SBFolderScrollAccessoryView
+ * _setUpAnimation]); the swaps' own timestamps ("tl: t") are 33.3 ms apart there and none of those frames is late.
+ * userland/src/inject_sb.c raises such ranges to the panel's rate (sb_fps). What fb_ca_hz=120 does is the rest: told 60,
+ * CoreAnimation starts a frame about 3 ms after the panel's refresh and has the 13 ms left to it for the render thread
+ * (8 to 15 ms a frame here) and the GPU (5 ms), and a frame that takes longer misses that refresh (21 refreshes missed
+ * while the finger moved in about 97 frames, 3 November); told 120 it draws every other 8.3 ms tick and the swap queue
+ * (fb_queue, two) takes up the difference (3 to 11 in about 115). Nothing here reads a refresh notification
+ * (IOMobileFramebuffer's selector 72 is never called) and nothing reports when a frame was shown.
  */
 static TUNABLE(uint32_t, gCARefreshHz, "fb_ca_hz", 0);
 static TUNABLE(uint32_t, gOnTheBeat, "fb_beat", 1);
@@ -316,6 +325,24 @@ SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_swapwait, CTLFLAG_RW | CTLFLAG_LOCKED | C
     "SwapWait waits until the swap is on the panel (1)");
 SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_rt, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gRenderRT, 0,
     "the render thread made real-time at its next swap (1)");
+/* kern.hakios.ksample: a thread's stacks while it runs, for what holds frames up (osfmk/arm64/user_exception_trace.c) */
+extern "C" int hakios_ksample_get(void);
+extern "C" bool hakios_ksample_set(int value);
+static int
+ksampleSysctl(__unused struct sysctl_oid * oidp, __unused void * arg1, __unused int arg2, struct sysctl_req * req)
+{
+	int value = hakios_ksample_get(), error = SYSCTL_OUT(req, &value, sizeof(value));
+
+	if (error != 0 || req->newptr == 0) {
+		return error;
+	}
+	if ((error = SYSCTL_IN(req, &value, sizeof(value))) != 0) {
+		return error;
+	}
+	return hakios_ksample_set(value) ? 0 : EINVAL;
+}
+SYSCTL_PROC(_kern_hakios, OID_AUTO, ksample, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, NULL, 0,
+    ksampleSysctl, "I", "sample a thread while it runs: 1 SpringBoard's main, 2 backboardd's render thread, N process N's main");
 #define SCAN_BUFFERS    3
 #define FLIP_STUCK_MS   100
 #define NO_BUFFER       (~0u)
@@ -1263,6 +1290,13 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	clock_interval_to_deadline(SWAP_HELD_MS, kMillisecondScale, &deadline);
 	if (gTouchLat) {
 		hakios_tl("tl: s %u at %llu\n", swapWord(swap, SWAP_ID), micros(now));
+		/* "tl: t ID NOW T1 ... T7": the swap's seven timestamps (IOMobileFramebufferSwapSetTimestamps, types 1 to 7, at its
+		 * first 56 bytes), raw, beside mach_absolute_time now */
+		uint64_t ts[7];
+
+		memcpy(ts, swap, sizeof(ts));
+		hakios_tl("tl: t %u %llu %llu %llu %llu %llu %llu %llu %llu\n", swapWord(swap, SWAP_ID), now, ts[0], ts[1], ts[2],
+		    ts[3], ts[4], ts[5], ts[6]);
 	}
 	if (gFpsLog) {
 		swapSource();

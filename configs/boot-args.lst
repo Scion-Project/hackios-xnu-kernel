@@ -243,6 +243,8 @@ hv_wdt_pet	k
 immediate_NMI	k
 ioaes	k
 isa_floor	k
+ksample	k
+ksample_us	k
 loader_platform	l
 loader_return_after	kl
 m3_diag	k
@@ -355,6 +357,7 @@ s6sy761_pri	k
 s6sy761_steps	k
 s6sy761_trace	k
 sb_delay	u
+sb_fps	u
 sccam.addr	k
 sccam.h	k
 sccam.size	k
