@@ -92,7 +92,8 @@
  *          again and kept at 115200), the address read, and the chip kept powered: the USB console's "bt" (its state) and
  *          "bt scan" (Set Event Mask with LE Meta, Write Inquiry Mode 2, a general inquiry of 7.7 s, an active LE scan of
  *          5 s, every device heard listed once, with its RSSI and name), /dev/cu.bluetooth (also uart.bluetooth and
- *          tty.bluetooth; bt_tty=0 leaves them out) and the "bluetooth" registry entry for iOS's bluetoothd
+ *          tty.bluetooth; bt_tty=0 leaves them out), the kernel control com.apple.uart.bluetooth (the UART as iOS's
+ *          BlueTool and bluetoothd open it) and the "bluetooth" registry entry for iOS's bluetoothd
  *   bt_scan=1        at bt=7, one scan as soon as the chip is up, before the console has it
  *   bt_keep=1        leave the chip powered at the end (default: BT_EN and BT_WAKE low once the steps are done or one fails)
  *   bt_hcd=<name>    the patch file's name in fw/ (default bcm4361B2.hcd); without it, the phone's own from VENDOR
@@ -133,6 +134,9 @@
 #include <sys/tty.h>
 #include <sys/ttycom.h>
 #include <miscfs/devfs/devfs.h>
+#include <sys/kern_control.h>
+#include <sys/kpi_mbuf.h>
+#include <sys/sys_domain.h>
 
 #include "hakios.bcm_hci.h"
 
@@ -1187,6 +1191,8 @@ hakios_bt_console(const char *arg)
  */
 static struct tty *bt_tty;
 static volatile bool pump_running;
+static volatile SInt32 kctl_owns;       /* 1 while a com.apple.uart.bluetooth client has the UART (below) */
+static void kctl_pump(int *in);
 
 static void
 bt_tty_start(__unused struct tty *tp)
@@ -1234,6 +1240,9 @@ bt_tty_pump(__unused void *arg, __unused wait_result_t w)
 			in++;
 		}
 		tty_unlock(tp);
+		if (kctl_owns) {
+			kctl_pump(&in);
+		}
 		if (out == 0 && in == 0) {
 			sleep_ms(1);
 		}
@@ -1251,7 +1260,11 @@ bt_cu_open(dev_t dev, int flag, __unused int devtype, __unused proc_t p)
 	}
 	tty_lock(tp);
 	if (!ISSET(tp->t_state, TS_ISOPEN)) {
-		if (!OSCompareAndSwap(0, 1, &busy)) {
+		if (OSCompareAndSwap(1, 0, &kctl_owns)) {
+			/* BlueTool's session (below) gives way to bluetoothd: busy stays taken, now by the tty */
+			say("bt: tty: opened by pid %d while com.apple.uart.bluetooth had the UART: the tty has it now\n",
+			    proc_pid(current_proc()));
+		} else if (!OSCompareAndSwap(0, 1, &busy)) {
 			tty_unlock(tp);
 			return EBUSY;
 		}
@@ -1355,6 +1368,180 @@ static const struct cdevsw bt_cdevsw = {
 	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = D_TTY
 };
 
+/*
+ * com.apple.uart.bluetooth: the UART as iOS's BlueTool opens it. BlueTool 16.5 ("device -D", or "device -d <name>")
+ * does not open a /dev node: it makes a PF_SYSTEM stream socket, asks CTLIOCGINFO for the kernel control of that name
+ * (default com.apple.uart.bluetooth, or $BT_UART), connects to it, reads and sets termios with get/setsockopt at
+ * SYSPROTO_CONTROL (the option numbers are TIOCGETA and TIOCSETA), writes H4 with write() and reads it with read()
+ * until it has as many bytes as it asked for (a control registered for datagrams refuses its connect: EPROTOTYPE). With
+ * no such control, every BlueTool command that needs the chip says "Device not open yet" and bluetoothd's boot of the
+ * chip through BlueTool fails (seen on the phone, 3 November). bluetoothd's own transport
+ * (BT_HCI_TRANSPORT=H4:POSIX:<name>,<rate>, its "POSIX" driver) is the same kind of socket, so it opens this control
+ * too. So the same UART, when neither the tty nor the console has it: what is sent goes out as it comes; what the chip
+ * sends is queued to the socket as it is read; the rate is the kernel's (the chip was raised to it at bt=7), so a rate
+ * set through termios is answered and not followed. One client at a time, the newest: BlueTool keeps its socket open
+ * after its scripts, so a new connection (bluetoothd's) takes the UART from it, as does an open of /dev/cu.bluetooth;
+ * the client cut off finds its writes failing with ENXIO.
+ */
+static kern_ctl_ref kctl_ref;
+static volatile u_int32_t kctl_unit;
+static uint8_t kctl_rx[256];            /* read from the chip, not yet taken by the socket */
+static size_t kctl_rx_len;
+static uint32_t kctl_bytes_in, kctl_bytes_out;
+
+static errno_t
+kctl_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
+{
+	*unitinfo = NULL;
+	if (!resident) {
+		return ENXIO;
+	}
+	if (kctl_owns) {
+		/* the newest client has it: BlueTool keeps its socket after its script, and bluetoothd comes next */
+		say("bt: com.apple.uart.bluetooth: unit %u gives way to pid %d\n", kctl_unit, proc_pid(current_proc()));
+	} else if (!OSCompareAndSwap(0, 1, &busy)) {
+		say("bt: com.apple.uart.bluetooth: refused to pid %d: the UART is in use\n", proc_pid(current_proc()));
+		return EBUSY;
+	}
+	kctl_unit = sac->sc_unit;
+	kctl_rx_len = 0;
+	kctl_bytes_in = kctl_bytes_out = 0;
+	fifo_reset();
+	OSCompareAndSwap(0, 1, &kctl_owns);
+	say("bt: com.apple.uart.bluetooth: connected (unit %u) by pid %d, the chip at %u baud\n", sac->sc_unit,
+	    proc_pid(current_proc()), link_baud);
+	return 0;
+}
+
+static errno_t
+kctl_disconnect(__unused kern_ctl_ref ref, u_int32_t unit, __unused void *unitinfo)
+{
+	if (unit == kctl_unit && OSCompareAndSwap(1, 0, &kctl_owns)) {
+		kctl_unit = 0;
+		OSCompareAndSwap(1, 0, &busy);
+	}
+	say("bt: com.apple.uart.bluetooth: unit %u closed (%u bytes to the chip, %u from it)\n", unit, kctl_bytes_out,
+	    kctl_bytes_in);
+	return 0;
+}
+
+static errno_t
+kctl_send(__unused kern_ctl_ref ref, u_int32_t unit, __unused void *unitinfo, mbuf_t m, __unused int flags)
+{
+	uint8_t buf[256];
+	size_t len = mbuf_pkthdr_len(m), off = 0;
+	errno_t error = 0;
+
+	if (!kctl_owns || unit != kctl_unit) {
+		error = ENXIO;
+	}
+	while (error == 0 && off < len) {
+		size_t n = len - off < sizeof(buf) ? len - off : sizeof(buf);
+
+		if (mbuf_copydata(m, off, n, buf) != 0) {
+			error = EINVAL;
+		} else if (!bt_write(buf, n, 2000)) {
+			error = EIO;
+		} else {
+			off += n;
+			kctl_bytes_out += (uint32_t)n;
+		}
+	}
+	mbuf_freem(m);
+	return error;
+}
+
+/* the termios BlueTool reads and sets: 8 bits, RTS/CTS, the kernel's rate */
+static void
+kctl_termios(struct termios *t)
+{
+	bzero(t, sizeof(*t));
+	t->c_cflag = CS8 | CREAD | CLOCAL | CRTSCTS;
+	t->c_ispeed = t->c_ospeed = (speed_t)link_baud;
+}
+
+static errno_t
+kctl_getopt(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *unitinfo, int opt, void *data,
+    size_t *len)
+{
+	if ((u_long)(u_int)opt != (u_long)(u_int)TIOCGETA) {
+		return ENOPROTOOPT;
+	}
+	if (data != NULL) {
+		struct termios t;
+
+		if (*len < sizeof(t)) {
+			return EINVAL;
+		}
+		kctl_termios(&t);
+		memcpy(data, &t, sizeof(t));
+	}
+	*len = sizeof(struct termios);
+	return 0;
+}
+
+static errno_t
+kctl_setopt(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *unitinfo, int opt, void *data,
+    size_t len)
+{
+	u_int o = (u_int)opt;
+
+	if (o != (u_int)TIOCSETA && o != (u_int)TIOCSETAW && o != (u_int)TIOCSETAF) {
+		return ENOPROTOOPT;
+	}
+	if (data != NULL && len >= sizeof(struct termios)) {
+		const struct termios *t = data;
+
+		if (t->c_ospeed != 0 && t->c_ospeed != (speed_t)link_baud) {
+			say("bt: com.apple.uart.bluetooth: %lu baud asked; the chip stays at %u\n", (unsigned long)t->c_ospeed,
+			    link_baud);
+		}
+	}
+	return 0;
+}
+
+/* from the pump: what the chip sent, to the socket, while it has room */
+static void
+kctl_pump(int *in)
+{
+	u_int32_t unit = kctl_unit;
+	int c;
+
+	while (kctl_owns && *in < 1024) {
+		while (kctl_rx_len < sizeof(kctl_rx) && (c = bt_getc()) >= 0) {
+			kctl_rx[kctl_rx_len++] = (uint8_t)c;
+		}
+		if (kctl_rx_len == 0) {
+			return;
+		}
+		if (ctl_enqueuedata(kctl_ref, unit, kctl_rx, kctl_rx_len, 0) != 0) {
+			return;                         /* ENOBUFS: the reader is behind; RTS holds the chip meanwhile */
+		}
+		kctl_bytes_in += (uint32_t)kctl_rx_len;
+		*in += (int)kctl_rx_len;
+		kctl_rx_len = 0;
+	}
+}
+
+static void
+kctl_publish(void)
+{
+	struct kern_ctl_reg reg;
+	errno_t e;
+
+	bzero(&reg, sizeof(reg));
+	strlcpy(reg.ctl_name, "com.apple.uart.bluetooth", sizeof(reg.ctl_name));
+	reg.ctl_flags = CTL_FLAG_REG_SOCK_STREAM;      /* a stream, as BlueTool's socket; not privileged: it runs as mobile */
+	reg.ctl_recvsize = 64 * 1024;
+	reg.ctl_connect = kctl_connect;
+	reg.ctl_disconnect = kctl_disconnect;
+	reg.ctl_send = kctl_send;
+	reg.ctl_getopt = kctl_getopt;
+	reg.ctl_setopt = kctl_setopt;
+	e = ctl_register(&reg, &kctl_ref);
+	say("bt: com.apple.uart.bluetooth: %s (%d)\n", e == 0 ? "the kernel control for BlueTool" : "not registered", e);
+}
+
 /* the nodes, once: cu.bluetooth, uart.bluetooth and tty.bluetooth, one tty */
 static void
 bt_tty_publish(void)
@@ -1377,6 +1564,7 @@ bt_tty_publish(void)
 			say("bt: tty: /dev/%s not made\n", names[i]);
 		}
 	}
+	kctl_publish();
 	if (kernel_thread_start(bt_tty_pump, NULL, &thread) == KERN_SUCCESS) {
 		thread_set_thread_name(thread, "bt-tty");
 		thread_deallocate(thread);

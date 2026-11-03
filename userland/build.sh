@@ -27,6 +27,13 @@
 #                                   (default: src/inject.c in backboardd, src/inject_sb.c in SpringBoard,
 #                                   src/inject_media.c in mediaserverd);
 #                                   init hands the list to the kernel (etc/inject.conf -> sysctl kern.exec_inject)
+#                      BT=1         Bluetooth on the Galaxy S9 (kernel bt=7, drivers/bluetooth/hakios.bcm4361_bt.c):
+#                                   the jobs com.apple.bluetoothd (its transport BT_HCI_TRANSPORT=H4:POSIX:
+#                                   com.apple.uart.bluetooth,4000000 -- the kernel's control at the chip's rate; give
+#                                   BT_HCI_TRANSPORT= for another) and com.apple.BlueTool; BlueTool started with
+#                                   lib/libhakios.bluetool.dylib (src/inject_bluetool.c), which has it run this
+#                                   phone's own scripts, etc/bluetool/ (bluetool/ here), instead of Apple's firmware
+#                                   loading. devices/starlte/BLUETOOTH.md, "iOS"
 #                      EXTRA="..."  more programs for /redwood/bin (files on this machine): one-off
 #                                   diagnostics, which a file given as RC_JOBS can then run
 #                      EXTRA_SHARE="..." directories on this machine to copy whole into /redwood/share,
@@ -158,6 +165,11 @@ DARWIN_JOBS=${JOBS-"
 # (Count a QEMU run log with its duplicate lines removed: run-darwin.sh prints launchd's log twice.)
 # WIFID=0 leaves it out.
 [ "${WIFID-1}" != 0 ] && DARWIN_JOBS="$DARWIN_JOBS com.apple.wifid"
+# Bluetooth (BT=1): bluetoothd at load, BlueTool when bluetoothd asks it (mkjobs.py gives bluetoothd BT_HCI_TRANSPORT)
+if [ -n "$BT" ]; then
+	DARWIN_JOBS="$DARWIN_JOBS com.apple.bluetoothd com.apple.BlueTool"
+	export BT_HCI_TRANSPORT=${BT_HCI_TRANSPORT-H4:POSIX:com.apple.uart.bluetooth,4000000}
+fi
 # The programs (file names) started with a library of ours inside them: "LIBRARY NAME..." per line
 # (src/inject.c is libhakios.dylib, src/inject_sb.c is libhakios.sb.dylib, src/inject_media.c is
 # libhakios.media.dylib).
@@ -172,6 +184,8 @@ INJECT=${INJECT-"/redwood/lib/libhakios.dylib backboardd containermanagerd conta
 /redwood/lib/libhakios.media.dylib mediaserverd
 /redwood/lib/libhakios.app.dylib Sileo
 /redwood/lib/libhakios.tweaks.dylib Preferences"}
+[ -n "$BT" ] && INJECT="$INJECT
+/redwood/lib/libhakios.bluetool.dylib BlueTool"
 mkdir -p obj
 
 if [ -z "$PREBUILT" ] && ! command -v ld64 >/dev/null; then PREBUILT=1; fi
@@ -368,6 +382,9 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		# ... and inside an application, to say what killed it (src/inject_app.c)
 		$DYN -dynamiclib -install_name /redwood/lib/libhakios.app.dylib -lobjc \
 			-o obj/libhakios.app.dylib src/inject_app.c
+		# ... and inside BlueTool, so that it runs the Galaxy S9's Bluetooth scripts (BT=1, src/inject_bluetool.c)
+		$DYN -dynamiclib -install_name /redwood/lib/libhakios.bluetool.dylib -framework CoreFoundation -lMobileGestalt \
+			-o obj/libhakios.bluetool.dylib src/inject_bluetool.c
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libhakios.media.dylib -framework CoreFoundation -framework CoreMedia \
 			-framework CoreVideo -framework IOSurface -lobjc \
 			-o obj/libhakios.media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c
@@ -552,6 +569,11 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/libhakios.media.dylib ] && cp obj/libhakios.media.dylib root/lib/     # (as with cpu_test)
 	[ -f obj/libhakios.app.dylib ] && cp obj/libhakios.app.dylib root/lib/
 	[ -f obj/libhakios.tweaks.dylib ] && cp obj/libhakios.tweaks.dylib root/lib/
+	if [ -n "$BT" ]; then
+		[ -f obj/libhakios.bluetool.dylib ] && cp obj/libhakios.bluetool.dylib root/lib/
+		mkdir -p root/etc/bluetool
+		cp bluetool/*.script root/etc/bluetool/
+	fi
 	[ -f obj/libhakiosmetal.dylib ] && cp obj/libhakiosmetal.dylib root/lib/
 	[ -f obj/libhakiosair.dylib ] && cp obj/libhakiosair.dylib root/lib/
 	if [ -f obj/HakiosAudio ]; then
