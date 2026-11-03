@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 545 symbols in 19 groups; 52 are set, 43 of them drivers built in.
+# 566 symbols in 19 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (49)
+# Drivers built in (51)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -46,6 +46,9 @@ CONFIG_HAKIOS_MAX98512=y
 # the Galaxy S9's speaker path through ABOX, Samsung's audio block, with its CPU off (abox=N, the first N of 8 steps: ... [hakios.exynos_abox.c; requires CONFIG_HAKIOS_GUARD, CONFIG_HAKIOS_EXYNOS_ACPM]
 CONFIG_HAKIOS_EXYNOS_ABOX=y
 
+# the Galaxy S9's audio codec, a Cirrus CS47L93 on PERIC0's SPI (cs47l93=N of 6 steps: 1 a look, 2 powered and its ID ... [hakios.cs47l93.c; requires CONFIG_HAKIOS_EXYNOS_SPI, CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_CS47L93 is not set
+
 # the Bluetooth half of the WCN6750: step one, a read-only look at its three pins (bt=1) [hakios.bt.c]
 CONFIG_HAKIOS_BT=y
 
@@ -69,6 +72,9 @@ CONFIG_HAKIOS_SOCINFO=y
 
 # an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery ... [hakios.exynos_hsi2c.c]
 CONFIG_HAKIOS_EXYNOS_HSI2C=y
+
+# an Exynos 9810 SPI master (the SPI of a USI block), polled, the chip select by hand, for the Galaxy S9's audio codec ... [hakios.exynos_spi.c]
+CONFIG_HAKIOS_EXYNOS_SPI=y
 
 # the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the clocks' DVFS ... [hakios.exynos_acpm.c]
 CONFIG_HAKIOS_EXYNOS_ACPM=y
@@ -455,7 +461,7 @@ CONFIG_TOUCHSCREEN=y
 # CONFIG_VIRTIO_INPUT is not set
 
 #
-# GPU and display (96)
+# GPU and display (104)
 #
 
 # rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone) [needs fw-gpu/ from the phone]
@@ -533,11 +539,26 @@ CONFIG_GPU=y
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_QUEUE is not set
 
+# the thread handing the swaps over made real-time, once for each such thread: a period of a refresh, fb_rt_us
+# CONFIG_FB_RT is not set
+
+# read by MiniIOMobileFramebuffer.cpp (kernel)
+# CONFIG_FB_RT_US is not set
+
+# read by MiniIOMobileFramebuffer.cpp (kernel)
+# CONFIG_FB_SWAPWAIT is not set
+
 # the kernel's timer coalescing left on
 # CONFIG_FB_TCOAL is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_THREADS is not set
+
+# the surface VGF0 scans out now, and the one flipped to and not yet taken (each held, its use count raised)
+# CONFIG_FB_ZC is not set
+
+# read by MiniIOMobileFramebuffer.cpp (kernel)
+# CONFIG_FB_ZC_HOLD is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FBHEIGHT is not set
@@ -689,8 +710,17 @@ CONFIG_GPU=y
 # read by hakios.mali.cpp (kernel)
 # CONFIG_MALI_FLUSH is not set
 
+# read by hakios.mali.c (kernel)
+# CONFIG_MALI_GOV is not set
+
+# read by hakios.mali.c (kernel)
+# CONFIG_MALI_GOV_FRAME is not set
+
 # the GPU's clock: 260 (S-Boot's, the default), 455 or 572, the S9+ port's three rates
 # CONFIG_MALI_MHZ is not set
+
+# read by hakios.mali.c (kernel)
+# CONFIG_MALI_NAP_US is not set
 
 # PLL_G3D left as the boot left it (the step stops if it does not run)
 # CONFIG_MALI_PLL is not set
@@ -747,7 +777,7 @@ CONFIG_GPU=y
 # CONFIG_VBLUR is not set
 
 #
-# Audio and battery (50)
+# Audio and battery (57)
 #
 
 # the audio DSP; the battery level in the UI and charging state come through it [needs fw-audio/ from the phone]
@@ -780,13 +810,22 @@ CONFIG_SOUND=4
 # eighths of a dB of gain before the speakers' guard, 0 to 96 (0)
 # CONFIG_ABOX_GAIN is not set
 
+# refuse a translating SysMMU instead of switching it off (1: CTRL 0, as found needed on the S9)
+# CONFIG_ABOX_MMU_OFF is not set
+
 # bits of RDMA0's CTRL0 besides ENABLE, to try a format there (none: as it reads after reset)
 # CONFIG_ABOX_RDMA_CTRL0 is not set
 
 # RDMA0's CTRL1 (none: as it reads after reset)
 # CONFIG_ABOX_RDMA_CTRL1 is not set
 
-# UAIF1 from SIFS1 (SPUS OUT0 straight, SPUS_CTRL1 [18:16] = 0, ROUTE_CTRL0 [7:4] = 2) instead of the mixer
+# leave RDMA0 CTRL0's FORMAT/FUNC/BUF_UPDATE and SBANK_LIMIT as they read (1: calliope's values)
+# CONFIG_ABOX_RDMA_FMT is not set
+
+# the ring at this physical address of abox_rmem (0xFB200000 + 40 MB) instead of the kernel's memory
+# CONFIG_ABOX_RING_PA is not set
+
+# UAIF1 from SIFS0, the mixer (SPUS_CTRL0 OUT 1, MIXP_FORMAT, ROUTE_CTRL0 [7:4] = 1), instead of SIFS1
 # CONFIG_ABOX_ROUTE is not set
 
 # read by hakios.exynos_abox.c (kernel)
@@ -794,6 +833,9 @@ CONFIG_SOUND=4
 
 # how long step 7 plays its tone, 1 to 10 seconds (3)
 # CONFIG_ABOX_SECS is not set
+
+# leave SYSPOWER_CTRL ("DRAM on") and the ACLK/BCLK_UAIF1 Q-channels alone while streaming (1: set)
+# CONFIG_ABOX_SYSPOWER is not set
 
 # RDMA0's VOL_FACTOR [23:0] (none: 0x800000 if it reads 0, else left)
 # CONFIG_ABOX_VOL is not set
@@ -830,6 +872,15 @@ CONFIG_SOUND=4
 
 # every property once, for the log (which number is which on this phone's firmware)
 # CONFIG_BATTMGR is not set
+
+# the first N steps (1 looks, 2 powers the codec and reads its ID, 6 makes the microphone ready)
+# CONFIG_CS47L93 is not set
+
+# read by hakios.cs47l93.c (kernel)
+# CONFIG_CS47L93_DIV is not set
+
+# IN3L's digital volume, 0x80 0 dB, 0.5 dB a step, at most 0xBF (0x90, +8 dB)
+# CONFIG_CS47L93_MIC_VOL is not set
 
 # read by hakios.max77705.c (kernel)
 # CONFIG_MAX77705 is not set
@@ -1215,7 +1266,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_SOC_SMEM is not set
 
 #
-# Cameras (24)
+# Cameras (28)
 #
 
 # the cameras (5 is what the README uses) [needs fw-camera/ from the phone]
@@ -1251,13 +1302,22 @@ CONFIG_MODEM_AGAIN=y
 # the sensor's 7-bit I2C address, if not 0x35 (the device tree's) and not found by the scan
 # CONFIG_CAM_S9_ADDR is not set
 
+# no auto-exposure: the frames as cam_s9_exp and cam_s9_gain have them (default 1: on)
+# CONFIG_CAM_S9_AE is not set
+
+# read by hakios.exynos_camera.c (kernel)
+# CONFIG_CAM_S9_AE_FRAMES is not set
+
 # camshot's Bayer order: 0 RGGB, 1 GRBG (the default, the sensor's), 2 GBRG, 3 BGGR
 # CONFIG_CAM_S9_BAYER is not set
 
-# the exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
+# the most digital gain the auto-exposure may use, 0x100 being 1x (default 0x400, at most 0x1000)
+# CONFIG_CAM_S9_DGAIN is not set
+
+# the first exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
 # CONFIG_CAM_S9_EXP is not set
 
-# the analog gain of step 5's frame, 0x20 being 1x (default 0x40, at most 0x200)
+# the first analog gain of step 5's frame, 0x20 being 1x (default 0x40, at most 0x200)
 # CONFIG_CAM_S9_GAIN is not set
 
 # read by hakios.exynos_camera.c (kernel)
@@ -1274,6 +1334,9 @@ CONFIG_MODEM_AGAIN=y
 
 # the risky reads too, for the log: CMU_ISPPRE's whole Q-channel sweep with each DBG_NFO (+0x4000)
 # CONFIG_CAM_S9_PROBE is not set
+
+# camshot's colour saturation in per cent (default 140; 100: none; at most 300)
+# CONFIG_CAM_S9_SAT is not set
 
 # camshot's bytes a line of the frame (default 3264: the WDMA's RAW10 is a pixel in 16 bits)
 # CONFIG_CAM_S9_STRIDE is not set

@@ -53,6 +53,7 @@ audio    bsd/dev/hakios.virtio_sound.c
 audio    bsd/dev/hakios.guard.c
 audio    bsd/dev/hakios.exynos_abox.c
 audio    bsd/dev/hakios.max98512.c
+audio    bsd/dev/hakios.cs47l93.c
 
 power    bsd/dev/hakios.battery.c
 power    iokit/Kernel/hakios.battery.cpp
@@ -85,6 +86,7 @@ core     bsd/dev/hakios.version.c
 core     bsd/dev/hakios.platform.c
 core     bsd/dev/hakios.stubs.c
 core     bsd/dev/hakios.exynos_hsi2c.c
+core     bsd/dev/hakios.exynos_spi.c
 core     bsd/dev/hakios.exynos_acpm.c
 core     bsd/dev/hakios.exynos_m3.c
 core     bsd/dev/hakios.dwc3.c

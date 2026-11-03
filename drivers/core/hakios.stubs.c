@@ -171,6 +171,10 @@ void hakios_exynos_abox_quiesce(void) {}
 void hakios_abox_set_amp(__unused const struct hakios_abox_amp *amp) {}   /* an amplifiers' driver built without ABOX's */
 void hakios_abox_console(__unused const char *arg) {}   /* the USB console's "abox": nothing to drive */
 #endif
+#ifndef HAKIOS_CS47L93
+void hakios_cs47l93_console(__unused const char *arg) {}        /* the USB console's "codec": nothing to drive */
+void hakios_cs47l93_quiesce(void) {}
+#endif
 #ifndef HAKIOS_MAX98512
 void hakios_max98512_quiesce(void) {}
 #endif
