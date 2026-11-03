@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **531 arguments**: 466 read by the kernel, 17 by the loader, 60 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **534 arguments**: 469 read by the kernel, 17 by the loader, 60 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -235,7 +235,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `soc_pas_mpss` | K | `hakios.mpss.c` | `CONFIG_SOC_PAS_MPSS` |  |
 | `soc_smem` | K | `hakios.mpss.c`, `hakios.socinfo.c` | `CONFIG_SOC_SMEM` |  |
 
-## Audio and battery (58)
+## Audio and battery (61)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -244,6 +244,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `abox_burst` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_BURST` |  |
 | `abox_dvfs` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_DVFS` |  |
 | `abox_gain` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_GAIN` |  |
+| `abox_mic` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_MIC` |  |
 | `abox_mmu_off` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_MMU_OFF` |  |
 | `abox_rdma_ctrl0` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_RDMA_CTRL0` |  |
 | `abox_rdma_ctrl1` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_RDMA_CTRL1` |  |
@@ -271,6 +272,8 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `battmgr` | K | `hakios.adsp.c` | `CONFIG_BATTMGR` |  |
 | `cs47l93` | K | `hakios.cs47l93.c` | `CONFIG_CS47L93` |  |
 | `cs47l93_div` | K | `hakios.cs47l93.c` | `CONFIG_CS47L93_DIV` |  |
+| `cs47l93_hp` | K | `hakios.cs47l93.c` | `CONFIG_CS47L93_HP` |  |
+| `cs47l93_hp_vol` | K | `hakios.cs47l93.c` | `CONFIG_CS47L93_HP_VOL` |  |
 | `cs47l93_mic_vol` | K | `hakios.cs47l93.c` | `CONFIG_CS47L93_MIC_VOL` |  |
 | `max77705` | K | `hakios.max77705.c` | `CONFIG_MAX77705` |  |
 | `max77705_haptic` | K | `hakios.max77705.c` | `CONFIG_MAX77705_HAPTIC` |  |

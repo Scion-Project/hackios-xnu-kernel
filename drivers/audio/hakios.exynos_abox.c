@@ -30,7 +30,8 @@
  *               programmed (its burst length 8 if it reads 0); UAIF1 on, then RDMA0 on (Samsung's order); the amplifiers started; a tone (1 kHz, -20 dBFS,
  *               both channels) for abox_secs, through the speakers' guard; RDMA0's status every millisecond at first
  *               and every second after; then the amplifiers stopped, RDMA0 off, UAIF1 off
- *   8  sink     the same stream, kept running for good: /dev/hakios-audio's sink (sys/hakios.audio.h) into a ring, a
+ *   8  sink     the same stream, kept running for good (and, with abox_mic=1, the microphone for iOS; with the codec's
+ *               cs47l93_hp=1, the headphones: their sections below): /dev/hakios-audio's sink (sys/hakios.audio.h) into a ring, a
  *               thread of ours from there through the guard into each period RDMA0 has finished (silence when there is
  *               nothing), at the volume iOS sets (its "below", taken off digitally before the guard, as the POCO's
  *               amplifiers take it off in their own volume); the amplifiers started when iOS plays and stopped after
@@ -56,6 +57,8 @@
  *   abox_syspower=0    leave SYSPOWER_CTRL ("DRAM on") and the ACLK/BCLK_UAIF1 Q-channels alone while streaming (1: set)
  *   abox_rdma_fmt=0    leave RDMA0 CTRL0's FORMAT/FUNC/BUF_UPDATE and SBANK_LIMIT as they read (1: calliope's values)
  *   abox_ring_pa=PA    the ring at this physical address of abox_rmem (0xFB200000 + 40 MB) instead of the kernel's memory
+ *   abox_mic=1         with abox=8: /dev/hakios-mic, the codec's main microphone for iOS, recorded through UAIF0 and WDMA1
+ *                      whenever iOS listens (its section below; the codec made ready by cs47l93=6); 0 or none: no device
  *
  * THE USB CONSOLE. "abox" on hakios.dwc3.c's console (usb_gadget=5) says the state of the path and the amplifiers' own
  * status registers, and "abox tone S" makes steps 1-7 again while the phone runs, with what "abox set" changed: a
@@ -1128,6 +1131,12 @@ guard_say(void)
 
 static uint32_t clock_writes[3];        /* PLL_CON0, DIV AUDIF, DIV UAIF1 as left by step 3 */
 
+/* the microphone for iOS and the headphones, followed from step 8's loop (their section is after the capture's) */
+static void follow_input(void);
+static void follow_headphones(void);
+static volatile bool hp_on;                     /* iOS's sound goes to UAIF0 (the codec, the headphones), not to UAIF1 */
+static uint32_t mic_for_ios;                    /* abox_mic: /dev/hakios-mic, fed through WDMA1 while iOS listens */
+
 static bool
 stream_start(void)
 {
@@ -1262,9 +1271,12 @@ stream_run(uint64_t tone_until_us, uint64_t until_us)
 			refilled++;
 		}
 
-		/* step 8: the amplifiers while iOS plays, and not while it is muted */
+		/* step 8: the amplifiers while iOS plays, and not while it is muted or the headphones have the sound */
 		if (steps >= 8) {
 			uint64_t sounded = last_sound_us, since = sounded > now ? 0 : now - sounded;    /* (the sink's clock may be ahead) */
+
+			follow_headphones();
+			follow_input();
 
 			if (now - last_volume >= 100000) {
 				uint32_t below, generation;
@@ -1283,15 +1295,15 @@ stream_run(uint64_t tone_until_us, uint64_t until_us)
 					}
 				}
 			}
-			if (amp_running == NULL && !amp_given_up && !muted && sounded != 0 && since < 100000) {
+			if (amp_running == NULL && !amp_given_up && !muted && !hp_on && sounded != 0 && since < 100000) {
 				if (amp_hook != NULL) {
 					say("abox: 8: iOS plays: starting the amplifiers\n");
 				}
 				sink_peak = 0;
 				amps_start();
-			} else if (amp_running != NULL && (muted || since > QUIET_STOP_US)) {
+			} else if (amp_running != NULL && (muted || hp_on || since > QUIET_STOP_US)) {
 				say("abox: 8: %s: stopping the amplifiers; what iOS wrote peaked at %u of 32768\n",
-				    muted ? "muted" : "three seconds of silence", sink_peak);
+				    muted ? "muted" : hp_on ? "the headphones have the sound" : "three seconds of silence", sink_peak);
 				guard_say();
 				amps_stop();
 			}
@@ -1357,6 +1369,10 @@ step_sink(void)
 	}
 	hakios_audio_set_sink("ABOX: RDMA0 -> UAIF1 -> the speakers", abox_sink);
 	say("abox: 8: /dev/hakios-audio plays through ABOX; the amplifiers start when iOS plays\n");
+	if (mic_for_ios && hakios_audio_input_create("the Galaxy S9's main microphone (the codec's IN3L) through ABOX's UAIF0 and "
+	    "WDMA1, while iOS listens (abox_mic=1)")) {
+		say("abox: 8: /dev/hakios-mic: the codec's microphone, recorded through WDMA1 whenever iOS listens\n");
+	}
 	(void)stream_run(0, 0);
 	/* (only on a failure of RDMA0's: what iOS writes is then dropped) */
 	hakios_audio_set_sink("nothing (ABOX's stream stopped)", NULL);
@@ -1482,6 +1498,46 @@ rec_levels(uint32_t frames)
 	}
 }
 
+/*
+ * UAIF0 as ABOX's master of an I2S of 2 x 16 bits at 48 kHz, neither side enabled: its BCLK's divider, mux and
+ * Q-channel, its pins (gpb0-1..4), the pads' retention released, CTRL1 as UAIF1's and CTRL0's master, DATA_MODE 1 and
+ * IRQ_MODE 0 (each side's ENABLE left as it is: the microphone's and the headphones' are switched on and off on their
+ * own); SYSPOWER_CTRL and the ACLK and BCLK_UAIF0 Q-channels held on. What the capture ("abox rec", the microphone
+ * for iOS) and the headphones share; undone by uaif0_release() when neither uses UAIF0 any more.
+ */
+static bool
+uaif0_prepare(void)
+{
+	if (!cmu_ratio("DIV_CLK_AUD_UAIF0", CMU_DIV_UAIF0, 0x1FF, AUD_DIV_UAIF1) ||
+	    !cmu_ratio("MUX_CLK_AUD_UAIF0", CMU_MUX_UAIF0, 0x1, 0)) {
+		return false;
+	}
+	qch_on("QCH ABOX_BCLK0 (UAIF0's bclk_gate)", CMU_QCH_BCLK0);
+	(void)poke_bits(&gpio, "gpb0 CON (UAIF0)", GPIO_GPB0 + GPIO_CON, UAIF0_PINS_MASK, UAIF0_PINS_FUNC);
+	(void)poke_bits(&gpio, "gpb0 PUD", GPIO_GPB0 + GPIO_PUD, UAIF0_PINS_MASK, UAIF0_PINS_PUD);
+	rec_pins_set = true;
+	(void)poke_bits(&pmu, "PAD_RETENTION_ABOX_OPTION", PMU_PAD_RETENTION_ABOX, PMU_PAD_RELEASE, PMU_PAD_RELEASE);
+	(void)poke_bits(&pmu, "GPIO_MODE_ABOX_SYS_PWR_REG", PMU_GPIO_MODE_ABOX, 1, 1);
+	(void)poke(&abox, "UAIF0_CTRL1", ABOX_UAIF_CTRL1(0), uaif1_ctrl1());
+	(void)poke_bits(&abox, "UAIF0_CTRL0 (master, DATA_MODE 1, IRQ_MODE 0)", ABOX_UAIF_CTRL0(0),
+	    UAIF_MODE_MASTER | UAIF_DATA_MODE | UAIF_IRQ_MODE, UAIF_MODE_MASTER | UAIF_DATA_MODE);
+	(void)poke_bits(&abox, "SYSPOWER_CTRL (DRAM on)", ABOX_SYSPOWER_CTRL, 1, 1);
+	(void)poke_bits(&abox, "QCHANNEL_DISABLE (ACLK, BCLK_UAIF0)", ABOX_QCHANNEL_DISABLE, QCHANNEL_ACLK | QCHANNEL_BCLK_UAIF0,
+	    QCHANNEL_ACLK | QCHANNEL_BCLK_UAIF0);
+	return true;
+}
+
+/* UAIF0's BCLK Q-channel given back and its pins idle: only when neither the capture nor the headphones use it */
+static void
+uaif0_release(void)
+{
+	(void)poke_bits(&abox, "QCHANNEL_DISABLE (BCLK_UAIF0 back)", ABOX_QCHANNEL_DISABLE, QCHANNEL_BCLK_UAIF0, 0);
+	if (rec_pins_set) {
+		(void)poke_bits(&gpio, "gpb0 CON (idle)", GPIO_GPB0 + GPIO_CON, UAIF0_PINS_MASK, 0);
+		rec_pins_set = false;
+	}
+}
+
 static bool
 rec_prepare(void)
 {
@@ -1501,25 +1557,9 @@ rec_prepare(void)
 	say("abox: rec: about to set up UAIF0's clock (CMU_AUD), its pins (gpb0-1..4), UAIF0 as the master of an I2S of "
 	    "2 x 16 bits taking the microphone's side, the route UAIF0 -> NSRC0 -> SIFM0 -> WDMA1, and WDMA1 into %u KB at %#x\n",
 	    REC_RING_BYTES / 1024, REC_RING_PA);
-	if (!cmu_ratio("DIV_CLK_AUD_UAIF0", CMU_DIV_UAIF0, 0x1FF, AUD_DIV_UAIF1) ||
-	    !cmu_ratio("MUX_CLK_AUD_UAIF0", CMU_MUX_UAIF0, 0x1, 0)) {
+	if (!uaif0_prepare() || !sysmmu_passes()) {
 		return false;
 	}
-	qch_on("QCH ABOX_BCLK0 (UAIF0's bclk_gate)", CMU_QCH_BCLK0);
-	(void)poke_bits(&gpio, "gpb0 CON (UAIF0)", GPIO_GPB0 + GPIO_CON, UAIF0_PINS_MASK, UAIF0_PINS_FUNC);
-	(void)poke_bits(&gpio, "gpb0 PUD", GPIO_GPB0 + GPIO_PUD, UAIF0_PINS_MASK, UAIF0_PINS_PUD);
-	rec_pins_set = true;
-	(void)poke_bits(&pmu, "PAD_RETENTION_ABOX_OPTION", PMU_PAD_RETENTION_ABOX, PMU_PAD_RELEASE, PMU_PAD_RELEASE);
-	(void)poke_bits(&pmu, "GPIO_MODE_ABOX_SYS_PWR_REG", PMU_GPIO_MODE_ABOX, 1, 1);
-	if (!sysmmu_passes()) {
-		return false;
-	}
-	(void)poke(&abox, "UAIF0_CTRL1", ABOX_UAIF_CTRL1(0), uaif1_ctrl1());
-	(void)poke_bits(&abox, "UAIF0_CTRL0 (master, DATA_MODE 1, IRQ_MODE 0, off)", ABOX_UAIF_CTRL0(0),
-	    UAIF_SPK_ENABLE | UAIF_MIC_ENABLE | UAIF_MODE_MASTER | UAIF_DATA_MODE | UAIF_IRQ_MODE, UAIF_MODE_MASTER | UAIF_DATA_MODE);
-	(void)poke_bits(&abox, "SYSPOWER_CTRL (DRAM on)", ABOX_SYSPOWER_CTRL, 1, 1);
-	(void)poke_bits(&abox, "QCHANNEL_DISABLE (ACLK, BCLK_UAIF0)", ABOX_QCHANNEL_DISABLE, QCHANNEL_ACLK | QCHANNEL_BCLK_UAIF0,
-	    QCHANNEL_ACLK | QCHANNEL_BCLK_UAIF0);
 	(void)poke_bits(&abox, "ROUTE_CTRL1 (NSRC0 from UAIF0)", ABOX_ROUTE_CTRL1, 0xFu, ROUTE_NSRC_UAIF0);
 	(void)poke_bits(&abox, "SPUM_CTRL0 (NSRC0: no ASRC, out to WDMA)", ABOX_SPUM_CTRL0, (1u << 4) | (1u << 7), 0);
 	(void)poke(&abox, "SPUM_CTRL3 (SIFM0 flushed)", ABOX_SPUM_CTRL3, 1);
@@ -1559,10 +1599,8 @@ rec_stop(void)
 		    rd(&abox, W1(RDMA_STATUS)));
 		wdma_on = !stopped;
 	}
-	(void)poke_bits(&abox, "QCHANNEL_DISABLE (BCLK_UAIF0 back)", ABOX_QCHANNEL_DISABLE, QCHANNEL_BCLK_UAIF0, 0);
-	if (rec_pins_set) {
-		(void)poke_bits(&gpio, "gpb0 CON (idle)", GPIO_GPB0 + GPIO_CON, UAIF0_PINS_MASK, 0);
-		rec_pins_set = false;
+	if (!hp_on) {
+		uaif0_release();        /* (the headphones keep UAIF0 while they have the sound) */
 	}
 }
 
@@ -1664,6 +1702,203 @@ rec_thread(__unused void *arg, __unused wait_result_t result)
 	thread_terminate(current_thread());
 }
 
+/* ---- the microphone for iOS: /dev/hakios-mic, while it is open (abox_mic=1, with abox=8) ------------------------------ */
+
+/*
+ * The capture of "abox rec" made continuous: whenever Darwin's audio server has /dev/hakios-mic open (its input runs:
+ * Voice Memos, dictation, an AVAudioRecorder), step 8's loop sets up UAIF0, the route UAIF0 -> NSRC0 -> SIFM0 and WDMA1
+ * into the same 64 KB ring (abox_rmem +1 MB: 16 periods of 4 KB, 341 ms of 48 kHz 16-bit stereo) and follows WDMA1's
+ * STATUS every 2 ms with RDMA0's; what WDMA1 has written since is taken as it comes, its left slot (AIF1TX1: IN3L, the
+ * main microphone; the codec sends it on both) into /dev/hakios-mic's ring (hakios.audio.c), which hands it to Darwin
+ * 40 ms behind. When the device is closed, WDMA1 and UAIF0's microphone side are stopped again, and what was heard is
+ * said (its length, RMS, peak, how many samples were exactly 0). A start that fails (WDMA1 never moves) is not tried
+ * again until Darwin closes and opens the device. The codec's side (cs47l93=6: the microphone and AIF1) is made at boot.
+ */
+static bool live, live_refused;                 /* WDMA1 runs for iOS; it did not start: not again until iOS closes */
+static uint32_t live_last;                      /* how far into the ring WDMA1's samples have been taken */
+static uint64_t live_frames, live_squares, live_began_us, live_said_us;
+static uint32_t live_peak, live_zeroes, live_count;
+static int16_t live_mono[REC_PERIOD_BYTES / FRAME_BYTES];
+
+static bool
+live_start(void)
+{
+	uint64_t took = 0;
+
+	live_count++;
+	say("abox: mic: iOS listens (%u): the codec's microphone through UAIF0 -> NSRC0 -> SIFM0 -> WDMA1, into /dev/hakios-mic\n",
+	    live_count);
+	if (!rec_prepare()) {
+		rec_stop();
+		return false;
+	}
+	(void)poke_bits(&abox, "WDMA1_CTRL0 (ENABLE)", W1(RDMA_CTRL0), RDMA_ENABLE, RDMA_ENABLE);
+	wdma_on = true;
+	(void)poke_bits(&abox, "UAIF0_CTRL0 (MIC_ENABLE)", ABOX_UAIF_CTRL0(0), UAIF_MIC_ENABLE, UAIF_MIC_ENABLE);
+	uaif0_on = true;
+	if (!wait_bits(&abox, W1(RDMA_STATUS), RDMA_PROGRESS, RDMA_PROGRESS, 2000, &took)) {
+		say("abox: mic: WDMA1 has not started after %llu us (STATUS %#x, CTRL0 %#x, UAIF0 STATUS %#x): no microphone until iOS "
+		    "opens it again\n", took, rd(&abox, W1(RDMA_STATUS)), rd(&abox, W1(RDMA_CTRL0)), rd(&abox, ABOX_UAIF_STATUS(0)));
+		rec_stop();
+		return false;
+	}
+	live_last = 0;
+	live_frames = live_squares = 0;
+	live_peak = live_zeroes = 0;
+	live_began_us = live_said_us = now_us();
+	hakios_audio_input_begin();
+	live = true;
+	return true;
+}
+
+static void
+live_say(const char *when)
+{
+	uint64_t skipped = 0, dry = 0;
+
+	hakios_audio_input_counts(&skipped, &dry);
+	say("abox: mic: %s: %llu.%02llu s heard in %llu.%01llu s, RMS %u, peak %u (of 32768), %u samples exactly 0; "
+	    "%llu frames skipped as late, %llu reads short\n", when, live_frames / HAKIOS_ABOX_RATE,
+	    live_frames % HAKIOS_ABOX_RATE * 100 / HAKIOS_ABOX_RATE, (now_us() - live_began_us) / 1000000,
+	    (now_us() - live_began_us) / 100000 % 10, live_frames ? isqrt64(live_squares / live_frames) : 0, live_peak, live_zeroes,
+	    skipped, dry);
+}
+
+static void
+live_stop(const char *why)
+{
+	live = false;
+	live_say(why);
+	rec_stop();
+}
+
+/* what WDMA1 has written since the last look, its left slot into /dev/hakios-mic */
+static void
+live_follow(void)
+{
+	uint32_t status = rd(&abox, W1(RDMA_STATUS)), pos = (RDMA_RBUF_OFFSET(status) + RDMA_RBUF_CNT(status)) & ~3u;
+
+	if (pos >= REC_RING_BYTES) {
+		say("abox: mic: WDMA1's position %#x is outside the ring (STATUS %#x): stopping\n", pos, status);
+		live_stop("stopped");
+		live_refused = true;
+		return;
+	}
+	while (live_last != pos) {
+		uint32_t bytes = pos > live_last ? pos - live_last : REC_RING_BYTES - live_last, frames;
+		const volatile int16_t *stereo = (const volatile int16_t *)(rec_ring + live_last);
+
+		bytes = bytes > sizeof(live_mono) * 2 ? (uint32_t)sizeof(live_mono) * 2 : bytes;
+		frames = bytes / FRAME_BYTES;
+		for (uint32_t i = 0; i < frames; i++) {
+			int32_t v = stereo[2 * i];
+			uint32_t a = (uint32_t)(v < 0 ? -v : v);
+
+			live_mono[i] = (int16_t)v;
+			live_squares += (uint64_t)((int64_t)v * v);
+			live_peak = a > live_peak ? a : live_peak;
+			live_zeroes += v == 0;
+		}
+		hakios_audio_input_put(live_mono, frames);
+		live_frames += frames;
+		live_last = (live_last + frames * FRAME_BYTES) % REC_RING_BYTES;
+	}
+	if (live_count == 1 && live_said_us != 0 && now_us() - live_said_us >= 1000000) {
+		live_say("its first second");   /* (said once, for the first recording: the level is there or it is not) */
+		live_said_us = 0;
+	}
+}
+
+static void
+follow_input(void)
+{
+	bool wanted;
+
+	if (!mic_for_ios) {
+		return;
+	}
+	wanted = hakios_audio_input_wanted();
+	if (wanted && !live && !live_refused) {
+		live_refused = !live_start();
+	} else if (!wanted && live) {
+		live_stop("iOS stops listening");
+	}
+	if (!wanted) {
+		live_refused = false;
+	}
+	if (live) {
+		live_follow();
+	}
+}
+
+/* ---- the headphones: iOS's sound to UAIF0, the codec's AIF1 (hakios.cs47l93.c, cs47l93_hp=1) ------------------------ */
+
+/*
+ * With something plugged into the jack, the codec's driver asks for the sound (hakios_abox_headphones(true)) before it
+ * switches its headphone output on, and gives it back (false) after switching it off. Step 8's loop then:
+ *   on   stops the amplifiers (and keeps them off: hp_on), makes UAIF0 ready (uaif0_prepare(), as for the capture),
+ *        routes UAIF0's speaker side from the SIF UAIF1 takes RDMA0's samples from (ROUTE_CTRL0 [3:0] := [7:4]: SIFS1)
+ *        and switches UAIF0's SPK_ENABLE on: the same samples, through the speakers' guard, go to the codec's AIF1RX1/2
+ *        and from there (its OUT2 mixers) to the headphones
+ *   off  UAIF0's SPK_ENABLE off, its route as it was, UAIF0 released unless the microphone runs; the amplifiers start
+ *        again the next time iOS plays
+ * INFERRED: that one SIF may feed two UAIFs at once (the route is a field per UAIF; Samsung's DAPM routes
+ * "UAIF0 SPK" and "UAIF1 SPK" each with its own mux) -- the owner's test (docs: starlte, the headphones) says.
+ */
+static volatile uint32_t hp_want;
+static uint32_t hp_route_was;
+
+bool
+hakios_abox_headphones(bool on)
+{
+	if (steps < 8 || !busy) {
+		return false;           /* no stream for iOS: nothing to route */
+	}
+	hp_want = on;
+	for (int i = 0; i < 100 && hp_on != on; i++) {
+		delay_for_interval(2, NSEC_PER_MSEC);
+	}
+	if (hp_on != on) {
+		hp_want = hp_on;        /* not taken (the loop does not run yet): not done later behind the codec's back */
+		return false;
+	}
+	return true;
+}
+
+static void
+follow_headphones(void)
+{
+	uint32_t route;
+
+	if ((hp_want != 0) == hp_on) {
+		return;
+	}
+	if (hp_want) {
+		say("abox: headphones: iOS's sound to UAIF0 (the codec's AIF1) instead of the amplifiers\n");
+		amps_stop();
+		if (!uaif0_prepare()) {
+			say("abox: headphones: UAIF0 could not be set up: the sound stays with the speakers\n");
+			hp_want = 0;
+			return;
+		}
+		route = rd(&abox, ABOX_ROUTE_CTRL0);
+		hp_route_was = route & 0xFu;
+		(void)poke_bits(&abox, "ROUTE_CTRL0 (UAIF0 SPK from UAIF1's SIF)", ABOX_ROUTE_CTRL0, 0xFu,
+		    (route >> ROUTE_UAIF1_SHIFT) & 0xFu);
+		(void)poke_bits(&abox, "UAIF0_CTRL0 (SPK_ENABLE)", ABOX_UAIF_CTRL0(0), UAIF_SPK_ENABLE, UAIF_SPK_ENABLE);
+		hp_on = true;
+	} else {
+		(void)poke_bits(&abox, "UAIF0_CTRL0 (SPK_ENABLE off)", ABOX_UAIF_CTRL0(0), UAIF_SPK_ENABLE, 0);
+		spin_us(FIFO_FLUSH_US);
+		(void)poke_bits(&abox, "ROUTE_CTRL0 (UAIF0 SPK as it was)", ABOX_ROUTE_CTRL0, 0xFu, hp_route_was);
+		hp_on = false;
+		if (!live) {
+			uaif0_release();
+		}
+		say("abox: headphones: the sound is the speakers' again\n");
+	}
+}
+
 static void abox_thread_run(void);
 
 /* what was done, undone: the stream stopped, the pins idle, the domain off if it was off before */
@@ -1737,6 +1972,12 @@ hakios_exynos_abox_quiesce(void)
 	uint64_t took = 0;
 	bool stopped = true;
 
+	if (abox.va != 0 && (wdma_on || uaif0_on || hp_on)) {
+		/* the microphone's capture and the headphones: WDMA1 writes into abox_rmem, UAIF0 clocks the codec */
+		wr(&abox, W1(RDMA_CTRL0), rd(&abox, W1(RDMA_CTRL0)) & ~RDMA_ENABLE);
+		wr(&abox, ABOX_UAIF_CTRL0(0), rd(&abox, ABOX_UAIF_CTRL0(0)) & ~(UAIF_MIC_ENABLE | UAIF_SPK_ENABLE));
+		say("abox: at the run's end: WDMA1 and UAIF0 off (UAIF0 CTRL0 %#x)\n", rd(&abox, ABOX_UAIF_CTRL0(0)));
+	}
 	if (abox.va == 0 || (!rdma_on && !uaif_on)) {
 		return;
 	}
@@ -1780,6 +2021,7 @@ hakios_exynos_abox_init(void)
 	PE_parse_boot_argn("abox_syspower", &syspower, sizeof(syspower));
 	PE_parse_boot_argn("abox_rdma_fmt", &rdma_fmt, sizeof(rdma_fmt));
 	PE_parse_boot_argn("abox_ring_pa", &ring_pa, sizeof(ring_pa));
+	PE_parse_boot_argn("abox_mic", &mic_for_ios, sizeof(mic_for_ios));
 	busy = 1;
 	if (kernel_thread_start(abox_thread, NULL, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);

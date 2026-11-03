@@ -44,12 +44,38 @@
  *   cs47l93_mic_vol=V  IN3L's digital volume, 0x80 0 dB, 0.5 dB a step, at most 0xBF (0x90, +8 dB)
  *   cs47l93_div=D      the SPI's IP clock divider, 0 to 15 (15: 400 MHz / 16 = 25 MHz, the bus at a quarter of it,
  *                      6.25 MHz); 255 leaves it as the boot has it
+ *   cs47l93_hp=1       the headphones (THE HEADPHONES below): Cirrus's register patch at power-up, then, once the six
+ *                      steps are done, the jack watched and the headphone output (OUT2) switched on while something is
+ *                      plugged in, with iOS's sound taken from the speakers to it (ABOX, abox=8). 0 or none: the
+ *                      output is never switched on (as before)
+ *   cs47l93_hp_vol=V   OUT2's digital volume, 0x80 0 dB, 0.5 dB a step, at most 0x80 (0x68: -12 dB); iOS's own volume
+ *                      scales the samples before it
  *
  * THE USB CONSOLE. "codec" says the state; "codec r REG [N]" reads N 16-bit registers from REG; "codec w REG VALUE"
  * writes one (the codec must have been powered: step 2); "codec power" makes steps 1-2 again, "codec mic" steps 1-6.
  *
- * WHAT IS NOT DONE (yet): the headphone output (OUT2: its enable, its volume and Cirrus's headphone sequence), the
- * other microphones (IN4L, the headset's IN1BL), the jack's microphone and impedance detection, Cirrus's register patch
+ * THE HEADPHONES (cs47l93_hp=1; NOT tried with headphones yet: the owner's test is in hakios-starlte's AUDIO.md).
+ * Cirrus's own order (the S9's kernel: cs47l92-tables.c cs47l92_patch(), madera.c madera_hp_ev() and madera_out_ev(),
+ * cs47l92.c's DAPM for OUT2, mixer_paths.xml's route-headphone):
+ *   power-up   after BOOT_DONE (step 2) the chip's register patch, as madera_dev_init() writes it before anything else:
+ *              the 16-bit one (cs47l92_reva_16_patch) and the 32-bit one, the write sequencer's steps for the outputs
+ *              (cs47l92_reva_32_patch, 0x3030-0x31D8: the 32-bit register map, a 32-bit value after the padding)
+ *   the jack   once step 6 is done, a thread reads IRQ1_RAW_STATUS_7 every 100 ms (MICD_CLAMP_RISE 0: plugged in, as
+ *              step 3) and takes a change after it has read the same three times (300 ms)
+ *   plugged in ABOX first (hakios_abox_headphones(true): the amplifiers stopped, iOS's samples on UAIF0 into AIF1RX1/2,
+ *              which step 6 has mixed into OUT2L/R at 0 dB); then OUT2: its digital volume (cs47l93_hp_vol) set muted,
+ *              OUTPUT_ENABLES_1's OUT2L_ENA and OUT2R_ENA (the chip's write sequencer brings the output stage up), 6 ms
+ *              for each output (madera_out_ev's out_up_delay for the CS47L92/93), OUTPUT_STATUS_1 read, then unmuted
+ *              (OUT_VU taking both sides at once)
+ *   pulled out OUT2 muted, its enables cleared, 1 ms for each output (out_down_delay); then ABOX given the sound back
+ *              (the speakers' again)
+ *   Every change is told to /dev/hakios-audio (hakios_audio_set_route()), whose HAKIOS_AUDIO_GET_ROUTE the plug-in in
+ *   the audio server watches, to tell the HAL that the speaker's jack has changed.
+ * Not done: the headphones' impedance (Cirrus's HPDET, which sets the output's gain for low-impedance ones), the
+ * headset's microphone (IN1BL) and its buttons, the clamp madera's extcon puts on the output while a jack goes in and
+ * out (a click is possible; the output is muted and off within 300 ms of the jack leaving).
+ *
+ * WHAT IS NOT DONE (yet): the other microphones (IN4L, the headset's IN1BL), the jack's microphone and impedance detection, Cirrus's register patch
  * for the chip's revision (cs47l92-tables.c). ABOX's side of the capture (UAIF0 -> WDMA1) is hakios.exynos_abox.c's
  * "abox rec". Nothing is ever written to the PMIC but LDO34's control register, and that only in step 2, read back
  * each time.
@@ -60,6 +86,7 @@
  * cmucal-sfr.c and cmucal-node.c, drivers/pinctrl/samsung/pinctrl-exynos.c), GPL-2.0, read for facts and not copied.
  */
 #include <kern/clock.h>
+#include <kern/locks.h>
 #include <kern/startup.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
@@ -69,7 +96,9 @@
 #include <pexpert/pexpert.h>
 #include <stdarg.h>
 #include <sys/errno.h>
+#include <sys/hakios.audio.h>
 #include <sys/hakios.cs47l93.h>
+#include <sys/hakios.exynos_abox.h>
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.exynos_spi.h>
 #include <sys/systm.h>
@@ -140,17 +169,30 @@ static vm_offset_t gpio;
 
 /* ---- the codec's registers over SPI ------------------------------------------------------------------------------- */
 
+/* one transfer at a time: the boot's run, the USB console and the headphones' thread all use the bus */
+static LCK_GRP_DECLARE(codec_lock_group, "hakios-cs47l93");
+static LCK_MTX_DECLARE(spi_lock, &codec_lock_group);
+
+static uint32_t
+transfer(const uint8_t *tx, uint8_t *rx, uint32_t len)
+{
+	uint32_t error;
+
+	lck_mtx_lock(&spi_lock);
+	hakios_exynos_spi_select(&bus, true);
+	error = hakios_exynos_spi_transfer(&bus, tx, rx, len);
+	hakios_exynos_spi_select(&bus, false);
+	lck_mtx_unlock(&spi_lock);
+	return error;
+}
+
 static int
 reg_read(uint32_t reg, uint16_t *value)
 {
 	uint8_t tx[8] = { (uint8_t)(0x80 | (reg >> 24)), (uint8_t)(reg >> 16), (uint8_t)(reg >> 8), (uint8_t)reg, 0, 0, 0, 0 };
 	uint8_t rx[8] = { 0 };
-	uint32_t error;
 
-	hakios_exynos_spi_select(&bus, true);
-	error = hakios_exynos_spi_transfer(&bus, tx, rx, sizeof(tx));
-	hakios_exynos_spi_select(&bus, false);
-	if (error) {
+	if (transfer(tx, rx, sizeof(tx))) {
 		return EIO;
 	}
 	*value = (uint16_t)(rx[6] << 8 | rx[7]);
@@ -162,12 +204,31 @@ reg_write(uint32_t reg, uint16_t value)
 {
 	uint8_t tx[8] = { (uint8_t)(reg >> 24), (uint8_t)(reg >> 16), (uint8_t)(reg >> 8), (uint8_t)reg, 0, 0,
 		          (uint8_t)(value >> 8), (uint8_t)value };
-	uint32_t error;
 
-	hakios_exynos_spi_select(&bus, true);
-	error = hakios_exynos_spi_transfer(&bus, tx, NULL, sizeof(tx));
-	hakios_exynos_spi_select(&bus, false);
-	return error ? EIO : 0;
+	return transfer(tx, NULL, sizeof(tx)) ? EIO : 0;
+}
+
+/* the 32-bit registers (0x3000 up: the write sequencer, the DSPs; cs47l92_32bit_spi_regmap): the same, a 32-bit value */
+static int
+reg_read32(uint32_t reg, uint32_t *value)
+{
+	uint8_t tx[10] = { (uint8_t)(0x80 | (reg >> 24)), (uint8_t)(reg >> 16), (uint8_t)(reg >> 8), (uint8_t)reg };
+	uint8_t rx[10] = { 0 };
+
+	if (transfer(tx, rx, sizeof(tx))) {
+		return EIO;
+	}
+	*value = (uint32_t)rx[6] << 24 | (uint32_t)rx[7] << 16 | (uint32_t)rx[8] << 8 | rx[9];
+	return 0;
+}
+
+static int
+reg_write32(uint32_t reg, uint32_t value)
+{
+	uint8_t tx[10] = { (uint8_t)(reg >> 24), (uint8_t)(reg >> 16), (uint8_t)(reg >> 8), (uint8_t)reg, 0, 0,
+		           (uint8_t)(value >> 24), (uint8_t)(value >> 16), (uint8_t)(value >> 8), (uint8_t)value };
+
+	return transfer(tx, NULL, sizeof(tx)) ? EIO : 0;
 }
 
 /* ---- the reset pin and the supplies --------------------------------------------------------------------------------- */
@@ -270,6 +331,58 @@ step_look(void)
 	return true;
 }
 
+/* ---- Cirrus's register patch for the chip (cs47l93_hp=1) --------------------------------------------------------------- */
+
+static uint32_t hp_enabled;             /* cs47l93_hp */
+static uint32_t hp_vol = 0x68;          /* cs47l93_hp_vol: -12 dB */
+
+/* the S9 kernel's cs47l92_reva_16_patch, in its order (0x120 twice, as there) */
+static const uint16_t patch16[][2] = {
+	{ 0x3A2, 0x2C29 }, { 0x3A3, 0x0E00 }, { 0x281, 0x0000 }, { 0x282, 0x0000 }, { 0x4EA, 0x0100 }, { 0x22B, 0x0000 },
+	{ 0x4A0, 0x0080 }, { 0x4A1, 0x0000 }, { 0x4A2, 0x0000 }, { 0x180B, 0x033F }, { 0x190B, 0x033F }, { 0x442, 0x0304 },
+	{ 0x34C, 0x0003 }, { 0x124, 0x0C49 }, { 0x120, 0x0345 }, { 0x120, 0x0305 }, { 0x4FA, 0x5064 }, { 0x1300, 0x050E },
+	{ 0x1302, 0x0101 }, { 0x1380, 0x02E0 }, { 0x1381, 0xF942 }, { 0x1382, 0x04CE }, { 0x1383, 0xFF06 }, { 0x1390, 0x0304 },
+	{ 0x1391, 0xF8FF }, { 0x1392, 0x04F3 }, { 0x1393, 0xFF00 }, { 0x13A0, 0x02E0 }, { 0x13A1, 0xF942 }, { 0x13A2, 0x04CE },
+	{ 0x13A3, 0xFF06 }, { 0x13B0, 0x0304 }, { 0x13B1, 0xF8FF }, { 0x13B2, 0x04F3 }, { 0x13B3, 0xFF00 }, { 0x412, 0x0005 },
+	{ 0x41A, 0x0005 }, { 0x422, 0x0005 },
+};
+/* ... and cs47l92_reva_32_patch: the write sequencer's steps for OUT1-3 (the address, then the 32-bit value) */
+static const uint32_t patch32[][2] = {
+	{ 0x3030, 0x04A00C01 }, { 0x3032, 0x0225F501 }, { 0x3044, 0x04A00C00 }, { 0x3046, 0x0225FF01 }, { 0x3080, 0x04A00C01 },
+	{ 0x3082, 0x0226F501 }, { 0x3094, 0x04A00C00 }, { 0x3096, 0x0226FF01 }, { 0x30D1, 0x04A10C01 }, { 0x30D2, 0x0227F501 },
+	{ 0x30E4, 0x04A10C00 }, { 0x30E6, 0x0227FF01 }, { 0x3120, 0x04A10C01 }, { 0x3122, 0x0228F501 }, { 0x3134, 0x04A10C00 },
+	{ 0x3136, 0x0228FF01 }, { 0x3170, 0x04A20C01 }, { 0x3172, 0x022B0101 }, { 0x3174, 0x0229F501 }, { 0x3184, 0x04A20C00 },
+	{ 0x3186, 0x022B0100 }, { 0x3188, 0x0229FF01 }, { 0x31C0, 0x04A20C01 }, { 0x31C2, 0x022B0001 }, { 0x31C4, 0x022AF501 },
+	{ 0x31D4, 0x04A20C00 }, { 0x31D6, 0x022B0000 }, { 0x31D8, 0x022AFF01 },
+};
+
+/* both patches written, as madera_dev_init() writes them right after the boot; what reads back otherwise is said */
+static void
+chip_patch(void)
+{
+	uint32_t differ = 0;
+
+	for (unsigned i = 0; i < sizeof(patch16) / sizeof(patch16[0]); i++) {
+		uint16_t back = 0;
+
+		if (reg_write(patch16[i][0], patch16[i][1]) != 0 || reg_read(patch16[i][0], &back) != 0 || back != patch16[i][1]) {
+			say("cs47l93: the patch: %04x <- %04x reads %04x\n", patch16[i][0], patch16[i][1], back);
+			differ++;
+		}
+	}
+	for (unsigned i = 0; i < sizeof(patch32) / sizeof(patch32[0]); i++) {
+		uint32_t back = 0;
+
+		if (reg_write32(patch32[i][0], patch32[i][1]) != 0 || reg_read32(patch32[i][0], &back) != 0 || back != patch32[i][1]) {
+			say("cs47l93: the patch: %04x <- %08x reads %08x\n", patch32[i][0], patch32[i][1], back);
+			differ++;
+		}
+	}
+	say("cs47l93: Cirrus's register patch written (%u 16-bit, %u 32-bit registers), %u not read back as written (some "
+	    "read differently by design: the list above)\n", (unsigned)(sizeof(patch16) / sizeof(patch16[0])),
+	    (unsigned)(sizeof(patch32) / sizeof(patch32[0])), differ);
+}
+
 static bool
 step_power(void)
 {
@@ -313,6 +426,9 @@ step_power(void)
 	(void)reg_write(IRQ1_STATUS_1, BOOT_DONE);      /* BOOT_DONE is unmasked after a reset: acknowledged */
 	say("cs47l93: booted (IRQ1_RAW_STATUS_1 %04x) within %llu us\n", raw, now / 1000);
 	powered = true;
+	if (hp_enabled) {
+		chip_patch();           /* (only with the headphones: what the microphone was verified with stays as it was) */
+	}
 	return true;
 }
 
@@ -645,6 +761,113 @@ step_aif(void)
 	return true;
 }
 
+/* ---- the headphones (cs47l93_hp=1; THE HEADPHONES in the header) ------------------------------------------------------ */
+
+#define OUTPUT_ENABLES_1        0x0400  /* OUT2L_ENA 3, OUT2R_ENA 2 */
+#define  OUT2_ENA               0x000C
+#define OUTPUT_STATUS_1         0x0401
+#define DAC_DIGITAL_VOLUME_2L   0x0419  /* OUT_VU 9, OUT2L_MUTE 8, OUT2L_VOL [7:0] */
+#define DAC_DIGITAL_VOLUME_2R   0x041D
+#define  OUT_VU                 0x0200
+#define  OUT_MUTE               0x0100
+#define OUT_UP_MS               6       /* madera_out_ev(): each output of a CS47L92/93 */
+#define OUT_DOWN_MS             1
+
+static bool hp_out;                     /* OUT2 is on */
+static bool hp_watching;                /* the jack's thread runs */
+static volatile bool hp_stop;           /* the run ends: the thread stops */
+
+/* OUT2 up (muted, enabled, 6 ms each, unmuted) or down (muted, disabled, 1 ms each), Cirrus's order */
+static bool
+hp_power(bool on)
+{
+	uint16_t status = 0;
+
+	if (on) {
+		if (!set("DAC_DIGITAL_VOLUME_2L (muted, the volume)", DAC_DIGITAL_VOLUME_2L, 0x01FF, (uint16_t)(OUT_MUTE | hp_vol)) ||
+		    update(DAC_DIGITAL_VOLUME_2R, 0x03FF, (uint16_t)(OUT_VU | OUT_MUTE | hp_vol)) != 0 ||
+		    !set("OUTPUT_ENABLES_1 (OUT2L, OUT2R)", OUTPUT_ENABLES_1, OUT2_ENA, OUT2_ENA)) {
+			(void)update(OUTPUT_ENABLES_1, OUT2_ENA, 0);
+			return false;
+		}
+		delay(2 * OUT_UP_MS * 1000);
+		(void)reg_read(OUTPUT_STATUS_1, &status);
+		(void)update(DAC_DIGITAL_VOLUME_2L, OUT_MUTE, 0);
+		(void)update(DAC_DIGITAL_VOLUME_2R, OUT_VU | OUT_MUTE, OUT_VU);
+		hp_out = true;
+		say("cs47l93: the headphones: OUT2 on (OUTPUT_STATUS_1 %04x), unmuted at %d.%d dB\n", status,
+		    ((int)hp_vol - 0x80) / 2, (hp_vol & 1) ? 5 : 0);
+	} else {
+		(void)update(DAC_DIGITAL_VOLUME_2L, OUT_MUTE, OUT_MUTE);
+		(void)update(DAC_DIGITAL_VOLUME_2R, OUT_VU | OUT_MUTE, OUT_VU | OUT_MUTE);
+		(void)update(OUTPUT_ENABLES_1, OUT2_ENA, 0);
+		delay(2 * OUT_DOWN_MS * 1000);
+		(void)reg_read(OUTPUT_STATUS_1, &status);
+		hp_out = false;
+		say("cs47l93: the headphones: OUT2 muted and off (OUTPUT_STATUS_1 %04x)\n", status);
+	}
+	return true;
+}
+
+/* the jack's new state: ABOX before OUT2 going in, OUT2 before ABOX going out */
+static bool
+hp_jack(bool in)
+{
+	bool routed = false;
+
+	say("cs47l93: the jack: %s\n", in ? "something plugged in" : "pulled out");
+	if (in) {
+		routed = hakios_abox_headphones(true);
+		if (!routed) {
+			say("cs47l93: the headphones: ABOX did not take iOS's sound to UAIF0 (abox=8 not running?): OUT2 stays off\n");
+		} else if (!hp_power(true)) {
+			(void)hakios_abox_headphones(false);
+			routed = false;
+		}
+	} else {
+		if (hp_out) {
+			(void)hp_power(false);
+		}
+		(void)hakios_abox_headphones(false);
+	}
+	hakios_audio_set_route(in, routed);
+	return routed;
+}
+
+static void
+hp_thread(__unused void *arg, __unused wait_result_t result)
+{
+	bool state = jack_in, seen = jack_in, routed = false;
+	unsigned same = 0, tick = 0;
+
+	say("cs47l93: the headphones: the jack watched (%s now)\n", jack_in ? "something plugged in" : "nothing plugged in");
+	if (jack_in) {
+		routed = hp_jack(true);
+	} else {
+		hakios_audio_set_route(false, false);
+	}
+	while (!hp_stop) {
+		uint16_t raw = 0;
+		bool in;
+
+		delay_for_interval(100, NSEC_PER_MSEC);
+		if (!powered || busy || reg_read(IRQ1_RAW_STATUS_7, &raw) != 0) {
+			continue;               /* (the console re-making the codec: not now) */
+		}
+		in = !(raw & CLAMP_RISE);
+		same = in == seen ? same + 1 : 0;
+		seen = in;
+		if (in != state && same >= 2) {
+			state = in;
+			jack_in = in;
+			routed = hp_jack(in);
+		} else if (state && !routed && ++tick % 20 == 0) {
+			routed = hp_jack(true);         /* plugged in before iOS's stream ran: tried again every 2 s */
+		}
+	}
+	thread_terminate(current_thread());
+}
+
 static void
 run(void)
 {
@@ -658,6 +881,16 @@ run(void)
 		}
 	}
 	say("cs47l93: the first %u step%s done\n", step - 1, step == 2 ? "" : "s");
+	if (hp_enabled && step > STEPS && !hp_watching) {
+		thread_t thread;
+
+		hp_watching = true;
+		if (kernel_thread_start(hp_thread, NULL, &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+		} else {
+			hp_watching = false;
+		}
+	}
 }
 
 static void
@@ -674,8 +907,9 @@ codec_thread(void *arg, __unused wait_result_t result)
 void
 hakios_cs47l93_quiesce(void)
 {
+	hp_stop = true;
 	if (gpio && powered) {
-		reset_pin(false);       /* the codec held in reset on the way back to the loader */
+		reset_pin(false);       /* the codec held in reset on the way back to the loader: OUT2 off with it */
 		powered = clocked = mic_on = aif_on = false;
 	}
 	if (pmu) {
@@ -753,7 +987,7 @@ hakios_cs47l93_console(const char *arg)
 		}
 		steps = strcmp(verb, "mic") == 0 ? STEPS : steps < 2 ? 2 : steps;
 		clocked = mic_on = aif_on = false;
-		powered = false;
+		powered = hp_out = false;
 		if (kernel_thread_start(codec_thread, NULL, &thread) == KERN_SUCCESS) {
 			thread_deallocate(thread);
 		} else {
@@ -824,6 +1058,13 @@ cs47l93_init(void)
 	}
 	if (PE_parse_boot_argn("cs47l93_mic_vol", &div, sizeof(div)) && div <= 0xBF) {
 		mic_vol = div;          /* IN3L's digital volume: 0x80 is 0 dB, 0.5 dB a step; at most +31.5 dB */
+	}
+	PE_parse_boot_argn("cs47l93_hp", &hp_enabled, sizeof(hp_enabled));
+	if (PE_parse_boot_argn("cs47l93_hp_vol", &div, sizeof(div)) && div <= 0x80) {
+		hp_vol = div;           /* OUT2's digital volume: 0x80 is 0 dB, 0.5 dB a step; never above 0 dB here */
+	}
+	if (hp_enabled) {
+		hakios_audio_set_route(false, false);   /* a jack is known here: the plug-in's speaker gets one (its state follows) */
 	}
 	busy = 1;
 	if (kernel_thread_start(codec_thread, (void *)1, &thread) == KERN_SUCCESS) {
