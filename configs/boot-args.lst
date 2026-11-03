@@ -157,9 +157,13 @@ fb_hz	k
 fb_measure	k
 fb_pri	k
 fb_queue	k
+fb_rt	k
+fb_rt_us	k
+fb_swapwait	k
 fb_tcoal	k
 fb_threads	k
 fb_zc	k
+fb_zc_hold	k
 fbheight	k
 fbscale	k
 fbtrace	k
@@ -242,6 +246,7 @@ mali_acpm	k
 mali_fastmap	k
 mali_flush	k
 mali_gov	k
+mali_gov_frame	k
 mali_mhz	k
 mali_nap_us	k
 mali_pll	k

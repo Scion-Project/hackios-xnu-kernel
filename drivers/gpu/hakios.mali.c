@@ -1728,6 +1728,25 @@ pll_mhz(void)
 #define GOV_LEVELS      ((unsigned)(sizeof(g3d_rates) / sizeof(g3d_rates[0])))
 extern int32_t hakios_exynos_tmu_zone_mc(unsigned zone);       /* 2: the G3D's (hakios.exynos_tmu.c; stubs.c) */
 static uint32_t mali_gov;
+/*
+ * mali_gov_frame=<MHz> (kern.hakios.mali_gov_frame while it runs): the GPU's clock while frames come -- one given to the
+ * display (hakios_mali_frame(), MiniIOMobileFramebuffer.cpp present()) in the last GOV_FRAME_MS -- at least the lowest
+ * rate of the three that is as fast, whatever the load says (still under the temperature's cap). A frame's jobs are on
+ * the way of the next frame: CoreAnimation's render thread waits for them, so a GPU busy a third of the time at 260 MHz
+ * is a frame later than one at 572, though the load alone would keep it at 260. 0: none (as mali_gov first was).
+ */
+#define GOV_FRAME_MS    100
+static uint32_t gov_frame_mhz = 572;
+static uint64_t gov_frame_last;
+SYSCTL_UINT(_kern_hakios, OID_AUTO, mali_gov_frame, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gov_frame_mhz, 0,
+    "the GPU's clock while frames come, MHz at least (mali_gov=1; 0: none)");
+
+void hakios_mali_frame(void);
+void
+hakios_mali_frame(void)
+{
+	__atomic_store_n(&gov_frame_last, mach_absolute_time(), __ATOMIC_RELAXED);
+}
 static bool gov_on;
 static unsigned gov_level, gov_cap = GOV_LEVELS - 1, gov_down, gov_failed;
 static uint64_t gov_since, gov_busy;
@@ -1756,6 +1775,7 @@ gov_start(void)
 		    mali_pll, mali_acpm, acpm_ok ? "answers" : "does not answer", gov_level < GOV_LEVELS ? "at" : "NOT at");
 		return;
 	}
+	(void)PE_parse_boot_argn("mali_gov_frame", &gov_frame_mhz, sizeof(gov_frame_mhz));
 	gov_on = true;
 	gov_since = mach_absolute_time();
 	say("mali: mali_gov=1: the GPU's clock follows its load from %u MHz: %u%% of a %u ms window wanted at most; no more "
@@ -1829,6 +1849,20 @@ gov_window(uint64_t now, uint64_t busy)
 	}
 	for (want = 0; want + 1 < GOV_LEVELS &&
 	    (uint64_t)load * g3d_rates[gov_level].mhz > (uint64_t)GOV_TARGET * g3d_rates[want].mhz; want++) {
+	}
+	/* (mali_gov_frame: frames coming, the floor) */
+	if (gov_frame_mhz != 0) {
+		uint64_t last = __atomic_load_n(&gov_frame_last, __ATOMIC_RELAXED), span;
+
+		nanoseconds_to_absolutetime((uint64_t)GOV_FRAME_MS * NSEC_PER_MSEC, &span);
+		if (last != 0 && now - last < span) {
+			unsigned floor = 0;
+
+			while (floor + 1 < GOV_LEVELS && g3d_rates[floor].mhz < gov_frame_mhz) {
+				floor++;
+			}
+			want = want < floor ? floor : want;
+		}
 	}
 	want = want > cap ? cap : want;
 	if (want > gov_level || gov_level > cap) {

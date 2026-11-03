@@ -148,9 +148,13 @@ FB_HZ	arg	fb_hz	GPU and display	k	MiniIOMobileFramebuffer.cpp
 FB_MEASURE	arg	fb_measure	GPU and display	k	MiniIOMobileFramebuffer.cpp	how often the panel is really refreshed
 FB_PRI	arg	fb_pri	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_QUEUE	arg	fb_queue	GPU and display	k	MiniIOMobileFramebuffer.cpp	
+FB_RT	arg	fb_rt	GPU and display	k	MiniIOMobileFramebuffer.cpp	the thread handing the swaps over made real-time, once for each such thread: a period of a refresh, fb_rt_us
+FB_RT_US	arg	fb_rt_us	GPU and display	k	MiniIOMobileFramebuffer.cpp	
+FB_SWAPWAIT	arg	fb_swapwait	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_TCOAL	arg	fb_tcoal	GPU and display	k	MiniIOMobileFramebuffer.cpp	the kernel's timer coalescing left on
 FB_THREADS	arg	fb_threads	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_ZC	arg	fb_zc	GPU and display	k	MiniIOMobileFramebuffer.cpp	the surface VGF0 scans out now, and the one flipped to and not yet taken (each held, its use count raised)
+FB_ZC_HOLD	arg	fb_zc_hold	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FBHEIGHT	arg	fbheight	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FBSCALE	arg	fbscale	GPU and display	k	MiniIOMobileFramebuffer.cpp	the same 375 x 812 points drawn at two pixels a point instead of three
 FBTRACE	arg	fbtrace	GPU and display	k	MiniIOMobileFramebuffer.cpp	log the first N calls of every selector (default 3)
@@ -228,6 +232,7 @@ MALI_ACPM	arg	mali_acpm	GPU and display	k	hakios.mali.c	the rail not raised: the
 MALI_FASTMAP	arg	mali_fastmap	GPU and display	k	hakios.mali.c	the GPU walks its tables through its own caches, and every buffer entered is an UPDATE of AS 0
 MALI_FLUSH	arg	mali_flush	GPU and display	k	hakios.mali.cpp	
 MALI_GOV	arg	mali_gov	GPU and display	k	hakios.mali.c	
+MALI_GOV_FRAME	arg	mali_gov_frame	GPU and display	k	hakios.mali.c	
 MALI_MHZ	arg	mali_mhz	GPU and display	k	hakios.mali.c	the GPU's clock: 260 (S-Boot's, the default), 455 or 572, the S9+ port's three rates
 MALI_NAP_US	arg	mali_nap_us	GPU and display	k	hakios.mali.c	
 MALI_PLL	arg	mali_pll	GPU and display	k	hakios.mali.c	PLL_G3D left as the boot left it (the step stops if it does not run)

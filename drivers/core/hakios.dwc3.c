@@ -114,6 +114,7 @@
 #include <vm/vm_kern.h>
 #include <vm/memory_types.h>
 #include <console/video_console.h>
+#include <sys/hakios.input.h>
 
 #include "hakios.usb_acm.h"
 #include "hakios.usb_glue.h"
@@ -138,6 +139,10 @@ extern void hakios_adsp_stop(void);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern int hakios_panel_brightness(int level);  /* hakios.backlight.cpp (always built): ENODEV with no panel driver */
 extern void delay(int usec);
+extern void IOSleep(unsigned int milliseconds);
+extern void hakios_exynos_cpufreq_touch(void);  /* the governor's touch boost, as the touch screen's driver asks it */
+extern kern_return_t kernel_thread_start(thread_continue_t continuation, void *parameter, thread_t *new_thread);
+extern void thread_deallocate(thread_t thread);
 extern struct vc_info vinfo;            /* the boot framebuffer: the panel's memory, as the display driver draws on it */
 /* the presenter's buffer scanned out now (MiniIOMobileFramebuffer.cpp): 2 fb_dpp, 1 fb_flip, 0 the boot framebuffer */
 extern int hakios_fb_scanned(uintptr_t *base, uint32_t *width, uint32_t *height, uint32_t *rowbytes, unsigned *index);
@@ -1137,6 +1142,112 @@ console_sysctl(char *arg)
 	}
 }
 
+/*
+ * swipe [l|r|u|d|lr|ud] [N] [MS] [GAP]: a finger drawn across the screen N times (default lr 6 250 1000: left, right,
+ * left ..., each stroke 250 ms, a second apart), posted to the touch queue as the touch screen's driver posts its
+ * events (hakios_touch_post(), one every 8 ms, the S6SY761's pace, with the governor's touch boost), so that what moves
+ * on the screen moves the same way in every run, without a hand. Strokes keep 20% from the edges: from the bottom edge
+ * one would go home. Left and right page the home screen; up and down scroll a list. On a thread of its own.
+ */
+#define SWIPE_STEP_MS   8
+static struct {
+	char pattern[3];
+	uint32_t count, ms, gap;
+} swipe_job;
+static volatile uint32_t swipe_running;
+
+static void
+swipe_stroke(char dir, uint32_t ms)
+{
+	uint32_t x0 = 32768, y0 = 32768, x1 = 32768, y1 = 32768, steps = ms / SWIPE_STEP_MS;
+
+	switch (dir) {
+	case 'l': x0 = 52428; x1 = 13107; break;       /* 80% to 20% of the width */
+	case 'r': x0 = 13107; x1 = 52428; break;
+	case 'u': y0 = 45875; y1 = 19660; break;       /* 70% to 30% of the height */
+	default: y0 = 19660; y1 = 45875; break;
+	}
+	steps = steps < 2 ? 2 : steps;
+	hakios_exynos_cpufreq_touch();
+	hakios_touch_post(HAKIOS_TOUCH_DOWN, 0, x0, y0);
+	for (uint32_t i = 1; i <= steps; i++) {
+		IOSleep(SWIPE_STEP_MS);
+		hakios_exynos_cpufreq_touch();
+		hakios_touch_post(HAKIOS_TOUCH_MOVE, 0, x0 + (uint32_t)(((int64_t)x1 - x0) * i / steps),
+		    y0 + (uint32_t)(((int64_t)y1 - y0) * i / steps));
+	}
+	IOSleep(SWIPE_STEP_MS);
+	hakios_touch_post(HAKIOS_TOUCH_UP, 0, x1, y1);
+}
+
+static void
+swipe_thread(__unused void *arg, __unused wait_result_t wr)
+{
+	size_t kinds = strlen(swipe_job.pattern);
+	uint64_t ns;
+
+	for (uint32_t n = 0; n < swipe_job.count; n++) {
+		if (n > 0) {
+			IOSleep(swipe_job.gap);
+		}
+		absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+		con("usb: swipe %u of %u: %c at %llu.%03llu s\n", n + 1, swipe_job.count, swipe_job.pattern[n % kinds],
+		    ns / NSEC_PER_SEC, (ns / NSEC_PER_MSEC) % 1000);
+		swipe_stroke(swipe_job.pattern[n % kinds], swipe_job.ms);
+	}
+	con("usb: swipe: done\n");
+	swipe_running = 0;
+}
+
+static uint32_t
+console_number(const char **arg, uint32_t otherwise, uint32_t least, uint32_t most)
+{
+	uint32_t n = 0;
+	bool any = false;
+
+	while (**arg == ' ') {
+		(*arg)++;
+	}
+	for (; **arg >= '0' && **arg <= '9' && n < 100000; (*arg)++) {
+		n = n * 10 + (uint32_t)(**arg - '0');
+		any = true;
+	}
+	return !any ? otherwise : n < least ? least : n > most ? most : n;
+}
+
+static void
+console_swipe(const char *arg)
+{
+	thread_t thread;
+	size_t k = 0;
+
+	if (swipe_running) {
+		con("usb: swipe: one is going on\n");
+		return;
+	}
+	while (*arg == ' ') {
+		arg++;
+	}
+	while (k < 2 && (*arg == 'l' || *arg == 'r' || *arg == 'u' || *arg == 'd')) {
+		swipe_job.pattern[k++] = *arg++;
+	}
+	swipe_job.pattern[k] = 0;
+	if (k == 0) {
+		strlcpy(swipe_job.pattern, "lr", sizeof(swipe_job.pattern));
+	}
+	swipe_job.count = console_number(&arg, 6, 1, 1000);
+	swipe_job.ms = console_number(&arg, 250, 16, 5000);
+	swipe_job.gap = console_number(&arg, 1000, 0, 60000);
+	con("usb: swipe %s: %u strokes of %u ms, %u ms apart\n", swipe_job.pattern, swipe_job.count, swipe_job.ms, swipe_job.gap);
+	swipe_running = 1;
+	if (kernel_thread_start(swipe_thread, NULL, &thread) != KERN_SUCCESS) {
+		swipe_running = 0;
+		con("usb: swipe: no thread\n");
+		return;
+	}
+	thread_deallocate(thread);
+}
+
 /* bl: the panel's brightness; bl N: set, straight to the panel driver (not through sysctl), and the answer */
 static void
 console_bl(const char *arg)
@@ -1188,6 +1299,8 @@ console(char *line)
 		    "camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
 		    "ufs (the storage's ufs=3 summary), "
 		    "abox [tone [S] | r BLOCK OFF [N] | w BLOCK OFF VALUE | set NAME VALUE] (the S9's speaker path, abox=N), "
+		    "swipe [l|r|u|d|lr|ud] [N] [MS] [GAP] (a finger drawn across the screen N times, MS each, GAP apart; default "
+		    "lr 6 250 1000), "
 		    "wifi (the radio's log kept, and its driver's state now), wifi scan (a scan of every channel by the station, and "
 		    "the access points heard), wifi ip (en0's address and gateway), wifi ping [A.B.C.D] (four echo requests; the gateway "
 		    "by default), return (end the run)\n");
@@ -1204,6 +1317,8 @@ console(char *line)
 		console_sysctl(arg);
 	} else if (strcmp(line, "bl") == 0) {
 		console_bl(arg);
+	} else if (strcmp(line, "swipe") == 0) {
+		console_swipe(arg);
 	} else if (strcmp(line, "wifi") == 0 && strcmp(arg, "scan") == 0) {
 		hakios_sta_console_scan();
 	} else if (strcmp(line, "wifi") == 0 && strcmp(arg, "ip") == 0) {

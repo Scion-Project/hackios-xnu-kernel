@@ -119,6 +119,8 @@
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/sysctl.h>
+#include <sys/errno.h>
 
 extern void loader_log_line(const char *line);
 extern bool ml_cpu_idle_time(int cpu_id, uint64_t *idle);
@@ -245,6 +247,35 @@ hakios_exynos_cpufreq_frame(void)
 		(void)thread_wakeup_prim((event_t)&boost_event, FALSE, THREAD_AWAKENED);
 	}
 }
+
+/*
+ * kern.hakios.gov_frame_big: the M3s' floor while frames come (gov_frame_big=), changed while the system runs (kHz; 0:
+ * no frame boost), for trying one rate against another in one run: the USB console's "sysctl kern.hakios.gov_frame_big=N".
+ */
+SYSCTL_DECL(_kern_hakios);
+static int
+frame_big_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int arg2, struct sysctl_req *req)
+{
+	int khz = (int)clusters[1].frame_khz, error;
+
+	error = sysctl_io_number(req, khz, sizeof(khz), &khz, NULL);
+	if (error != 0 || req->newptr == 0) {
+		return error;
+	}
+	if (khz < 0 || khz > 3000000) {
+		return EINVAL;
+	}
+	if (khz != 0 && frame_span == 0) {
+		frame_ms = 100;
+		nanoseconds_to_absolutetime((uint64_t)frame_ms * NSEC_PER_MSEC, &frame_span);
+	}
+	clusters[1].frame_khz = (uint32_t)khz;
+	say("cpufreq_gov: the M3s' frame boost now %d kHz (kern.hakios.gov_frame_big)\n", khz);
+	return 0;
+}
+SYSCTL_PROC(_kern_hakios, OID_AUTO, gov_frame_big, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, NULL, 0,
+    frame_big_sysctl, "I", "the M3s' floor while frames come, kHz (gov_frame_big=; 0: none)");
+
 static uint64_t idle_before[MAX_CPUS];
 static bool ever_idle[MAX_CPUS];
 

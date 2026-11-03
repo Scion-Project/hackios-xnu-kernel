@@ -277,6 +277,9 @@ int hakios_mali_second(uint64_t *busy_ns, uint32_t *jobs, uint64_t *queued_ns, u
     int32_t *g3d_mc);
 int hakios_mali_second(__unused uint64_t *busy_ns, __unused uint32_t *jobs, __unused uint64_t *queued_ns,
     __unused uint32_t *mhz, __unused uint32_t *switches, __unused int32_t *g3d_mc) { return 0; }
+/* a frame given to the display (MiniIOMobileFramebuffer.cpp present()), for mali_gov_frame: no Mali, no floor */
+void hakios_mali_frame(void);
+void hakios_mali_frame(void) {}
 #endif
 
 #ifndef HAKIOS_WIFI
