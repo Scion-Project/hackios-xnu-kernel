@@ -62,6 +62,10 @@
  *                     hands it here; it goes out framed as a shot's does, after the camera's log lines. "tp": CSIS1's
  *                     test pattern instead of the sensor. A capture that fails says "usb: camshot failed: ..." with
  *                     the link's and the WDMA's status registers instead. tools/usb-shot.py --cam
+ *   ufs               what the storage's ufs=3 did (hakios_ufs_summary in hakios.ufs.c): the step reached, the
+ *                     self-test's and the fence test's results, the mode (native, or fallen back to ufs=2 and why),
+ *                     reads, writes and refusals with the first three refusals' reasons. Said by itself too when
+ *                     the host configures the link (ufs=3 only)
  *   return            end the run: the data volume saved, the drivers given back, the loader restarts the phone (into
  *                     TWRP on the S9). Done on a thread call of its own; should that not have ended the run after
  *                     RETURN_FORCE_SECONDS (the save or a driver's stop waiting on something under load), the poll goes
@@ -121,6 +125,7 @@ extern void loader_log_line(const char *line);
 extern uint32_t loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len));
 extern void loader_return(void);
 extern void hakios_var_save_on_return(void);
+extern void hakios_ufs_summary(const char *when, int how);     /* hakios.ufs.c (or the stub): ufs=3's summary */
 extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_adsp_stop(void);
@@ -533,6 +538,7 @@ apply(const struct usbacm_reply *r)
 			bulk_up();
 			set_state("configured");
 			say("usb: configured (%s speed): /dev/ttyACM* on a Linux host, /dev/cu.usbmodem* on a Mac\n", high_speed ? "high" : "full");
+			hakios_ufs_summary("the USB console is up", 1 | 4);    /* ufs=3 only: what the storage did before the link */
 		} else {
 			set_state("address");
 			say("usb: unconfigured\n");
@@ -1169,7 +1175,7 @@ console(char *line)
 		con("usb: help, stat, uptime, sysctl NAME, sysctl NAME=N, bl (the panel's brightness), bl N (set it, 0-255), "
 		    "log (the kernel's log again from its start), shot [N] (the panel's picture, binary: tools/usb-shot.py), "
 		    "camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
-		    "return (end the run)\n");
+		    "ufs (the storage's ufs=3 summary), return (end the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
 		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
 		    "%llu shots\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out, ring_dropped,
@@ -1191,6 +1197,8 @@ console(char *line)
 		shot_begin(arg);
 	} else if (strcmp(line, "camshot") == 0) {
 		camshot_begin(arg);
+	} else if (strcmp(line, "ufs") == 0) {
+		hakios_ufs_summary("asked on the USB console", 1);
 	} else if (strcmp(line, "return") == 0) {
 		con("usb: ending the run: the loader will restart the phone\n");
 		want_return = true;     /* done by tick() once this event is handled and the controller let go */

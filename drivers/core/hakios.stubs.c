@@ -205,6 +205,8 @@ void hakios_ufs_init(void) {}
 void hakios_ufs_report(__unused const char *when) {}
 bool hakios_ufs_dev(__unused dev_t dev) { return false; }
 void hakios_ufs_quiesce(void) {}
+void hakios_ufs_summary(const char *when, int how);
+void hakios_ufs_summary(__unused const char *when, __unused int how) {}      /* no flash driver: nothing to say */
 void hakios_var_save_on_return(void) {}         /* no flash, so no data volume to save into it */
 #endif
 

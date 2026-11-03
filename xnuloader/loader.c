@@ -3044,7 +3044,10 @@ block_poll(void)
 		efi_block_io *bio = block_bios[part];
 
 		bytes = count * block_shared.part[part].block_size;
-		if (!hc_list_is_uefis()) {
+		/* the kernel says its own list is in (ufs=3, or ufs_native=1): it should not ask, and is not served */
+		flush_dcache((uint64_t)(uintptr_t)&block_shared.kernel_native,
+		    (uint64_t)(uintptr_t)&block_shared.kernel_native + sizeof(block_shared.kernel_native));
+		if (block_shared.kernel_native.list_in != 0 || !hc_list_is_uefis()) {
 			/* the kernel's own list is in: UEFI's driver must not ring now (the kernel should not ask) */
 			if (hc_refused_reads++ < 4) {
 				print("ufs: a read asked for while the kernel's own transfer list is in the controller: refused\n");
@@ -4196,7 +4199,12 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		torch_requested |= starts_with(c, "torch=") && (c == pi.cmdline || c[-1] == ' ') && c[6] >= '1' && c[6] <= '9';
 		camera_requested |= starts_with(c, "cam=5") && (c == pi.cmdline || c[-1] == ' ') && (c[5] == 0 || c[5] == ' ');
 		gamut_p3 |= starts_with(c, "gamut=p3") && (c == pi.cmdline || c[-1] == ' ');
-		if (starts_with(c, "ufs=") && (c == pi.cmdline || c[-1] == ' ') && c[4] >= '1' && c[4] <= '2' &&
+		/*
+		 * ufs=3: served as ufs=2. The kernel reads its references through this service, then its own driver takes
+		 * the controller (drivers/storage/hakios.ufs.c, ufs_nufs_start); while the page says its list is in, nothing
+		 * is asked of UEFI's driver here (block_poll).
+		 */
+		if (starts_with(c, "ufs=") && (c == pi.cmdline || c[-1] == ' ') && c[4] >= '1' && c[4] <= '3' &&
 		    (c[5] == 0 || c[5] == ' ')) {
 			ufs_requested = c[4] - '0';
 		}
@@ -4220,6 +4228,10 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	}
 	if (ufs_requested >= 2) {
 		hc_init();              /* (ufs_native=: UEFI's transfer list kept, before anything reads) */
+	}
+	if (ufs_requested == 3) {
+		print("ufs: ufs=3: the block service as ufs=2, for the kernel's own driver to check itself against and to fall "
+		    "back to; nothing asked of UEFI's driver while the kernel's list is in\n");
 	}
 	if (ufs_requested >= 1) {
 		ufs_survey();
@@ -4743,6 +4755,14 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	screen_quiet = screen_quiet_before_run;
 	wdt_set_ms(WDT_BITE_MS);
 	hc_take_back("the kernel came back");   /* before anything here touches the storage */
+	if (block_enabled) {
+		flush_dcache((uint64_t)(uintptr_t)&block_shared.kernel_native,
+		    (uint64_t)(uintptr_t)&block_shared.kernel_native + sizeof(block_shared.kernel_native));
+		if (block_shared.kernel_native.list_in != 0) {
+			/* (ufs=3) the kernel did not say UEFI's list is back: the storage is not used again until a restart */
+			print("ufs: the kernel left word that its own transfer list is in: the block service stays refused\n");
+		}
+	}
 	if (hc_known) {
 		flush_dcache((uint64_t)(uintptr_t)&block_shared.kernel_native,
 		    (uint64_t)(uintptr_t)&block_shared.kernel_native + sizeof(block_shared.kernel_native));
