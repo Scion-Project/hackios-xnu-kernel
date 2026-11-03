@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **499 arguments**: 434 read by the kernel, 17 by the loader, 59 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **503 arguments**: 438 read by the kernel, 17 by the loader, 59 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -283,7 +283,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `speaker_probe` | K | `hakios.speaker.c` | `CONFIG_SPEAKER_PROBE` |  |
 | `virtio_sound` | K | `hakios.virtio_sound.c` | `CONFIG_VIRTIO_SOUND` |  |
 
-## Cameras (24)
+## Cameras (28)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -298,7 +298,10 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_pattern` | K | `hakios.camera.c` | `CONFIG_CAM_PATTERN` |  |
 | `cam_s9` | K | `hakios.exynos_camera.c`, `hakios.s2mpb02_torch.c` | `CONFIG_CAM_S9` |  |
 | `cam_s9_addr` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_ADDR` |  |
+| `cam_s9_ae` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_AE` |  |
+| `cam_s9_ae_frames` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_AE_FRAMES` |  |
 | `cam_s9_bayer` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_BAYER` |  |
+| `cam_s9_dgain` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_DGAIN` |  |
 | `cam_s9_exp` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_EXP` |  |
 | `cam_s9_gain` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_GAIN` |  |
 | `cam_s9_ipclk` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_IPCLK` |  |
@@ -306,6 +309,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_s9_mmu_probe` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_MMU_PROBE` |  |
 | `cam_s9_pack12` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_PACK12` |  |
 | `cam_s9_probe` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_PROBE` |  |
+| `cam_s9_sat` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_SAT` |  |
 | `cam_s9_stride` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_STRIDE` |  |
 | `cam_sensor` | K | `hakios.camera.c` | `CONFIG_CAM_SENSOR` |  |
 | `cam_settle` | K | `hakios.camera.c` | `CONFIG_CAM_SETTLE` |  |

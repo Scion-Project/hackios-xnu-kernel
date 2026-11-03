@@ -131,15 +131,25 @@
  *              enabled as csi_hw_enable does (no clock lane: no sensor), 1.5 s; then the WDMA and the pattern off. The
  *              other three CSISs' DMA interrupts are unmasked for the while (put back after), so the log says which
  *              WDMA the pattern reached if not CSIS1's. The buffer's checksum, its first bytes, how much of it changed
- *   5  writes  the sensor's mode table, the D-PHY's settle for 719 Mb/s, the link on, streaming; two frame ends of
- *              VC0's WDMA waited for (1.5 s at the most), the WDMA off, streaming off; the counters, the link's errors,
- *              the checksum and the mean of a 64 x 64 patch in the middle (a black frame reads about 64 in 10 bits)
+ *   5  writes  the sensor's mode table, the D-PHY's settle for 719 Mb/s, the link on, the ring (four 4 MB slots)
+ *              given to VC0's WDMA's eight frame pointers, streaming; the auto-exposure: the green of the frame's middle
+ *              metered on every third frame and the exposure stepped towards 18 % grey (coarse integration time, then
+ *              analog gain, then digital gain, within the mode's 1266-line frame) until it is there or
+ *              cam_s9_ae_frames frames have passed (15 unless said); that frame is the one taken: the WDMA off, streaming off; the
+ *              counters, the link's errors, the checksum and the mean of a 64 x 64 patch in the middle (a black frame
+ *              reads about 64 in 10 bits)
  *   6  camshot: steps 1 to 5 as above at the start, then the thread stays for the USB console's "camshot [N] [tp]"
  *              (hakios.dwc3.c, usb_gadget=5): each one makes steps 2 to 5 again (with "tp", 3 and 4: the test pattern),
- *              everything off again, then the frame debayered on the processor (each 2 x 2 cell of GRBG one pixel,
- *              816 x 612, every Nth of them; the black level off, a grey-world balance, the green's mean to 18 %, a
- *              gamma of 2) and handed to the USB link, which sends it as it sends a shot of the panel. A capture that
- *              fails says "usb: camshot failed: ..." with CSIS1's and the WDMA's status. tools/usb-shot.py --cam
+ *              everything off again, then the frame demosaiced on the processor (bilinear, the whole 1632 x 1224 at
+ *              N = 1, every Nth pixel at N; the black level off, a grey-world balance kept to sane gains, a saturation,
+ *              a gamma of about 1/2.2) and handed to the USB link, which sends it as it sends a shot of the panel. A
+ *              capture that fails says "usb: camshot failed: ..." with CSIS1's and the WDMA's status.
+ *              tools/usb-shot.py --cam
+ *   7  the stream: after step 1's look, the sensor streams for the rest of the run into the ring, with the
+ *              auto-exposure running all along; /dev/hakios-camera gives the newest frame to user space (the POCO's
+ *              protocol, bsd/sys/hakios.camera.h: libhakios.media's capture device and camera_test read it); camshot
+ *              takes the newest frame without powering anything up or down; the log says the frame rate every ten
+ *              seconds
  * Whatever a run switched on is switched off again in the reverse order, also when a step fails, and at the run's end
  * (loader_return(), a panic's way out too): the WDMA and the pattern first, then the sensor, the link, the PHY, the
  * domain (if this run switched it on). A WDMA not seen to stop: no more DMA into the buffer for the run.
@@ -147,12 +157,16 @@
  * Boot-args:
  *   cam_s9=N           the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1,
  *                      4 one frame of the test pattern into memory, 5 one frame of the sensor's, 6 that and then the
- *                      USB console's camshot (0 or none: nothing)
+ *                      USB console's camshot, 7 the stream and /dev/hakios-camera (0 or none: nothing)
  *   cam_s9_addr=A      the sensor's 7-bit I2C address, if not 0x35 (the device tree's) and not found by the scan
  *   cam_s9_ipclk=MHZ   the two HSI2Cs' input clock in MHz (default 400, as the phone showed for the other buses on 1
  *                      November: a wrong guess on the high side only makes the bus slower)
- *   cam_s9_exp=LINES   the exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
- *   cam_s9_gain=CODE   the analog gain of step 5's frame, 0x20 being 1x (default 0x40, at most 0x200)
+ *   cam_s9_exp=LINES   the first exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
+ *   cam_s9_gain=CODE   the first analog gain of step 5's frame, 0x20 being 1x (default 0x40, at most 0x200)
+ *   cam_s9_ae=0        no auto-exposure: the frames as cam_s9_exp and cam_s9_gain have them (default 1: on)
+ *   cam_s9_ae_frames=N the auto-exposure's frames at most before a camshot's frame is taken (2 to 30, default 15)
+ *   cam_s9_dgain=CODE  the most digital gain the auto-exposure may use, 0x100 being 1x (default 0x400, at most 0x1000)
+ *   cam_s9_sat=PCT     camshot's colour saturation in per cent (default 140; 100: none; at most 300)
  *   cam_s9_pack12=1    the WDMA's PACK12 layout rather than RAW10 as it comes (the BSP sets PACK12 for its V4L2
  *                      SBGGR10 buffers). Without it the WDMA writes each RAW10 pixel in 16 bits, little-endian, the
  *                      value in [9:0] (the phone, 3 November): camshot's debayer reads only that)
@@ -181,8 +195,8 @@
  * on. The DMA is given only the buffer's address, checked to lie below 4 GB, and with the SysMMU taken as off (seen off, with cam_s9_mmu_probe=1). Every
  * wait is bounded by the clock.
  *
- * Not written yet (devices/starlte/CAMERA.md): /dev/hakios-camera's frames for libhakios.media's capture device, a ring
- * of buffers on the CSIS's frame-end interrupt (stage 4 of the plan), a live preview.
+ * Not written yet (docs/devices/starlte-camera.md): the CSIS's frame-end interrupt (the stream polls every millisecond),
+ * the camera powered only while /dev/hakios-camera is open, a colour matrix and lens shading of the module's own.
  *
  * Sources: the phone's device tree (exynos9810-starlte_eur_open_26.dts of the BSP: hsi2c@108F0000 and fimc-is-3h1@35,
  * fimc-is_sensor_3h1@6A, s2mpb02_pmic@59 and its regulators (s2mpb02-buck2: VDD_EXT_1P3_PB02), the fimc_is_mclk1 pin states, hsi2c21-bus, usi@1081102C,
@@ -206,7 +220,12 @@
 #include <pexpert/pexpert.h>
 #include <sys/hakios.exynos_hsi2c.h>
 #include <sys/hakios.input.h>
+#include <kern/locks.h>
+#include <miscfs/devfs/devfs.h>
+#include <sys/conf.h>
+#include <sys/hakios.camera.h>
 #include <sys/systm.h>
+#include <sys/uio.h>
 #include <vm/vm_kern.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -334,6 +353,15 @@ wr(vm_offset_t base, uint32_t off, uint32_t v)
 }
 
 /* by the clock, never sleeping: also on the run's way out */
+static uint64_t
+absolutetime_ms(uint64_t t)
+{
+	uint64_t ns;
+
+	absolutetime_to_nanoseconds(t, &ns);
+	return ns / NSEC_PER_MSEC;
+}
+
 static void
 spin_us(uint32_t us)
 {
@@ -698,18 +726,24 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 /*
  * The frame's memory: none of XNU's own is below 4 GB on the S9 (its RAM is the bank from 0x880000000), so it is
  * physical memory of the lower bank that XNU does not manage, in the device tree's gap between the display's scan-out
- * buffers and secure_camera (0xE1900000): 8 MB from 0xD8000000, the raw frame in the first 4 MB, camshot's RGB picture
- * in the next. The display's buffers start at 0xD4000000 (hakios.exynos_dpu.c; the moved payload is 0xD0000000 -
- * 0xD3FFFFFF): fb_flip's two of the panel's size end at 0xD60A0000, fb_dpp's three by 0xD71E0000 at the most (at the
- * panel's size); 0xD8000000 is clear of both, with room.
+ * buffers and secure_camera (0xE1900000): 32 MB from 0xD8000000 to 0xD9FFFFFF (UFS's own-mode memory starts at
+ * 0xDA000000): a ring of four raw frames of 4 MB each (the WDMA's eight frame pointers take them in turn, pointer i
+ * slot i % 4), then camshot's still (a raw frame copied out of the ring while the sensor streams on, cam_s9=7), then
+ * its RGB picture (1632 x 1224 x 3). The display's buffers start at 0xD4000000 (hakios.exynos_dpu.c; the moved
+ * payload is 0xD0000000 - 0xD3FFFFFF): fb_flip's two of the panel's size end at 0xD60A0000, fb_dpp's three by
+ * 0xD71E0000 at the most (at the panel's size); 0xD8000000 is clear of both, with room.
  * Mapped once, write-combined, through IOKit (hakios.exynos_camera_mem.cpp), never ml_io_map(). Nothing at or above
  * 0xF0000000 (the modem's and ABOX's memory) is ever given to the DMA.
  */
 #define MEM_PA                  0xD8000000ULL
-#define MEM_BYTES               (8u << 20)
+#define MEM_BYTES               (32u << 20)
 #define MEM_FLOOR               0xD71E0000ULL   /* the display's buffers end here at the most */
-#define MEM_CEILING             0xE1900000ULL   /* secure_camera */
-#define RGB_OFF                 BUF_BYTES       /* camshot's picture, after the raw frame */
+#define MEM_CEILING             0xDA000000ULL   /* UFS's own-mode memory (secure_camera is at 0xE1900000) */
+#define RING_SLOTS              4
+#define SLOT_BYTES              BUF_BYTES       /* a raw frame's place: 3264 x 1224 = 3995136 bytes, in 4 MB */
+#define STILL_OFF               (RING_SLOTS * SLOT_BYTES)       /* camshot's copy of a frame of the stream */
+#define RGB_OFF                 (STILL_OFF + SLOT_BYTES)        /* camshot's picture */
+#define RGB_BYTES               (FRAME_W * FRAME_H * 3)
 
 static const uint64_t other_cmn_pa[3] = { 0x162B0400, 0x162D0400, 0x162E0400 };        /* CSIS0, 2, 3: read only */
 
@@ -724,6 +758,7 @@ static bool top_rate_mine;              /* CLKCMU_ISPPRE_BUS's mux and divider a
 static uint32_t cam_ispdiv = 1;         /* cam_s9_ispdiv: CLKCMU_ISPPRE_BUS = SHARED1_DIV4 (466 MHz) / (1 + this) */
 static uint32_t user_found, isppre_qch_found[NQCHS];
 static vm_offset_t buffer;              /* the frame's (write-combined: MEM_PA's mapping) */
+static vm_offset_t frame;               /* the frame looked at: the ring's slot of the frame taken, or the still */
 static uint64_t buffer_pa;
 static bool buffer_busy;                /* the WDMA was not seen to stop: no more DMA into it this run */
 static uint32_t frame_last;             /* buffer_report()'s: the bytes up to the last one the DMA changed */
@@ -1194,21 +1229,22 @@ buffer_get(void)
 static void
 buffer_fill(void)
 {
-	memset((void *)buffer, CANARY, BUF_BYTES);
-	cache_flush(buffer, BUF_BYTES);
+	memset((void *)buffer, CANARY, RING_SLOTS * SLOT_BYTES);
+	cache_flush(buffer, RING_SLOTS * SLOT_BYTES);
+	frame = buffer;
 }
 
 /* What the DMA wrote: how much, how far, a checksum, the first bytes. Returns the bytes up to the last one changed. */
 static uint32_t
 buffer_report(const char *step)
 {
-	const uint8_t *b = (const uint8_t *)buffer;
+	const uint8_t *b = (const uint8_t *)frame;
 	uint32_t changed = 0, last = 0, sum = 0, fnv = 2166136261u;
 
-	cache_flush(buffer, BUF_BYTES);
+	cache_flush(frame, BUF_BYTES);
 	/* eight bytes a read: the mapping is not cached, and a byte a read over 4 MB is slow */
 	for (uint32_t i = 0; i < BUF_BYTES; i += 8) {
-		uint64_t w = *(const volatile uint64_t *)(buffer + i);
+		uint64_t w = *(const volatile uint64_t *)(frame + i);
 
 		if (w == 0xA5A5A5A5A5A5A5A5ULL) {
 			continue;
@@ -1221,7 +1257,7 @@ buffer_report(const char *step)
 		}
 	}
 	for (uint32_t i = 0; i < last; i += 8) {
-		uint64_t w = *(const volatile uint64_t *)(buffer + i);
+		uint64_t w = *(const volatile uint64_t *)(frame + i);
 
 		for (uint32_t k = 0; k < 8 && i + k < last; k++) {
 			uint8_t c = (uint8_t)(w >> (8 * k));
@@ -1521,7 +1557,7 @@ phy_setup(void)
 static void
 patch_mean(uint32_t stride)
 {
-	const uint8_t *b = (const uint8_t *)buffer;
+	const uint8_t *b = (const uint8_t *)frame;
 	uint64_t sum = 0;
 	uint32_t lo = 1023, hi = 0, n = 0, over = 0;
 
@@ -1548,58 +1584,216 @@ patch_mean(uint32_t stride)
 	    sum / n, (sum % n) * 100 / n, lo, hi, over);
 }
 
-static bool
-sensor_frame(void)
-{
-	uint32_t ends = 0, src, last, exp, stride;
-	uint8_t frames = 0xff;
-	uint64_t until, start;
+/*
+ * ---- the exposure: the 3H1's coarse integration time, analog gain and digital gain over I2C ----
+ *
+ * Registers (fimc-is-cis-3h1.c, as facts): 0x0202 the coarse integration time in lines (at least 2, at most the frame's
+ * length 0x0340 less 4), 0x0204 the analog gain (0x20 is 1x; the sensor's own least and most at 0x0084 and 0x0086),
+ * 0x020E the digital gain (0x100 is 1x, 8.8; its most at 0x1086), 0x0104 the grouped parameter hold around them. The
+ * mode's frame stays 1266 lines (30 frames a second): the exposure is at most 1262 lines of 26.3 us, 33.2 ms.
+ *
+ * The meter: the mean of the green of every 16th 2 x 2 cell across and down the middle half of the frame (about 1900
+ * cells), the black level off; the aim 18 % of the range above it (173 of 959). The exposure asked is the one before
+ * times aim / mean (a step of at most 8x either way, half the step while streaming), spent on time first, then on
+ * analog gain, then on digital gain (at most cam_s9_dgain, 4x unless said). A change written after frame N's end
+ * shows in frame N + 3 (seen on the phone, 3 November: the sensor latches it at a frame start, and the next frame has
+ * begun integrating already), so each one is measured on the third frame after it.
+ */
+#define AE_AIM                  ((1023 - BLACK_LEVEL) * 18 / 100)
+#define BLACK_LEVEL             64
+#define AE_CLIP                 1000            /* a sample at or above this is clipped */
 
-	frame_ends = 0;
-	if (mmu_translating()) {
-		say("exynos-camera: 5: the SysMMU is on (MMU_CTRL %#x): no DMA\n", rd(mmu, MMU_CTRL));
-		return false;
+static uint32_t ae_lines, ae_again = 0x20, ae_dgain = 0x100;   /* as last written */
+static uint32_t again_min = 0x20, again_max = 0x200, dgain_max = 0x400;
+static uint32_t cam_ae = 1, cam_ae_frames = 15, cam_dgain = 0x400;
+static uint32_t shot_slot;               /* the ring's slot of the frame taken */
+static uint32_t dma_errors, slot_fix, ring_written, ring_checks;     /* frame_wait()'s */
+
+struct meter {
+	uint32_t mean[3];       /* R, G, B less the black level */
+	uint32_t clipped;       /* per mille of the green samples */
+	uint32_t cells;
+};
+
+static uint32_t cam_bayer = 1, cam_stride;
+static const uint8_t bayer_place[4][4] = {      /* the colour of a cell's four places (0 R, 1 G, 2 B), row by row */
+	{ 0, 1, 1, 2 }, { 1, 0, 2, 1 }, { 1, 2, 0, 1 }, { 2, 1, 1, 0 },
+};
+
+static void
+meter(vm_offset_t raw, struct meter *m)
+{
+	const uint8_t *place = bayer_place[cam_bayer & 3];
+	uint64_t sum[3] = { 0, 0, 0 };
+	uint32_t n = 0, clip = 0;
+
+	for (uint32_t y = FRAME_H / 4; y < FRAME_H * 3 / 4; y += 16) {
+		const volatile uint32_t *top = (const volatile uint32_t *)(raw + (uint64_t)y * LINE_BYTES);
+		const volatile uint32_t *bottom = (const volatile uint32_t *)(raw + (uint64_t)(y + 1) * LINE_BYTES);
+
+		for (uint32_t x = FRAME_W / 4; x < FRAME_W * 3 / 4; x += 16) {
+			uint32_t a = top[x / 2], b = bottom[x / 2];
+			uint32_t v[4] = { a & 0x3ff, (a >> 16) & 0x3ff, b & 0x3ff, (b >> 16) & 0x3ff };
+
+			for (uint32_t i = 0; i < 4; i++) {
+				sum[place[i]] += v[i] > BLACK_LEVEL ? v[i] - BLACK_LEVEL : 0;
+				clip += place[i] == 1 && v[i] >= AE_CLIP;
+			}
+			n++;
+		}
 	}
-	if (!buffer_get()) {
-		return false;
+	m->cells = n;
+	m->mean[0] = (uint32_t)(sum[0] / n);
+	m->mean[1] = (uint32_t)(sum[1] / (2 * n));
+	m->mean[2] = (uint32_t)(sum[2] / n);
+	m->clipped = clip * 1000 / (2 * n);
+}
+
+static bool
+exposure_put(uint32_t lines, uint32_t again, uint32_t dgain)
+{
+	bool ok;
+
+	ok = sensor_put(0x0104, 0x01, 1) && sensor_put(0x0202, (uint16_t)lines, 2) && sensor_put(0x0204, (uint16_t)again, 2)
+	    && sensor_put(0x020E, (uint16_t)dgain, 2);
+	(void)sensor_put(0x0104, 0x00, 1);
+	if (ok) {
+		ae_lines = lines;
+		ae_again = again;
+		ae_dgain = dgain;
 	}
-	exp = cam_exp;
+	return ok;
+}
+
+/* the exposure in 1/256 of a line at 1x: lines x analog x digital */
+static uint64_t
+exposure_now(void)
+{
+	return (uint64_t)ae_lines * ae_again * ae_dgain / 32;
+}
+
+/* the exposure for an amount (lines x gain x 256): time first, then analog gain, then digital gain */
+static void
+exposure_split(uint64_t want, uint32_t *lines, uint32_t *again, uint32_t *dgain)
+{
+	uint32_t max_lines = MODE_LINES - MODE_MARGIN, l, a, d;
+	uint64_t g;
+
+	l = (uint32_t)(want / 256 > max_lines ? max_lines : want / 256);
+	l = l < 2 ? 2 : l;
+	g = want / l;                                   /* the gain left, 256 = 1x */
+	a = (uint32_t)(g * 32 / 256);
+	a = a < again_min ? again_min : (a > again_max ? again_max : a);
+	d = (uint32_t)(g * 32 / a);
+	d = d < 0x100 ? 0x100 : (d > dgain_max ? dgain_max : d);
+	*lines = l;
+	*again = a;
+	*dgain = d;
+}
+
+/* one step of the meter's: true when the green is near the aim (or the exposure can go no further that way) */
+static bool
+ae_step(const struct meter *m, bool half)
+{
+	uint64_t now = exposure_now(), want;
+	uint32_t g = m->mean[1] + 1, l, a, d;
+	bool near = g * 100 >= AE_AIM * 85 && g * 100 <= AE_AIM * 118;
+
+	if (m->clipped > 30 && g > AE_AIM / 2) {
+		near = false;
+		want = now / 2;                         /* highlights clipped: down, whatever the mean says */
+	} else {
+		want = now * AE_AIM / g;
+	}
+	if (near) {
+		return true;
+	}
+	want = want > now * 8 ? now * 8 : (want < now / 8 ? now / 8 : want);
+	if (half) {
+		want = (want + now) / 2;
+	}
+	exposure_split(want, &l, &a, &d);
+	if (l == ae_lines && a == ae_again && d == ae_dgain) {
+		return true;                            /* at an end of the range */
+	}
+	(void)exposure_put(l, a, d);
+	return false;
+}
+
+/* the gains' range as the sensor gives it (0x0084, 0x0086, 0x1086), sanity-checked */
+static void
+gains_read(void)
+{
+	uint32_t lo = sensor_get16(0x0084), hi = sensor_get16(0x0086), dhi = sensor_get16(0x1086);
+
+	again_min = lo >= 0x20 && lo <= 0x40 ? lo : 0x20;
+	again_max = hi > again_min && hi <= 0x400 ? hi : 0x200;
+	dgain_max = dhi >= 0x100 && dhi <= 0x1000 ? dhi : 0x400;
+	dgain_max = dgain_max > cam_dgain ? cam_dgain : dgain_max;
+	say("exynos-camera: 5: the gains: analog %#x to %#x (0x0084, 0x0086: %#x, %#x), digital to %#x (0x1086: %#x, "
+	    "capped at cam_s9_dgain %#x)\n", again_min, again_max, lo, hi, dgain_max, dhi, cam_dgain);
+}
+
+/* the mode's table, then the exposure; false if the sensor did not take them */
+static bool
+mode_load(void)
+{
+	uint32_t exp = cam_exp;
+
 	exp = exp < 2 ? 2 : exp;
 	exp = exp > MODE_LINES - MODE_MARGIN ? MODE_LINES - MODE_MARGIN : exp;
 	say("exynos-camera: 5: the sensor's mode: setfile A's 1632 x 1224 at 30 frames a second, %u 16-bit writes; then "
-	    "0x3092 = 0, exposure %u lines (0x0202), analog gain %#x (0x0204, 0x20 is 1x)\n", (unsigned)MODE_ENTRIES, exp,
-	    cam_gain);
+	    "0x3092 = 0, exposure %u lines (0x0202), analog gain %#x (0x0204, 0x20 is 1x), digital 1x; auto-exposure %s\n",
+	    (unsigned)MODE_ENTRIES, exp, cam_gain, cam_ae ? "on" : "off (cam_s9_ae=0)");
 	delay_for_interval(3, NSEC_PER_MSEC);
 	for (uint32_t i = 0; i < MODE_ENTRIES; i++) {
 		if (!sensor_put(mode_1632x1224[i][0], mode_1632x1224[i][1], 2)) {
 			return false;
 		}
 	}
-	if (!sensor_put(0x3092, 0x0000, 2) || !sensor_put(0x6028, 0x2000, 2) || !sensor_put(0x0202, (uint16_t)exp, 2) ||
-	    !sensor_put(0x0204, (uint16_t)cam_gain, 2)) {
+	if (!sensor_put(0x3092, 0x0000, 2) || !sensor_put(0x6028, 0x2000, 2)) {
 		return false;
 	}
-	say("exynos-camera: 5: read back: output %u x %u, frame %u lines of %u clocks, exposure %u, gain %#x\n",
+	gains_read();
+	if (!exposure_put(exp, cam_gain, 0x100)) {
+		return false;
+	}
+	say("exynos-camera: 5: read back: output %u x %u, frame %u lines of %u clocks, exposure %u, gain %#x, digital %#x\n",
 	    sensor_get16(0x034C), sensor_get16(0x034E), sensor_get16(0x0340), sensor_get16(0x0342), sensor_get16(0x0202),
-	    sensor_get16(0x0204));
+	    sensor_get16(0x0204), sensor_get16(0x020E));
+	return true;
+}
+
+/* the link up and the ring given to the WDMA, then the sensor streaming; false if a step failed */
+static bool
+stream_start(void)
+{
+	uint8_t frames = 0xff;
+	uint64_t until;
 
 	phy_setup();
-	say("exynos-camera: 5: CSIS1 reset and set up again; the buffer refilled; VC0's WDMA on\n");
+	say("exynos-camera: 5: CSIS1 reset and set up again; the ring filled; VC0's WDMA on, its eight frame pointers on "
+	    "the ring's %u slots\n", RING_SLOTS);
 	if (!link_setup()) {
 		return false;
 	}
 	dma_common();
 	buffer_fill();
-	dma_start();
+	ring_written = 0;
+	ring_checks = 0;
+	wr(wdma, DMA_CTRL, rd(wdma, DMA_CTRL) & ~DMA_FRAMEPTR_MASK);
+	for (uint32_t i = 0; i < 8; i++) {
+		wr(wdma, DMA_ADDR(i), (uint32_t)(buffer_pa + (uint64_t)(i % RING_SLOTS) * SLOT_BYTES));
+	}
+	wr(wdma, VCMN + VCMN_INT_SRC, rd(wdma, VCMN + VCMN_INT_SRC));
+	dma_on = true;
+	wr(wdma, DMA_CTRL, rd(wdma, DMA_CTRL) | DMA_ON | DMA_UPDT_PTR_EN);
 	say("exynos-camera: 5: the link on (UPDATE_SHADOW, D-PHY, clock lane, no Q-channel, CSI_EN)\n");
 	wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) | CMN_UPDATE_SHADOW);
 	wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) & ~CMN_PHY_SEL);
 	wr(csis, CSIS_PHY_CMN_CTRL, rd(csis, CSIS_PHY_CMN_CTRL) | PHY_ENABLE_CLK);
 	wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) & ~CMN_QCHANNEL_EN);
 	wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) | CMN_CSI_EN);
-	say("exynos-camera: 5: CMN_CTRL %#x, PHY_CMN_CTRL %#x, PHY_STATUS %#x (the lanes' stop states before streaming)\n",
-	    rd(csis, CSIS_CMN_CTRL), rd(csis, CSIS_PHY_CMN_CTRL), rd(csis, CSIS_PHY_STATUS));
-
 	say("exynos-camera: 5: STREAM ON: 0x0104 = 0, 8 ms, 0x6028 = 0x4000, 0x0100 = 1, 0x0216 = 0\n");
 	if (!sensor_put(0x0104, 0x00, 1)) {
 		return false;
@@ -1609,9 +1803,8 @@ sensor_frame(void)
 	if (!sensor_put(0x6028, 0x4000, 2) || !sensor_put(0x0100, 0x01, 1) || !sensor_put(0x0216, 0x00, 1)) {
 		return false;
 	}
-	start = mach_absolute_time();
 	nanoseconds_to_absolutetime(300 * NSEC_PER_MSEC, &until);
-	until += start;
+	until += mach_absolute_time();
 	while (mach_absolute_time() < until) {
 		if (sensor_get(0x0005, &frames, 1) == 0 && frames != 0xff) {
 			break;
@@ -1620,41 +1813,137 @@ sensor_frame(void)
 	}
 	say("exynos-camera: 5: the sensor's frame count %#x (0xff: not streaming); PHY_STATUS %#x\n", frames,
 	    rd(csis, CSIS_PHY_STATUS));
+	return true;
+}
 
-	/* two frame ends of VC0's WDMA (the first may be the sensor's settling one): 1.5 s at the most */
-	nanoseconds_to_absolutetime(1500 * NSEC_PER_MSEC, &until);
-	until += mach_absolute_time();
-	/*
-	 * Polled without sleeping, 20 us at a time: all eight frame pointers hold the one buffer, so the output goes off
-	 * the moment the second frame ends, inside the vertical blank (42 lines, 1.1 ms), before the third can write
-	 * over its first lines. A FIFO overflow (DMA_ERROR, bit 12) is said once
-	 */
-	{
-		bool told = false;
+/*
+ * The next frame end of VC0's WDMA, waited for (until `until'): the ring's slot it went to, or -1. Polled every
+ * `poll_us' (0: 20 us spinning). The WDMA's active frame pointer (ACT_CTRL [4:2]) is read at the frame's end: a
+ * frame start seen after it (the next frame's, its bit still set) means the pointer has moved on, and the frame done
+ * is the one before. A frame start alone is taken as it comes. The first four frames after the ring was filled are
+ * also checked against the fill (the last line of each slot): the slot that changed is the truth, and the pointer's
+ * offset from it (slot_fix) is kept for the frames after.
+ */
+static uint32_t
+slot_written(void)
+{
+	uint32_t mask = 0;
 
-		while (ends < 2 && mach_absolute_time() < until) {
-			src = rd(wdma, VCMN + VCMN_INT_SRC);
-			if (src & DMA_FRM_END0) {
-				wr(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0 | (src & DMA_FRM_START0));
-				if (++ends == 2) {
-					dma_stop();
-				}
-				say("exynos-camera: 5: frame end %u of the WDMA (INT_SRC %#x, CSIS1 FRM_CNT_CH0 %u, INT_SRC0 %#x)\n",
-				    ends, src, rd(csis, CSIS_FRM_CNT_CH0), rd(csis, CSIS_INT_SRC0));
-			} else {
-				if ((src & DMA_ERROR) && !told) {
-					told = true;
-					say("exynos-camera: 5: DMA_ERROR (the WDMA's FIFO full: INT_SRC %#x, ERR_CODE %#x; CSIS1 INT_SRC0 "
-					    "%#x, FRM_CNT_CH0 %u)\n", src, rd(wdma, VCMN + VCMN_ERR_CODE), rd(csis, CSIS_INT_SRC0),
-					    rd(csis, CSIS_FRM_CNT_CH0));
-				}
-				spin_us(20);
-			}
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		uint64_t w = *(const volatile uint64_t *)(buffer + (uint64_t)i * SLOT_BYTES + (uint64_t)FRAME_H * LINE_BYTES - 8);
+
+		mask |= w != 0xA5A5A5A5A5A5A5A5ULL ? 1u << i : 0;
+	}
+	return mask;
+}
+
+static int
+frame_wait(uint64_t until, uint32_t poll_us)
+{
+	while (mach_absolute_time() < until) {
+		uint32_t src = rd(wdma, VCMN + VCMN_INT_SRC), ptr, src2, slot, fresh;
+
+		if (src & DMA_ERROR) {
+			wr(wdma, VCMN + VCMN_INT_SRC, DMA_ERROR);
+			dma_errors++;
 		}
+		if ((src & (DMA_FRM_START0 | DMA_FRM_END0)) == DMA_FRM_START0) {
+			wr(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_START0);
+			src = rd(wdma, VCMN + VCMN_INT_SRC);
+		}
+		if (src & DMA_FRM_END0) {
+			ptr = (rd(wdma, DMA_ACT_CTRL) >> 2) & 7;
+			src2 = rd(wdma, VCMN + VCMN_INT_SRC);
+			if (src2 & DMA_FRM_START0) {
+				ptr = (ptr + 7) & 7;
+			}
+			wr(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0 | (src2 & DMA_FRM_START0));
+			slot = (ptr + slot_fix) % RING_SLOTS;
+			if (ring_checks < RING_SLOTS) {
+				fresh = slot_written() & ~ring_written;
+				ring_written |= fresh;
+				ring_checks++;
+				if (fresh != 0 && (fresh & (fresh - 1)) == 0) {
+					uint32_t truth = (uint32_t)__builtin_ctz(fresh);
+
+					if (truth != slot) {
+						slot_fix = (slot_fix + truth + RING_SLOTS - slot) % RING_SLOTS;
+					}
+					say("exynos-camera: the ring: frame end %u, frame pointer %u (INT_SRC %#x then %#x): slot %u by the "
+					    "pointer, slot %u by the fill (the pointer's offset now %u)\n", ring_checks, ptr, src, src2, slot,
+					    truth, slot_fix);
+					slot = truth;
+				} else {
+					say("exynos-camera: the ring: frame end %u, frame pointer %u (INT_SRC %#x then %#x): slot %u; the "
+					    "fill shows slots %#x new\n", ring_checks, ptr, src, src2, slot, fresh);
+				}
+			}
+			return (int)slot;
+		}
+		if (poll_us == 0) {
+			spin_us(20);
+		} else {
+			delay_for_interval(poll_us, NSEC_PER_USEC);
+		}
+	}
+	return -1;
+}
+
+/*
+ * One frame of the sensor's: the mode, the ring, streaming; the auto-exposure over up to cam_s9_ae_frames frames
+ * (measured on every third one); the frame where the green is at the aim (or the last) is the one taken: the WDMA
+ * off, streaming off, `frame' the ring's slot that holds it.
+ */
+static bool
+sensor_frame(void)
+{
+	uint32_t ends = 0, last, stride, measure_at = 2, limit = cam_ae ? cam_ae_frames : 2;
+	uint8_t frames = 0xff;
+	uint64_t until, start, per_frame;
+	struct meter m = { { 0, 0, 0 }, 0, 0 };
+	int slot = -1, taken = -1;
+
+	frame_ends = 0;
+	dma_errors = 0;
+	if (mmu_translating()) {
+		say("exynos-camera: 5: the SysMMU is on (MMU_CTRL %#x): no DMA\n", rd(mmu, MMU_CTRL));
+		return false;
+	}
+	if (!buffer_get() || !mode_load() || !stream_start()) {
+		return false;
+	}
+	start = mach_absolute_time();
+	nanoseconds_to_absolutetime(200 * NSEC_PER_MSEC, &per_frame);
+	until = start + per_frame * 3;          /* the first frame: the stream's start */
+	while (ends < limit + 4) {
+		slot = frame_wait(until, 0);
+		if (slot < 0) {
+			break;
+		}
+		ends++;
+		until = mach_absolute_time() + per_frame;
+		if (ends < measure_at) {
+			continue;
+		}
+		meter(buffer + (uint64_t)slot * SLOT_BYTES, &m);
+		if (ends <= 6 || ends >= limit) {
+			say("exynos-camera: 5: frame %u (slot %d, CSIS1 FRM_CNT_CH0 %u): green %u, red %u, blue %u of %u (aim %u), "
+			    "%u per mille clipped; exposure %u lines, gain %#x, digital %#x\n", ends, slot,
+			    rd(csis, CSIS_FRM_CNT_CH0), m.mean[1], m.mean[0], m.mean[2], 1023 - BLACK_LEVEL, AE_AIM, m.clipped,
+			    ae_lines, ae_again, ae_dgain);
+		}
+		if (!cam_ae || ends >= limit || ae_step(&m, false)) {
+			taken = slot;
+			break;
+		}
+		measure_at = ends + 3;
 	}
 	dma_stop();
 	frame_ends = ends;
-	say("exynos-camera: 5: %u frame end(s); the WDMA off; streaming off\n", ends);
+	say("exynos-camera: 5: %u frame end(s) in %llu ms, %u with the WDMA's FIFO error; the frame taken: %u (slot %d), "
+	    "exposure %u lines (%u us), gain %#x, digital %#x; the WDMA off; streaming off\n", ends,
+	    absolutetime_ms(mach_absolute_time() - start), dma_errors, ends, taken, ae_lines,
+	    ae_lines * 263 / 10, ae_again, ae_dgain);
 	stream_stop();
 	nanoseconds_to_absolutetime(300 * NSEC_PER_MSEC, &until);
 	until += mach_absolute_time();
@@ -1672,6 +1961,15 @@ sensor_frame(void)
 		    rd(wdma, DMA_ACT_CTRL));
 		buffer_busy = true;
 	}
+	if (taken < 0) {
+		taken = slot;
+	}
+	if (taken < 0) {
+		say("exynos-camera: 5: no frame end\n");
+		return false;
+	}
+	shot_slot = (uint32_t)taken;
+	frame = buffer + (uint64_t)shot_slot * SLOT_BYTES;
 	last = buffer_report("5");
 	if (last == 0) {
 		say("exynos-camera: 5: nothing reached the buffer\n");
@@ -1688,15 +1986,25 @@ sensor_frame(void)
 static volatile uint32_t shot_ready;    /* the thread waits for a request */
 static volatile uint32_t shot_asked;    /* a request is there */
 static volatile uint32_t shots_closed;  /* the run is ending: no more */
+static volatile uint32_t stream_live;   /* cam_s9=7: the stream's thread owns the camera ... */
+static volatile uint32_t stream_done;   /* ... and has put it all down again */
 static uint32_t shot_n, shot_pattern, n_camshots;
 static bool shots_enabled;              /* cam_s9=6 */
-static uint32_t cam_bayer = 1, cam_stride;
 
 /* On the way back to the loader (a panic's too): everything this run switched on, off again, the DMA first. */
 void
 hakios_exynos_camera_quiesce(void)
 {
 	shots_closed = 1;
+	if (stream_live && !stream_done) {
+		/* the stream's thread puts the camera down itself when it sees the end (it polls every millisecond) */
+		for (uint32_t i = 0; i < 20000 && !__atomic_load_n(&stream_done, __ATOMIC_ACQUIRE); i++) {
+			spin_us(10);
+		}
+		if (stream_done) {
+			return;
+		}
+	}
 	if (!powered && !domain_mine && !phy_mine && !dma_on && !pattern_on && !top_gate_mine) {
 		return;
 	}
@@ -1918,59 +2226,51 @@ all_down(void)
 }
 
 /*
- * ---- camshot: the frame in the buffer as an RGB picture, for the USB console ----
+ * ---- camshot: the frame taken as an RGB picture, for the USB console ----
  *
- * The simplest debayer there is, as tools/camraw.py does it: each 2 x 2 cell of the Bayer pattern one pixel (half the
- * width and height: 816 x 612), then every Nth of those. The pattern's order is the sensor's GRBG
- * (fimc-is-cis-3h1.c's cis->bayer_order, OTF_INPUT_ORDER_BAYER_GR_BG; cam_s9_bayer=0-3 for RGGB, GRBG, GBRG, BGGR).
- * The black level, 64 of 1023, taken off; a grey-world white balance and an exposure that brings the green's mean to
- * 18 % (both from a coarse pass over every 8th cell); a gamma of 2 (a square root, a table of 1024). RAW10 as the
- * WDMA writes it with PACK12 off: a pixel in 16 bits, little-endian, the value in [9:0], 3264 bytes a line.
- * The front camera's picture comes out as the sensor sees it (mirrored, perhaps turned): no flip is made here.
+ * A bilinear demosaic of the whole frame, 1632 x 1224 (camshot N: every Nth pixel of it across and down): at a green
+ * place the green as it is and the red and blue from the two neighbours on the line and the two above and below; at a
+ * red (blue) place the green from its four neighbours and the blue (red) from its four diagonal ones. The pattern's
+ * order is the sensor's GRBG (fimc-is-cis-3h1.c's cis->bayer_order, OTF_INPUT_ORDER_BAYER_GR_BG; cam_s9_bayer=0-3 for
+ * RGGB, GRBG, GBRG, BGGR); the frame's edges mirrored. The black level, 64 of 1023, taken off; a grey-world white
+ * balance from the meter's cells (red and blue to the green, each gain kept within 1/4x and 4x of the green's); the green brought to
+ * the meter's aim if the exposure could not get it there (at most 4x more); a saturation of cam_s9_sat per cent about
+ * the luminance (140 unless said: no colour matrix of the sensor's is in the GPL sources, whose setfile A is the
+ * sensor's registers only; the ISP's tuning, setfile_3h1.bin, is a vendor binary and not read); then a gamma of about
+ * 1/2.2 (a table of 4096). RAW10 as the WDMA writes it with PACK12 off: a pixel in 16 bits, little-endian, the value in
+ * [9:0], 3264 bytes a line. The front camera's picture comes out as the sensor sees it (mirrored): no flip is made here.
  */
-#define BLACK                   64
-#define CELLS_W                 (FRAME_W / 2)
-#define CELLS_H                 (FRAME_H / 2)
-
 static const char *const bayer_name[4] = { "RGGB", "GRBG", "GBRG", "BGGR" };
-static const uint8_t bayer_place[4][4] = {      /* the colour of a cell's four places (0 R, 1 G, 2 B), row by row */
-	{ 0, 1, 1, 2 }, { 1, 0, 2, 1 }, { 1, 2, 0, 1 }, { 2, 1, 1, 0 },
-};
-static uint8_t line0[LINE_BYTES], line1[LINE_BYTES];   /* two rows of the frame, copied out of the uncached mapping */
-static uint8_t out_row[CELLS_W * 3];
-static uint8_t gamma_lut[1024];
+static uint16_t rows[3][FRAME_W];               /* three lines of the frame, the black level off */
+static int32_t row_of[3] = { -1, -1, -1 };
+static uint8_t raw_line[LINE_BYTES];            /* a line copied out of the uncached mapping */
+static uint8_t out_row[FRAME_W * 3];
+static uint8_t gamma_lut[4096];
+static uint32_t cam_sat = 140;
 
-static inline uint32_t
-raw10(const uint8_t *line, uint32_t x)
+static const uint16_t *
+row_get(int32_t y, uint32_t stride)
 {
-	return ((uint32_t)line[2 * x] | ((uint32_t)line[2 * x + 1] << 8)) & 0x3ff;
-}
+	uint32_t i;
 
-/* one cell: R, G (the mean of two) and B, the black level taken off */
-static inline void
-cell(uint32_t cx, uint32_t rgb[3])
-{
-	uint32_t v[4] = { raw10(line0, 2 * cx), raw10(line0, 2 * cx + 1), raw10(line1, 2 * cx), raw10(line1, 2 * cx + 1) };
-	const uint8_t *place = bayer_place[cam_bayer & 3];
+	y = y < 0 ? 1 : (y >= FRAME_H ? FRAME_H - 2 : y);         /* mirrored: the same colours */
+	i = (uint32_t)y % 3;
+	if (row_of[i] != y) {
+		memcpy(raw_line, (const void *)(frame + (uint64_t)y * stride), LINE_BYTES);
+		for (uint32_t x = 0; x < FRAME_W; x++) {
+			uint32_t v = ((uint32_t)raw_line[2 * x] | ((uint32_t)raw_line[2 * x + 1] << 8)) & 0x3ff;
 
-	rgb[0] = rgb[1] = rgb[2] = 0;
-	for (uint32_t i = 0; i < 4; i++) {
-		rgb[place[i]] += v[i] > BLACK ? v[i] - BLACK : 0;
+			rows[i][x] = (uint16_t)(v > BLACK_LEVEL ? v - BLACK_LEVEL : 0);
+		}
+		row_of[i] = y;
 	}
-	rgb[1] /= 2;
-}
-
-static void
-rows_get(uint32_t stride, uint32_t cy)
-{
-	memcpy(line0, (const void *)(buffer + (size_t)(2 * cy) * stride), LINE_BYTES);
-	memcpy(line1, (const void *)(buffer + (size_t)(2 * cy + 1) * stride), LINE_BYTES);
+	return rows[i];
 }
 
 static uint32_t
-isqrt(uint32_t v)
+isqrt(uint64_t v)
 {
-	uint32_t r = 0, bit = 1u << 30;
+	uint64_t r = 0, bit = 1ULL << 62;
 
 	while (bit > v) {
 		bit >>= 2;
@@ -1984,72 +2284,114 @@ isqrt(uint32_t v)
 		}
 		bit >>= 2;
 	}
-	return r;
+	return (uint32_t)r;
 }
 
-/* the picture into the second half of MEM_PA's mapping; its width and height back (0: none) */
+static uint32_t
+icbrt(uint64_t v)
+{
+	uint32_t lo = 0, hi = 2097151;
+
+	while (lo < hi) {
+		uint32_t mid = (lo + hi + 1) / 2;
+
+		if ((uint64_t)mid * mid * mid <= v) {
+			lo = mid;
+		} else {
+			hi = mid - 1;
+		}
+	}
+	return lo;
+}
+
+/* the gamma: about t^(1/2.2) as 0.73 sqrt(t) + 0.27 cbrt(t), with sRGB's straight foot (12.92 t) near black */
+static void
+gamma_make(void)
+{
+	for (uint32_t i = 0; i < 4096; i++) {
+		uint32_t s = isqrt((uint64_t)i * (1u << 20) / 4095), c = icbrt((uint64_t)i * (1u << 30) / 4095);
+		uint32_t y = (73 * s + 27 * c) * 255 / (100 * 1024), foot = i * 1292 * 255 / (4095 * 100);
+
+		y = foot < y ? foot : y;
+		gamma_lut[i] = (uint8_t)(y > 255 ? 255 : y);
+	}
+}
+
+/* the picture into RGB_OFF of MEM_PA's mapping, from `frame'; its width and height back */
 static bool
 picture(uint32_t n, uint32_t *wp, uint32_t *hp)
 {
-	uint64_t sum[3] = { 0, 0, 0 };
-	uint32_t stride = cam_stride, w = CELLS_W / n, h = CELLS_H / n, k[3], rgb[3], mean[3], cells = 0;
+	const uint8_t *place = bayer_place[cam_bayer & 3];
+	uint32_t stride = cam_stride, w = FRAME_W / n, h = FRAME_H / n, k[3];
 	uint8_t *out = (uint8_t *)(buffer + RGB_OFF);
+	struct meter m;
+	uint64_t t0 = mach_absolute_time(), t1;
 
 	if (stride == 0) {
 		stride = LINE_BYTES;    /* the WDMA's RAW10 with PACK12 off: two bytes a pixel, 3264 a line */
 	}
-	if (stride < LINE_BYTES || (uint64_t)stride * FRAME_H > BUF_BYTES) {
+	if (stride < LINE_BYTES || (uint64_t)stride * FRAME_H > SLOT_BYTES) {
 		say("usb: camshot failed: a stride of %u bytes does not hold %u pixels of RAW10 in 16 bits\n", stride, FRAME_W);
 		return false;
 	}
-	if (frame_last < (uint64_t)stride * (FRAME_H - 1)) {
+	if (frame_last != 0 && frame_last < (uint64_t)stride * (FRAME_H - 1)) {
 		say("exynos-camera: camshot: the DMA wrote %u bytes, %u lines' worth at %u a line: the rest of the picture is "
 		    "the buffer's fill (0xA5)\n", frame_last, frame_last / stride, stride);
 	}
-	for (uint32_t i = 0; i < 1024; i++) {
-		uint32_t g = isqrt(i * 65025u / (1023 - BLACK));
-
-		gamma_lut[i] = (uint8_t)(g > 255 ? 255 : g);
-	}
-	for (uint32_t cy = 0; cy < CELLS_H; cy += 8) {
-		rows_get(stride, cy);
-		for (uint32_t cx = 0; cx < CELLS_W; cx += 8) {
-			cell(cx, rgb);
-			sum[0] += rgb[0];
-			sum[1] += rgb[1];
-			sum[2] += rgb[2];
-			cells++;
-		}
-	}
-	for (uint32_t c = 0; c < 3; c++) {
-		mean[c] = (uint32_t)(sum[c] / cells) + 1;
-	}
-	/* gains in 1/256: the green's mean to 18 % of the range (0.25x to 32x), red and blue to the green's mean */
-	k[1] = (1023 - BLACK) * 18 / 100 * 256 / mean[1];
-	k[1] = k[1] < 64 ? 64 : (k[1] > 8192 ? 8192 : k[1]);
+	gamma_make();
+	meter(frame, &m);
+	/*
+	 * gains in 1/256: the green to the aim (1x to 4x more), red and blue to the green's mean, each kept within 1/4x
+	 * and 4x of the green's (a warm lamp's red is well above the green in the raw frame: its gain goes below 1x)
+	 */
+	k[1] = AE_AIM * 256 / (m.mean[1] + 1);
+	k[1] = k[1] < 256 ? 256 : (k[1] > 1024 ? 1024 : k[1]);
 	for (uint32_t c = 0; c < 3; c += 2) {
-		uint64_t g = (uint64_t)k[1] * mean[1] / mean[c];
+		uint32_t g = (m.mean[1] + 1) * 256 / (m.mean[c] + 1);
 
-		k[c] = g > 16384 ? 16384 : (uint32_t)g;
+		g = g < 64 ? 64 : (g > 1024 ? 1024 : g);
+		k[c] = g * k[1] / 256;
 	}
-	for (uint32_t y = 0; y < h; y++) {
+	row_of[0] = row_of[1] = row_of[2] = -1;
+	for (uint32_t oy = 0; oy < h; oy++) {
+		int32_t y = (int32_t)(oy * n);
+		const uint16_t *up = row_get(y - 1, stride), *mid = row_get(y, stride), *dn = row_get(y + 1, stride);
+		const uint8_t *pl = place + (y & 1) * 2, *pv = place + ((y + 1) & 1) * 2;
 		uint8_t *o = out_row;
 
-		rows_get(stride, y * n);
-		for (uint32_t x = 0; x < w; x++) {
-			cell(x * n, rgb);
-			for (uint32_t c = 0; c < 3; c++) {
-				uint32_t v = (rgb[c] * k[c]) >> 8;
+		for (uint32_t ox = 0; ox < w; ox++) {
+			uint32_t x = ox * n, xl = x ? x - 1 : 1, xr = x + 1 < FRAME_W ? x + 1 : FRAME_W - 2, c = pl[x & 1];
+			int32_t v[3], yl;
 
-				*o++ = gamma_lut[v > 1023 ? 1023 : v];
+			if (c == 1) {
+				v[1] = mid[x];
+				v[pl[(x + 1) & 1]] = (mid[xl] + mid[xr]) / 2;
+				v[pv[x & 1]] = (up[x] + dn[x]) / 2;
+			} else {
+				v[c] = mid[x];
+				v[1] = (mid[xl] + mid[xr] + up[x] + dn[x]) / 4;
+				v[2 - c] = (up[xl] + up[xr] + dn[xl] + dn[xr]) / 4;
+			}
+			for (uint32_t i = 0; i < 3; i++) {
+				v[i] = (int32_t)(((uint32_t)v[i] * k[i]) >> 8);
+			}
+			yl = (77 * v[0] + 150 * v[1] + 29 * v[2]) >> 8;
+			for (uint32_t i = 0; i < 3; i++) {
+				int32_t s = yl + (v[i] - yl) * (int32_t)cam_sat / 100;
+
+				s = s < 0 ? 0 : s * 4;
+				*o++ = gamma_lut[s > 4095 ? 4095 : s];
 			}
 		}
-		memcpy(out + (size_t)y * w * 3, out_row, w * 3);
+		memcpy(out + (size_t)oy * w * 3, out_row, w * 3);
 	}
-	say("exynos-camera: camshot: RAW10 %s at a stride of %u (%u bytes written); means less the black level R %u G %u B "
-	    "%u of %u; gains R %u.%02u G %u.%02u B %u.%02u; %u x %u RGB (N = %u: every Nth 2 x 2 cell)\n", bayer_name[cam_bayer & 3],
-	    stride, frame_last, mean[0] - 1, mean[1] - 1, mean[2] - 1, 1023 - BLACK, k[0] / 256, k[0] % 256 * 100 / 256,
-	    k[1] / 256, k[1] % 256 * 100 / 256, k[2] / 256, k[2] % 256 * 100 / 256, w, h, n);
+	t1 = mach_absolute_time();
+	say("exynos-camera: camshot: RAW10 %s at a stride of %u (%u bytes written); the meter's means less the black level "
+	    "R %u G %u B %u of %u (aim %u, %u per mille clipped); gains R %u.%02u G %u.%02u B %u.%02u; saturation %u %%; "
+	    "%u x %u RGB (N = %u: every Nth pixel of the demosaic), made in %llu ms\n", bayer_name[cam_bayer & 3], stride,
+	    frame_last, m.mean[0], m.mean[1], m.mean[2], 1023 - BLACK_LEVEL, AE_AIM, m.clipped, k[0] / 256,
+	    k[0] % 256 * 100 / 256, k[1] / 256, k[1] % 256 * 100 / 256, k[2] / 256, k[2] % 256 * 100 / 256, cam_sat, w, h,
+	    n, absolutetime_ms(t1 - t0));
 	*wp = w;
 	*hp = h;
 	return true;
@@ -2070,11 +2412,24 @@ shot_failed(const char *why)
 	}
 }
 
+/* the picture made from `frame' and handed to the USB link */
+static void
+shot_send(uint32_t n, bool pattern)
+{
+	uint32_t w = 0, h = 0;
+
+	if (!picture(n, &w, &h)) {
+		return;
+	}
+	if (hakios_usb_picture(buffer + RGB_OFF, w, h, pattern ? "the test pattern" : "the front camera") != 0) {
+		say("usb: camshot failed: the USB link is not up, or is sending another picture\n");
+	}
+}
+
 /* one camshot: steps 2 to 5 again (or 3 and 4: the test pattern), everything off again, the picture to the USB link */
 static void
 shot_run(uint32_t n, bool pattern)
 {
-	uint32_t w = 0, h = 0;
 	const char *why = NULL;
 	bool got;
 
@@ -2113,12 +2468,7 @@ shot_run(uint32_t n, bool pattern)
 		shot_failed(why);
 		return;
 	}
-	if (!picture(n, &w, &h)) {
-		return;
-	}
-	if (hakios_usb_picture(buffer + RGB_OFF, w, h, pattern ? "the test pattern" : "the front camera") != 0) {
-		say("usb: camshot failed: the USB link is not up, or is sending another picture\n");
-	}
+	shot_send(n, pattern);
 }
 
 const char *hakios_exynos_camera_shot(uint32_t n, int pattern);
@@ -2133,7 +2483,7 @@ hakios_exynos_camera_shot(uint32_t n, int pattern)
 		return "the run is ending";
 	}
 	if (n == 0 || n > 16) {
-		return "N is a number from 1 to 16 (camshot 1: 816 x 612, every 2 x 2 cell of the frame)";
+		return "N is a number from 1 to 16 (camshot 1: the whole frame, 1632 x 1224; 2: every second pixel, 816 x 612)";
 	}
 	if (!shots_enabled) {
 		return "not in this run: boot-arg cam_s9=6 (and a kernel with the S9's camera driver)";
@@ -2149,6 +2499,301 @@ hakios_exynos_camera_shot(uint32_t n, int pattern)
 }
 
 /* cam_s9=6: after the boot's run, the thread stays for the console's camshots (one at a time) */
+/*
+ * ---- cam_s9=7: the stream, and /dev/hakios-camera ----
+ *
+ * The sensor streams for the rest of the run into the ring (four slots, the WDMA's frame pointers in turn); each
+ * frame end is taken by the camera's thread, which polls the WDMA every millisecond (no interrupt is wired), gives
+ * the frame its number (CSIS1's frame counter: frames the thread was too busy to see are counted as lost, not
+ * renumbered), meters every third frame and steps the exposure half-way to the aim (cam_s9_ae=0: as asked). Every
+ * ten seconds the log says the frame rate and how many were lost. camshot copies the newest frame out of the ring to
+ * the still (the ring has three frames' grace, 100 ms, for the copy) and makes the picture from there.
+ *
+ * /dev/hakios-camera, as the POCO's driver makes it (bsd/sys/hakios.camera.h, the same structure, so that
+ * libhakios.media's capture device and camera_test read either): read() waits (a second at the most) for the newest
+ * frame not read yet and gives a struct hakios_camera_frame, then the frame as MIPI RAW10 (four pixels in five bytes,
+ * 2040 a line: packed here from the WDMA's 16 bits a pixel, line by line), GRBG, black level 64; a buffer of the
+ * header's size learns the size. write(): HAKIOS_CAMERA_EXPOSURE (a lines, b analog gain; the auto-exposure off while
+ * they come, back on two seconds after the last, or at once with a = 0), HAKIOS_CAMERA_SENSOR (there is one camera here: taken, and the frames carry the
+ * number asked for, so that a capture device that asks for its back camera gets these frames), HAKIOS_CAMERA_FOCUS
+ * (no lens motor: taken, nothing done). EIO once the stream has failed.
+ */
+#define RAW10_LINE              (FRAME_W * 5 / 4)       /* 2040 */
+#define LINE_NS                 26283                   /* 10608 clocks of 403.6 MHz */
+
+static LCK_GRP_DECLARE(s9cam_grp, "hakios-exynos-camera");
+static LCK_MTX_DECLARE(s9cam_lock, &s9cam_grp);       /* the ring's frames' numbers and the commands */
+static LCK_MTX_DECLARE(s9read_lock, &s9cam_grp);      /* a reader's copy (the line buffers): never the thread's */
+static struct {
+	uint64_t sequence, time;
+	uint32_t lines, again, dgain;
+} slot_info[RING_SLOTS];
+static uint64_t stream_newest;          /* the newest frame's number (0: none yet) */
+static int32_t stream_newest_slot = -1;
+static uint64_t stream_given;           /* the newest frame read */
+static bool stream_running, stream_failed;
+static uint32_t asked_sensor = 2;       /* the frames' "sensor": 2, the front camera, unless asked for another */
+static uint32_t manual_lines, manual_again;
+static bool manual, manual_pending;
+static uint64_t manual_until;            /* the reader's exposure holds until then: two seconds after its last */
+static uint32_t stream_readers;
+static uint8_t pack_line[LINE_BYTES], packed[RAW10_LINE];
+
+static int
+s9dev_open(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
+{
+	return stream_failed ? EIO : 0;
+}
+
+static int
+s9dev_close(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
+{
+	return 0;
+}
+
+static int
+s9dev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	struct hakios_camera_frame f;
+	uint64_t since = mach_absolute_time(), second;
+	int32_t slot;
+	int error = 0;
+
+	nanoseconds_to_absolutetime(NSEC_PER_SEC, &second);
+	lck_mtx_lock(&s9cam_lock);
+	while (!stream_failed && (stream_newest_slot < 0 || stream_newest <= stream_given)) {
+		struct timespec ts = { 0, 100 * NSEC_PER_MSEC };
+
+		if (mach_absolute_time() - since > second) {
+			lck_mtx_unlock(&s9cam_lock);
+			return EAGAIN;
+		}
+		error = msleep(&stream_newest, &s9cam_lock, PZERO | PCATCH, "hakios-camera", &ts);
+		if (error != 0 && error != EWOULDBLOCK) {
+			lck_mtx_unlock(&s9cam_lock);
+			return error;
+		}
+	}
+	if (stream_failed) {
+		lck_mtx_unlock(&s9cam_lock);
+		return EIO;
+	}
+	slot = stream_newest_slot;
+	stream_given = stream_newest;
+	bzero(&f, sizeof(f));
+	memcpy(f.magic, HAKIOS_CAMERA_MAGIC, 8);
+	f.header_bytes = sizeof(f);
+	f.width = FRAME_W;
+	f.height = FRAME_H;
+	f.stride = RAW10_LINE;
+	f.format = 1;
+	f.bayer = cam_bayer & 3;
+	f.black = BLACK_LEVEL;
+	f.sequence = slot_info[slot].sequence;
+	f.time = slot_info[slot].time;
+	f.exposure_lines = slot_info[slot].lines;
+	f.line_ns = LINE_NS;
+	f.gain = slot_info[slot].again * slot_info[slot].dgain / 0x100;
+	f.gain_unity = 0x20;
+	f.gain_max = again_max;
+	f.frame_lines = MODE_LINES;
+	f.frame_lines_min = MODE_LINES;
+	f.frame_lines_max = MODE_LINES;
+	f.margin = MODE_MARGIN;
+	f.sensor = asked_sensor;
+	f.focus = HAKIOS_CAMERA_NO_FOCUS;
+	stream_readers++;
+	lck_mtx_unlock(&s9cam_lock);
+
+	error = uiomove((caddr_t)&f, (int)MIN((user_ssize_t)sizeof(f), uio_resid(uio)), uio);
+	/* the frame, packed a line at a time (one reader at a time: the line buffers are shared) */
+	lck_mtx_lock(&s9read_lock);
+	for (uint32_t y = 0; error == 0 && y < FRAME_H && uio_resid(uio) > 0; y++) {
+		memcpy(pack_line, (const void *)(buffer + (uint64_t)slot * SLOT_BYTES + (uint64_t)y * LINE_BYTES), LINE_BYTES);
+		for (uint32_t x = 0, o = 0; x < FRAME_W; x += 4, o += 5) {
+			uint32_t v[4];
+
+			for (uint32_t k = 0; k < 4; k++) {
+				v[k] = ((uint32_t)pack_line[2 * (x + k)] | ((uint32_t)pack_line[2 * (x + k) + 1] << 8)) & 0x3ff;
+				packed[o + k] = (uint8_t)(v[k] >> 2);
+			}
+			packed[o + 4] = (uint8_t)((v[0] & 3) | ((v[1] & 3) << 2) | ((v[2] & 3) << 4) | ((v[3] & 3) << 6));
+		}
+		error = uiomove((caddr_t)packed, (int)MIN((user_ssize_t)RAW10_LINE, uio_resid(uio)), uio);
+	}
+	lck_mtx_unlock(&s9read_lock);
+	lck_mtx_lock(&s9cam_lock);
+	stream_readers--;
+	lck_mtx_unlock(&s9cam_lock);
+	wakeup(&stream_readers);
+	return error;
+}
+
+static int
+s9dev_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	struct hakios_camera_command c;
+
+	if (uio_resid(uio) < (user_ssize_t)sizeof(c) || uiomove((caddr_t)&c, sizeof(c), uio) != 0) {
+		return EINVAL;
+	}
+	lck_mtx_lock(&s9cam_lock);
+	switch (c.command) {
+	case HAKIOS_CAMERA_EXPOSURE:
+		nanoseconds_to_absolutetime(2 * NSEC_PER_SEC, &manual_until);
+		manual_until += mach_absolute_time();
+		manual = c.a != 0;
+		manual_lines = c.a;
+		manual_again = c.b;
+		manual_pending = manual;
+		break;
+	case HAKIOS_CAMERA_SENSOR:
+		if (c.a <= 3) {
+			asked_sensor = c.a;
+		}
+		break;
+	case HAKIOS_CAMERA_FOCUS:
+	case HAKIOS_CAMERA_KEEP:
+		break;
+	default:
+		lck_mtx_unlock(&s9cam_lock);
+		return EINVAL;
+	}
+	lck_mtx_unlock(&s9cam_lock);
+	return 0;
+}
+
+static const struct cdevsw s9dev_cdevsw = {
+	.d_open = s9dev_open, .d_close = s9dev_close, .d_read = s9dev_read, .d_write = s9dev_write,
+	.d_ioctl = eno_ioctl, .d_stop = eno_stop, .d_reset = eno_reset, .d_select = eno_select,
+	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = 0
+};
+
+static void
+s9dev_make(void)
+{
+	int major = cdevsw_add(-1, &s9dev_cdevsw);
+
+	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-camera") == NULL) {
+		say("exynos-camera: 7: /dev/hakios-camera could not be made (%d)\n", major);
+		return;
+	}
+	say("exynos-camera: 7: /dev/hakios-camera made (major %d): the frames as the POCO's driver gives them\n", major);
+}
+
+/* the stream, until the run ends (or it fails) */
+static void
+stream_loop(void)
+{
+	uint64_t start, until, wait, log_at, ten, frm_base, frm_last = 0, frm_now;
+	uint64_t log_frames = 0, seen = 0, lost = 0, next_meter = 4;
+	uint32_t timeouts = 0;
+	struct meter m = { { 0, 0, 0 }, 0, 0 };
+	int slot;
+
+	say("exynos-camera: 7: THE STREAM: the front camera up, 1632 x 1224 RAW10 at 30 frames a second into the ring "
+	    "(%u slots of 4 MB at %#llx), the auto-exposure %s\n", RING_SLOTS, MEM_PA, cam_ae ? "on" : "off");
+	if (!sensor_up() || !isp_up() || mmu_translating()) {
+		goto failed;
+	}
+	phy_on();
+	if (!buffer_get() || !mode_load() || !stream_start()) {
+		goto failed;
+	}
+	frm_base = rd(csis, CSIS_FRM_CNT_CH0);
+	start = log_at = mach_absolute_time();
+	nanoseconds_to_absolutetime(300 * NSEC_PER_MSEC, &wait);
+	nanoseconds_to_absolutetime(10 * NSEC_PER_SEC, &ten);
+	log_at += ten;
+	lck_mtx_lock(&s9cam_lock);
+	stream_running = true;
+	lck_mtx_unlock(&s9cam_lock);
+	while (!shots_closed) {
+		until = mach_absolute_time() + wait;
+		slot = frame_wait(until, 1000);
+		if (slot < 0) {
+			say("exynos-camera: 7: no frame end in 300 ms (CSIS1 INT_SRC0 %#x, FRM_CNT_CH0 %u; WDMA ACT_CTRL %#x)\n",
+			    rd(csis, CSIS_INT_SRC0), rd(csis, CSIS_FRM_CNT_CH0), rd(wdma, DMA_ACT_CTRL));
+			if (++timeouts >= 5) {
+				break;
+			}
+			continue;
+		}
+		timeouts = 0;
+		frm_now = (uint32_t)(rd(csis, CSIS_FRM_CNT_CH0) - (uint32_t)frm_base);
+		frm_now = frm_now <= frm_last ? frm_last + 1 : frm_now;
+		lost += frm_now - frm_last - 1;
+		frm_last = frm_now;
+		seen++;
+		lck_mtx_lock(&s9cam_lock);
+		slot_info[slot].sequence = frm_now;
+		slot_info[slot].time = mach_absolute_time();
+		slot_info[slot].lines = ae_lines;
+		slot_info[slot].again = ae_again;
+		slot_info[slot].dgain = ae_dgain;
+		stream_newest = frm_now;
+		stream_newest_slot = slot;
+		if (manual_pending) {
+			uint32_t l = manual_lines, a = manual_again;
+
+			manual_pending = false;
+			lck_mtx_unlock(&s9cam_lock);
+			l = l < 2 ? 2 : (l > MODE_LINES - MODE_MARGIN ? MODE_LINES - MODE_MARGIN : l);
+			a = a < again_min ? again_min : (a > again_max ? again_max : a);
+			(void)exposure_put(l, a, 0x100);
+		} else {
+			lck_mtx_unlock(&s9cam_lock);
+		}
+		wakeup(&stream_newest);
+		if (manual && mach_absolute_time() > manual_until) {
+			manual = false;         /* the reader that asked has gone quiet: the kernel's own exposure again */
+			say("exynos-camera: 7: no exposure asked for two seconds: the auto-exposure again\n");
+		}
+		if (cam_ae && !manual && frm_now >= next_meter) {
+			meter(buffer + (uint64_t)slot * SLOT_BYTES, &m);
+			next_meter = frm_now + (ae_step(&m, true) ? 6 : 3);
+		}
+		if (__atomic_load_n(&shot_asked, __ATOMIC_ACQUIRE)) {
+			/* camshot: the newest frame out of the ring, then the picture from the still */
+			memcpy((void *)(buffer + STILL_OFF), (const void *)(buffer + (uint64_t)slot * SLOT_BYTES), SLOT_BYTES);
+			frame = buffer + STILL_OFF;
+			frame_last = FRAME_H * LINE_BYTES;
+			say("exynos-camera: camshot %u: frame %llu of the stream (slot %d; exposure %u lines, gain %#x, digital "
+			    "%#x)\n", ++n_camshots, frm_now, slot, ae_lines, ae_again, ae_dgain);
+			shot_send(shot_n, false);
+			__atomic_store_n(&shot_asked, 0, __ATOMIC_RELEASE);
+			__atomic_store_n(&shot_ready, 1, __ATOMIC_RELEASE);
+		}
+		if (mach_absolute_time() >= log_at) {
+			uint64_t ms = absolutetime_ms(mach_absolute_time() - start), frames = frm_now - log_frames;
+
+			meter(buffer + (uint64_t)slot * SLOT_BYTES, &m);
+
+			say("exynos-camera: 7: the stream: frame %llu after %llu ms, %llu.%02llu frames a second over the last ten "
+			    "seconds; %llu seen, %llu lost (the thread busy), %u with the WDMA's FIFO error; exposure %u lines, gain "
+			    "%#x, digital %#x%s; green %u (aim %u)\n", frm_now, ms, frames / 10, frames * 10 % 100, seen, lost,
+			    dma_errors, ae_lines, ae_again, ae_dgain, manual ? " (asked)" : "", m.mean[1], AE_AIM);
+			log_frames = frm_now;
+			log_at += ten;
+		}
+	}
+	say("exynos-camera: 7: the stream ends: %llu frames, %llu seen, %llu lost, %u FIFO errors\n", frm_last, seen, lost,
+	    dma_errors);
+failed:
+	all_down();
+	lck_mtx_lock(&s9cam_lock);
+	stream_running = false;
+	stream_failed = true;
+	while (stream_readers != 0) {
+		struct timespec ts = { 0, 10 * NSEC_PER_MSEC };
+
+		(void)msleep(&stream_readers, &s9cam_lock, PZERO, "hakios-camera", &ts);
+	}
+	lck_mtx_unlock(&s9cam_lock);
+	wakeup(&stream_newest);
+	__atomic_store_n(&stream_done, 1, __ATOMIC_RELEASE);
+}
+
 static void
 shot_loop(void)
 {
@@ -2178,11 +2823,22 @@ shot_loop(void)
 static void
 camera_thread(void *arg, __unused wait_result_t result)
 {
-	uint32_t steps = (uint32_t)(uintptr_t)arg, shots = steps >= 6;
+	uint32_t steps = (uint32_t)(uintptr_t)arg, shots = steps >= 6, stream = steps >= 7;
 	bool kept = false;
 
 	steps = steps > 5 ? 5 : steps;
 	if (!map_blocks()) {
+		goto out;
+	}
+	if (stream) {
+		look_pins("1");
+		if (look_supplies()) {
+			s9dev_make();
+			__atomic_store_n(&shot_ready, 1, __ATOMIC_RELEASE);
+			stream_live = 1;
+			stream_loop();
+			stream_live = 0;
+		}
 		goto out;
 	}
 	look_pins("1");
@@ -2265,10 +2921,23 @@ hakios_exynos_camera_init(void)
 			sensor_addr = sensor_addr_given = (uint8_t)addr;
 		}
 	}
-	if (steps > 6) {
-		steps = 6;
+	PE_parse_boot_argn("cam_s9_ae", &cam_ae, sizeof(cam_ae));
+	PE_parse_boot_argn("cam_s9_ae_frames", &cam_ae_frames, sizeof(cam_ae_frames));
+	if (cam_ae_frames < 2 || cam_ae_frames > 30) {
+		cam_ae_frames = 15;
 	}
-	shots_enabled = steps == 6;
+	PE_parse_boot_argn("cam_s9_sat", &cam_sat, sizeof(cam_sat));
+	if (cam_sat > 300) {
+		cam_sat = 140;
+	}
+	PE_parse_boot_argn("cam_s9_dgain", &cam_dgain, sizeof(cam_dgain));
+	if (cam_dgain < 0x100 || cam_dgain > 0x1000) {
+		cam_dgain = 0x400;
+	}
+	if (steps > 7) {
+		steps = 7;
+	}
+	shots_enabled = steps >= 6;
 	if (kernel_thread_start(camera_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}
