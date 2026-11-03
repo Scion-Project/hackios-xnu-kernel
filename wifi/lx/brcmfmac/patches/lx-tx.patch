@@ -1,0 +1,20 @@
+What brcmfmac's transmit asks of a buffer (HakiOS): only that it has room for the driver's header, not that it is
+not a clone, which LinuxKPI cannot tell (lx-tx.patch).
+--- a/brcmfmac/core.c
++++ b/brcmfmac/core.c
+@@ -328,8 +328,13 @@
+ 		goto done;
+ 	}
+ 
+-	/* Make sure there's enough writeable headroom */
+-	if (skb_headroom(skb) < drvr->hdrlen || skb_header_cloned(skb)) {
++	/*
++	 * Make sure there's enough writeable headroom. (HakiOS) LinuxKPI's skb_header_cloned() is a TODO that says
++	 * true of every buffer, and its pskb_expand_head() always fails, so every frame sent was dropped here ("failed
++	 * to expand headroom"; the four-way handshake's message 2 among them). Nothing here clones a buffer, and the
++	 * frames given to the driver (lx_cfg.c's frame_send()) leave room for its header: only too little room counts.
++	 */
++	if (skb_headroom(skb) < drvr->hdrlen) {
+ 		head_delta = max_t(int, drvr->hdrlen - skb_headroom(skb), 0);
+ 
+ 		brcmf_dbg(INFO, "%s: %s headroom\n", brcmf_ifname(ifp),
