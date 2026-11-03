@@ -2565,6 +2565,8 @@ brightness_bridge(const char *arguments)
  * never stays behind on a kept data volume. UIKit says "WARNING: Using overridden status bar visual
  * provider class" once per process when the key is there; that is the expected line.
  */
+static double screen_width, screen_height, screen_scale;
+
 static void
 status_bar_provider(void)
 {
@@ -2627,6 +2629,9 @@ status_bar_provider(void)
 		    "UIKit chooses alone\n", width, scale);
 		return;
 	}
+	screen_width = width;
+	screen_height = height;
+	screen_scale = scale;
 	if (width != 1125 || height != 2436 || scale != 3) {
 		for (unsigned i = 0; i < sizeof(splits) / sizeof(splits[0]); i++) {
 			double d = width / scale - splits[i].points;
@@ -2648,6 +2653,175 @@ status_bar_provider(void)
 	CFPreferencesSynchronize(kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 	say("hakios: SpringBoard: the status bar: screen %.0f x %.0f pixels at %.0fx, %s\n", width, height, scale,
 	    choice != NULL ? choice : "UIKit's own choice (Split1125)");
+}
+
+/*
+ * The home screen and the status bar on the S9's own shape: 1125 x 2313 pixels, 375 x 771 points
+ * (the kernel's fb_native; every number below is for that size and build 20F66, and any other size
+ * leaves SpringBoard as it is).
+ *
+ * The layout. SpringBoardHome keeps one screen type, _SBHScreenTypeLookup's answer cached by
+ * SBHScreenTypeForCurrentDevice, and takes the home screen's metrics from a table by that type. The lookup
+ * wants an exact size or falls down a ladder of sizes: 771 points is under the iPhone X's 812, so
+ * the ladder ends on "iPhone X (D22, Zoomed)", the Display Zoom layout of a 320-point screen: icons of
+ * 56 points, widgets of 141, side insets of 19. MobileGestalt has no say in
+ * this: the lookup measures the screen, so a fresh cache and a kept one (still 1125 x 2436) come
+ * out the same, and this goes by the framebuffer as well.
+ *
+ * So the type is set before anything asks, to 3, "iPhone X (D22)", the layout this phone had when it was
+ * stretched. That is the cached value and its dispatch_once token (done is ~0): there are 15 callers of
+ * the C function and no method to replace for them. Then the 41 points the X has more of. Rows are spaced by what the
+ * insets leave of the list's real height, (height - top - bottom - 6 x 60) / 5; the X's table insets
+ * are top 71 (27 + the 44 of the safe area), bottom 206, a row every 95 points. Left at that, 771 gives 86.8, and a small
+ * widget's caption (it ends 175 under the widget's top) reaches the third row. Instead, a row every
+ * 91, and the rest from the top: top 65, bottom 191. On the X -> here: above the first row 27 -> 21,
+ * between rows 35 -> 31, under a widget's caption 15 -> 7, a large widget's caption still clear of the
+ * fifth row (345 + 19 under 364), last caption to the Search pill 38 -> 21, pill to dock 15 as it was
+ * (pageControlVerticalOffset, measured from the dock). -[SBHDefaultIconListLayoutProvider makeLayoutForIconLocation:] is
+ * where the insets are set and the configuration copied into the layout, which reads them from there, so its result is
+ * changed, for the two root locations only: the folders', dock's, Today view's and App Library's insets stay the X's.
+ *
+ * The status bar. Split1125 places itself by the screen's exclusion area, and against the X's own
+ * picture at 2436 the bar on this size sits further out (read from screenshots of the same
+ * status bar, in points): the time's centre 39 against 47, the battery's right end 10 from the edge
+ * against 15, the text's centre 19 from the top against 23, and on the S9's rounded panel the
+ * battery ended on the curve. Moved back to the X's place: 7 and 5 in, 4 down,
+ * in the two regions' insets (-setupInContainerView: reads them, both ends of a region's constraints, so the
+ * regions keep their size). The background activity pill keeps Apple's place. No notch here, but a
+ * centred time was not taken: _UIStatusBarVisualProvider_LegacyPhone is a 20-point bar, so its ends
+ * sit further into the corners than these, under a safe area that still says 44 (not tried on a phone).
+ *
+ * Every step checks what it is about to change and otherwise says so and leaves it to Apple. None of
+ * this has run on a phone yet: the numbers are from the 20F66 tables and two screenshots.
+ */
+#define SCREEN_TYPE_FUNCTION    0x1c44ec4a8UL   /* SBHScreenTypeForCurrentDevice */
+#define SCREEN_TYPE_ONCE        0x1e2549eb8UL   /* its dispatch_once token, __DATA_DIRTY */
+#define SCREEN_TYPE_VALUE       0x1e2549ec0UL   /* its answer */
+#define SCREEN_TYPE_IPHONE_X    3UL             /* SBHStringForScreenType: "iPhone X (D22)" */
+#define HOME_TOP_LESS           6.0
+#define HOME_BOTTOM_LESS        15.0
+#define BAR_TIME_IN             7.0
+#define BAR_BATTERY_IN          5.0
+#define BAR_DOWN                4.0
+
+typedef struct {
+	double top, leading, bottom, trailing;
+} edge_insets;
+
+static id (*original_make_layout)(id self, SEL selector, id location);
+static edge_insets (*original_bar_leading)(id self, SEL selector);
+static edge_insets (*original_bar_trailing)(id self, SEL selector);
+static id home_root_location, home_root_widgets_location;
+
+static id
+make_layout(id self, SEL selector, id location)
+{
+	static int said;
+	SEL is_equal = sel_registerName("isEqualToString:"), configuration_of = sel_registerName("layoutConfiguration");
+	SEL get_insets = sel_registerName("portraitLayoutInsets"), set_insets = sel_registerName("setPortraitLayoutInsets:");
+	SEL screen_type = sel_registerName("screenType");
+	id layout = original_make_layout(self, selector, location);
+	id configuration;
+	edge_insets insets;
+
+	if (layout == NULL || location == NULL ||
+	    (!((BOOL (*)(id, SEL, id))objc_msgSend)(location, is_equal, home_root_location) &&
+	    !((BOOL (*)(id, SEL, id))objc_msgSend)(location, is_equal, home_root_widgets_location))) {
+		return layout;
+	}
+	if (!class_respondsToSelector(object_getClass(self), screen_type) ||
+	    ((unsigned long (*)(id, SEL))objc_msgSend)(self, screen_type) != SCREEN_TYPE_IPHONE_X ||
+	    !class_respondsToSelector(object_getClass(layout), configuration_of)) {
+		return layout;
+	}
+	configuration = ((id (*)(id, SEL))objc_msgSend)(layout, configuration_of);
+	if (configuration == NULL || !class_respondsToSelector(object_getClass(configuration), get_insets) ||
+	    !class_respondsToSelector(object_getClass(configuration), set_insets)) {
+		return layout;
+	}
+	insets = ((edge_insets (*)(id, SEL))objc_msgSend)(configuration, get_insets);
+	if (insets.top < 68 || insets.top > 74 || insets.bottom < 203 || insets.bottom > 209) {
+		if (said++ == 0) {
+			say("hakios: SpringBoard: home screen: insets top %.1f bottom %.1f are not the X's; left alone\n",
+			    insets.top, insets.bottom);
+		}
+		return layout;
+	}
+	insets.top -= HOME_TOP_LESS;
+	insets.bottom -= HOME_BOTTOM_LESS;
+	((void (*)(id, SEL, edge_insets))objc_msgSend)(configuration, set_insets, insets);
+	if (said++ == 0) {
+		say("hakios: SpringBoard: home screen: insets now top %.1f bottom %.1f\n", insets.top, insets.bottom);
+	}
+	return layout;
+}
+
+static edge_insets
+bar_leading(id self, SEL selector)
+{
+	edge_insets insets = original_bar_leading(self, selector);
+
+	insets.top += BAR_DOWN;
+	insets.bottom -= BAR_DOWN;
+	insets.leading += BAR_TIME_IN;
+	insets.trailing -= BAR_TIME_IN;
+	return insets;
+}
+
+static edge_insets
+bar_trailing(id self, SEL selector)
+{
+	edge_insets insets = original_bar_trailing(self, selector);
+
+	insets.top += BAR_DOWN;
+	insets.bottom -= BAR_DOWN;
+	insets.trailing += BAR_BATTERY_IN;
+	insets.leading -= BAR_BATTERY_IN;
+	return insets;
+}
+
+/* After `slide`, and after status_bar_provider(), which measures the framebuffer. */
+static void
+home_screen_layout(void)
+{
+	void *lookup, *root, *root_widgets;
+	long *once = (long *)(SCREEN_TYPE_ONCE + slide), *value = (long *)(SCREEN_TYPE_VALUE + slide);
+
+	if (screen_width != 1125 || screen_height != 2313 || screen_scale != 3) {
+		return;
+	}
+	lookup = dlsym(RTLD_DEFAULT, "SBHScreenTypeForCurrentDevice");
+	root = dlsym(RTLD_DEFAULT, "SBIconLocationRoot");
+	root_widgets = dlsym(RTLD_DEFAULT, "SBIconLocationRootWithWidgets");
+	if (lookup == NULL || (uintptr_t)lookup - slide != SCREEN_TYPE_FUNCTION || *once != 0 || *value != 0) {
+		say("hakios: SpringBoard: home screen: SBHScreenTypeForCurrentDevice at %#lx, or already asked; left alone\n",
+		    lookup != NULL ? (uintptr_t)lookup - slide : 0);
+	} else {
+		*value = (long)SCREEN_TYPE_IPHONE_X;
+		*once = ~0L;
+		if (root != NULL && root_widgets != NULL && *(id *)root != NULL && *(id *)root_widgets != NULL) {
+			home_root_location = *(id *)root;
+			home_root_widgets_location = *(id *)root_widgets;
+			original_make_layout = (id (*)(id, SEL, id))replace_method("SBHDefaultIconListLayoutProvider",
+			    "makeLayoutForIconLocation:", 0x1c4539588UL, (IMP)make_layout);
+		}
+		say("hakios: SpringBoard: home screen: the iPhone X's layout, insets %s\n",
+		    original_make_layout != NULL ? "fitted to 771 points" : "NOT fitted");
+	}
+	original_bar_leading = (edge_insets (*)(id, SEL))replace_method("_UIStatusBarVisualProvider_FixedSplit",
+	    "leadingEdgeInsets", 0x189ab109cUL, (IMP)bar_leading);
+	/* the time moved and not the battery would be worse than neither */
+	if (original_bar_leading != NULL) {
+		original_bar_trailing = (edge_insets (*)(id, SEL))replace_method("_UIStatusBarVisualProvider_FixedSplit",
+		    "trailingEdgeInsets", 0x189ab10c4UL, (IMP)bar_trailing);
+		if (original_bar_trailing == NULL) {
+			Method method = class_getInstanceMethod(objc_getClass("_UIStatusBarVisualProvider_FixedSplit"),
+			    sel_registerName("leadingEdgeInsets"));
+
+			method_setImplementation(method, (IMP)original_bar_leading);
+		}
+	}
+	say("hakios: SpringBoard: status bar insets %s\n", original_bar_trailing != NULL ? "moved in" : "left alone");
 }
 
 __attribute__((constructor))
@@ -2706,6 +2880,7 @@ hakios_springboard_init(void)
 	 */
 	setvbuf(stdout, NULL, _IONBF, 0);
 	slide = (uintptr_t)_dyld_get_shared_cache_range(&length) - CACHE_BASE;
+	home_screen_layout();
 	activation = replace_method("SBLockdownManager", "_setupActivationState", 0x1c4bc8dfcUL, (IMP)setup_activation_state);
 	_dyld_register_func_for_add_image(image_added);         /* Siri's orb, whose framework comes late */
 	original_set_setup_required_reason = (void (*)(id, SEL, long))replace_method("SBSetupManager",
