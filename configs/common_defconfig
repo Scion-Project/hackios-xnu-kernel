@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 592 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 595 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -1531,7 +1531,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (84)
+# User space (87)
 #
 
 # read by inject_sb.c (user space)
@@ -1707,6 +1707,15 @@ CONFIG_MODEM_AGAIN=y
 
 # read by 1509-m3-diag-and-pan-off.patch (kernel)
 # CONFIG_PAN is not set
+
+# read by passcoded.m (user space)
+# CONFIG_PASSCODE_DEBUG is not set
+
+# read by MiniAppleKeyStore.cpp (kernel)
+# CONFIG_PASSCODE_RESET is not set
+
+# read by MiniAppleKeyStore.cpp (kernel)
+# CONFIG_PASSCODE_SELFTEST is not set
 
 # read by poster_retry.c (user space)
 # CONFIG_POSTER_RETRY is not set
