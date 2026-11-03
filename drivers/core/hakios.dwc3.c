@@ -134,6 +134,7 @@ extern void hakios_sta_console_scan(void);
 extern void hakios_net_console_ip(void);            /* hakios.net.c */
 extern void hakios_net_console_ping(const char *arg);
 extern void hakios_abox_console(const char *arg);  /* sys/hakios.exynos_abox.h */
+extern void hakios_cs47l93_console(const char *arg);       /* sys/hakios.cs47l93.h */
 extern void hakios_adsp_stop(void);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern int hakios_panel_brightness(int level);  /* hakios.backlight.cpp (always built): ENODEV with no panel driver */
@@ -1187,7 +1188,9 @@ console(char *line)
 		    "log (the kernel's log again from its start), shot [N] (the panel's picture, binary: tools/usb-shot.py), "
 		    "camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
 		    "ufs (the storage's ufs=3 summary), "
-		    "abox [tone [S] | r BLOCK OFF [N] | w BLOCK OFF VALUE | set NAME VALUE] (the S9's speaker path, abox=N), "
+		    "abox [tone [S] | rec [S] | r BLOCK OFF [N] | w BLOCK OFF VALUE | set NAME VALUE] (the S9's speaker path, abox=N; "
+		    "rec: S seconds of the codec's microphone, sent as a camshot's bytes), "
+		    "codec [power | r REG [N] | w REG VALUE] (the S9's audio codec, cs47l93=N), "
 		    "wifi (the radio's log kept, and its driver's state now), wifi scan (a scan of every channel by the station, and "
 		    "the access points heard), wifi ip (en0's address and gateway), wifi ping [A.B.C.D] (four echo requests; the gateway "
 		    "by default), return (end the run)\n");
@@ -1227,6 +1230,8 @@ console(char *line)
 		camshot_begin(arg);
 	} else if (strcmp(line, "abox") == 0) {
 		hakios_abox_console(arg);
+	} else if (strcmp(line, "codec") == 0) {
+		hakios_cs47l93_console(arg);
 	} else if (strcmp(line, "ufs") == 0) {
 		hakios_ufs_summary("asked on the USB console", 1);
 	} else if (strcmp(line, "return") == 0) {

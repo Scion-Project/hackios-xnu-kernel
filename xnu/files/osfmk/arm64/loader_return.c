@@ -60,6 +60,7 @@ extern void hakios_camera_quiesce(void);
 extern void hakios_mic_quiesce(void);
 extern void hakios_max98512_quiesce(void);
 extern void hakios_exynos_abox_quiesce(void);
+extern void hakios_cs47l93_quiesce(void);
 extern void hakios_exynos_camera_quiesce(void);
 extern void hakios_s2mpb02_torch_quiesce(void);
 extern void hakios_exynos_pcie_quiesce(void);
@@ -388,6 +389,7 @@ loader_return(void)
 	hakios_mic_quiesce();          /* (what the microphones' path did, said again: it happens in the log's middle) */
 	hakios_max98512_quiesce();     /* the S9's speaker amplifiers shut down, while UAIF1's clocks still run */
 	hakios_exynos_abox_quiesce();  /* then ABOX's RDMA0 and UAIF1: no more reading of memory the loader reuses */
+	hakios_cs47l93_quiesce();      /* the S9's audio codec held in reset */
 	hakios_s2mpb02_torch_quiesce(); /* the S9's flashlight off */
 	hakios_exynos_camera_quiesce(); /* the S9's front camera powered down */
 	hakios_exynos_pcie_quiesce();  /* the S9's Wi-Fi chip held in reset, unpowered: no DMA into the loader's memory */

@@ -59,7 +59,9 @@
  *
  * THE USB CONSOLE. "abox" on hakios.dwc3.c's console (usb_gadget=5) says the state of the path and the amplifiers' own
  * status registers, and "abox tone S" makes steps 1-7 again while the phone runs, with what "abox set" changed: a
- * run on the phone without a new image for every guess. "abox r/w BLOCK OFF" reads and writes registers. See
+ * run on the phone without a new image for every guess. "abox rec S" records S seconds of the codec's microphone
+ * through UAIF0 and WDMA1 (the capture section below; the codec set up first by "codec mic", hakios.cs47l93.c).
+ * "abox r/w BLOCK OFF" reads and writes registers. See
  * hakios_abox_console() below.
  *
  * WHERE IT COMES FROM. The S9 kernel (github.com/ExyHyperBrick/android_kernel_samsung_exynos9810, lineage-24.0), GPL-2.0,
@@ -130,7 +132,7 @@
  * RDMA0 only through `struct abox_dma` below, which that mode would give through IPC instead.
  *
  * WHAT IS NOT DONE. No PMIC is written (the AUD domain's power-on has no PMIC step in the CAL); ACPM is only read unless
- * abox_dvfs= asks. ABOX's GIC, its CPU, its SRAM and the WDMAs are not touched. No interrupt is used: RDMA0's status is
+ * abox_dvfs= asks. ABOX's GIC, its CPU and its SRAM are not touched; of the WDMAs only WDMA1, by "abox rec". No interrupt is used: RDMA0's status is
  * polled from a thread of ours every 2 ms. The amplifiers are not touched except through their driver's hook.
  *
  * THE SPEAKERS' GUARD (drivers/audio/hakios.guard.c) applies: on Android the S9's speakers are protected by Maxim's DSM
@@ -1363,6 +1365,305 @@ step_sink(void)
 
 /* ---- the whole ----------------------------------------------------------------------------------------------------- */
 
+/* ---- capture: the codec's microphone, UAIF0 -> NSRC0 -> SPUM (no ASRC) -> SIFM0 -> WDMA1 ("abox rec S") ------------ */
+
+/*
+ * What Samsung's firmware would do for a capture stream, done by the AP as for RDMA0 (the Galaxy Tab Active3's
+ * firmware-less work names the WDMAs' registers, the same as the RDMAs' at 0x17C52000 + 0x100 n, and the route:
+ * ROUTE_CTRL1's NSRCn = 8 + n for UAIFn, SPUM_CTRL0's ASRC [4n+4] and OUT [4n+7] clear for WDMA, SIFMn flushed through
+ * SPUM_CTRL3 bit n, WDMAn+1 then writes it; UAIFn's CTRL0 DATA_MODE 1 and IRQ_MODE 0 on the microphone's side, as
+ * abox_if_startup() sets them). UAIF0 is the S9's codec link (mixer_paths.xml: "UAIF0 - CODEC for normal Playback and
+ * Capture"; the machine driver exynos9810_madera.c's UAIF0: I2S, NB_NF, CBS_CFS: ABOX the master, as UAIF1), 48 kHz,
+ * 2 x 16 bits, its pins gpb0-1..4 (aud-i2s0-bus: function 2, pull 1), its BCLK DIV_CLK_AUD_UAIF0 (+0x1824) with
+ * MUX_CLK_AUD_UAIF0 (+0x1004) and the Q-channel ABOX_QCH_BCLK0 (+0x3028) of CMU_AUD. The codec's side (its clocks, the
+ * microphone, AIF1 a slave sending IN3L) is hakios.cs47l93.c's, "codec mic" on the console, made before this.
+ *
+ * The ring is 64 KB of abox_rmem at +1 MB, 16 periods of 4 KB (STATUS's offset reaches 128 KB); a thread follows WDMA1's
+ * STATUS every millisecond and copies what it has written to the recording, abox_rmem at +2 MB (up to 10 s). Then each
+ * channel's mean, RMS and peak are said, and the recording goes to the USB console as a camshot's bytes do (16-bit
+ * little-endian stereo at 48 kHz, "camshot ... RGB" in the header only because it rides that framing).
+ */
+#define CMU_DIV_UAIF0           0x1824
+#define CMU_MUX_UAIF0           0x1004
+#define CMU_QCH_BCLK0           0x3028
+#define GPIO_GPB0               0x0000
+#define UAIF0_PINS_MASK         0xFFFF0u        /* gpb0-1..4 */
+#define UAIF0_PINS_FUNC         0x22220u
+#define UAIF0_PINS_PUD          0x11110u
+#define UAIF_MIC_ENABLE         (1u << 1)
+#define UAIF_IRQ_MODE           (1u << 3)
+#define UAIF_DATA_MODE          (1u << 4)
+#define QCHANNEL_BCLK_UAIF0     (1u << 2)
+#define ABOX_SPUM_CTRL0         0x0300
+#define ABOX_SPUM_CTRL3         0x030C
+#define ABOX_SPUM_SBANK_NSRC0   0x0328          /* the S10's abox_soc.h: SPUM_SBANK_NSRCn at 0x328 + 4n (ABOX before 2.0) */
+#define ROUTE_NSRC_UAIF0        8u
+#define ABOX_WDMA(n)            (0x2000 + 0x100 * (n))
+#define W1(reg)                 (ABOX_WDMA(1) + (reg))
+#define REC_RING_PA             (ABOX_RMEM_PA + 0x100000u)
+#define REC_RING_BYTES          0x10000u
+#define REC_PERIOD_BYTES        0x1000u
+#define REC_STORE_PA            (ABOX_RMEM_PA + 0x200000u)
+#define REC_MAX_SECS            10u
+#define REC_STORE_BYTES         (REC_MAX_SECS * BYTES_PER_SECOND)
+
+extern int hakios_usb_picture(uintptr_t rgb, uint32_t width, uint32_t height, const char *what);  /* hakios.dwc3.c */
+static void put_back(void);
+
+static uint32_t rec_secs = 3;
+static vm_offset_t rec_ring, rec_store;
+static bool rec_pins_set, wdma_on, uaif0_on, rec_with_tone;
+
+static uint32_t
+isqrt64(uint64_t v)
+{
+	uint64_t r = 0, bit = 1ull << 62;
+
+	while (bit > v) {
+		bit >>= 2;
+	}
+	while (bit != 0) {
+		if (v >= r + bit) {
+			v -= r + bit;
+			r = (r >> 1) + bit;
+		} else {
+			r >>= 1;
+		}
+		bit >>= 2;
+	}
+	return (uint32_t)r;
+}
+
+static void
+rec_levels(uint32_t frames)
+{
+	const int16_t *s = (const int16_t *)rec_store;
+
+	for (int ch = 0; ch < 2; ch++) {
+		int64_t sum = 0;
+		uint64_t squares = 0;
+		uint32_t peak = 0, zeroes = 0;
+
+		for (uint32_t i = 0; i < frames; i++) {
+			int32_t v = s[2 * i + ch];
+
+			sum += v;
+			zeroes += v == 0;
+		}
+		int32_t mean = frames ? (int32_t)(sum / (int64_t)frames) : 0;
+
+		for (uint32_t i = 0; i < frames; i++) {
+			int32_t v = s[2 * i + ch] - mean;
+			uint32_t a = (uint32_t)(v < 0 ? -v : v);
+
+			squares += (uint64_t)((int64_t)v * v);
+			peak = a > peak ? a : peak;
+		}
+		say("abox: rec: %s channel: %u frames, mean %d, RMS %u (of 32768, about the mean), peak %u, %u samples 0\n",
+		    ch == 0 ? "left (AIF1TX1)" : "right (AIF1TX2)", frames, mean, frames ? isqrt64(squares / frames) : 0, peak,
+		    zeroes);
+	}
+	/* the level every 100 ms (the left channel), to see a sound come and go */
+	for (uint32_t at = 0; at + 4800 <= frames; at += 4800 * 5) {
+		char row[200];
+
+		row[0] = 0;
+		for (uint32_t k = 0; k < 5 && at + (k + 1) * 4800 <= frames; k++) {
+			uint64_t sq = 0;
+
+			for (uint32_t i = 0; i < 4800; i++) {
+				int32_t v = s[2 * (at + k * 4800 + i)];
+
+				sq += (uint64_t)((int64_t)v * v);
+			}
+			snprintf(row + strlen(row), sizeof(row) - strlen(row), " %u", isqrt64(sq / 4800));
+		}
+		say("abox: rec: RMS a 100 ms from %u.%u s:%s\n", at / 48000, (at % 48000) / 4800, row);
+	}
+}
+
+static bool
+rec_prepare(void)
+{
+	uint32_t ctrl0;
+
+	if (rec_ring == 0) {
+		rec_ring = ml_io_map_unmappable(REC_RING_PA, REC_RING_BYTES, VM_WIMG_WCOMB);
+		rec_store = ml_io_map_unmappable(REC_STORE_PA, REC_STORE_BYTES, VM_WIMG_WCOMB);
+		if (rec_ring == 0 || rec_store == 0) {
+			say("abox: rec: abox_rmem could not be mapped for the recording\n");
+			return false;
+		}
+	}
+	for (uint32_t i = 0; i < REC_RING_BYTES / 8; i++) {
+		((volatile uint64_t *)rec_ring)[i] = 0x5A5A5A5A5A5A5A5Aull;      /* what WDMA1 has not written reads so */
+	}
+	say("abox: rec: about to set up UAIF0's clock (CMU_AUD), its pins (gpb0-1..4), UAIF0 as the master of an I2S of "
+	    "2 x 16 bits taking the microphone's side, the route UAIF0 -> NSRC0 -> SIFM0 -> WDMA1, and WDMA1 into %u KB at %#x\n",
+	    REC_RING_BYTES / 1024, REC_RING_PA);
+	if (!cmu_ratio("DIV_CLK_AUD_UAIF0", CMU_DIV_UAIF0, 0x1FF, AUD_DIV_UAIF1) ||
+	    !cmu_ratio("MUX_CLK_AUD_UAIF0", CMU_MUX_UAIF0, 0x1, 0)) {
+		return false;
+	}
+	qch_on("QCH ABOX_BCLK0 (UAIF0's bclk_gate)", CMU_QCH_BCLK0);
+	(void)poke_bits(&gpio, "gpb0 CON (UAIF0)", GPIO_GPB0 + GPIO_CON, UAIF0_PINS_MASK, UAIF0_PINS_FUNC);
+	(void)poke_bits(&gpio, "gpb0 PUD", GPIO_GPB0 + GPIO_PUD, UAIF0_PINS_MASK, UAIF0_PINS_PUD);
+	rec_pins_set = true;
+	(void)poke_bits(&pmu, "PAD_RETENTION_ABOX_OPTION", PMU_PAD_RETENTION_ABOX, PMU_PAD_RELEASE, PMU_PAD_RELEASE);
+	(void)poke_bits(&pmu, "GPIO_MODE_ABOX_SYS_PWR_REG", PMU_GPIO_MODE_ABOX, 1, 1);
+	if (!sysmmu_passes()) {
+		return false;
+	}
+	(void)poke(&abox, "UAIF0_CTRL1", ABOX_UAIF_CTRL1(0), uaif1_ctrl1());
+	(void)poke_bits(&abox, "UAIF0_CTRL0 (master, DATA_MODE 1, IRQ_MODE 0, off)", ABOX_UAIF_CTRL0(0),
+	    UAIF_SPK_ENABLE | UAIF_MIC_ENABLE | UAIF_MODE_MASTER | UAIF_DATA_MODE | UAIF_IRQ_MODE, UAIF_MODE_MASTER | UAIF_DATA_MODE);
+	(void)poke_bits(&abox, "SYSPOWER_CTRL (DRAM on)", ABOX_SYSPOWER_CTRL, 1, 1);
+	(void)poke_bits(&abox, "QCHANNEL_DISABLE (ACLK, BCLK_UAIF0)", ABOX_QCHANNEL_DISABLE, QCHANNEL_ACLK | QCHANNEL_BCLK_UAIF0,
+	    QCHANNEL_ACLK | QCHANNEL_BCLK_UAIF0);
+	(void)poke_bits(&abox, "ROUTE_CTRL1 (NSRC0 from UAIF0)", ABOX_ROUTE_CTRL1, 0xFu, ROUTE_NSRC_UAIF0);
+	(void)poke_bits(&abox, "SPUM_CTRL0 (NSRC0: no ASRC, out to WDMA)", ABOX_SPUM_CTRL0, (1u << 4) | (1u << 7), 0);
+	(void)poke(&abox, "SPUM_CTRL3 (SIFM0 flushed)", ABOX_SPUM_CTRL3, 1);
+	/* NSRC0's sample bank: reads 0 after the boot, and with it 0 WDMA1 waits (PROGRESS, no byte) and UAIF0 says
+	 * ERROR_OF_MIC; given 512 bytes (SIZE [29:20] in 16-byte units, as for RDMA0) it runs (phone 1, 3 November) */
+	if ((rd(&abox, ABOX_SPUM_SBANK_NSRC0) & SBANK_SIZE_MASK) == 0) {
+		(void)poke_bits(&abox, "SPUM_SBANK_NSRC0 (SIZE 512 bytes)", ABOX_SPUM_SBANK_NSRC0, SBANK_SIZE_MASK,
+		    (512u / 16) << SBANK_SIZE_SHIFT);
+	}
+	/* the firmware's set-buffer order (the T570 work): volume, FUNC 0, the buffer, the period, then CTRL0's fields */
+	(void)poke_bits(&abox, "WDMA1_VOL_FACTOR", W1(RDMA_VOL_FACTOR), RDMA_VOL_MASK, 0x800000);
+	(void)poke_bits(&abox, "WDMA1_CTRL0 (FUNC 0, off)", W1(RDMA_CTRL0), RDMA_FUNC_MASK | RDMA_ENABLE, 0);
+	(void)poke(&abox, "WDMA1_BUF_STR", W1(RDMA_BUF_STR), REC_RING_PA);
+	(void)poke(&abox, "WDMA1_BUF_END", W1(RDMA_BUF_END), REC_RING_PA + REC_RING_BYTES);
+	(void)poke(&abox, "WDMA1_STR_POINT", W1(RDMA_STR_POINT), REC_RING_PA);
+	(void)poke(&abox, "WDMA1_BUF_OFFSET", W1(RDMA_BUF_OFFSET), REC_PERIOD_BYTES);
+	ctrl0 = rd(&abox, W1(RDMA_CTRL0)) & ~(RDMA_BURST_MASK | RDMA_FORMAT_MASK | RDMA_BUF_TYPE | RDMA_EXPAND | RDMA_ENABLE);
+	ctrl0 |= 8u << RDMA_BURST_SHIFT | ABOX_FORMAT(16, 2) << RDMA_FORMAT_SHIFT | RDMA_BUF_UPDATE;
+	(void)poke(&abox, "WDMA1_CTRL0 (burst 8, 16-bit stereo, BUF_UPDATE)", W1(RDMA_CTRL0), ctrl0);
+	return true;
+}
+
+static void
+rec_stop(void)
+{
+	uint64_t took;
+	bool stopped = true;
+
+	if (uaif0_on) {
+		(void)poke_bits(&abox, "UAIF0_CTRL0 (MIC_ENABLE off)", ABOX_UAIF_CTRL0(0), UAIF_MIC_ENABLE, 0);
+		uaif0_on = false;
+	}
+	if (wdma_on) {
+		(void)poke_bits(&abox, "WDMA1_CTRL0 (ENABLE off)", W1(RDMA_CTRL0), RDMA_ENABLE, 0);
+		stopped = wait_bits(&abox, W1(RDMA_STATUS), RDMA_PROGRESS, 0, DMA_STOP_US, &took);
+		say("abox: rec: WDMA1 %s after %llu us (STATUS %#x)\n", stopped ? "stopped" : "has NOT said it stopped", took,
+		    rd(&abox, W1(RDMA_STATUS)));
+		wdma_on = !stopped;
+	}
+	(void)poke_bits(&abox, "QCHANNEL_DISABLE (BCLK_UAIF0 back)", ABOX_QCHANNEL_DISABLE, QCHANNEL_BCLK_UAIF0, 0);
+	if (rec_pins_set) {
+		(void)poke_bits(&gpio, "gpb0 CON (idle)", GPIO_GPB0 + GPIO_CON, UAIF0_PINS_MASK, 0);
+		rec_pins_set = false;
+	}
+}
+
+static bool
+step_rec(void)
+{
+	uint32_t want = rec_secs * BYTES_PER_SECOND, got = 0, last = 0, s = 0, second = 0, moved = 0;
+	uint64_t start, until, took, next_say;
+
+	if (!rec_prepare()) {
+		rec_stop();
+		return false;
+	}
+	(void)poke_bits(&abox, "WDMA1_CTRL0 (ENABLE)", W1(RDMA_CTRL0), RDMA_ENABLE, RDMA_ENABLE);
+	wdma_on = true;
+	(void)poke_bits(&abox, "UAIF0_CTRL0 (MIC_ENABLE)", ABOX_UAIF_CTRL0(0), UAIF_MIC_ENABLE, UAIF_MIC_ENABLE);
+	uaif0_on = true;
+	if (!wait_bits(&abox, W1(RDMA_STATUS), RDMA_PROGRESS, RDMA_PROGRESS, 2000, &took)) {
+		say("abox: rec: WDMA1 has not started after %llu us (STATUS %#x, CTRL0 %#x, UAIF0 STATUS %#x)\n", took,
+		    rd(&abox, W1(RDMA_STATUS)), rd(&abox, W1(RDMA_CTRL0)), rd(&abox, ABOX_UAIF_STATUS(0)));
+	}
+	start = now_us();
+	until = start + (uint64_t)rec_secs * 1000000 + 200000;
+	next_say = start + 1000000;
+	/* follow WDMA1: what it has written since `last` is copied out, a period behind at most */
+	while (got < want && now_us() < until) {
+		uint32_t pos;
+
+		s = rd(&abox, W1(RDMA_STATUS));
+		pos = (RDMA_RBUF_OFFSET(s) + RDMA_RBUF_CNT(s)) & ~3u;
+		if (pos >= REC_RING_BYTES) {
+			say("abox: rec: WDMA1's position %#x is outside the ring (STATUS %#x): stopping\n", pos, s);
+			break;
+		}
+		while (last != pos && got < want) {
+			uint32_t n = pos > last ? pos - last : REC_RING_BYTES - last;
+
+			if (n > want - got) {
+				n = want - got;
+			}
+			memcpy((void *)(rec_store + got), (const void *)(rec_ring + last), n);
+			got += n;
+			moved += n;
+			last = (last + n) % REC_RING_BYTES;
+		}
+		if (now_us() >= next_say) {
+			say("abox: rec: %u s: %u bytes in the last second (192000 is 48 kHz 16-bit stereo), STATUS %#x, UAIF0 STATUS "
+			    "%#x\n", ++second, moved, s, rd(&abox, ABOX_UAIF_STATUS(0)));
+			moved = 0;
+			next_say += 1000000;
+		}
+		delay_for_interval(1, NSEC_PER_MSEC);
+	}
+	rec_stop();
+	say("abox: rec: %u bytes recorded of %u (%u frames) in %llu ms; the ring's first words %08x %08x %08x %08x\n", got, want,
+	    got / FRAME_BYTES, (now_us() - start) / 1000, ((volatile uint32_t *)rec_ring)[0], ((volatile uint32_t *)rec_ring)[1],
+	    ((volatile uint32_t *)rec_ring)[2], ((volatile uint32_t *)rec_ring)[3]);
+	rec_levels(got / FRAME_BYTES);
+	got -= got % 12;        /* the sender's frame is w x h x 3 bytes: whole frames, a multiple of 3 of them */
+	if (got != 0 && hakios_usb_picture(rec_store, got / 3, 1, "abox rec: 48 kHz 16-bit stereo PCM, little-endian") == 0) {
+		say("abox: rec: %u bytes of PCM going out on the USB console (a camshot's framing: SHOT %u 1 ...)\n", got, got / 3);
+	} else {
+		say("abox: rec: the PCM could not be sent (no USB console, or a picture on its way)\n");
+	}
+	return got != 0;
+}
+
+/* "abox rec S" while "abox tone" plays: the tone's run has made steps 1-4 and owns them; only the capture is made here */
+static void
+rec_tone_thread(__unused void *arg, __unused wait_result_t result)
+{
+	say("abox: rec: %u s from the codec's microphone while the tone plays (steps 1-4 the tone's)\n", rec_secs);
+	(void)step_rec();
+	rec_with_tone = false;
+	thread_terminate(current_thread());
+}
+
+static void
+rec_thread(__unused void *arg, __unused wait_result_t result)
+{
+	bool (*const fn[4])(void) = { step_look, step_power, step_clocks, step_pins };
+
+	say("abox: rec: steps 1-4, then %u s from the codec's microphone (UAIF0 -> WDMA1)\n", rec_secs);
+	if (map_blocks()) {
+		for (step = 1; step <= 4; step++) {
+			if (!fn[step - 1]()) {
+				say("abox: %u: failed; no recording\n", step);
+				break;
+			}
+		}
+		if (step > 4) {
+			step = 9;
+			(void)step_rec();
+			step = 4;
+		}
+		put_back();
+	}
+	busy = 0;
+	thread_terminate(current_thread());
+}
+
 static void abox_thread_run(void);
 
 /* what was done, undone: the stream stopped, the pins idle, the domain off if it was off before */
@@ -1619,6 +1920,36 @@ hakios_abox_console(const char *arg)
 		} else {
 			busy = 0;
 		}
+	} else if (strcmp(verb, "rec") == 0) {
+		uint32_t s = rec_secs;
+
+		(void)number(word(&p), &s);
+		if (!OSCompareAndSwap(0, 1, &busy)) {
+			say("abox> a run is going on (or iOS's stream, abox=8): not now\n");
+			return;
+		}
+		rec_secs = s < 1 ? 1 : s > REC_MAX_SECS ? REC_MAX_SECS : s;
+		if (kernel_thread_start(rec_thread, NULL, &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+		} else {
+			busy = 0;
+		}
+	} else if (strcmp(verb, "rectone") == 0) {
+		uint32_t s = rec_secs;
+
+		(void)number(word(&p), &s);
+		/* a tone ("abox tone S") is playing: its step 7 has steps 1-4 done; the capture rides along */
+		if (!busy || step != 7 || !uaif_on || rec_with_tone) {
+			say("abox> rectone S: only while \"abox tone\" plays (step 7, UAIF1 on)\n");
+			return;
+		}
+		rec_with_tone = true;
+		rec_secs = s < 1 ? 1 : s > REC_MAX_SECS ? REC_MAX_SECS : s;
+		if (kernel_thread_start(rec_tone_thread, NULL, &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+		} else {
+			rec_with_tone = false;
+		}
 	} else if (strcmp(verb, "r") == 0 || strcmp(verb, "w") == 0) {
 		struct block *b = block_named(word(&p));
 		uint32_t off = 0, v = 1;
@@ -1670,6 +2001,6 @@ hakios_abox_console(const char *arg)
 		say("abox> set: no %s (route, rdma_ctrl0, rdma_ctrl1, vol, bclk_on, sbank, burst, mmu_off, syspower, rdma_fmt, "
 		    "ring_pa, secs)\n", name);
 	} else {
-		say("abox> abox [tone [S] | r BLOCK OFF [N] | w BLOCK OFF VALUE | set NAME VALUE]\n");
+		say("abox> abox [tone [S] | rec [S] | rectone [S] | r BLOCK OFF [N] | w BLOCK OFF VALUE | set NAME VALUE]\n");
 	}
 }
