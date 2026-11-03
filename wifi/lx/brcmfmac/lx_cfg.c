@@ -29,7 +29,8 @@
  * What is not done: more than one network, roaming (brcmfmac's roamoff is set: the firmware does not move to another
  * access point by itself), WPA3 and enterprise networks, protected management frames, power saving.
  *
- * Nothing here has run on the phone.
+ * On the phone (3 Nov, wifi-d4): a WPA2-PSK network on 5 GHz joined 166 ms after brcmfmac's connect, configd's DHCP,
+ * the gateway and the Internet answering the USB console's "wifi ping" (devices/starlte/WIFI.md).
  */
 #include <linux/kernel.h>
 #include <linux/etherdevice.h>
