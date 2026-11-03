@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 591 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 592 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -1503,11 +1503,14 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_USTACKS_TNAME is not set
 
 #
-# Loader (7)
+# Loader (8)
 #
 
 # read by loader.c (loader)
 # CONFIG_CPUMASK is not set
+
+# read by 1512-arm-extra-ram.patch, loader.c (kernel and loader)
+# CONFIG_EXTRA_RAM is not set
 
 # read by loader.c (loader)
 # CONFIG_GAMUT is not set

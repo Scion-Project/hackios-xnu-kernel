@@ -728,6 +728,8 @@ struct platform {
 	uint8_t affinity_unreliable;     /* PSCI AFFINITY_INFO says "on" of cores that are off: CPU_ON's answer is what counts */
 	uint64_t payload_home;           /* not 0: the payload is moved here (or a 64 MiB step above) from PAYLOAD_BASE at the start */
 	struct { uint64_t base, size; const char *what; } keep_out[2];  /* RAM neither UEFI nor XNU may have: reserved at the start */
+	const uint64_t (*extra_ram)[2];  /* where free RAM beside XNU's window is XNU's too ([lo, hi) each, to a {0, 0}): extra_ram_claim */
+	uint8_t extra_ram_off;           /* ... only with extra_ram=1 among the kernel's arguments (otherwise: unless extra_ram=0) */
 	const char *data_part;           /* a port with no darwin: the one partition, by name, ufs_write=1 may write (block_is_data_part) */
 	const struct platform *sibling_of; /* not NULL: told apart from this one only by loader_platform= (platform_sibling) */
 };
@@ -742,6 +744,13 @@ static const struct platform platform_qemu_virt = {
 	 * is that of real hardware: an eighth of a second by a 24 MHz clock, a twentieth here.
 	 */
 	.timeout_scale = 20,
+	/*
+	 * A test of the phone's two banks (extra_ram=1 among the kernel's arguments): with the payload at 0xF0000000 in the
+	 * middle of QEMU's RAM (from 0x40000000), the window is the block above it and the RAM below, past 128 MB left to
+	 * UEFI, is the kernel's beside it, as the S9's low bank is.
+	 */
+	.extra_ram = (const uint64_t[][2]){ { 0x48000000, 0xF0000000 }, { 0, 0 } },
+	.extra_ram_off = 1,
 };
 
 static const struct platform platform_redwood = {
@@ -757,6 +766,28 @@ static const struct platform platform_redwood = {
 	.small_cores = 0x0f,
 	.fb_base = 0xE1000000,
 	.ufs_hc = 0x1d84000,             /* ufshc@1d84000, "ufs_mem", in this phone's Android device tree */
+};
+
+/*
+ * The Exynos 9810 phones' low bank (0x80000000-0xFFFFFFFF), where the window is not (it is the bank from 0x880000000):
+ * where its free RAM may be XNU's as well (extra_ram_claim). Every range the device tree reserves there, every range the
+ * kernel's drivers take for themselves, and the platform's keep-outs are outside these (devices/starlte/README.md,
+ * Memory layout; xnu/files/bsd/sys/hakios.exynos9810_mem.h):
+ *   0x80000000 + 2 MB          sec_debug_magic (4 KB) and a margin
+ *   0x8F000000 - 0x97FFFFFF    the UEFI image, its stack, the DXE heap, and 80 MB more left to UEFI's allocator, which
+ *                              stays alive beside the kernel (zswap_debug, 0x91300000, is in it)
+ *   0xAF800000 + 32 MB         rkp_region
+ *   0xB8000000 + 2 MB          tima_region
+ *   0xC0000000 + 512 KB        seclog_mem
+ *   0xCC000000 - 0xE36FFFFF    the panel's buffer; the moved payload and the panic log, the display's, the cameras', UFS's
+ *                              and Wi-Fi's ranges (0xD0000000-0xE18FFFFF: hakios.exynos9810_mem.h); secure_camera
+ *   0xF0000000 -               the CP's, ABOX's (keep_out), exynos_ss, fimc_is_lib
+ * Within them only what UEFI's memory map calls free is taken: the secure holes (Silicium's RamManagerLib takes them out of
+ * the map), the loader's image at 0xA1000000 and whatever UEFI has handed out stay where they are.
+ */
+static const uint64_t exynos9810_extra_ram[][2] = {
+	{ 0x80200000, 0x8F000000 }, { 0x98000000, 0xAF800000 }, { 0xB1800000, 0xB8000000 }, { 0xB8200000, 0xC0000000 },
+	{ 0xC0080000, 0xCC000000 }, { 0xE3700000, 0xF0000000 }, { 0, 0 },
 };
 
 static const struct platform platform_starlte = {
@@ -839,6 +870,11 @@ static const struct platform platform_starlte = {
 	 */
 	.payload_home = 0xD0000000,
 	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
+	/*
+	 * The low bank's free RAM, about 900 MB, is the kernel's too (beside its 2 GB window from 0x880000000), in the ranges
+	 * above; extra_ram=0 among the kernel's arguments: not.
+	 */
+	.extra_ram = exynos9810_extra_ram,
 };
 
 /*
@@ -864,6 +900,7 @@ static const struct platform platform_star2lte = {
 	.parked_cores = 0x2, .affinity_unreliable = 1,
 	.payload_home = 0xD0000000,
 	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
+	.extra_ram = exynos9810_extra_ram, .extra_ram_off = 1,   /* (seen on the S9 only: on this phone with extra_ram=1) */
 	.sibling_of = &platform_starlte,
 };
 
@@ -878,6 +915,7 @@ static const struct platform platform_crownlte = {
 	.parked_cores = 0x2, .affinity_unreliable = 1,
 	.payload_home = 0xD0000000,
 	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
+	.extra_ram = exynos9810_extra_ram, .extra_ram_off = 1,   /* (seen on the S9 only: on this phone with extra_ram=1) */
 	.sibling_of = &platform_starlte,
 };
 
@@ -3968,6 +4006,9 @@ print_memory_map(void)
 	}
 }
 
+static int extra_ram_wanted(const char *cmdline);
+static void extra_ram_claim(void);
+
 static int
 choose_window(const struct payload_info *pi)
 {
@@ -4043,7 +4084,131 @@ choose_window(const struct payload_info *pi)
 	}
 	win_base = best_base;
 	win_size = best_size;
+	if (extra_ram_wanted(pi->cmdline)) {
+		extra_ram_claim();
+	}
 	return 1;
+}
+
+/*
+ * Free RAM beside the window that is the kernel's too (struct platform extra_ram): taken from UEFI once, with the window,
+ * and given to the kernel in the device tree, /chosen "hakios-extra-ram" (pairs of base and size; the kernel's patch 1512,
+ * arm/pmap/pmap.h). The kernel's pages are 16 KB: each piece is cut to that, and a piece under EXTRA_RAM_MIN is left
+ * to UEFI. The kernel takes at most HAKIOS_EXTRA_RAM_MAX (12) ranges: the largest are kept.
+ */
+#define EXTRA_RAM_MAX 12
+#define EXTRA_RAM_MIN 0x200000ULL
+static struct { uint64_t base, size; } extra_ram[EXTRA_RAM_MAX];
+static int extra_ram_count;
+static uint64_t extra_ram_total;
+
+/* extra_ram=0 / extra_ram=1 among the kernel's arguments, else the platform's default */
+static int
+extra_ram_wanted(const char *cmdline)
+{
+	int want = PLAT->extra_ram != NULL && !PLAT->extra_ram_off;
+
+	for (const char *c = cmdline; c != NULL && *c; c++) {
+		if ((c == cmdline || c[-1] == ' ') && starts_with(c, "extra_ram=") && (c[10] == '0' || c[10] == '1') &&
+		    (c[11] == 0 || c[11] == ' ')) {
+			want = c[10] == '1' && PLAT->extra_ram != NULL;
+		}
+	}
+	return want;
+}
+
+static void
+extra_ram_claim(void)
+{
+	static uint8_t map_buf[65536];
+	uint64_t map_size = sizeof(map_buf), map_key, desc_size, cand[64][2], bad = 0;
+	uint32_t desc_ver;
+	int n = 0;
+
+	if (EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &map_key, &desc_size, &desc_ver))) {
+		print("extra RAM: GetMemoryMap failed, none\n");
+		return;
+	}
+	for (uint64_t off = 0; off < map_size; off += desc_size) {
+		efi_memory_descriptor *d = (efi_memory_descriptor *)(map_buf + off);
+
+		if (d->type != EfiConventionalMemory) {
+			continue;
+		}
+		for (int w = 0; PLAT->extra_ram[w][1] != 0; w++) {
+			uint64_t lo = d->phys_start, hi = d->phys_start + (d->pages << 12);
+
+			lo = lo < PLAT->extra_ram[w][0] ? PLAT->extra_ram[w][0] : lo;
+			hi = hi > PLAT->extra_ram[w][1] ? PLAT->extra_ram[w][1] : hi;
+			lo = (lo + PAGE_SIZE_MAX - 1) & ~(PAGE_SIZE_MAX - 1);
+			hi &= ~(PAGE_SIZE_MAX - 1);
+			if (hi > lo && hi - lo >= EXTRA_RAM_MIN && n < 64) {
+				cand[n][0] = lo;
+				cand[n][1] = hi - lo;
+				n++;
+			}
+		}
+	}
+	/* the largest first (the kernel takes EXTRA_RAM_MAX), then each taken from UEFI and tested */
+	for (int i = 1; i < n; i++) {
+		for (int j = i; j > 0 && cand[j][1] > cand[j - 1][1]; j--) {
+			uint64_t t0 = cand[j][0], t1 = cand[j][1];
+
+			cand[j][0] = cand[j - 1][0];
+			cand[j][1] = cand[j - 1][1];
+			cand[j - 1][0] = t0;
+			cand[j - 1][1] = t1;
+		}
+	}
+	for (int i = 0; i < n && extra_ram_count < EXTRA_RAM_MAX; i++) {
+		uint64_t at = cand[i][0], lo = cand[i][0], hi = cand[i][0] + cand[i][1], wrong = 0;
+
+		/*
+		 * Taken as reserved memory, as the keep-outs are (keep_out_reserve): UEFI merges neighbours of one type, and a
+		 * piece of loader data next to the loader's own would hide that from the cache cleaning before the hand-over.
+		 */
+		if (EFI_ERROR(BS->allocate_pages(AllocateAddress, 0 /* EfiReservedMemoryType */, cand[i][1] >> 12, &at))) {
+			print("extra RAM: %x..%x free but not taken\n", lo, hi - 1);
+			continue;
+		}
+		/*
+		 * Is it RAM, and all there? A word at each end of each 16 KB page, written, put out of the cache, read back from
+		 * the RAM itself. (The kernel's pages are given out unwritten: what is left in them does not matter.)
+		 */
+		for (uint64_t p = lo; p < hi; p += PAGE_SIZE_MAX) {
+			*(volatile uint64_t *)p = p ^ 0x5A5AC3C3A5A53C3CULL;
+			*(volatile uint64_t *)(p + PAGE_SIZE_MAX - 8) = ~p;
+			flush_dcache(p, p + 8);
+			flush_dcache(p + PAGE_SIZE_MAX - 8, p + PAGE_SIZE_MAX);
+		}
+		for (uint64_t p = lo; p < hi; p += PAGE_SIZE_MAX) {
+			wrong += *(volatile uint64_t *)p != (p ^ 0x5A5AC3C3A5A53C3CULL) ||
+			    *(volatile uint64_t *)(p + PAGE_SIZE_MAX - 8) != ~p;
+		}
+		if (wrong != 0) {
+			print("extra RAM: %x..%x: %d pages of %d read back wrong: NOT given to the kernel (kept from UEFI)\n", lo,
+			    hi - 1, wrong, (hi - lo) / PAGE_SIZE_MAX);
+			bad += hi - lo;
+			continue;
+		}
+		extra_ram[extra_ram_count].base = lo;
+		extra_ram[extra_ram_count].size = hi - lo;
+		extra_ram_count++;
+		extra_ram_total += hi - lo;
+	}
+	/* in address order, for the log and the kernel */
+	for (int i = 1; i < extra_ram_count; i++) {
+		for (int j = i; j > 0 && extra_ram[j].base < extra_ram[j - 1].base; j--) {
+			uint64_t t0 = extra_ram[j].base, t1 = extra_ram[j].size;
+
+			extra_ram[j].base = extra_ram[j - 1].base;
+			extra_ram[j].size = extra_ram[j - 1].size;
+			extra_ram[j - 1].base = t0;
+			extra_ram[j - 1].size = t1;
+		}
+	}
+	print("extra RAM: %d MB in %d ranges taken from UEFI beside the window (%d pieces free, %d MB failed the test)\n",
+	    extra_ram_total >> 20, (uint64_t)extra_ram_count, (uint64_t)n, bad >> 20);
 }
 
 /*
@@ -4235,6 +4400,17 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		}
 	}
 	print("%s\n", PLAT->keep_out[0].size != 0 ? "" : " nothing");
+	/* the RAM beside the window that is the kernel's too (extra_ram_claim), and how much it has in all */
+	int give_extra = extra_ram_count != 0 && extra_ram_wanted(pi.cmdline);
+	if (give_extra) {
+		print("layout: extra RAM for XNU:");
+		for (int i = 0; i < extra_ram_count; i++) {
+			print(" %x..%x", extra_ram[i].base, extra_ram[i].base + extra_ram[i].size - 1);
+		}
+		print(" (%d MB); XNU's RAM in all %d MB\n", extra_ram_total >> 20, (win_size + extra_ram_total) >> 20);
+	} else if (extra_ram_count != 0) {
+		print("layout: extra RAM (%d MB) not given: extra_ram=0\n", extra_ram_total >> 20);
+	}
 
 	/* "bootcpu=N" among the kernel's arguments: run it on core N (see run_on_other_cpu) */
 	uint64_t this_mpidr = READ_SYSREG(MPIDR_EL1) & 0xFFFFFF, kernel_mpidr = this_mpidr;
@@ -4511,6 +4687,16 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	dt_prop(&w, "random-seed", seed, sizeof(seed));
 	dt_prop_u64(&w, "dram-base", phys_base);
 	dt_prop_u64(&w, "dram-size", win_size);
+	if (give_extra) {
+		/* RAM beside the window that is the kernel's too: pairs of base and size (extra_ram_claim; patch 1512) */
+		static uint64_t extra_reg[EXTRA_RAM_MAX][2];
+
+		for (int i = 0; i < extra_ram_count; i++) {
+			extra_reg[i][0] = extra_ram[i].base;
+			extra_reg[i][1] = extra_ram[i].size;
+		}
+		dt_prop(&w, "hakios-extra-ram", extra_reg, (uint32_t)(extra_ram_count * sizeof(extra_reg[0])));
+	}
 	dt_prop_u32(&w, "debug-enabled", 1);
 	/* what MobileGestalt answers "main screen scale" from: 3 device pixels per point */
 	dt_prop_u32(&w, "display-scale", 3);
