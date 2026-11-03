@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 566 symbols in 19 groups; 53 are set, 44 of them drivers built in.
+# 567 symbols in 19 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -64,7 +64,7 @@ CONFIG_HAKIOS_TORCH=y
 # the Galaxy S9's flashlight: the S2MPB02's flash block on PERIC1's HSI2C, lit by a pin (torch=N there, the same steps ... [hakios.s2mpb02_torch.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 CONFIG_HAKIOS_S2MPB02_TORCH=y
 
-# the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK, ... [hakios.exynos_camera.c, hakios.exynos_camera_mem.cpp; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
+# the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK, ... [hakios.exynos_camera.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 # CONFIG_HAKIOS_EXYNOS_CAMERA is not set
 
 # the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps ... [hakios.socinfo.c]
@@ -157,7 +157,7 @@ CONFIG_HAKIOS_EXYNOS_TMU=y
 # the Galaxy S9 powered off: PS_HOLD let go in the Exynos 9810's PMU, for the TMU's tmu_off=1 and for a halt ... [hakios.exynos_poweroff.c]
 CONFIG_HAKIOS_EXYNOS_POWEROFF=y
 
-# the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from ... [hakios.ufs.c, hakios.ufshc.c, hakios.ufshc_mem.cpp, hakios.ext4.c]
+# the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from ... [hakios.ufs.c, hakios.ufshc.c, hakios.ext4.c]
 CONFIG_HAKIOS_UFS=y
 
 # a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only [hakios.virtio_blk.c]
@@ -249,7 +249,7 @@ CONFIG_HAKIOS_BRCMFMAC=y
 # the phone's storage: 1 a survey, read only; 2 the loader's block service, through which the kernel reads it (the ...
 CONFIG_UFS=2
 
-# let the kernel write, to the partition `darwin` (the Galaxy S9: `USERDATA`, all of it) and nowhere else (writes to ... [requires CONFIG_UFS=2]
+# let the kernel write, to the partition `darwin` (the Galaxy S9: `USERDATA`, all of it) and nowhere else (writes to ... [requires CONFIG_UFS=2|3]
 # CONFIG_UFS_WRITE is not set
 
 # keep /private/var across reboots, in the partition `darwin` [requires CONFIG_UFS_WRITE]
@@ -1742,8 +1742,11 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_VIRTIO_POLL is not set
 
 #
-# Extra arguments (1)
+# Extra arguments (2)
 #
+
+# the characters a run on this device adds to the kernel's command line itself (not set: 260, the reference phone's ...
+# CONFIG_CMDLINE_RUN is not set
 
 # more kernel arguments, as `name=value` words in quotes; each name must be one docs/boot-args.md lists
 # CONFIG_BOOTARGS is not set

@@ -8,6 +8,7 @@ savedefconfig`), for a kernel whose options are not compiled in but given on its
   tools/hakios-config.py defconfig redwood open       ... and the fragment configs/open.config on top
   tools/hakios-config.py merge virt                   put a fragment over the .config there is
   tools/hakios-config.py args                         the kernel's boot-arguments for the .config
+  tools/hakios-config.py args --with "ARGS"           ... with a run's own over them (a device's mkimage.sh: its defaults)
   tools/hakios-config.py check | show | needs         validate it; say what it is; which firmware it wants
   tools/hakios-config.py savedefconfig                the .config as a minimal defconfig (its differences from configs/defconfig)
   tools/hakios-config.py list | help SYMBOL           what configs/ holds; what a symbol means
@@ -53,9 +54,10 @@ SYMBOLS = [
     ("BOOTCPU", "int", "bootcpu", "the core the kernel runs on, 0 to 7; 7 is the biggest core (the loader keeps core 0)", None, None),
     ("CPUFREQ", "bool", "cpufreq", "set the boot core to its top speed", None, None),
     ("UFS", "int", "ufs", "the phone's storage: 1 a survey, read only; 2 the loader's block service, through which the kernel "
-                          "reads it (the modem's file systems, /private/var)", None, None),
+                          "reads it (the modem's file systems, /private/var); 3 the kernel's own UFS driver after a self-test "
+                          "against the loader's reads (the Galaxy S9), falling back to 2", None, None),
     ("UFS_WRITE", "bool", "ufs_write", "let the kernel write, to the partition `darwin` (the Galaxy S9: `USERDATA`, all of it) "
-                                       "and nowhere else (writes to the phone's storage: it is the one switch for it)", None, "UFS=2"),
+                                       "and nowhere else (writes to the phone's storage: it is the one switch for it)", None, "UFS=2|3"),
     ("VAR_STORE", "bool", "var_store", "keep /private/var across reboots, in the partition `darwin`", None, "UFS_WRITE"),
     ("TOUCHSCREEN", "bool", "touchscreen", "the touch screen, and the power and volume buttons", None, None),
     ("GPU", "bool", "gpu", "rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone)", "fw-gpu", None),
@@ -83,6 +85,11 @@ SYMBOLS = [
     ("PMIC", "bool", "pmic", "list every block of the power-management chips the SPMI arbiter shows, and read the PMIC's clock; read only", None, None),
     # Linux's CONFIG_CMDLINE: whatever the symbols above do not cover, as name=value words in quotes. It is not an escape
     # from the checks: every name must be one the source reads (configs/boot-args.lst), so a typo is an error, not a no-op.
+    # Not an argument: how much of the kernel's command line a run on this device adds itself (the loader's own words, its
+    # addresses, hakios_kver=, the image's loader_return_after= and epoch=), which the check of the line's length leaves free.
+    # Without it, RUN_OVERHEAD: the reference phone's, with xl's and the runner's words, the most any device adds.
+    ("CMDLINE_RUN", "int", None, "the characters a run on this device adds to the kernel's command line itself (not set: %d, "
+                                 "the reference phone's with xl's; the Galaxy S9's mkimage.sh and loader add about 155)" % RUN_OVERHEAD, None, None),
     ("BOOTARGS", "args", None, "more kernel arguments, as `name=value` words in quotes; each name must be one docs/boot-args.md lists", None, None),
 ]
 
@@ -97,7 +104,7 @@ GROUP_OF = {
     "MODEM": "Cellular", "MODEM_AGAIN": "Cellular", "MODEM_BUFFER": "Cellular",
     "NET_TRACE": "Network", "NET_NAMES": "Network", "VIRTIO_NET": "Network",
     "BATTERY_STOP": "Audio and battery", "BATTERY_STOP_POLL": "Audio and battery", "SOCINFO": "Chip, thermal and PMIC", "THERMAL": "Chip, thermal and PMIC", "THERMAL_POLL": "Chip, thermal and PMIC",
-    "THERMAL_STOP": "Chip, thermal and PMIC", "PMIC": "Chip, thermal and PMIC", "BOOTARGS": "Extra arguments",
+    "THERMAL_STOP": "Chip, thermal and PMIC", "PMIC": "Chip, thermal and PMIC", "BOOTARGS": "Extra arguments", "CMDLINE_RUN": "Extra arguments",
 }
 LAYER_OF = {}
 RELAXED = re.compile(r"[A-Za-z0-9_.,:/+@=\-]+")       # what a text value may hold: no space, no quote, no backslash
@@ -315,7 +322,7 @@ for _d in DRIVERS:
 SYMBOLS[3:3] = driver_symbols(DRIVERS)      # after the build facts: they are facts about the build as well
 BY_NAME = {s[0]: s for s in SYMBOLS}
 FIRMWARE_VALUES = ("device", "none")
-RANGES = {"CPUS": (1, 8), "BOOTCPU": (0, 7), "UFS": (1, 2), "THERMAL_POLL": (200, 60000), "THERMAL_STOP": (0, 160), "BATTERY_STOP": (0, 99), "BATTERY_STOP_POLL": (5, 600)}
+RANGES = {"CPUS": (1, 8), "BOOTCPU": (0, 7), "UFS": (1, 3), "CMDLINE_RUN": (0, KERNEL_LINE), "THERMAL_POLL": (200, 60000), "THERMAL_STOP": (0, 160), "BATTERY_STOP": (0, 99), "BATTERY_STOP_POLL": (5, 600)}
 
 
 # ---- reading and writing --------------------------------------------------------------------------------------
@@ -537,9 +544,9 @@ def check(config):
             problems.append('CONFIG_%s needs the phone\'s own firmware (%s/), and this configuration says CONFIG_FIRMWARE="none": '
                             "it loads nothing from the device" % (name, needs))
         if requires:
-            wanted, _, value = requires.partition("=")
+            wanted, _, value = requires.partition("=")          # NAME, or NAME=value, or NAME=value|value
             have = parsed.get(wanted)
-            if have is None or (value and str(have) != value):
+            if have is None or (value and str(have) not in value.split("|")):
                 problems.append("CONFIG_%s requires CONFIG_%s%s" % (name, wanted, "=" + value if value else ""))
     args = boot_args(parsed)
     extra = parsed.get("BOOTARGS", [])
@@ -558,9 +565,10 @@ def check(config):
             problems.append("CONFIG_BOOTARGS: %s twice" % arg)
         seen.add(arg)
     length = len(" ".join(args))
-    if length > KERNEL_LINE - RUN_OVERHEAD:
+    overhead = parsed.get("CMDLINE_RUN", RUN_OVERHEAD)
+    if length > KERNEL_LINE - overhead:
         problems.append("the boot-arguments take %d characters; a run adds about %d of its own and the kernel's command line holds %d: "
-                        "the end of it would be lost" % (length, RUN_OVERHEAD, KERNEL_LINE))
+                        "the end of it would be lost" % (length, overhead, KERNEL_LINE))
     return problems, args
 
 
@@ -631,6 +639,29 @@ def boot_args(parsed):
     return args
 
 
+def merge_args(defaults, given):
+    """The configuration's arguments with the ones given over them: a word name=value given replaces the configuration's word
+    of that name where it stands, one the configuration has not is added at the end, a word without = (-v) is kept as it is.
+    The kernel, the loader and user space each take the first of two words with one name, so a default is never just
+    followed by its override: it is replaced. `name=` (nothing after the =) takes the configuration's word out."""
+    out, where = [], {}
+    for word in defaults:
+        name = word.partition("=")[0]
+        where[name] = len(out)
+        out.append(word)
+    for word in given:
+        name, eq, value = word.partition("=")
+        if eq and name in where:
+            out[where[name]] = word if value else None
+        elif eq and not value:
+            continue
+        else:
+            if eq:
+                where[name] = len(out)
+            out.append(word)
+    return [w for w in out if w is not None]
+
+
 def load(path):
     if not os.path.isfile(path):
         raise ConfigError("no %s: make one with `tools/hakios-config.py defconfig NAME` (or `make NAME_defconfig`)" % path)
@@ -679,6 +710,8 @@ def cmd_args(a):
         for p in problems:
             print("hakios-config: PROBLEM: " + p, file=sys.stderr)
         return 1
+    if a.with_args is not None:
+        args = merge_args(args, a.with_args.split())
     print(" ".join(args))
     return 0
 
@@ -1057,6 +1090,8 @@ def main():
     p.add_argument("--force", action="store_true", help="print them even if the check finds a problem")
     p.add_argument("--defconfig", help="the arguments of this defconfig (and --fragment) instead of the .config's")
     p.add_argument("--fragment", action="append", default=[], help="a fragment over it; more than one is allowed")
+    p.add_argument("--with", dest="with_args", metavar="ARGS", help="arguments given for a run, over the configuration's: "
+                   "name=value replaces its word of that name, a new name is added, name= takes the word out")
     p.set_defaults(fn=cmd_args)
     for name, fn, text in (("check", cmd_check, "validate the .config"), ("show", cmd_show, "say what the .config is"),
                            ("needs", cmd_needs, "which firmware the .config wants, and whether it is there"),

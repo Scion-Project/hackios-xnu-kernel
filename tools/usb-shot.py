@@ -126,7 +126,7 @@ def one(port, args, word, out, log):
             if b"usb: " + word + b" failed" in text:
                 print(text.decode("ascii", "replace"), file=sys.stderr)
                 return 1
-            if b"usb: " + word in text or b"usb> " + word in text or (args.cam and b"exynos-camera:" in text):
+            if b"usb: " + word in text or b"usb> " + word in text or (args.cam and (b"exynos_camera:" in text or b"exynos-camera:" in text)):
                 print(text.decode("ascii", "replace"), file=sys.stderr)
         if header is None and not port.fill(deadline):
             print("usb-shot: no SHOT header in %.0f s (is another program reading %s?)" % (args.timeout, path),

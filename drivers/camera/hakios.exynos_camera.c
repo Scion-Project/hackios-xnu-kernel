@@ -96,10 +96,10 @@
  *                  default), it is taken as off and never touched
  *   the buffer     4 MB below 4 GB (the WDMA's addresses are 32 bits). XNU has no memory there on the S9 (its RAM is
  *                  the bank from 0x880000000: kmem's "below 4 GB" never succeeds), so it is physical memory XNU does
- *                  not manage, in the device tree's gap: 0xD8000000 + 8 MB (the raw frame, then camshot's picture),
- *                  above the display's scan-out buffers (from 0xD4000000) and the moved payload (0xD0000000 -
- *                  0xD3FFFFFF), below secure_camera (0xE1900000); never 0xF0000000 and above (the modem's, ABOX's).
- *                  Mapped once through IOKit, write-combined (hakios.exynos_camera_mem.cpp), never with ml_io_map()
+ *                  not manage, in the device tree's gap: the camera's 32 MB from 0xD8000000 in sys/hakios.exynos9810_mem.h
+ *                  (the raw frames, then camshot's picture), above the display's buffers and the moved payload,
+ *                  below UFS's own-mode memory; never 0xF0000000 and above (the modem's, ABOX's).
+ *                  Mapped once through IOKit, write-combined (hakios_physmap_wc()), never with ml_io_map()
  *                  (io_submap is 8 MB); filled with 0xA5 first, so that what the DMA wrote shows
  *
  * STAGE 3, A FRAME (cam_s9=5)
@@ -224,6 +224,8 @@
 #include <miscfs/devfs/devfs.h>
 #include <sys/conf.h>
 #include <sys/hakios.camera.h>
+#include <sys/hakios.exynos9810_mem.h>
+#include <sys/hakios.physmap.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <vm/vm_kern.h>
@@ -406,7 +408,7 @@ pmic_put(uint8_t reg, uint8_t value, const char *name)
 
 	if (broken || !pmic_allowed(reg, value)) {
 		if (!broken) {
-			say("exynos-camera: S2MPB02 %#x (%s) = %#x refused: not a value this driver writes\n", reg, name, value);
+			say("exynos_camera: S2MPB02 %#x (%s) = %#x refused: not a value this driver writes\n", reg, name, value);
 		}
 		return false;
 	}
@@ -419,7 +421,7 @@ pmic_put(uint8_t reg, uint8_t value, const char *name)
 		same = reg == B2CTRL1 ? (back & BUCK_ON) == (value & BUCK_ON) : back == value;
 	}
 	if (!same) {
-		say("exynos-camera: S2MPB02 %#x (%s): wrote %#x, read back %#x (bus %#x): no more writing for this run\n",
+		say("exynos_camera: S2MPB02 %#x (%s): wrote %#x, read back %#x (bus %#x): no more writing for this run\n",
 		    reg, name, value, back, pmic_bus.last_error);
 		broken = true;
 		return false;
@@ -441,7 +443,7 @@ static bool
 buck2_on(void)
 {
 	if ((b2ctrl1_found & BUCK_ON) == BUCK_ON) {
-		say("exynos-camera: 2: VDD_EXT_1P3_PB02 (BUCK2) was on already (%#x, voltage %#x): left as it is\n",
+		say("exynos_camera: 2: VDD_EXT_1P3_PB02 (BUCK2) was on already (%#x, voltage %#x): left as it is\n",
 		    b2ctrl1_found, b2ctrl2_found);
 		return true;
 	}
@@ -452,7 +454,7 @@ buck2_on(void)
 	if (!pmic_put(B2CTRL1, (uint8_t)((b2ctrl1_found & ~BUCK_ON) | BUCK_ON), "VDD_EXT_1P3_PB02 (BUCK2)")) {
 		return false;
 	}
-	say("exynos-camera: 2: VDD_EXT_1P3_PB02 (BUCK2) on at 1.3 V (B2CTRL1 %#x, B2CTRL2 %#x)\n",
+	say("exynos_camera: 2: VDD_EXT_1P3_PB02 (BUCK2) on at 1.3 V (B2CTRL1 %#x, B2CTRL2 %#x)\n",
 	    (b2ctrl1_found & ~BUCK_ON) | BUCK_ON, BUCK2_VSEL);
 	return true;
 }
@@ -476,7 +478,7 @@ static bool
 ldo_on(uint32_t i)
 {
 	if (found[i] & LDO_ON) {
-		say("exynos-camera: 2: %s was on already (%#x): left as it is\n", ldos[i].name, found[i]);
+		say("exynos_camera: 2: %s was on already (%#x): left as it is\n", ldos[i].name, found[i]);
 		return true;
 	}
 	if ((found[i] & LDO_VSEL) != ldos[i].vsel && !ldo_put(i, false)) {
@@ -486,7 +488,7 @@ ldo_on(uint32_t i)
 	if (!ldo_put(i, true)) {
 		return false;
 	}
-	say("exynos-camera: 2: %s on (%#x)\n", ldos[i].name, LDO_ON | ldos[i].vsel);
+	say("exynos_camera: 2: %s on (%#x)\n", ldos[i].name, LDO_ON | ldos[i].vsel);
 	spin_us(200);
 	return true;
 }
@@ -536,7 +538,7 @@ clock_on(void)
 	wr(cmu_top, CIS1_QCH, qch_found | 3);
 	wr(cmu_top, CIS1_GATE, gate_found | GATE_MANUAL | GATE_ON);
 	clock_mine = true;
-	say("exynos-camera: 2: CIS_CLK1: mux %x -> %x, divider %x -> %x, gate %x -> %x (26 MHz from OSCCLK)\n", mux_found,
+	say("exynos_camera: 2: CIS_CLK1: mux %x -> %x, divider %x -> %x, gate %x -> %x (26 MHz from OSCCLK)\n", mux_found,
 	    rd(cmu_top, CIS1_MUX), div_found, rd(cmu_top, CIS1_DIV), gate_found, rd(cmu_top, CIS1_GATE));
 }
 
@@ -565,7 +567,7 @@ power_down(void)
 		clock_mine = false;
 	}
 	powered = false;
-	say("exynos-camera: powered down: MCLK and reset low, the bus pins inputs, BUCK2 and the LDOs %s; CIS_CLK1's gate "
+	say("exynos_camera: powered down: MCLK and reset low, the bus pins inputs, BUCK2 and the LDOs %s; CIS_CLK1's gate "
 	    "%x again\n", (mine[VDDD] || mine[VDDA] || mine[VDDIO] || mine[VDDAF] || buck2_mine) ?
 	    "NOT ALL OFF (a write failed)" : "off as found", gate_found);
 }
@@ -583,7 +585,7 @@ sensor_get(uint16_t reg, uint8_t *buf, uint32_t len)
 static void
 look_pins(const char *when)
 {
-	say("exynos-camera: %s: reset gpg2-5 CON %x DAT %u; MCLK1 gpc1-5 CON %x DAT %u; bus gpp5-2/3 CON %x %x\n", when,
+	say("exynos_camera: %s: reset gpg2-5 CON %x DAT %u; MCLK1 gpc1-5 CON %x DAT %u; bus gpp5-2/3 CON %x %x\n", when,
 	    (rd(peric0 + GPG2, 0) >> (4 * RESET_PIN)) & 0xf, (rd(peric0 + GPG2, 4) >> RESET_PIN) & 1,
 	    (rd(peric1 + GPC1, 0) >> (4 * MCLK_PIN)) & 0xf, (rd(peric1 + GPC1, 4) >> MCLK_PIN) & 1,
 	    (rd(peric1 + GPP5, 0) >> 8) & 0xf, (rd(peric1 + GPP5, 0) >> 12) & 0xf);
@@ -725,20 +727,18 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define CANARY                  0xA5
 /*
  * The frame's memory: none of XNU's own is below 4 GB on the S9 (its RAM is the bank from 0x880000000), so it is
- * physical memory of the lower bank that XNU does not manage, in the device tree's gap between the display's scan-out
- * buffers and secure_camera (0xE1900000): 32 MB from 0xD8000000 to 0xD9FFFFFF (UFS's own-mode memory starts at
- * 0xDA000000): a ring of four raw frames of 4 MB each (the WDMA's eight frame pointers take them in turn, pointer i
+ * physical memory of the lower bank that XNU does not manage: the camera's range in the table of that bank,
+ * sys/hakios.exynos9810_mem.h, 32 MB from 0xD8000000 to 0xD9FFFFFF (the display's scan-out buffers below it, UFS's
+ * own-mode memory above): a ring of four raw frames of 4 MB each (the WDMA's eight frame pointers take them in turn, pointer i
  * slot i % 4), then camshot's still (a raw frame copied out of the ring while the sensor streams on, cam_s9=7), then
- * its RGB picture (1632 x 1224 x 3). The display's buffers start at 0xD4000000 (hakios.exynos_dpu.c; the moved
- * payload is 0xD0000000 - 0xD3FFFFFF): fb_flip's two of the panel's size end at 0xD60A0000, fb_dpp's three by
- * 0xD71E0000 at the most (at the panel's size); 0xD8000000 is clear of both, with room.
- * Mapped once, write-combined, through IOKit (hakios.exynos_camera_mem.cpp), never ml_io_map(). Nothing at or above
- * 0xF0000000 (the modem's and ABOX's memory) is ever given to the DMA.
+ * its RGB picture (1632 x 1224 x 3). Mapped once, write-combined, through IOKit (hakios_physmap_wc(),
+ * sys/hakios.physmap.h), never ml_io_map(). Nothing at or above 0xF0000000 (the modem's and ABOX's memory) is ever
+ * given to the DMA.
  */
-#define MEM_PA                  0xD8000000ULL
-#define MEM_BYTES               (32u << 20)
-#define MEM_FLOOR               0xD71E0000ULL   /* the display's buffers end here at the most */
-#define MEM_CEILING             0xDA000000ULL   /* UFS's own-mode memory (secure_camera is at 0xE1900000) */
+#define MEM_PA                  EXYNOS9810_MEM_CAMERA_PA
+#define MEM_BYTES               ((uint32_t)EXYNOS9810_MEM_SIZE(CAMERA))
+#define MEM_FLOOR               EXYNOS9810_MEM_DPU_SCAN_END     /* the display's scan-out buffers end here */
+#define MEM_CEILING             EXYNOS9810_MEM_CAMERA_END       /* UFS's own-mode memory */
 #define RING_SLOTS              4
 #define SLOT_BYTES              BUF_BYTES       /* a raw frame's place: 3264 x 1224 = 3995136 bytes, in 4 MB */
 #define STILL_OFF               (RING_SLOTS * SLOT_BYTES)       /* camshot's copy of a frame of the stream */
@@ -773,7 +773,6 @@ mmu_translating(void)
 	return cam_mmu_probe && mmu != 0 && (rd(mmu, MMU_CTRL) & 1);
 }
 
-extern vm_offset_t hakios_exynos_camera_map(uint64_t pa, uint64_t bytes);       /* hakios.exynos_camera_mem.cpp */
 
 /* One SMC to EL3 (through Carbon at EL2): x0 back. */
 static uint64_t
@@ -839,7 +838,7 @@ sensor_put(uint16_t reg, uint16_t value, uint32_t bytes)
 	}
 	error = hakios_hsi2c_message(&sensor_bus, sensor_addr, false, buf, 2 + bytes, true);
 	if (error != 0) {
-		say("exynos-camera: the sensor did not take %#06x = %#x (%x)\n", reg, value, error);
+		say("exynos_camera: the sensor did not take %#06x = %#x (%x)\n", reg, value, error);
 		sensor_broken = true;
 		return false;
 	}
@@ -914,7 +913,7 @@ stream_stop(void)
 	(void)sensor_put(0x6028, 0x4000, 2);
 	(void)sensor_put(0x0100, 0x00, 1);
 	streaming = false;
-	say("exynos-camera: the sensor told to stop streaming (0x0100 = 0)\n");
+	say("exynos_camera: the sensor told to stop streaming (0x0100 = 0)\n");
 }
 
 static void
@@ -983,27 +982,27 @@ isp_down(void)
 		was = rd(pmu, PMU_ISPPRE_MEMORY);
 		wr(pmu, PMU_ISPPRE_MEMORY, (was & ~3u) | 2u);
 		answer = smc(DTZPC_SMC, DTZPC_SAVE, DTZPC_ISPPRE, 0);
-		say("exynos-camera: the ISPPRE domain off again: MEMORY_ISPPRE_OPTION %#x -> %#x; SMC %#x (%u, %#x): the DTZPC "
+		say("exynos_camera: the ISPPRE domain off again: MEMORY_ISPPRE_OPTION %#x -> %#x; SMC %#x (%u, %#x): the DTZPC "
 		    "save, returned %#llx\n", was, rd(pmu, PMU_ISPPRE_MEMORY), DTZPC_SMC, DTZPC_SAVE, DTZPC_ISPPRE, answer);
 		if ((uint32_t)answer != 0) {
-			say("exynos-camera: the protection was not saved: the domain is left ON\n");
+			say("exynos_camera: the protection was not saved: the domain is left ON\n");
 		} else {
 			domain_up = false;
 			wr(pmu, PMU_ISPPRE_CONFIG, rd(pmu, PMU_ISPPRE_CONFIG) & ~PD_ON);
 			if (!wait_for(pmu, PMU_ISPPRE_STATUS, PD_ON, 0, PD_WAIT_US, false)) {
-				say("exynos-camera: the domain did not go off (status %#x): on again, its protection restored, left on\n",
+				say("exynos_camera: the domain did not go off (status %#x): on again, its protection restored, left on\n",
 				    rd(pmu, PMU_ISPPRE_STATUS));
 				wr(pmu, PMU_ISPPRE_CONFIG, rd(pmu, PMU_ISPPRE_CONFIG) | PD_ON);
 				if (wait_for(pmu, PMU_ISPPRE_STATUS, PD_ON, PD_ON, PD_WAIT_US, false)) {
 					answer = smc(DTZPC_SMC, DTZPC_RESTORE, DTZPC_ISPPRE, 0);
-					say("exynos-camera: on again; the DTZPC restore returned %#llx\n", answer);
+					say("exynos_camera: on again; the DTZPC restore returned %#llx\n", answer);
 				} else {
-					say("exynos-camera: NOT ON AGAIN EITHER: status %#x\n", rd(pmu, PMU_ISPPRE_STATUS));
+					say("exynos_camera: NOT ON AGAIN EITHER: status %#x\n", rd(pmu, PMU_ISPPRE_STATUS));
 				}
 			}
 		}
 		domain_mine = false;
-		say("exynos-camera: ISPPRE: configuration %#x, status %#x\n", rd(pmu, PMU_ISPPRE_CONFIG),
+		say("exynos_camera: ISPPRE: configuration %#x, status %#x\n", rd(pmu, PMU_ISPPRE_CONFIG),
 		    rd(pmu, PMU_ISPPRE_STATUS));
 	}
 	if (top_rate_mine) {
@@ -1029,7 +1028,7 @@ isp_status(const char *step)
 	char line[2][300];
 	uint32_t len[2] = { 0, 0 };
 
-	say("exynos-camera: %s: PD: ISPPRE configuration %#x, status %#x (0xf: on), DPU status %#x; CMU_TOP CLKCMU_ISPPRE_BUS "
+	say("exynos_camera: %s: PD: ISPPRE configuration %#x, status %#x (0xf: on), DPU status %#x; CMU_TOP CLKCMU_ISPPRE_BUS "
 	    "mux %#x, divider %#x, gate %#x; CMU_ISPPRE: BUS_USER %#x, PLL_CON2 %#x, BUSP divider %#x, CONTROLLER_OPTION %#x; "
 	    "SYSREG_ISPPRE DRCG_EN %#x, MIPI PHY resets %#x\n", step, rd(pmu, PMU_ISPPRE_CONFIG), rd(pmu, PMU_ISPPRE_STATUS),
 	    rd(pmu, PMU_DPU_STATUS), rd(cmu_top, TOP_ISPPRE_MUX), rd(cmu_top, TOP_ISPPRE_DIV), rd(cmu_top, TOP_ISPPRE_GATE),
@@ -1046,9 +1045,9 @@ isp_status(const char *step)
 			    rd(cmu_isppre, off), rd(cmu_isppre, off + QCH_DBG));
 		}
 	}
-	say("exynos-camera: %s: CMU_ISPPRE Q-channels, 0x30XX: QCH_CON/DBG_NFO (10 BTM, 14 CMU, 18 3AA, 1c 3AAM, 20-2c "
+	say("exynos_camera: %s: CMU_ISPPRE Q-channels, 0x30XX: QCH_CON/DBG_NFO (10 BTM, 14 CMU, 18 3AA, 1c 3AAM, 20-2c "
 	    "CSIS0-3, 30/34 PDP cores, 38 PDP_DMA, 3c PDP_STAT_DMA):%s\n", step, line[0]);
-	say("exynos-camera: %s: CMU_ISPPRE Q-channels, 0x30XX (40/44 PGEN, 48 PPMU, 4c-58 QE, 5c SysMMU, 60 AXI_P, 64/68 ATB, "
+	say("exynos_camera: %s: CMU_ISPPRE Q-channels, 0x30XX (40/44 PGEN, 48 PPMU, 4c-58 QE, 5c SysMMU, 60 AXI_P, 64/68 ATB, "
 	    "6c AXI_D, 70 SYSREG):%s\n", step, line[1]);
 }
 
@@ -1058,44 +1057,44 @@ isp_up(void)
 	uint64_t answer;
 	uint32_t status, user;
 
-	say("exynos-camera: 3: map the PMU; read pd-dpu (the parent) and pd-isppre\n");
+	say("exynos_camera: 3: map the PMU; read pd-dpu (the parent) and pd-isppre\n");
 	if (pmu == 0) {
 		pmu = ml_io_map(PMU_PA, PMU_SIZE);       /* once a run: camshot comes back here (io_submap is 8 MB) */
 	}
 	if (pmu == 0) {
-		say("exynos-camera: 3: the PMU could not be mapped\n");
+		say("exynos_camera: 3: the PMU could not be mapped\n");
 		return false;
 	}
 	iso_found = rd(pmu, PMU_DPHY_ISO_CSIS1);
 	status = rd(pmu, PMU_ISPPRE_STATUS);
-	say("exynos-camera: 3: DPU status %#x; ISPPRE configuration %#x, status %#x; MEMORY_ISPPRE_OPTION %#x; the D-PHY's "
+	say("exynos_camera: 3: DPU status %#x; ISPPRE configuration %#x, status %#x; MEMORY_ISPPRE_OPTION %#x; the D-PHY's "
 	    "isolation (0x14060730) %#x\n", rd(pmu, PMU_DPU_STATUS), rd(pmu, PMU_ISPPRE_CONFIG), status,
 	    rd(pmu, PMU_ISPPRE_MEMORY), iso_found);
 	if ((rd(pmu, PMU_DPU_STATUS) & PD_ON) != PD_ON) {
-		say("exynos-camera: 3: the parent domain (DPU) is off: ISPPRE is not switched on under it\n");
+		say("exynos_camera: 3: the parent domain (DPU) is off: ISPPRE is not switched on under it\n");
 		return false;
 	}
 	if ((status & PD_ON) == PD_ON) {
-		say("exynos-camera: 3: ISPPRE is on already (the boot left it): used as it is, no SMC, and left on\n");
+		say("exynos_camera: 3: ISPPRE is on already (the boot left it): used as it is, no SMC, and left on\n");
 	} else {
-		say("exynos-camera: 3: ISPPRE on: configuration [3:0] = 0xF, status waited for (%u ms at the most)\n",
+		say("exynos_camera: 3: ISPPRE on: configuration [3:0] = 0xF, status waited for (%u ms at the most)\n",
 		    PD_WAIT_US / 1000);
 		domain_mine = true;
 		wr(pmu, PMU_ISPPRE_CONFIG, rd(pmu, PMU_ISPPRE_CONFIG) | PD_ON);
 		if (!wait_for(pmu, PMU_ISPPRE_STATUS, PD_ON, PD_ON, PD_WAIT_US, true)) {
-			say("exynos-camera: 3: the domain did not come on (status %#x): its configuration back to off\n",
+			say("exynos_camera: 3: the domain did not come on (status %#x): its configuration back to off\n",
 			    rd(pmu, PMU_ISPPRE_STATUS));
 			wr(pmu, PMU_ISPPRE_CONFIG, rd(pmu, PMU_ISPPRE_CONFIG) & ~PD_ON);
 			(void)wait_for(pmu, PMU_ISPPRE_STATUS, PD_ON, 0, PD_WAIT_US, true);
 			domain_mine = false;
 			return false;
 		}
-		say("exynos-camera: 3: the domain is on (status %#x); about to make SMC %#x (%u, %#x, 0): the DTZPC restore; "
+		say("exynos_camera: 3: the domain is on (status %#x); about to make SMC %#x (%u, %#x, 0): the DTZPC restore; "
 		    "Carbon, at EL2, passes it on to EL3\n", rd(pmu, PMU_ISPPRE_STATUS), DTZPC_SMC, DTZPC_RESTORE, DTZPC_ISPPRE);
 		answer = smc(DTZPC_SMC, DTZPC_RESTORE, DTZPC_ISPPRE, 0);
-		say("exynos-camera: 3: SMC %#x returned %#llx\n", DTZPC_SMC, answer);
+		say("exynos_camera: 3: SMC %#x returned %#llx\n", DTZPC_SMC, answer);
 		if ((uint32_t)answer != 0) {
-			say("exynos-camera: 3: %s: nothing in the domain is touched; its power goes again (no save: nothing was "
+			say("exynos_camera: 3: %s: nothing in the domain is touched; its power goes again (no save: nothing was "
 			    "restored)\n", answer == (uint64_t)-1 ? "the call is not known to whoever answered it" : "a refusal");
 			wr(pmu, PMU_ISPPRE_CONFIG, rd(pmu, PMU_ISPPRE_CONFIG) & ~PD_ON);
 			(void)wait_for(pmu, PMU_ISPPRE_STATUS, PD_ON, 0, PD_WAIT_US, true);
@@ -1105,7 +1104,7 @@ isp_up(void)
 	}
 	domain_up = true;
 
-	say("exynos-camera: 3: map CMU_ISPPRE, SYSREG_ISPPRE, CSIS1, its D-PHY, its WDMA and the DMA common%s%s\n",
+	say("exynos_camera: 3: map CMU_ISPPRE, SYSREG_ISPPRE, CSIS1, its D-PHY, its WDMA and the DMA common%s%s\n",
 	    cam_mmu_probe ? ", the SysMMU" : "", cam_probe ? ", the other CSISs' DMA commons" : "");
 	if (cmu_isppre == 0) {
 		cmu_isppre = ml_io_map(CMU_ISPPRE_PA, 0x8000);    /* the Q-channels' debug states are at +0x7010 */
@@ -1126,12 +1125,12 @@ isp_up(void)
 	if (cmu_isppre == 0 || sysreg_isppre == 0 || csis == 0 || dphy == 0 || wdma == 0 || cdma == 0 ||
 	    (cam_mmu_probe && mmu == 0) ||
 	    (cam_probe && (other_cmn[0] == 0 || other_cmn[1] == 0 || other_cmn[2] == 0))) {
-		say("exynos-camera: 3: a block could not be mapped\n");
+		say("exynos_camera: 3: a block could not be mapped\n");
 		return false;
 	}
 
 	top_gate_found = rd(cmu_top, TOP_ISPPRE_GATE);
-	say("exynos-camera: 3: CMU_TOP's CLKCMU_ISPPRE_BUS: mux %#x, divider %#x, gate %#x; CMU_ISPPRE: BUS_USER %#x, BUSP "
+	say("exynos_camera: 3: CMU_TOP's CLKCMU_ISPPRE_BUS: mux %#x, divider %#x, gate %#x; CMU_ISPPRE: BUS_USER %#x, BUSP "
 	    "divider %#x, Q-channels CSIS1 %#x, SysMMU %#x\n", rd(cmu_top, TOP_ISPPRE_MUX), rd(cmu_top, TOP_ISPPRE_DIV),
 	    top_gate_found, rd(cmu_isppre, ISPPRE_BUS_USER), rd(cmu_isppre, ISPPRE_BUSP_DIV), rd(cmu_isppre, QCH_CSIS1),
 	    rd(cmu_isppre, QCH_SYSMMU));
@@ -1152,14 +1151,14 @@ isp_up(void)
 		top_rate_mine = true;
 		wr(cmu_top, TOP_ISPPRE_MUX, (top_mux_found & ~3u) | ISPPRE_MUX_SHARED1_DIV4);
 		if (!wait_for(cmu_top, TOP_ISPPRE_MUX, TOP_BUSY, 0, 1000, true)) {
-			say("exynos-camera: 3: CLKCMU_ISPPRE_BUS's mux stays busy (%#x)\n", rd(cmu_top, TOP_ISPPRE_MUX));
+			say("exynos_camera: 3: CLKCMU_ISPPRE_BUS's mux stays busy (%#x)\n", rd(cmu_top, TOP_ISPPRE_MUX));
 		}
 		wr(cmu_top, TOP_ISPPRE_DIV, (top_div_found & ~0xfu) | cam_ispdiv);
 		if (!wait_for(cmu_top, TOP_ISPPRE_DIV, TOP_BUSY, 0, 1000, true)) {
-			say("exynos-camera: 3: CLKCMU_ISPPRE_BUS's divider stays busy (%#x)\n", rd(cmu_top, TOP_ISPPRE_DIV));
+			say("exynos_camera: 3: CLKCMU_ISPPRE_BUS's divider stays busy (%#x)\n", rd(cmu_top, TOP_ISPPRE_DIV));
 		}
 	}
-	say("exynos-camera: 3: CLKCMU_ISPPRE_BUS: mux %#x -> %#x, divider %#x -> %#x (SHARED1_DIV4, 466 MHz, / %u)\n",
+	say("exynos_camera: 3: CLKCMU_ISPPRE_BUS: mux %#x -> %#x, divider %#x -> %#x (SHARED1_DIV4, 466 MHz, / %u)\n",
 	    top_mux_found, rd(cmu_top, TOP_ISPPRE_MUX), top_div_found, rd(cmu_top, TOP_ISPPRE_DIV), cam_ispdiv + 1);
 	user = user_found = rd(cmu_isppre, ISPPRE_BUS_USER);
 	for (uint32_t i = 0; i < NQCHS; i++) {
@@ -1169,35 +1168,35 @@ isp_up(void)
 	if ((user & (1u << 4)) == 0) {
 		wr(cmu_isppre, ISPPRE_BUS_USER, user | (1u << 4));
 		if (!wait_for(cmu_isppre, ISPPRE_BUS_USER, 1u << 7, 0, 1000, true)) {
-			say("exynos-camera: 3: the ISPPRE bus's mux stays busy (%#x)\n", rd(cmu_isppre, ISPPRE_BUS_USER));
+			say("exynos_camera: 3: the ISPPRE bus's mux stays busy (%#x)\n", rd(cmu_isppre, ISPPRE_BUS_USER));
 		}
 	}
 	for (uint32_t i = 0; i < NQCHS; i++) {
 		wr(cmu_isppre, qchs[i], isppre_qch_found[i] | QCH_REQ);
 	}
-	say("exynos-camera: 3: clocks: CMU_TOP's gate %#x, BUS_USER %#x (bit 4: CMU_TOP's clock), Q-channels CSIS1 %#x, "
+	say("exynos_camera: 3: clocks: CMU_TOP's gate %#x, BUS_USER %#x (bit 4: CMU_TOP's clock), Q-channels CSIS1 %#x, "
 	    "SysMMU %#x (bit 1: requested)\n", rd(cmu_top, TOP_ISPPRE_GATE), rd(cmu_isppre, ISPPRE_BUS_USER),
 	    rd(cmu_isppre, QCH_CSIS1), rd(cmu_isppre, QCH_SYSMMU));
 	isp_status("3");
 
 	dphy_reset_found = rd(sysreg_isppre, DPHY_RESET);
-	say("exynos-camera: 3: CSIS1: version %#x, CMN_CTRL %#x, PHY_STATUS %#x, PHY_CMN_CTRL %#x; the PHYs' resets "
+	say("exynos_camera: 3: CSIS1: version %#x, CMN_CTRL %#x, PHY_STATUS %#x, PHY_CMN_CTRL %#x; the PHYs' resets "
 	    "(0x16210500) %#x\n", rd(csis, CSIS_VERSION), rd(csis, CSIS_CMN_CTRL), rd(csis, CSIS_PHY_STATUS),
 	    rd(csis, CSIS_PHY_CMN_CTRL), dphy_reset_found);
-	say("exynos-camera: 3: VC0's WDMA: CTRL %#x, FMT %#x, ACT_CTRL %#x, ADDR1 %#x; its DMA common: INT_SRC %#x, ERR_CODE "
+	say("exynos_camera: 3: VC0's WDMA: CTRL %#x, FMT %#x, ACT_CTRL %#x, ADDR1 %#x; its DMA common: INT_SRC %#x, ERR_CODE "
 	    "%#x; the DMA common: ARB_PRI %#x, CTRL %#x, SRAM_SPLIT %#x, MATRIX %#x, TEST_PATTERN %#x\n",
 	    rd(wdma, DMA_CTRL), rd(wdma, DMA_FMT), rd(wdma, DMA_ACT_CTRL), rd(wdma, DMA_ADDR(0)),
 	    rd(wdma, VCMN + VCMN_INT_SRC),
 	    rd(wdma, VCMN + VCMN_ERR_CODE), rd(cdma, CDMA_ARB_PRI), rd(cdma, CDMA_CTRL), rd(cdma, CDMA_SRAM_SPLIT),
 	    rd(cdma, CDMA_MATRIX), rd(cdma, TP_ENABLE));
 	if (cam_mmu_probe) {
-		say("exynos-camera: 3: the SysMMU: MMU_CTRL %#x (bit 0: translating), CFG %#x, STATUS %#x, VERSION %#x\n",
+		say("exynos_camera: 3: the SysMMU: MMU_CTRL %#x (bit 0: translating), CFG %#x, STATUS %#x, VERSION %#x\n",
 		    rd(mmu, MMU_CTRL), rd(mmu, MMU_CFG), rd(mmu, MMU_STATUS), rd(mmu, MMU_VERSION));
 	} else {
-		say("exynos-camera: 3: the SysMMU is not read (cam_s9_mmu_probe=1 reads it): taken as off, pass-through\n");
+		say("exynos_camera: 3: the SysMMU is not read (cam_s9_mmu_probe=1 reads it): taken as off, pass-through\n");
 	}
 	if ((rd(csis, CSIS_VERSION) == 0 || rd(csis, CSIS_VERSION) == 0xffffffffu)) {
-		say("exynos-camera: 3: CSIS1's version reads %#x: is its clock there?\n", rd(csis, CSIS_VERSION));
+		say("exynos_camera: 3: CSIS1's version reads %#x: is its clock there?\n", rd(csis, CSIS_VERSION));
 	}
 	return true;
 }
@@ -1211,17 +1210,17 @@ buffer_get(void)
 		return !buffer_busy;
 	}
 	if (MEM_PA < MEM_FLOOR || MEM_PA + MEM_BYTES > MEM_CEILING || MEM_PA + MEM_BYTES > 0x100000000ULL) {
-		say("exynos-camera: the frame's memory %#llx + %u is not in the gap %#llx - %#llx: not used\n", MEM_PA, MEM_BYTES,
+		say("exynos_camera: the frame's memory %#llx + %u is not in the gap %#llx - %#llx: not used\n", MEM_PA, MEM_BYTES,
 		    MEM_FLOOR, MEM_CEILING);
 		return false;
 	}
-	buffer = hakios_exynos_camera_map(MEM_PA, MEM_BYTES);
+	buffer = hakios_physmap_wc(MEM_PA, MEM_BYTES);
 	if (buffer == 0) {
-		say("exynos-camera: the frame's memory (%u bytes at %#llx, physical) cannot be mapped\n", MEM_BYTES, MEM_PA);
+		say("exynos_camera: the frame's memory (%u bytes at %#llx, physical) cannot be mapped\n", MEM_BYTES, MEM_PA);
 		return false;
 	}
 	buffer_pa = MEM_PA;
-	say("exynos-camera: the buffer: %u bytes at %#llx (physical, outside XNU's RAM, below 4 GB; mapped write-combined "
+	say("exynos_camera: the buffer: %u bytes at %#llx (physical, outside XNU's RAM, below 4 GB; mapped write-combined "
 	    "at %#lx)\n", BUF_BYTES, buffer_pa, (unsigned long)buffer);
 	return true;
 }
@@ -1267,9 +1266,9 @@ buffer_report(const char *step)
 		}
 	}
 	frame_last = last;
-	say("exynos-camera: %s: the buffer: %u bytes changed, the last at %u (%u a line over %u lines); sum %#x, FNV-1a "
+	say("exynos_camera: %s: the buffer: %u bytes changed, the last at %u (%u a line over %u lines); sum %#x, FNV-1a "
 	    "%#x\n", step, changed, last, last / FRAME_H, FRAME_H, sum, fnv);
-	say("exynos-camera: %s: its first bytes: %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x "
+	say("exynos_camera: %s: its first bytes: %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x "
 	    "%02x; at %u: %02x %02x %02x %02x %02x %02x %02x %02x\n", step, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
 	    b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], LINE_BYTES, b[LINE_BYTES], b[LINE_BYTES + 1],
 	    b[LINE_BYTES + 2], b[LINE_BYTES + 3], b[LINE_BYTES + 4], b[LINE_BYTES + 5], b[LINE_BYTES + 6], b[LINE_BYTES + 7]);
@@ -1280,13 +1279,13 @@ buffer_report(const char *step)
 static void
 phy_on(void)
 {
-	say("exynos-camera: 4: the D-PHY (M0S4S2, CSIS1): isolation bypass, PMU 0x730 %#x |= 1; reset bit 2 of 0x16210500 "
+	say("exynos_camera: 4: the D-PHY (M0S4S2, CSIS1): isolation bypass, PMU 0x730 %#x |= 1; reset bit 2 of 0x16210500 "
 	    "(%#x) cleared, then set\n", iso_found, rd(sysreg_isppre, DPHY_RESET));
 	phy_mine = true;
 	wr(pmu, PMU_DPHY_ISO_CSIS1, rd(pmu, PMU_DPHY_ISO_CSIS1) | ISO_BYPASS);
 	wr(sysreg_isppre, DPHY_RESET, rd(sysreg_isppre, DPHY_RESET) & ~DPHY_RESET_CSIS1);
 	wr(sysreg_isppre, DPHY_RESET, rd(sysreg_isppre, DPHY_RESET) | DPHY_RESET_CSIS1);
-	say("exynos-camera: 4: the D-PHY: isolation %#x, resets %#x\n", rd(pmu, PMU_DPHY_ISO_CSIS1),
+	say("exynos_camera: 4: the D-PHY: isolation %#x, resets %#x\n", rd(pmu, PMU_DPHY_ISO_CSIS1),
 	    rd(sysreg_isppre, DPHY_RESET));
 }
 
@@ -1298,7 +1297,7 @@ link_setup(void)
 
 	wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) | CMN_SW_RESET);
 	if (!wait_for(csis, CSIS_CMN_CTRL, CMN_SW_RESET, 0, 100, false)) {
-		say("exynos-camera: CSIS1's reset does not finish (CMN_CTRL %#x)\n", rd(csis, CSIS_CMN_CTRL));
+		say("exynos_camera: CSIS1's reset does not finish (CMN_CTRL %#x)\n", rd(csis, CSIS_CMN_CTRL));
 		return false;
 	}
 	link_on = true;         /* (from here, the way down resets it again) */
@@ -1328,7 +1327,7 @@ link_setup(void)
 	wr(wdma, VCMN + VCMN_DATA_CTRL, rd(wdma, VCMN + VCMN_DATA_CTRL) & ~1u);
 	wr(wdma, VCMN + VCMN_INT_MASK, VCMN_IRQ_MASK);
 	wr(wdma, VCMN + VCMN_INT_SRC, rd(wdma, VCMN + VCMN_INT_SRC));
-	say("exynos-camera: CSIS1 set up: CMN_CTRL %#x, PHY_CMN_CTRL %#x, CH0 %#x %#x, CH2 %#x; WDMA FMT %#x, RESOL %#x; "
+	say("exynos_camera: CSIS1 set up: CMN_CTRL %#x, PHY_CMN_CTRL %#x, CH0 %#x %#x, CH2 %#x; WDMA FMT %#x, RESOL %#x; "
 	    "its common: DATA_CTRL %#x, OTF_FORMAT %#x\n", rd(csis, CSIS_CMN_CTRL), rd(csis, CSIS_PHY_CMN_CTRL),
 	    rd(csis, CSIS_ISP_CONFIG(0)), rd(csis, CSIS_ISP_RESOL(0)), rd(csis, CSIS_ISP_CONFIG(2)), rd(wdma, DMA_FMT),
 	    rd(wdma, DMA_RESOL), rd(wdma, VCMN + VCMN_DATA_CTRL), rd(wdma, VCMN + VCMN_OTF_FORMAT));
@@ -1393,18 +1392,18 @@ static void
 dma_log(const char *step)
 {
 	snap_take();
-	say("exynos-camera: %s: WDMA CTRL %#x, ACT_CTRL %#x, FCNTSEQ_STAT %#x; its common: INT_SRC %#x (frame start [7:4], "
+	say("exynos_camera: %s: WDMA CTRL %#x, ACT_CTRL %#x, FCNTSEQ_STAT %#x; its common: INT_SRC %#x (frame start [7:4], "
 	    "end [11:8], error 12, abort done 16), ERR_CODE %#x, CRC %#x, CMN_CTRL %#x; the pattern %#x\n", step,
 	    rd(wdma, DMA_CTRL), rd(wdma, DMA_ACT_CTRL), rd(wdma, DMA_FCNTSEQ_STAT), rd(wdma, VCMN + VCMN_INT_SRC),
 	    rd(wdma, VCMN + VCMN_ERR_CODE), rd(wdma, VCMN + VCMN_CRC_RESULT), rd(wdma, VCMN + VCMN_CMN_CTRL),
 	    rd(cdma, TP_ENABLE));
 	if (cam_probe) {
-		say("exynos-camera: %s: the others' INT_SRC (VC0 ACT_CTRL): CSIS0 %#x (%#x), CSIS2 %#x (%#x), CSIS3 %#x (%#x)\n",
+		say("exynos_camera: %s: the others' INT_SRC (VC0 ACT_CTRL): CSIS0 %#x (%#x), CSIS2 %#x (%#x), CSIS3 %#x (%#x)\n",
 		    step, rd(other_cmn[0], 0x400 + VCMN_INT_SRC), rd(other_cmn[0], DMA_ACT_CTRL),
 		    rd(other_cmn[1], 0x400 + VCMN_INT_SRC), rd(other_cmn[1], DMA_ACT_CTRL),
 		    rd(other_cmn[2], 0x400 + VCMN_INT_SRC), rd(other_cmn[2], DMA_ACT_CTRL));
 	}
-	say("exynos-camera: %s: CSIS1 INT_SRC0 %#x (frame start [27:24], end [23:20], SOT [19:16], lost FS [15:12], lost FE "
+	say("exynos_camera: %s: CSIS1 INT_SRC0 %#x (frame start [27:24], end [23:20], SOT [19:16], lost FS [15:12], lost FE "
 	    "[11:8], overflow 4, wrong config 3, ECC 2, CRC 1, ID 0), INT_SRC1 %#x (V/H size mismatch [15:12]/[11:8]), "
 	    "FRM_CNT_CH0 %u, PHY_STATUS %#x\n", step, rd(csis, CSIS_INT_SRC0), rd(csis, CSIS_INT_SRC1),
 	    rd(csis, CSIS_FRM_CNT_CH0), rd(csis, CSIS_PHY_STATUS));
@@ -1448,7 +1447,7 @@ pattern_frame(void)
 	bool ended;
 
 	if (mmu_translating()) {
-		say("exynos-camera: 4: the SysMMU is on (MMU_CTRL %#x): the WDMA's addresses would be translated by a table "
+		say("exynos_camera: 4: the SysMMU is on (MMU_CTRL %#x): the WDMA's addresses would be translated by a table "
 		    "this driver did not make; no DMA\n", rd(mmu, MMU_CTRL));
 		return false;
 	}
@@ -1457,24 +1456,24 @@ pattern_frame(void)
 	}
 	buffer_fill();
 	phy_on();
-	say("exynos-camera: 4: CSIS1 reset and set up for %u x %u RAW10 on VC0 (%s), two lanes\n", FRAME_W, FRAME_H,
+	say("exynos_camera: 4: CSIS1 reset and set up for %u x %u RAW10 on VC0 (%s), two lanes\n", FRAME_W, FRAME_H,
 	    cam_pack12 ? "PACK12" : "RAW10 as it comes");
 	if (!link_setup()) {
 		return false;
 	}
 	dma_common();
-	say("exynos-camera: 4: VC0's WDMA to %#llx, the output on; then the test pattern generator, %u x %u, two pixels a "
+	say("exynos_camera: 4: VC0's WDMA to %#llx, the output on; then the test pattern generator, %u x %u, two pixels a "
 	    "clock, vertical blank %u clocks: ONE frame, its end waited for (2 s at the most)\n", buffer_pa, FRAME_W, FRAME_H,
 	    TP_VBLANK);
 	cmn = rd(wdma, VCMN + VCMN_CMN_CTRL);
 	if (cmn & 1) {
 		wr(wdma, VCMN + VCMN_CMN_CTRL, cmn & ~1u);
 	}
-	say("exynos-camera: 4: before: WDMA ACT_CTRL %#x (bit 16: aborted, bit 0: active), DMA_CMN_CTRL %#x -> %#x (bit 0: "
+	say("exynos_camera: 4: before: WDMA ACT_CTRL %#x (bit 16: aborted, bit 0: active), DMA_CMN_CTRL %#x -> %#x (bit 0: "
 	    "abort request); CSIS1 CLK_CTRL %#x; the DMA common: CTRL %#x, CLK_CTRL %#x\n", rd(wdma, DMA_ACT_CTRL), cmn,
 	    rd(wdma, VCMN + VCMN_CMN_CTRL), rd(csis, CSIS_CLK_CTRL), rd(cdma, CDMA_CTRL), rd(cdma, CDMA_CLK_CTRL));
 	if (cam_mmu_probe) {
-		say("exynos-camera: 4: the SysMMU: CTRL %#x, CFG %#x, STATUS %#x\n", rd(mmu, MMU_CTRL), rd(mmu, MMU_CFG),
+		say("exynos_camera: 4: the SysMMU: CTRL %#x, CFG %#x, STATUS %#x\n", rd(mmu, MMU_CTRL), rd(mmu, MMU_CFG),
 		    rd(mmu, MMU_STATUS));
 	}
 	others_watch(true);
@@ -1483,7 +1482,7 @@ pattern_frame(void)
 	ended = wait_for(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0, DMA_FRM_END0, 500000, true);
 	if (!ended && (rd(wdma, VCMN + VCMN_INT_SRC) & DMA_FRM_START0) == 0) {
 		dma_log("4, the link off");
-		say("exynos-camera: 4: no frame start on CSIS1's WDMA in 500 ms with the link off (Android's way for the "
+		say("exynos_camera: 4: no frame start on CSIS1's WDMA in 500 ms with the link off (Android's way for the "
 		    "pattern): the pattern off, CSIS1's link enabled as csi_hw_enable does (UPDATE_SHADOW, PHY_SEL 0, no "
 		    "Q-channel, CSI_EN; no clock lane: no sensor), the pattern on again, 1.5 s\n");
 		wr(cdma, TP_ENABLE, rd(cdma, TP_ENABLE) & ~TP_ON);
@@ -1494,7 +1493,7 @@ pattern_frame(void)
 		wr(wdma, VCMN + VCMN_INT_SRC, rd(wdma, VCMN + VCMN_INT_SRC));
 		pattern_on_now();
 		ended = wait_for(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0, DMA_FRM_END0, 1500000, true);
-		say("exynos-camera: 4: with the link on: %s (CMN_CTRL %#x)\n", ended ? "THE FRAME ENDED" :
+		say("exynos_camera: 4: with the link on: %s (CMN_CTRL %#x)\n", ended ? "THE FRAME ENDED" :
 		    "no frame end either", rd(csis, CSIS_CMN_CTRL));
 	} else if (!ended) {
 		/* it started: give it the rest of the 2 s */
@@ -1502,23 +1501,23 @@ pattern_frame(void)
 	}
 	dma_stop();
 	delay_for_interval(50, NSEC_PER_MSEC);
-	say("exynos-camera: 4: %s; the WDMA and the pattern off\n", ended ? "THE FRAME ENDED" : "no frame end in 2 s");
+	say("exynos_camera: 4: %s; the WDMA and the pattern off\n", ended ? "THE FRAME ENDED" : "no frame end in 2 s");
 	dma_log("4");
 	others_watch(false);
 	if (!ended) {
 		isp_status("4");
 	}
 	if (!dma_quiet()) {
-		say("exynos-camera: 4: the WDMA still reads active (ACT_CTRL %#x): no more DMA into the buffer this run\n",
+		say("exynos_camera: 4: the WDMA still reads active (ACT_CTRL %#x): no more DMA into the buffer this run\n",
 		    rd(wdma, DMA_ACT_CTRL));
 		buffer_busy = true;
 	}
 	last = buffer_report("4");
 	if (last == 0) {
-		say("exynos-camera: 4: nothing reached the buffer\n");
+		say("exynos_camera: 4: nothing reached the buffer\n");
 		return false;
 	}
-	say("exynos-camera: 4: THE PATTERN REACHED MEMORY: %u bytes (%u x %u RAW10 packed would be %u)\n", last, FRAME_W,
+	say("exynos_camera: 4: THE PATTERN REACHED MEMORY: %u bytes (%u x %u RAW10 packed would be %u)\n", last, FRAME_W,
 	    FRAME_H, FRAME_W * FRAME_H * 10 / 8);
 	return true;
 }
@@ -1546,7 +1545,7 @@ phy_setup(void)
 		wr(dphy, DPHY_DCTRL_SD_06 + DPHY_LANE(lane), (rd(dphy, DPHY_DCTRL_SD_06 + DPHY_LANE(lane)) & ~0xffu) |
 		    SETTLE_719);
 	}
-	say("exynos-camera: 5: the D-PHY: SC_06 %#x, SC_02 %#x; lane 0: SD_08 %#x, SD_05 %#x, SD_06 %#x (settle), SD_13 %#x; "
+	say("exynos_camera: 5: the D-PHY: SC_06 %#x, SC_02 %#x; lane 0: SD_08 %#x, SD_05 %#x, SD_06 %#x (settle), SD_13 %#x; "
 	    "lane 1: %#x %#x %#x %#x\n", rd(dphy, DPHY_ACTRL_SC_06), rd(dphy, DPHY_DCTRL_SC_02), rd(dphy, DPHY_ACTRL_SD_08),
 	    rd(dphy, DPHY_DCTRL_SD_05), rd(dphy, DPHY_DCTRL_SD_06), rd(dphy, DPHY_DCTRL_SD_13),
 	    rd(dphy, DPHY_ACTRL_SD_08 + DPHY_LANE(1)), rd(dphy, DPHY_DCTRL_SD_05 + DPHY_LANE(1)),
@@ -1562,7 +1561,7 @@ patch_mean(uint32_t stride)
 	uint32_t lo = 1023, hi = 0, n = 0, over = 0;
 
 	if (stride < LINE_BYTES || (uint64_t)stride * FRAME_H > BUF_BYTES) {
-		say("exynos-camera: 5: a stride of %u does not hold the frame: no patch\n", stride);
+		say("exynos_camera: 5: a stride of %u does not hold the frame: no patch\n", stride);
 		return;
 	}
 	for (uint32_t y = FRAME_H / 2 - 32; y < FRAME_H / 2 + 32; y++) {
@@ -1579,7 +1578,7 @@ patch_mean(uint32_t stride)
 			n++;
 		}
 	}
-	say("exynos-camera: 5: THE PATCH (64 x 64 in the middle, 16-bit RAW10 at a stride of %u): mean %llu.%02llu of 1023 "
+	say("exynos_camera: 5: THE PATCH (64 x 64 in the middle, 16-bit RAW10 at a stride of %u): mean %llu.%02llu of 1023 "
 	    "(about 64 is black), %u to %u; %u samples above 10 bits (the fill's 0xA5A5, or not RAW10 in 16 bits)\n", stride,
 	    sum / n, (sum % n) * 100 / n, lo, hi, over);
 }
@@ -1730,7 +1729,7 @@ gains_read(void)
 	again_max = hi > again_min && hi <= 0x400 ? hi : 0x200;
 	dgain_max = dhi >= 0x100 && dhi <= 0x1000 ? dhi : 0x400;
 	dgain_max = dgain_max > cam_dgain ? cam_dgain : dgain_max;
-	say("exynos-camera: 5: the gains: analog %#x to %#x (0x0084, 0x0086: %#x, %#x), digital to %#x (0x1086: %#x, "
+	say("exynos_camera: 5: the gains: analog %#x to %#x (0x0084, 0x0086: %#x, %#x), digital to %#x (0x1086: %#x, "
 	    "capped at cam_s9_dgain %#x)\n", again_min, again_max, lo, hi, dgain_max, dhi, cam_dgain);
 }
 
@@ -1742,7 +1741,7 @@ mode_load(void)
 
 	exp = exp < 2 ? 2 : exp;
 	exp = exp > MODE_LINES - MODE_MARGIN ? MODE_LINES - MODE_MARGIN : exp;
-	say("exynos-camera: 5: the sensor's mode: setfile A's 1632 x 1224 at 30 frames a second, %u 16-bit writes; then "
+	say("exynos_camera: 5: the sensor's mode: setfile A's 1632 x 1224 at 30 frames a second, %u 16-bit writes; then "
 	    "0x3092 = 0, exposure %u lines (0x0202), analog gain %#x (0x0204, 0x20 is 1x), digital 1x; auto-exposure %s\n",
 	    (unsigned)MODE_ENTRIES, exp, cam_gain, cam_ae ? "on" : "off (cam_s9_ae=0)");
 	delay_for_interval(3, NSEC_PER_MSEC);
@@ -1758,7 +1757,7 @@ mode_load(void)
 	if (!exposure_put(exp, cam_gain, 0x100)) {
 		return false;
 	}
-	say("exynos-camera: 5: read back: output %u x %u, frame %u lines of %u clocks, exposure %u, gain %#x, digital %#x\n",
+	say("exynos_camera: 5: read back: output %u x %u, frame %u lines of %u clocks, exposure %u, gain %#x, digital %#x\n",
 	    sensor_get16(0x034C), sensor_get16(0x034E), sensor_get16(0x0340), sensor_get16(0x0342), sensor_get16(0x0202),
 	    sensor_get16(0x0204), sensor_get16(0x020E));
 	return true;
@@ -1772,7 +1771,7 @@ stream_start(void)
 	uint64_t until;
 
 	phy_setup();
-	say("exynos-camera: 5: CSIS1 reset and set up again; the ring filled; VC0's WDMA on, its eight frame pointers on "
+	say("exynos_camera: 5: CSIS1 reset and set up again; the ring filled; VC0's WDMA on, its eight frame pointers on "
 	    "the ring's %u slots\n", RING_SLOTS);
 	if (!link_setup()) {
 		return false;
@@ -1788,13 +1787,13 @@ stream_start(void)
 	wr(wdma, VCMN + VCMN_INT_SRC, rd(wdma, VCMN + VCMN_INT_SRC));
 	dma_on = true;
 	wr(wdma, DMA_CTRL, rd(wdma, DMA_CTRL) | DMA_ON | DMA_UPDT_PTR_EN);
-	say("exynos-camera: 5: the link on (UPDATE_SHADOW, D-PHY, clock lane, no Q-channel, CSI_EN)\n");
+	say("exynos_camera: 5: the link on (UPDATE_SHADOW, D-PHY, clock lane, no Q-channel, CSI_EN)\n");
 	wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) | CMN_UPDATE_SHADOW);
 	wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) & ~CMN_PHY_SEL);
 	wr(csis, CSIS_PHY_CMN_CTRL, rd(csis, CSIS_PHY_CMN_CTRL) | PHY_ENABLE_CLK);
 	wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) & ~CMN_QCHANNEL_EN);
 	wr(csis, CSIS_CMN_CTRL, rd(csis, CSIS_CMN_CTRL) | CMN_CSI_EN);
-	say("exynos-camera: 5: STREAM ON: 0x0104 = 0, 8 ms, 0x6028 = 0x4000, 0x0100 = 1, 0x0216 = 0\n");
+	say("exynos_camera: 5: STREAM ON: 0x0104 = 0, 8 ms, 0x6028 = 0x4000, 0x0100 = 1, 0x0216 = 0\n");
 	if (!sensor_put(0x0104, 0x00, 1)) {
 		return false;
 	}
@@ -1811,7 +1810,7 @@ stream_start(void)
 		}
 		delay_for_interval(2, NSEC_PER_MSEC);
 	}
-	say("exynos-camera: 5: the sensor's frame count %#x (0xff: not streaming); PHY_STATUS %#x\n", frames,
+	say("exynos_camera: 5: the sensor's frame count %#x (0xff: not streaming); PHY_STATUS %#x\n", frames,
 	    rd(csis, CSIS_PHY_STATUS));
 	return true;
 }
@@ -1869,12 +1868,12 @@ frame_wait(uint64_t until, uint32_t poll_us)
 					if (truth != slot) {
 						slot_fix = (slot_fix + truth + RING_SLOTS - slot) % RING_SLOTS;
 					}
-					say("exynos-camera: the ring: frame end %u, frame pointer %u (INT_SRC %#x then %#x): slot %u by the "
+					say("exynos_camera: the ring: frame end %u, frame pointer %u (INT_SRC %#x then %#x): slot %u by the "
 					    "pointer, slot %u by the fill (the pointer's offset now %u)\n", ring_checks, ptr, src, src2, slot,
 					    truth, slot_fix);
 					slot = truth;
 				} else {
-					say("exynos-camera: the ring: frame end %u, frame pointer %u (INT_SRC %#x then %#x): slot %u; the "
+					say("exynos_camera: the ring: frame end %u, frame pointer %u (INT_SRC %#x then %#x): slot %u; the "
 					    "fill shows slots %#x new\n", ring_checks, ptr, src, src2, slot, fresh);
 				}
 			}
@@ -1906,7 +1905,7 @@ sensor_frame(void)
 	frame_ends = 0;
 	dma_errors = 0;
 	if (mmu_translating()) {
-		say("exynos-camera: 5: the SysMMU is on (MMU_CTRL %#x): no DMA\n", rd(mmu, MMU_CTRL));
+		say("exynos_camera: 5: the SysMMU is on (MMU_CTRL %#x): no DMA\n", rd(mmu, MMU_CTRL));
 		return false;
 	}
 	if (!buffer_get() || !mode_load() || !stream_start()) {
@@ -1927,7 +1926,7 @@ sensor_frame(void)
 		}
 		meter(buffer + (uint64_t)slot * SLOT_BYTES, &m);
 		if (ends <= 6 || ends >= limit) {
-			say("exynos-camera: 5: frame %u (slot %d, CSIS1 FRM_CNT_CH0 %u): green %u, red %u, blue %u of %u (aim %u), "
+			say("exynos_camera: 5: frame %u (slot %d, CSIS1 FRM_CNT_CH0 %u): green %u, red %u, blue %u of %u (aim %u), "
 			    "%u per mille clipped; exposure %u lines, gain %#x, digital %#x\n", ends, slot,
 			    rd(csis, CSIS_FRM_CNT_CH0), m.mean[1], m.mean[0], m.mean[2], 1023 - BLACK_LEVEL, AE_AIM, m.clipped,
 			    ae_lines, ae_again, ae_dgain);
@@ -1940,7 +1939,7 @@ sensor_frame(void)
 	}
 	dma_stop();
 	frame_ends = ends;
-	say("exynos-camera: 5: %u frame end(s) in %llu ms, %u with the WDMA's FIFO error; the frame taken: %u (slot %d), "
+	say("exynos_camera: 5: %u frame end(s) in %llu ms, %u with the WDMA's FIFO error; the frame taken: %u (slot %d), "
 	    "exposure %u lines (%u us), gain %#x, digital %#x; the WDMA off; streaming off\n", ends,
 	    absolutetime_ms(mach_absolute_time() - start), dma_errors, ends, taken, ae_lines,
 	    ae_lines * 263 / 10, ae_again, ae_dgain);
@@ -1953,11 +1952,11 @@ sensor_frame(void)
 		}
 		delay_for_interval(2, NSEC_PER_MSEC);
 	}
-	say("exynos-camera: 5: the sensor's frame count %#x after the stop\n", frames);
+	say("exynos_camera: 5: the sensor's frame count %#x after the stop\n", frames);
 	dma_log("5");
 	link_stop();
 	if (!dma_quiet()) {
-		say("exynos-camera: 5: the WDMA still reads active (ACT_CTRL %#x): no more DMA into the buffer this run\n",
+		say("exynos_camera: 5: the WDMA still reads active (ACT_CTRL %#x): no more DMA into the buffer this run\n",
 		    rd(wdma, DMA_ACT_CTRL));
 		buffer_busy = true;
 	}
@@ -1965,14 +1964,14 @@ sensor_frame(void)
 		taken = slot;
 	}
 	if (taken < 0) {
-		say("exynos-camera: 5: no frame end\n");
+		say("exynos_camera: 5: no frame end\n");
 		return false;
 	}
 	shot_slot = (uint32_t)taken;
 	frame = buffer + (uint64_t)shot_slot * SLOT_BYTES;
 	last = buffer_report("5");
 	if (last == 0) {
-		say("exynos-camera: 5: nothing reached the buffer\n");
+		say("exynos_camera: 5: nothing reached the buffer\n");
 		return false;
 	}
 	stride = last / FRAME_H;
@@ -2009,7 +2008,7 @@ hakios_exynos_camera_quiesce(void)
 		return;
 	}
 	leaving = true;
-	say("exynos-camera: at the run's end: the WDMA and the pattern stopped, the front camera powered down\n");
+	say("exynos_camera: at the run's end: the WDMA and the pattern stopped, the front camera powered down\n");
 	dma_stop();
 	if (streaming && peric0 != 0) {
 		stream_stop();
@@ -2027,14 +2026,14 @@ map_blocks(void)
 	if (peric0 != 0) {
 		return true;
 	}
-	say("exynos-camera: 1: map the pins' GPIO blocks, CMU_TOP and the two buses (USI10 of PERIC1 for the S2MPB02, "
+	say("exynos_camera: 1: map the pins' GPIO blocks, CMU_TOP and the two buses (USI10 of PERIC1 for the S2MPB02, "
 	    "USI08_I2C for the sensor)\n");
 	peric0 = ml_io_map(GPIO_PERIC0_PA, 0x1000);
 	peric1 = ml_io_map(GPIO_PERIC1_PA, 0x1000);
 	cmu_top = ml_io_map(CMU_TOP_PA, 0x4000);
 	if (peric0 == 0 || peric1 == 0 || cmu_top == 0 || !hakios_hsi2c_map(&pmic_bus, say) ||
 	    !hakios_hsi2c_map(&sensor_bus, say)) {
-		say("exynos-camera: 1: a block could not be mapped\n");
+		say("exynos_camera: 1: a block could not be mapped\n");
 		peric0 = 0;
 		return false;
 	}
@@ -2050,23 +2049,23 @@ look_supplies(void)
 	hakios_hsi2c_power(&pmic_bus);
 	hakios_hsi2c_reset(&pmic_bus);
 	if (pmic_get(PMIC_ID, &id) != 0) {
-		say("exynos-camera: 1: the S2MPB02 does not answer at 0x%x (%x)\n", PMIC, pmic_bus.last_error);
+		say("exynos_camera: 1: the S2MPB02 does not answer at 0x%x (%x)\n", PMIC, pmic_bus.last_error);
 		return false;
 	}
-	say("exynos-camera: 1: S2MPB02 ID %#x\n", id);
+	say("exynos_camera: 1: S2MPB02 ID %#x\n", id);
 	if (pmic_get(B2CTRL1, &b2ctrl1_found) != 0 || pmic_get(B2CTRL2, &b2ctrl2_found) != 0) {
-		say("exynos-camera: 1: BUCK2's registers cannot be read (%x)\n", pmic_bus.last_error);
+		say("exynos_camera: 1: BUCK2's registers cannot be read (%x)\n", pmic_bus.last_error);
 		return false;
 	}
-	say("exynos-camera: 1: VDD_EXT_1P3_PB02 (BUCK2): B2CTRL1 %#x (%s), B2CTRL2 %#x (voltage code; Android's %#x, 1.3 V)\n",
+	say("exynos_camera: 1: VDD_EXT_1P3_PB02 (BUCK2): B2CTRL1 %#x (%s), B2CTRL2 %#x (voltage code; Android's %#x, 1.3 V)\n",
 	    b2ctrl1_found, (b2ctrl1_found & BUCK_ON) == BUCK_ON ? "on" : (b2ctrl1_found & BUCK_ON) ? "in another mode" : "off",
 	    b2ctrl2_found, BUCK2_VSEL);
 	for (uint32_t i = 0; i < NLDOS; i++) {
 		if (pmic_get(ldos[i].reg, &found[i]) != 0) {
-			say("exynos-camera: 1: %s cannot be read (%x)\n", ldos[i].name, pmic_bus.last_error);
+			say("exynos_camera: 1: %s cannot be read (%x)\n", ldos[i].name, pmic_bus.last_error);
 			return false;
 		}
-		say("exynos-camera: 1: %s: %#x (%s, voltage code %#x, Android's %#x)\n", ldos[i].name, found[i],
+		say("exynos_camera: 1: %s: %#x (%s, voltage code %#x, Android's %#x)\n", ldos[i].name, found[i],
 		    (found[i] & LDO_ON) ? "on" : "off", found[i] & LDO_VSEL, ldos[i].vsel);
 	}
 	return true;
@@ -2078,21 +2077,21 @@ bus_look(const char *step)
 {
 	vm_offset_t r = sensor_bus.regs, c = sensor_bus.cmu;
 
-	say("exynos-camera: %s: the sensor's HSI2C (0x108F0000): CTL %x FIFO_CTL %x INT_EN %x INT_STAT %x FIFO_STAT %x CONF %x "
+	say("exynos_camera: %s: the sensor's HSI2C (0x108F0000): CTL %x FIFO_CTL %x INT_EN %x INT_STAT %x FIFO_STAT %x CONF %x "
 	    "TIMEOUT %x TRANS_STATUS %x TIMING_FS1 %x FS2 %x FS3 %x USI_CON %x USI_OPT %x; %llu transfers, %llu errors, the "
 	    "last %x (INT_STAT: 0x100 abort, 0x200 no ack, 0x400 no device, 0x800 time-out)\n", step, rd(r, 0x00),
 	    rd(r, 0x04), rd(r, 0x20), rd(r, 0x24), rd(r, 0x30), rd(r, 0x40), rd(r, 0x48), rd(r, 0x50), rd(r, 0x60),
 	    rd(r, 0x64), rd(r, 0x68), rd(r, 0xC4), rd(r, 0xC8), sensor_bus.transfers, sensor_bus.errors,
 	    sensor_bus.last_error);
-	say("exynos-camera: %s: its USI mode word (0x1081102C) %x (4: I2C); CMU_PERIC1: mux %x, divider %x, gates %x %x %x %x "
+	say("exynos_camera: %s: its USI mode word (0x1081102C) %x (4: I2C); CMU_PERIC1: mux %x, divider %x, gates %x %x %x %x "
 	    "(bit 21 on, 20 manual), Q-channel %x\n", step, *(volatile uint32_t *)sensor_bus.usi, rd(c, sensor_bus.mux),
 	    rd(c, sensor_bus.div), rd(c, sensor_bus.gates[0]), rd(c, sensor_bus.gates[1]), rd(c, sensor_bus.gates[2]),
 	    rd(c, sensor_bus.gates[3]), rd(c, sensor_bus.qch));
-	say("exynos-camera: %s: pins (CON DAT PUD DRV): gpp5 (the bus, pins 2 and 3) %x %x %x %x; gpc1 (MCLK1, pin 5) %x %x %x "
+	say("exynos_camera: %s: pins (CON DAT PUD DRV): gpp5 (the bus, pins 2 and 3) %x %x %x %x; gpc1 (MCLK1, pin 5) %x %x %x "
 	    "%x; gpg2 (the reset, pin 5) %x %x %x %x\n", step, rd(peric1 + GPP5, 0), rd(peric1 + GPP5, 4),
 	    rd(peric1 + GPP5, 8), rd(peric1 + GPP5, 0xC), rd(peric1 + GPC1, 0), rd(peric1 + GPC1, 4), rd(peric1 + GPC1, 8),
 	    rd(peric1 + GPC1, 0xC), rd(peric0 + GPG2, 0), rd(peric0 + GPG2, 4), rd(peric0 + GPG2, 8), rd(peric0 + GPG2, 0xC));
-	say("exynos-camera: %s: CIS_CLK1 (CMU_TOP): mux %x (bit 0: 0 OSCCLK), divider %x ([4:0] + 1), gate %x (bit 21 on, 20 "
+	say("exynos_camera: %s: CIS_CLK1 (CMU_TOP): mux %x (bit 0: 0 OSCCLK), divider %x ([4:0] + 1), gate %x (bit 21 on, 20 "
 	    "manual), Q-channel %x: MCLK %s\n", step, rd(cmu_top, CIS1_MUX), rd(cmu_top, CIS1_DIV), rd(cmu_top, CIS1_GATE),
 	    rd(cmu_top, CIS1_QCH), ((rd(cmu_top, CIS1_MUX) & 1) == 0 && (rd(cmu_top, CIS1_DIV) & 0x1f) == 0 &&
 	    (rd(cmu_top, CIS1_GATE) & (GATE_MANUAL | GATE_ON)) == (GATE_MANUAL | GATE_ON)) ? "26 MHz, gated on" :
@@ -2120,7 +2119,7 @@ bus_scan(void)
 			len += (uint32_t)snprintf(list + len, sizeof(list) - len, " %02x", a);
 		}
 	}
-	say("exynos-camera: 2: the bus scanned (a one-byte read at 0x08-0x77, nothing written): %u address(es) answer%s\n",
+	say("exynos_camera: 2: the bus scanned (a one-byte read at 0x08-0x77, nothing written): %u address(es) answer%s\n",
 	    n, n ? list : ": none (no device on the bus is powered, or the bus itself is wrong: the registers above)");
 	for (uint32_t i = 0; i < sizeof(sensor_alternatives); i++) {
 		uint8_t a = sensor_alternatives[i];
@@ -2132,11 +2131,11 @@ bus_scan(void)
 		model[0] = model[1] = 0;
 		if (sensor_get(0x0000, model, 2) == 0 && ((model[0] << 8) | model[1]) != 0 &&
 		    ((model[0] << 8) | model[1]) != 0xffff) {
-			say("exynos-camera: 2: at %#x: model ID %#06x: THE SENSOR IS AT %#x (not the device tree's 0x35); used for the "
+			say("exynos_camera: 2: at %#x: model ID %#06x: THE SENSOR IS AT %#x (not the device tree's 0x35); used for the "
 			    "run\n", a, (model[0] << 8) | model[1], a);
 			return true;
 		}
-		say("exynos-camera: 2: at %#x: no model ID (%02x %02x)\n", a, model[0], model[1]);
+		say("exynos_camera: 2: at %#x: no model ID (%02x %02x)\n", a, model[0], model[1]);
 	}
 	sensor_addr = sensor_addr_given;
 	return false;
@@ -2151,16 +2150,16 @@ sensor_up(void)
 
 	for (uint32_t i = 0; i < NLDOS; i++) {
 		if (ldos[i].switched && (found[i] & LDO_ON) && (found[i] & LDO_VSEL) != ldos[i].vsel) {
-			say("exynos-camera: 2: %s is on at another voltage: someone else has it; nothing is written\n", ldos[i].name);
+			say("exynos_camera: 2: %s is on at another voltage: someone else has it; nothing is written\n", ldos[i].name);
 			return false;
 		}
 	}
 	if ((b2ctrl1_found & BUCK_ON) != 0 && ((b2ctrl1_found & BUCK_ON) != BUCK_ON || b2ctrl2_found != BUCK2_VSEL)) {
-		say("exynos-camera: 2: BUCK2 is on in another mode or at another voltage (%#x, %#x): someone else has it; "
+		say("exynos_camera: 2: BUCK2 is on in another mode or at another voltage (%#x, %#x): someone else has it; "
 		    "nothing is written\n", b2ctrl1_found, b2ctrl2_found);
 		return false;
 	}
-	say("exynos-camera: 2: the front camera's power-up (Android's order for star: BUCK2, VDDAF, VDDA, VDDIO, VDDD)\n");
+	say("exynos_camera: 2: the front camera's power-up (Android's order for star: BUCK2, VDDAF, VDDA, VDDIO, VDDD)\n");
 	powered = true;
 	clock_on();
 	pin_out(peric0 + GPG2, RESET_PIN, false);
@@ -2184,12 +2183,12 @@ sensor_up(void)
 
 	error = sensor_get(0x0000, model, 2);
 	if (error != 0) {
-		say("exynos-camera: 2: the sensor does not answer at %#x (%x): 20 ms more, and again\n", sensor_addr, error);
+		say("exynos_camera: 2: the sensor does not answer at %#x (%x): 20 ms more, and again\n", sensor_addr, error);
 		delay_for_interval(20, NSEC_PER_MSEC);
 		error = sensor_get(0x0000, model, 2);
 	}
 	if (error != 0) {
-		say("exynos-camera: 2: the sensor does not answer at %#x (%x)\n", sensor_addr, error);
+		say("exynos_camera: 2: the sensor does not answer at %#x (%x)\n", sensor_addr, error);
 		bus_look("2");
 		if (!bus_scan()) {
 			power_down();
@@ -2204,7 +2203,7 @@ sensor_up(void)
 	(void)sensor_get(0x0002, &revision, 1);
 	(void)sensor_get(0x0005, &frames, 1);
 	(void)sensor_get(0x0100, &mode, 1);
-	say("exynos-camera: 2: THE SENSOR ANSWERS: model ID %#06x, revision %#x, frame count %u, mode_select %#x "
+	say("exynos_camera: 2: THE SENSOR ANSWERS: model ID %#06x, revision %#x, frame count %u, mode_select %#x "
 	    "(0: standby)\n", (model[0] << 8) | model[1], revision, frames, mode);
 	return true;
 }
@@ -2220,7 +2219,7 @@ all_down(void)
 	}
 	isp_down();
 	if (buffer != 0 && (dma_on || pattern_on || !dma_quiet())) {
-		say("exynos-camera: the WDMA was not seen to stop: no more DMA into %#llx this run\n", buffer_pa);
+		say("exynos_camera: the WDMA was not seen to stop: no more DMA into %#llx this run\n", buffer_pa);
 		buffer_busy = true;
 	}
 }
@@ -2335,7 +2334,7 @@ picture(uint32_t n, uint32_t *wp, uint32_t *hp)
 		return false;
 	}
 	if (frame_last != 0 && frame_last < (uint64_t)stride * (FRAME_H - 1)) {
-		say("exynos-camera: camshot: the DMA wrote %u bytes, %u lines' worth at %u a line: the rest of the picture is "
+		say("exynos_camera: camshot: the DMA wrote %u bytes, %u lines' worth at %u a line: the rest of the picture is "
 		    "the buffer's fill (0xA5)\n", frame_last, frame_last / stride, stride);
 	}
 	gamma_make();
@@ -2386,7 +2385,7 @@ picture(uint32_t n, uint32_t *wp, uint32_t *hp)
 		memcpy(out + (size_t)oy * w * 3, out_row, w * 3);
 	}
 	t1 = mach_absolute_time();
-	say("exynos-camera: camshot: RAW10 %s at a stride of %u (%u bytes written); the meter's means less the black level "
+	say("exynos_camera: camshot: RAW10 %s at a stride of %u (%u bytes written); the meter's means less the black level "
 	    "R %u G %u B %u of %u (aim %u, %u per mille clipped); gains R %u.%02u G %u.%02u B %u.%02u; saturation %u %%; "
 	    "%u x %u RGB (N = %u: every Nth pixel of the demosaic), made in %llu ms\n", bayer_name[cam_bayer & 3], stride,
 	    frame_last, m.mean[0], m.mean[1], m.mean[2], 1023 - BLACK_LEVEL, AE_AIM, m.clipped, k[0] / 256,
@@ -2438,7 +2437,7 @@ shot_run(uint32_t n, bool pattern)
 	frame_last = 0;
 	frame_ends = 0;
 	sensor_broken = false;
-	say("exynos-camera: camshot %u: %s, then the debayered frame (N = %u) to the USB console\n", n_camshots,
+	say("exynos_camera: camshot %u: %s, then the debayered frame (N = %u) to the USB console\n", n_camshots,
 	    pattern ? "one frame of CSIS1's test pattern (steps 3 and 4 again)" : "one frame of the sensor's (steps 2 to 5 "
 	    "again)", n);
 	if (pattern) {
@@ -2675,10 +2674,10 @@ s9dev_make(void)
 	int major = cdevsw_add(-1, &s9dev_cdevsw);
 
 	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-camera") == NULL) {
-		say("exynos-camera: 7: /dev/hakios-camera could not be made (%d)\n", major);
+		say("exynos_camera: 7: /dev/hakios-camera could not be made (%d)\n", major);
 		return;
 	}
-	say("exynos-camera: 7: /dev/hakios-camera made (major %d): the frames as the POCO's driver gives them\n", major);
+	say("exynos_camera: 7: /dev/hakios-camera made (major %d): the frames as the POCO's driver gives them\n", major);
 }
 
 /* the stream, until the run ends (or it fails) */
@@ -2691,7 +2690,7 @@ stream_loop(void)
 	struct meter m = { { 0, 0, 0 }, 0, 0 };
 	int slot;
 
-	say("exynos-camera: 7: THE STREAM: the front camera up, 1632 x 1224 RAW10 at 30 frames a second into the ring "
+	say("exynos_camera: 7: THE STREAM: the front camera up, 1632 x 1224 RAW10 at 30 frames a second into the ring "
 	    "(%u slots of 4 MB at %#llx), the auto-exposure %s\n", RING_SLOTS, MEM_PA, cam_ae ? "on" : "off");
 	if (!sensor_up() || !isp_up() || mmu_translating()) {
 		goto failed;
@@ -2712,7 +2711,7 @@ stream_loop(void)
 		until = mach_absolute_time() + wait;
 		slot = frame_wait(until, 1000);
 		if (slot < 0) {
-			say("exynos-camera: 7: no frame end in 300 ms (CSIS1 INT_SRC0 %#x, FRM_CNT_CH0 %u; WDMA ACT_CTRL %#x)\n",
+			say("exynos_camera: 7: no frame end in 300 ms (CSIS1 INT_SRC0 %#x, FRM_CNT_CH0 %u; WDMA ACT_CTRL %#x)\n",
 			    rd(csis, CSIS_INT_SRC0), rd(csis, CSIS_FRM_CNT_CH0), rd(wdma, DMA_ACT_CTRL));
 			if (++timeouts >= 5) {
 				break;
@@ -2747,7 +2746,7 @@ stream_loop(void)
 		wakeup(&stream_newest);
 		if (manual && mach_absolute_time() > manual_until) {
 			manual = false;         /* the reader that asked has gone quiet: the kernel's own exposure again */
-			say("exynos-camera: 7: no exposure asked for two seconds: the auto-exposure again\n");
+			say("exynos_camera: 7: no exposure asked for two seconds: the auto-exposure again\n");
 		}
 		if (cam_ae && !manual && frm_now >= next_meter) {
 			meter(buffer + (uint64_t)slot * SLOT_BYTES, &m);
@@ -2758,7 +2757,7 @@ stream_loop(void)
 			memcpy((void *)(buffer + STILL_OFF), (const void *)(buffer + (uint64_t)slot * SLOT_BYTES), SLOT_BYTES);
 			frame = buffer + STILL_OFF;
 			frame_last = FRAME_H * LINE_BYTES;
-			say("exynos-camera: camshot %u: frame %llu of the stream (slot %d; exposure %u lines, gain %#x, digital "
+			say("exynos_camera: camshot %u: frame %llu of the stream (slot %d; exposure %u lines, gain %#x, digital "
 			    "%#x)\n", ++n_camshots, frm_now, slot, ae_lines, ae_again, ae_dgain);
 			shot_send(shot_n, false);
 			__atomic_store_n(&shot_asked, 0, __ATOMIC_RELEASE);
@@ -2769,7 +2768,7 @@ stream_loop(void)
 
 			meter(buffer + (uint64_t)slot * SLOT_BYTES, &m);
 
-			say("exynos-camera: 7: the stream: frame %llu after %llu ms, %llu.%02llu frames a second over the last ten "
+			say("exynos_camera: 7: the stream: frame %llu after %llu ms, %llu.%02llu frames a second over the last ten "
 			    "seconds; %llu seen, %llu lost (the thread busy), %u with the WDMA's FIFO error; exposure %u lines, gain "
 			    "%#x, digital %#x%s; green %u (aim %u)\n", frm_now, ms, frames / 10, frames * 10 % 100, seen, lost,
 			    dma_errors, ae_lines, ae_again, ae_dgain, manual ? " (asked)" : "", m.mean[1], AE_AIM);
@@ -2777,7 +2776,7 @@ stream_loop(void)
 			log_at += ten;
 		}
 	}
-	say("exynos-camera: 7: the stream ends: %llu frames, %llu seen, %llu lost, %u FIFO errors\n", frm_last, seen, lost,
+	say("exynos_camera: 7: the stream ends: %llu frames, %llu seen, %llu lost, %u FIFO errors\n", frm_last, seen, lost,
 	    dma_errors);
 failed:
 	all_down();
@@ -2798,10 +2797,10 @@ static void
 shot_loop(void)
 {
 	if (broken) {
-		say("exynos-camera: camshot: not taken in this run (a write to the S2MPB02 did not read back)\n");
+		say("exynos_camera: camshot: not taken in this run (a write to the S2MPB02 did not read back)\n");
 		return;
 	}
-	say("exynos-camera: 6: CAMSHOT READY: the USB console's \"camshot [N]\" (tools/usb-shot.py --cam) powers the front "
+	say("exynos_camera: 6: CAMSHOT READY: the USB console's \"camshot [N]\" (tools/usb-shot.py --cam) powers the front "
 	    "camera up, takes one frame and powers it down again; \"camshot N tp\": CSIS1's test pattern instead\n");
 	__atomic_store_n(&shot_ready, 1, __ATOMIC_RELEASE);
 	while (!shots_closed) {
@@ -2842,7 +2841,7 @@ camera_thread(void *arg, __unused wait_result_t result)
 		goto out;
 	}
 	look_pins("1");
-	say("exynos-camera: 1: CIS_CLK1: mux %x, divider %x, gate %x, Q-channel %x\n", rd(cmu_top, CIS1_MUX),
+	say("exynos_camera: 1: CIS_CLK1: mux %x, divider %x, gate %x, Q-channel %x\n", rd(cmu_top, CIS1_MUX),
 	    rd(cmu_top, CIS1_DIV), rd(cmu_top, CIS1_GATE), rd(cmu_top, CIS1_QCH));
 	if (!look_supplies()) {
 		goto out;
@@ -2856,7 +2855,7 @@ camera_thread(void *arg, __unused wait_result_t result)
 	}
 	kept = steps >= 5;
 	if (kept) {
-		say("exynos-camera: 2: the sensor stays powered for step 5\n");
+		say("exynos_camera: 2: the sensor stays powered for step 5\n");
 	} else {
 		power_down();
 	}
@@ -2871,7 +2870,7 @@ camera_thread(void *arg, __unused wait_result_t result)
 		goto down;
 	}
 	if (sensor_frame()) {
-		say("exynos-camera: 5: A FRAME OF THE SENSOR'S IS IN MEMORY (the patch's mean tells a picture from black)\n");
+		say("exynos_camera: 5: A FRAME OF THE SENSOR'S IS IN MEMORY (the patch's mean tells a picture from black)\n");
 	}
 down:
 	all_down();

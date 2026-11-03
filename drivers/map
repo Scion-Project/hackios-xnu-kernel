@@ -19,7 +19,6 @@ input    bsd/dev/hakios.virtio_input.c
 storage  bsd/dev/hakios.ufs.c
 storage  bsd/dev/hakios.ufshc.c
 storage  bsd/dev/hakios.ufshc.h
-storage  iokit/Kernel/hakios.ufshc_mem.cpp
 storage  bsd/dev/hakios.ext4.c
 storage  bsd/dev/hakios.sparse.c
 storage  bsd/dev/hakios.image.c
@@ -40,7 +39,6 @@ camera   bsd/dev/hakios.camera.c
 camera   bsd/dev/hakios.torch.c
 camera   bsd/dev/hakios.s2mpb02_torch.c
 camera   bsd/dev/hakios.exynos_camera.c
-camera   iokit/Kernel/hakios.exynos_camera_mem.cpp
 
 haptic   bsd/dev/hakios.haptic.c
 
@@ -94,6 +92,7 @@ core     bsd/dev/hakios.usb_acm.h
 core     bsd/dev/hakios.usb_glue.h
 core     bsd/dev/hakios.exynos_usb.c
 core     iokit/Kernel/hakios.stubs.cpp
+core     iokit/Kernel/hakios.physmap.cpp
 core    bsd/dev/hakios.socinfo.c
 power   bsd/dev/hakios.thermal.c
 power   bsd/dev/hakios.thermal_provider.c

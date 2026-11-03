@@ -81,8 +81,9 @@
  * "touch", "frames", both, or "off" -- so boosts are said once a second at most, never one line each)
  * to the loader's log (loader_log_line), which printf does not reach.
  *
- * Status: the load governor RUN on the phone (ACPM takes the requests, the measured MHz match them, the temperatures are
- * read), but too slow to rise for the UI; the boosts, the 60% target and the five down windows are WRITTEN, NOT YET RUN.
+ * Status: the load governor run on the phone (ACPM takes the requests, the measured MHz match them, the temperatures are
+ * read), with the touch and frame boosts, the 60% target and the five down windows (kernel PR 158): the S9's default,
+ * cpufreq_gov=1.
  *
  * Boot-args:
  *   cpufreq_gov=1            run it (0, or none: the fixed rates of cpufreq_lit= and cpufreq_big=)

@@ -71,6 +71,7 @@
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
+#include <sys/hakios.exynos9810_mem.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_line(const char *line);
@@ -286,6 +287,10 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 	say("exynos_dpu: probe: as expected (window %u on %s reading the boot framebuffer, command mode, running; the "
 	    "boot channel's IDMA enable reads %x, not checked): flips and the scaler may be asked for\n", win,
 	    type_name[boot_type], rd(idma(boot_type), IDMA_ENABLE));
+	/* (sys/hakios.exynos9810_mem.h; SCAN_SLOTS below is the same count) */
+	say("exynos_dpu: memory: scan-out buffers %#llx-%#llx, fb_zc's pool %#llx-%#llx (%llu slots of 12 MB)\n",
+	    EXYNOS9810_MEM_DPU_SCAN_PA, EXYNOS9810_MEM_DPU_SCAN_END - 1, EXYNOS9810_MEM_DPU_POOL_PA,
+	    EXYNOS9810_MEM_DPU_POOL_END - 1, EXYNOS9810_MEM_SIZE(DPU_POOL) / (12ULL << 20));
 	return 0;
 }
 
@@ -298,17 +303,20 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
  * Shannon modem's region (modem_if, cp_ram_logging), then ABOX's. `count` buffers of `bytes` each from 0xD4000000,
  * 64 KB apart at least; physical addresses, the caller maps them (write-combined). 0 if they fit.
  */
-#define SCAN_MEMORY_PA          0xD4000000ULL
-#define SCAN_MEMORY_END         0xE1900000ULL   /* secure_camera */
+#define SCAN_MEMORY_PA          EXYNOS9810_MEM_DPU_SCAN_PA      /* 0xD4000000 (sys/hakios.exynos9810_mem.h) */
+#define SCAN_MEMORY_END         EXYNOS9810_MEM_DPU_SCAN_END     /* 0xD7000000 */
 /*
- * The rest of the gap, from 48 MB on (the three buffers above take 34 MB at most, fb_flip's of the panel's size), is a
- * pool for fb_zc: the window server's own display surfaces are made of it (MiniIOSurface.cpp), so that VGF0 scans out
- * the very surface CoreAnimation's frame was drawn into, and nothing is copied (MiniIOMobileFramebuffer.cpp). Slots of
- * 12 MB, one surface each: the iPhone's 1125 x 2436 at 4544 or 4608 bytes a row is 11 MB. 14 slots.
+ * The buffers above take 34 MB at most (fb_flip's of the panel's size) of their 48 MB. fb_zc has a pool of its own, the
+ * top of the gap above the camera's, UFS's and Wi-Fi's memory (sys/hakios.exynos9810_mem.h): the window server's own
+ * display surfaces are made of it (MiniIOSurface.cpp), so that VGF0 scans out the very surface CoreAnimation's frame was
+ * drawn into, and nothing is copied (MiniIOMobileFramebuffer.cpp). Slots of 12 MB, one surface each: the iPhone's
+ * 1125 x 2436 at 4544 or 4608 bytes a row is 11 MB. Three slots; CoreAnimation keeps two display surfaces.
  */
-#define SCAN_POOL_PA            (SCAN_MEMORY_PA + (48ULL << 20))
+#define SCAN_POOL_PA            EXYNOS9810_MEM_DPU_POOL_PA      /* 0xDEC00000, above the camera's, UFS's and Wi-Fi's */
+#define SCAN_POOL_END           EXYNOS9810_MEM_DPU_POOL_END     /* 0xE1900000, secure_camera */
 #define SCAN_SLOT               (12ULL << 20)
-#define SCAN_SLOTS              ((unsigned)((SCAN_MEMORY_END - SCAN_POOL_PA) / SCAN_SLOT))
+#define SCAN_SLOTS              ((unsigned)((SCAN_POOL_END - SCAN_POOL_PA) / SCAN_SLOT))
+_Static_assert(SCAN_SLOTS >= 2 && SCAN_SLOTS <= 32, "exynos_dpu: the pool holds CoreAnimation's two surfaces, and pool_used's bits");
 static uint32_t pool_used;              /* a bit for every slot given out (SCAN_SLOTS <= 32) */
 static uint32_t scan_rowbytes;          /* the buffers' row length as attached: a flip back to them restores it */
 static uint32_t shown_rowbytes;         /* what the IDMA reads now */
@@ -322,16 +330,16 @@ hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t *phys)
 		say("exynos_dpu: memory: not the S9's DECON as expected: no buffers of its own\n");
 		return -1;
 	}
-	if (SCAN_MEMORY_PA + step * count > SCAN_POOL_PA) {
+	if (SCAN_MEMORY_PA + step * count > SCAN_MEMORY_END) {
 		say("exynos_dpu: memory: %u buffers of %llu bytes do not fit between %#llx and %#llx\n", count, bytes,
-		    SCAN_MEMORY_PA, SCAN_POOL_PA);
+		    SCAN_MEMORY_PA, SCAN_MEMORY_END);
 		return -1;
 	}
 	for (unsigned k = 0; k < count; k++) {
 		phys[k] = SCAN_MEMORY_PA + step * k;
 	}
-	say("exynos_dpu: memory: %u buffers of %llu bytes at %#llx to %#llx (the device tree's gap below secure_camera at "
-	    "%#llx)\n", count, bytes, SCAN_MEMORY_PA, SCAN_MEMORY_PA + step * count, SCAN_MEMORY_END);
+	say("exynos_dpu: memory: %u buffers of %llu bytes at %#llx to %#llx (of %#llx to %#llx)\n", count, bytes,
+	    SCAN_MEMORY_PA, SCAN_MEMORY_PA + step * count, SCAN_MEMORY_PA, SCAN_MEMORY_END);
 	return 0;
 }
 

@@ -19,7 +19,6 @@ driver S2MPB02_TORCH
 
 driver EXYNOS_CAMERA
 	file    bsd/dev/hakios.exynos_camera.c
-	file    iokit/Kernel/hakios.exynos_camera_mem.cpp iokitcpp
 	requires EXYNOS_HSI2C
 	default n
 	help    the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and

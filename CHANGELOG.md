@@ -16,6 +16,12 @@ changes to it; the scripts named fetch the release and put the changes on.
 - the build tools: Apple's [libdispatch](https://github.com/apple-oss-distributions/libdispatch), [libpthread](https://github.com/apple-oss-distributions/libpthread) and [AvailabilityVersions](https://github.com/apple-oss-distributions/AvailabilityVersions), [bootstrap_cmds](https://github.com/markmentovai/bootstrap_cmds), [unifdef](https://github.com/fanf2/unifdef), the [macOS 13.3 SDK](https://github.com/joseluisq/macosx-sdks) and the [iPhoneOS 16.5 SDK](https://github.com/theos/sdks) -- `xnu-deps/setup.sh`
 - not fetched by anything here: the Darwin 16.5 user space, which you lay out from your own IPSW (`sysimage/`), and the phone's own firmware, pulled from its Android (`fw-*`)
 
+## 2026-11-03
+
+- Galaxy S9: what has been seen working is on by default: the S9's configuration (`devices/starlte/configs/starlte.config`) sets six cores, the kernel's own UFS driver with /private/var in USERDATA, touch, keys, battery, USB console, GPU and both governors, brightness, zero-copy display, the RTC, the front camera, the speakers and Wi-Fi, and `devices/starlte/mkimage.sh` puts them on every image; a run's own arguments go over them by name (`tools/hakios-config.py args --with`; `name=` drops one, `-n` none). No other device changes
+- Galaxy S9: the display's `fb_zc` pool moves to 0xDEC00000-0xE18FFFFF (three 12 MB slots): it ran from 0xD7000000 to `secure_camera`, over the camera's frames, UFS's own-mode memory and Wi-Fi's optional DMA window. The S9's physical carve-outs are one table, `sys/hakios.exynos9810_mem.h`, checked at build time for overlaps; the display logs its ranges at probe
+- drivers: one `hakios_physmap_wc()` (`sys/hakios.physmap.h`) maps physical memory XNU does not manage, write-combined, for the camera and UFS's own mode, in place of a copy each; the camera's and the keys' log lines start `exynos_camera:` and `exynos_keys:`
+
 ## 2026-11-02
 
 - Galaxy S9: a run's end restarts into TWRP again: the loader writes INFORM2/3 right before it restarts the phone with the PMU's software reset (SWRESET) instead of UEFI's ResetSystem, feeds the watchdog while it shows the kernel's log on the screen (it bit there before, and its reset clears INFORM3: the phone came back into BOOT), and keeps the kernel's log in the RAM log through the last write; the USB console's `return` runs off the busy thread-call group and forces the return after 15 s

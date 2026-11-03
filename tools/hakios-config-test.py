@@ -189,6 +189,21 @@ try:
     long = " ".join("modem_ipa_data_trace=%d" % i for i in range(30))
     problems, _ = hc.check(dict(base, BOOTARGS='"%s"' % long))
     check("BOOTARGS counts toward the length limit", any("the end of it would be lost" in p for p in problems), problems)
+    # a device's own run overhead (CMDLINE_RUN): the S9's mkimage.sh and loader add less than the reference phone's runs
+    problems, _ = hc.check(dict(base, BOOTARGS='"%s"' % " ".join("modem_ipa_data_trace=%d" % i for i in range(16))))
+    check("about 380 characters of arguments are too many with the default overhead", any("would be lost" in p for p in problems), problems)
+    problems, _ = hc.check(dict(base, CMDLINE_RUN="170", BOOTARGS='"%s"' % " ".join("modem_ipa_data_trace=%d" % i for i in range(16))))
+    check("... and fit where the device says a run adds 170", not any("would be lost" in p for p in problems), problems)
+    # ufs=3 (the kernel's own driver, the S9) and ufs_write with it
+    problems, _ = hc.check({"UFS": "3", "UFS_WRITE": "y"})
+    check("UFS=3 with UFS_WRITE is accepted", not problems, problems)
+    problems, _ = hc.check({"UFS": "1", "UFS_WRITE": "y"})
+    check("UFS_WRITE with UFS=1 (a survey) is refused", any("requires CONFIG_UFS=2|3" in p for p in problems), problems)
+    # a run's own arguments over the configuration's (args --with; devices/starlte/mkimage.sh)
+    merged = hc.merge_args(["cpus=6", "bootcpu=2", "ufs=3", "wifi=1"], ["-v", "cpus=2", "ufs=", "fps_log=1"])
+    check("--with: a given word replaces the default where it stands, name= drops it, new ones and flags are added",
+          merged == ["cpus=2", "bootcpu=2", "wifi=1", "-v", "fps_log=1"], merged)
+    check("--with: nothing given is the configuration's own", hc.merge_args(["a=1", "b=2"], []) == ["a=1", "b=2"])
 
     # the common kernel's configuration: not named after a phone, and a phone's defconfig is only what it includes
     r = run("defconfig", "common", "-o", os.path.join(work, "common"))
@@ -234,11 +249,13 @@ try:
           len(hc.SYMBOLS) >= 300 and len({s[0] for s in hc.SYMBOLS}) == len(hc.SYMBOLS), len(hc.SYMBOLS))
 
     # the drivers: compiled in, not arguments
-    check("redwood builds every driver, and they give no argument",
-          all("CONFIG_%s=y" % d.symbol in open(cfg).read() for d in hc.DRIVERS) and len(hc.DRIVERS) >= 20 and
+    # (a driver whose drivers/*/conf says `default n` -- the S9's Exynos blocks -- is built only where a configuration asks)
+    check("redwood builds every driver that is built by default, and they give no argument",
+          all("CONFIG_%s=y" % d.symbol in open(cfg).read() for d in hc.DRIVERS if d.default == "y") and len(hc.DRIVERS) >= 20 and
           not any(x.startswith("hakios_") for x in args_of(run("args", "--config", cfg))), len(hc.DRIVERS))
     built = hc.drivers_built({})
-    check("a configuration that names no driver builds them all (their default)", all(built.values()), built)
+    check("a configuration that names no driver builds each as its conf says (their default)",
+          built == {d.symbol: d.default == "y" for d in hc.DRIVERS} and sum(built.values()) >= 20, built)
     off = dict(hc.parse(cfg)[0])
     problems, _ = hc.check(dict(off, HAKIOS_ADSP="n"))
     check("a driver without one it requires is refused (SOUND without ADSP)", any("CONFIG_HAKIOS_SOUND requires CONFIG_HAKIOS_ADSP" in p for p in problems), problems)

@@ -117,7 +117,7 @@ keys_poll(void)
 		if (!k->live) {
 			if (!now) {
 				k->live = true;
-				say("exynos-keys: %s seen released: watching it\n", k->name);
+				say("exynos_keys: %s seen released: watching it\n", k->name);
 			}
 			continue;
 		}
@@ -127,7 +127,7 @@ keys_poll(void)
 				k->presses++;
 			}
 			hakios_touch_post(now ? HAKIOS_BUTTON_DOWN : HAKIOS_BUTTON_UP, k->button, 0, 0);
-			say("exynos-keys: %s %s\n", k->name, now ? "down" : "up");
+			say("exynos_keys: %s %s\n", k->name, now ? "down" : "up");
 		}
 	}
 }
@@ -139,7 +139,7 @@ keys_thread(__unused void *arg, __unused wait_result_t wr)
 
 	alive = ml_io_map(ALIVE_PA, ALIVE_SIZE);
 	if (alive == 0) {
-		say("exynos-keys: cannot map the ALIVE GPIO block at 0x%lx\n", ALIVE_PA);
+		say("exynos_keys: cannot map the ALIVE GPIO block at 0x%lx\n", ALIVE_PA);
 		thread_terminate(current_thread());
 		return;
 	}
@@ -152,15 +152,15 @@ keys_thread(__unused void *arg, __unused wait_result_t wr)
 		k->usable = con == 0x0 || con == 0xf;
 		k->last = key_held(k, gpa0, gpa2);
 		k->live = k->usable && !k->last;
-		say("exynos-keys: %s: bank 0x%x pin %u, CON %x (%s), %s\n", k->name, k->bank, k->pin, con,
+		say("exynos_keys: %s: bank 0x%x pin %u, CON %x (%s), %s\n", k->name, k->bank, k->pin, con,
 		    con == 0 ? "input" : con == 0xf ? "interrupt" : "SOMETHING ELSE: not a key here, left alone",
 		    k->last ? "reads as held: believed once it has been seen released" : "released");
 	}
-	say("exynos-keys: watching every %u ms: power is the side button, Bixby the home button\n", POLL_MS);
+	say("exynos_keys: watching every %u ms: power is the side button, Bixby the home button\n", POLL_MS);
 	for (unsigned tick = 1;; tick++) {
 		keys_poll();
 		if (tick % MINUTE_TICKS == 0) {
-			say("exynos-keys: a minute: presses power %u, volume-up %u, volume-down %u, bixby %u\n",
+			say("exynos_keys: a minute: presses power %u, volume-up %u, volume-down %u, bixby %u\n",
 			    keys[0].presses, keys[1].presses, keys[2].presses, keys[3].presses);
 		}
 		delay_for_interval(POLL_MS, NSEC_PER_MSEC);
