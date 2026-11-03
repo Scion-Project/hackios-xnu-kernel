@@ -1792,6 +1792,177 @@ __asm__ (
         "  b 1b\n"
         );
 
+/*
+ * core0=1: this core's own state while the kernel has it (loader_save_ctx's, in an array of its own: loader_ctx is the
+ * boot core's way back). core0_save_ctx() returns 0, and 1 a second time when the kernel gives the core back through
+ * core0_return_stub (MMU on through the kernel's identity mapping of the stub, or off; interrupts masked).
+ */
+uint64_t core0_ctx[CTX_COUNT];
+int core0_save_ctx(void) __attribute__((returns_twice));
+void core0_jump(uint64_t entry) __attribute__((noreturn));
+
+__asm__ (
+        ".text\n"
+        ".balign 64\n"
+        ".globl core0_save_ctx\n"
+        "core0_save_ctx:\n"
+        "  adrp x10, core0_ctx\n"
+        "  add  x10, x10, :lo12:core0_ctx\n"
+        "  mrs x9, ttbr0_el1\n   str x9, [x10, #0]\n"
+        "  mrs x9, tcr_el1\n     str x9, [x10, #8]\n"
+        "  mrs x9, mair_el1\n    str x9, [x10, #16]\n"
+        "  mrs x9, sctlr_el1\n   str x9, [x10, #24]\n"
+        "  mrs x9, vbar_el1\n    str x9, [x10, #32]\n"
+        "  mrs x9, cpacr_el1\n   str x9, [x10, #40]\n"
+        "  mov x9, sp\n          str x9, [x10, #48]\n"
+        "  mrs x9, spsel\n       str x9, [x10, #56]\n"
+        "  mrs x9, daif\n        str x9, [x10, #64]\n"
+        "  mrs x9, cntkctl_el1\n   str x9, [x10, #104]\n"
+        "  mrs x9, tpidr_el1\n     str x9, [x10, #280]\n"
+        "  mrs x9, tpidr_el0\n     str x9, [x10, #288]\n"
+        "  mrs x9, tpidrro_el0\n   str x9, [x10, #296]\n"
+        "  mrs x9, contextidr_el1\n str x9, [x10, #312]\n"
+        "  mrs x9, mdscr_el1\n     str x9, [x10, #320]\n"
+        "  mrs x9, s3_3_c4_c4_0\n          str x9, [x10, #328]\n"
+        "  mrs x9, s3_3_c4_c4_1\n          str x9, [x10, #336]\n"
+        "  mrs x9, spsel\n"
+        "  cbz x9, 1f\n"
+        "  mrs x9, sp_el0\n        str x9, [x10, #304]\n"
+        "1:\n"
+        "  str x18, [x10, #112]\n"
+        "  stp x19, x20, [x10, #120]\n"
+        "  stp x21, x22, [x10, #136]\n"
+        "  stp x23, x24, [x10, #152]\n"
+        "  stp x25, x26, [x10, #168]\n"
+        "  stp x27, x28, [x10, #184]\n"
+        "  stp x29, x30, [x10, #200]\n"
+        "  mov x0, #0\n"
+        "  ret\n"
+        ".balign 64\n"
+        ".globl core0_return_stub\n"
+        "core0_return_stub:\n"
+        "  msr daifset, #0xf\n"
+        "  .inst 0xd500409f\n"          /* msr PAN, #0 */
+        "  .inst 0xd500407f\n"          /* msr UAO, #0 */
+        "  mrs x9, sctlr_el1\n"
+        "  bic x9, x9, #0x1\n"
+        "  bic x9, x9, #0x4\n"
+        "  bic x9, x9, #0x1000\n"
+        "  msr sctlr_el1, x9\n"
+        "  isb\n"
+        "  adrp x10, core0_ctx\n"
+        "  add  x10, x10, :lo12:core0_ctx\n"
+        "  ldr x9, [x10, #0]\n   msr ttbr0_el1, x9\n"
+        "  ldr x9, [x10, #8]\n   msr tcr_el1, x9\n"
+        "  ldr x9, [x10, #16]\n  msr mair_el1, x9\n"
+        "  ldr x9, [x10, #32]\n  msr vbar_el1, x9\n"
+        "  ldr x9, [x10, #40]\n  msr cpacr_el1, x9\n"
+        "  isb\n"
+        "  tlbi vmalle1\n"
+        "  dsb sy\n"
+        "  ic iallu\n"
+        "  isb\n"
+        "  ldr x9, [x10, #24]\n  msr sctlr_el1, x9\n"
+        "  isb\n"
+        "  ldr x9, [x10, #56]\n"
+        "  cbz x9, 1f\n"
+        "  msr spsel, #1\n"
+        "  ldr x9, [x10, #304]\n msr sp_el0, x9\n"
+        "  b 2f\n"
+        "1:\n"
+        "  msr spsel, #0\n"
+        "2:\n"
+        "  ldr x9, [x10, #48]\n  mov sp, x9\n"
+        "  ldr x9, [x10, #280]\n msr tpidr_el1, x9\n"
+        "  ldr x9, [x10, #288]\n msr tpidr_el0, x9\n"
+        "  ldr x9, [x10, #296]\n msr tpidrro_el0, x9\n"
+        "  ldr x9, [x10, #312]\n msr contextidr_el1, x9\n"
+        "  ldr x9, [x10, #320]\n msr mdscr_el1, x9\n"
+        "  ldr x9, [x10, #328]\n msr s3_3_c4_c4_0, x9\n"
+        "  ldr x9, [x10, #336]\n msr s3_3_c4_c4_1, x9\n"
+        "  ldr x9, [x10, #104]\n msr cntkctl_el1, x9\n"
+        "  ldr x18, [x10, #112]\n"
+        "  ldp x19, x20, [x10, #120]\n"
+        "  ldp x21, x22, [x10, #136]\n"
+        "  ldp x23, x24, [x10, #152]\n"
+        "  ldp x25, x26, [x10, #168]\n"
+        "  ldp x27, x28, [x10, #184]\n"
+        "  ldp x29, x30, [x10, #200]\n"
+        "  ldr x9, [x10, #64]\n  msr daif, x9\n"
+        "  mov x0, #1\n"
+        "  ret\n"
+        /*
+         * core0_jump(entry): into the kernel as a core the firmware has just started: its data cache off first, then
+         * every line of its own caches (to the point of unification, inner shareable: what TF-A cleans for a core's
+         * power-down) written back and dropped by set and way, its TLB emptied, the MMU and the instruction cache off,
+         * and in at entry with x0 = 0. Nothing it held before is found by the kernel once it turns its caches on.
+         */
+        ".balign 64\n"
+        ".globl core0_jump\n"
+        "core0_jump:\n"
+        "  msr daifset, #0xf\n"
+        "  mov x12, x0\n"
+        "  mrs x9, sctlr_el1\n"
+        "  bic x9, x9, #0x4\n"
+        "  msr sctlr_el1, x9\n"
+        "  isb\n"
+        "  dmb sy\n"
+        "  mrs x0, clidr_el1\n"
+        "  and x3, x0, #0xe00000\n"          /* LoUIS, times 2 */
+        "  lsr x3, x3, #20\n"
+        "  cbz x3, 5f\n"
+        "  mov x10, #0\n"
+        "1:\n"
+        "  add x2, x10, x10, lsr #1\n"
+        "  lsr x1, x0, x2\n"
+        "  and x1, x1, #7\n"
+        "  cmp x1, #2\n"
+        "  b.lt 4f\n"                         /* no data cache at this level */
+        "  msr csselr_el1, x10\n"
+        "  isb\n"
+        "  mrs x1, ccsidr_el1\n"
+        "  and x2, x1, #7\n"
+        "  add x2, x2, #4\n"                  /* log2 of the line */
+        "  mov x4, #0x3ff\n"
+        "  and x4, x4, x1, lsr #3\n"          /* the ways, less one */
+        "  clz w5, w4\n"
+        "  mov x7, #0x7fff\n"
+        "  and x7, x7, x1, lsr #13\n"         /* the sets, less one */
+        "2:\n"
+        "  mov x9, x4\n"
+        "3:\n"
+        "  lsl x6, x9, x5\n"
+        "  orr x11, x10, x6\n"
+        "  lsl x6, x7, x2\n"
+        "  orr x11, x11, x6\n"
+        "  dc cisw, x11\n"
+        "  subs x9, x9, #1\n"
+        "  b.ge 3b\n"
+        "  subs x7, x7, #1\n"
+        "  b.ge 2b\n"
+        "4:\n"
+        "  add x10, x10, #2\n"
+        "  cmp x3, x10\n"
+        "  b.gt 1b\n"
+        "5:\n"
+        "  mov x10, #0\n"
+        "  msr csselr_el1, x10\n"
+        "  dsb sy\n"
+        "  isb\n"
+        "  tlbi vmalle1\n"
+        "  dsb sy\n"
+        "  mrs x9, sctlr_el1\n"
+        "  bic x9, x9, #0x1\n"
+        "  bic x9, x9, #0x1000\n"
+        "  msr sctlr_el1, x9\n"
+        "  isb\n"
+        "  ic iallu\n"
+        "  dsb sy\n"
+        "  isb\n"
+        "  mov x0, #0\n"
+        "  br x12\n"
+        );
+
 static uint64_t smc_call(uint64_t id, uint64_t a1, uint64_t a2, uint64_t *r1, uint64_t *r2);
 static uint64_t smc_x3;
 static const struct platform *PLAT;
@@ -1892,6 +2063,43 @@ static const char *sound_data;
 static uint64_t sound_len;
 #define KERNEL_LIVE_MAGIC2      0x324556494c554e58ULL
 #define KERNEL_LIVE_MAGIC       0x214556494c554e58ULL
+
+/*
+ * core0=1: this core -- the one the loader stays on while the kernel runs on others (bootcpu=) -- given to the kernel
+ * once the kernel no longer needs the loader (the Galaxy S9 with ufs=3: after its own UFS driver's switch), and given
+ * back to the loader when the kernel ends (struct loader_core_box in XNU's osfmk/arm64/psci_smp.c, patch 1511).
+ *
+ *   at the start  the loader finds the kernel's box (its magic, and its own address in its second word), writes this
+ *                 core's MPIDR into it and lists the core last among the kernel's (the device tree's /cpus). The kernel
+ *                 does not start it: its CPU_ON for that core is put off (the processor waits, as a core that has not
+ *                 come yet)
+ *   offered       once the loader only watches (NOTE_SECONDS on, its interrupts off) it writes where the core comes back
+ *                 to and the watchdog the kernel is to feed, and says OFFERED
+ *   wanted        the kernel (its UFS driver, after the switch) writes where the core enters it and says WANTED; the
+ *                 loader feeds the watchdog a last time, quiets this core's timers and its half of the GIC, says GONE
+ *                 and jumps there (core0_jump: its caches emptied, MMU and caches off), as CPU_ON would have started it
+ *   given back    on the way out (psci_smp_stop_others, a panic, processor_exit) the kernel says RETURNING and jumps to
+ *                 core0_return_stub through a mapping of its own: the loader's state comes back, it says BACK and
+ *                 watches again -- the kernel's return (other_cpu_return_stub on the boot core) finds it there
+ * While the kernel has the core it feeds the watchdog (WTCNT, from the box); the loader's watch for a silent kernel
+ * and its log on a hang are not there: a hang then is the watchdog's (a restart into BOOT), and the kernel's own log
+ * is what is left (esslog=1). Nothing of this happens without core0=1, nor before the kernel asks.
+ */
+#define LOADER_CORE_MAGIC       0x3045524f434c4458ULL   /* "XDLCORE0" */
+enum { LOADER_CORE_NONE, LOADER_CORE_OFFERED, LOADER_CORE_WANTED, LOADER_CORE_GONE, LOADER_CORE_RETURNING, LOADER_CORE_BACK };
+struct loader_core_box {
+	uint64_t magic;                 /* LOADER_CORE_MAGIC */
+	uint64_t self;                  /* the box's own kernel virtual address: add the slide, and it is where it was found */
+	uint64_t mpidr;                 /* ours: the core the kernel may have (~0: none) */
+	volatile uint64_t state;        /* LOADER_CORE_*: the loader's and the kernel's turns, as above */
+	uint64_t entry;                 /* the kernel's: where the core enters it (physical; LowResetVectorBase) */
+	uint64_t back;                  /* ours: core0_return_stub (physical, identity mapped by the kernel) */
+	uint64_t wdt_pa, wdt_count;     /* ours: the watchdog the kernel feeds while it has the core (WTCNT at +8), 0: none */
+};
+static struct loader_core_box *core_box;        /* this run's, or NULL: the core stays the loader's */
+static int core0_requested, core1_requested;
+static void core0_into_kernel(void);
+void core0_return_stub(void);
 #define OTHER_CPU_NOT_STARTED   1000    /* run_on_other_cpu(): the firmware said yes but the core never arrived */
 #define OTHER_CPU_HUNG          1001    /* ... the kernel stopped giving signs of life */
 #define START_SECONDS           5
@@ -1901,6 +2109,7 @@ static uint64_t sound_len;
 static void wdt_pet(void);
 static int wdt_armed;
 static int exynos_wdt_owns(void);       /* (the Galaxy S9's watchdog, below) */
+static uint32_t exynos_wdt_count;
 
 /*
  * While a kernel runs on another core and this one watches it: where it shows its signs of life,
@@ -3392,6 +3601,28 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 				status = OTHER_CPU_HUNG;
 			}
 		}
+		/*
+		 * core0=1: once this core only watches, it is offered; when the kernel asks, it goes (and comes back only when
+		 * the kernel ends: then the watch goes on, the silence counted from the return)
+		 */
+		if (core_box != NULL && watching_only && arrived && status == 0) {
+			if (core_box->state == LOADER_CORE_NONE) {
+				core_box->back = (uint64_t)(uintptr_t)&core0_return_stub;
+				core_box->wdt_pa = exynos_wdt_owns() && PLAT->exynos_wdt != 0 ? PLAT->exynos_wdt : 0;
+				core_box->wdt_count = core_box->wdt_pa != 0 ? exynos_wdt_count : 0;
+				__asm__ volatile ("dsb sy" ::: "memory");
+				core_box->state = LOADER_CORE_OFFERED;
+				print("core0: offered to the kernel after %d s (back to %x; the watchdog %x, %d counts, the kernel's to feed "
+				    "while it has the core)\n", seconds_since(started), core_box->back, core_box->wdt_pa, core_box->wdt_count);
+			} else if (core_box->state == LOADER_CORE_WANTED) {
+				core0_into_kernel();
+				last_pet = last_beat_at = READ_SYSREG(CNTVCT_EL0);
+				if (live != NULL) {
+					last_beat = live->heartbeat;
+				}
+				wdt_pet();
+			}
+		}
 		if (block_enabled) {
 			block_poll();
 		}
@@ -3480,7 +3711,6 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 
 static int exynos_wdt_on;               /* armed, and fed by wdt_pet() */
 static int exynos_wdt_paused;           /* stopped while a kernel runs on this core; wdt_set_ms() arms it again */
-static uint32_t exynos_wdt_count;
 static int starts_with(const char *s, const char *prefix);
 
 static inline uint32_t
@@ -3708,6 +3938,74 @@ wdt_set_ms(uint64_t ms)
 		smc_call(VIRT_WDT_SET_TIME, ms, ms, NULL, NULL);
 		smc_call(VIRT_WDT_PET, 0, 0, NULL, NULL);
 	}
+}
+
+/*
+ * core0=1, the kernel has asked (LOADER_CORE_WANTED): this core into the kernel, as the firmware's CPU_ON would start it
+ * (core0_jump: caches emptied, MMU and caches off, interrupts masked, x0 = 0, at the kernel's entry), and back here when
+ * the kernel gives it back
+ * (core0_return_stub). What the kernel finds of the loader's use of this core is quieted first, and put back after:
+ * the architected timers (UEFI's tick) and this core's banked half of a GICv2 (CPU interface, SGI/PPI enables).
+ */
+static void
+core0_into_kernel(void)
+{
+	uint64_t t0 = READ_SYSREG(CNTVCT_EL0), cntp_ctl, cntp_cval, cntv_ctl, cntv_cval;
+	uint32_t gicc_ctlr = 0, gicc_pmr = 0, gicc_bpr = 0, gicd_en0 = 0;
+	uint64_t gicc = PLAT->gic_cpu, gicd = PLAT->gic_dist;
+
+	print("core0: the kernel takes this core (%x) at %x; until it gives it back the watchdog is the kernel's to feed, "
+	    "and a silent kernel is the watchdog's to catch (a restart into BOOT), not the loader's\n", core_box->mpidr,
+	    core_box->entry);
+	wdt_pet();
+	cntp_ctl = READ_SYSREG(CNTP_CTL_EL0);
+	cntp_cval = READ_SYSREG(CNTP_CVAL_EL0);
+	cntv_ctl = READ_SYSREG(CNTV_CTL_EL0);
+	cntv_cval = READ_SYSREG(CNTV_CVAL_EL0);
+	__asm__ volatile ("msr cntp_ctl_el0, %0\nmsr cntv_ctl_el0, %0\nisb" : : "r" ((uint64_t)0));
+	if (gicc != 0) {
+		/* GICv2: this core's CPU interface off, its SGIs and PPIs disabled and nothing left pending */
+		gicc_ctlr = *(volatile uint32_t *)(uintptr_t)(gicc + 0x0);
+		gicc_pmr = *(volatile uint32_t *)(uintptr_t)(gicc + 0x4);
+		gicc_bpr = *(volatile uint32_t *)(uintptr_t)(gicc + 0x8);
+		gicd_en0 = *(volatile uint32_t *)(uintptr_t)(gicd + 0x100);
+		*(volatile uint32_t *)(uintptr_t)(gicc + 0x0) = 0;
+		*(volatile uint32_t *)(uintptr_t)(gicd + 0x180) = 0xFFFFFFFFu;
+		*(volatile uint32_t *)(uintptr_t)(gicd + 0x280) = 0xFFFFFFFFu;
+		__asm__ volatile ("dsb sy" ::: "memory");
+	}
+	if (core0_save_ctx() == 0) {
+		uint64_t sp_now = (uint64_t)(uintptr_t)__builtin_frame_address(0);
+
+		/* what this core reads with its caches off on the way back: the stub's state, and this stack */
+		clean_dcache((uint64_t)(uintptr_t)core0_ctx, (uint64_t)(uintptr_t)core0_ctx + sizeof(core0_ctx));
+		clean_dcache(sp_now - 0x2000, sp_now + 0x2000);
+		uint64_t entry = core_box->entry;
+
+		core_box->state = LOADER_CORE_GONE;
+		__asm__ volatile ("dsb sy" ::: "memory");
+		core0_jump(entry);
+	}
+	/*
+	 * back: the kernel has ended, or let the core go. It may have given the core back from the handler of its stop
+	 * signal (an SGI acknowledged and never ended): nothing of the kernel's stays active or pending in this core's half.
+	 */
+	if (gicc != 0) {
+		*(volatile uint32_t *)(uintptr_t)(gicd + 0x180) = 0xFFFFFFFFu;
+		*(volatile uint32_t *)(uintptr_t)(gicd + 0x280) = 0xFFFFFFFFu;
+		*(volatile uint32_t *)(uintptr_t)(gicd + 0x380) = 0xFFFFFFFFu;
+		*(volatile uint32_t *)(uintptr_t)(gicc + 0xD0) = 0;    /* GICC_APR0: no active priority left */
+		*(volatile uint32_t *)(uintptr_t)(gicd + 0x100) = gicd_en0;
+		*(volatile uint32_t *)(uintptr_t)(gicc + 0x4) = gicc_pmr;
+		*(volatile uint32_t *)(uintptr_t)(gicc + 0x8) = gicc_bpr;
+		*(volatile uint32_t *)(uintptr_t)(gicc + 0x0) = gicc_ctlr;
+		__asm__ volatile ("dsb sy" ::: "memory");
+	}
+	__asm__ volatile ("msr cntp_cval_el0, %0\nmsr cntv_cval_el0, %1\nisb" : : "r" (cntp_cval), "r" (cntv_cval));
+	__asm__ volatile ("msr cntp_ctl_el0, %0\nmsr cntv_ctl_el0, %1\nisb" : : "r" (cntp_ctl), "r" (cntv_ctl));
+	core_box->state = LOADER_CORE_BACK;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	print("core0: back in the loader after %d s with the kernel\n", seconds_since(t0));
 }
 
 static void
@@ -4018,6 +4316,38 @@ choose_window(const struct payload_info *pi)
 		}
 	}
 	print("largest free block %x size %x\n", best_base, best_size);
+	{
+		/*
+		 * What XNU does not get: XNU 8796's arm64 VM takes one contiguous range (boot_args physBase, memSize; pmap's
+		 * avail_start..avail_end, pa_valid, the physical aperture), so the free RAM outside the largest block is left
+		 * out. Counted here, so that every run says how much that is (devices/starlte/README.md, Memory layout).
+		 */
+		uint64_t left = 0, left_n = 0, left_big = 0, left_big_at = 0;
+
+		for (uint64_t off = 0; off < map_size; off += desc_size) {
+			efi_memory_descriptor *d = (efi_memory_descriptor *)(map_buf + off);
+			uint64_t lo = d->phys_start, hi = d->phys_start + (d->pages << 12);
+
+			if (d->type != EfiConventionalMemory || (lo >= best_base && hi <= best_base + best_size)) {
+				continue;
+			}
+			left += hi - lo;
+			left_n++;
+			if (hi - lo > left_big) {
+				left_big = hi - lo;
+				left_big_at = lo;
+			}
+		}
+		print("memory: outside that block UEFI has %d MB free in %d ranges (the largest %d MB at %x): not XNU's, whose "
+		    "VM takes one contiguous range\n", left >> 20, left_n, left_big >> 20, left_big_at);
+		/* memmap=1: the firmware's whole memory map in the run's log as well (as "oem memmap" gives it) */
+		for (const char *c = pi->cmdline; c != NULL && *c; c++) {
+			if ((c == pi->cmdline || c[-1] == ' ') && starts_with(c, "memmap=1") && (c[8] == 0 || c[8] == ' ')) {
+				print_memory_map();
+				break;
+			}
+		}
+	}
 	if (pi->forced_base != 0) {
 		best_base = pi->forced_base;
 		best_size = MAX_MEM_SIZE;
@@ -4258,6 +4588,8 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	hc_requested = 0;
 	block_probe_requested = 0;
 	block_enabled = 0;
+	core0_requested = core1_requested = 0;
+	core_box = NULL;
 	for (const char *c = pi.cmdline; *c; c++) {
 		if (starts_with(c, "bootcpu=") && (c == pi.cmdline || c[-1] == ' ') && c[8] >= '0' && c[8] <= '7') {
 			int want = c[8] - '0';
@@ -4276,6 +4608,11 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		    (c[9] == 0 || c[9] == ' ');
 		torch_requested |= starts_with(c, "torch=") && (c == pi.cmdline || c[-1] == ' ') && c[6] >= '1' && c[6] <= '9';
 		camera_requested |= starts_with(c, "cam=5") && (c == pi.cmdline || c[-1] == ' ') && (c[5] == 0 || c[5] == ' ');
+		if (c == pi.cmdline || c[-1] == ' ') {
+			/* core0=1: this core the kernel's once it no longer needs the loader; core1=1: core 1 offered too */
+			core0_requested |= starts_with(c, "core0=1") && (c[7] == 0 || c[7] == ' ');
+			core1_requested |= starts_with(c, "core1=1") && (c[7] == 0 || c[7] == ' ');
+		}
 		gamut_p3 |= starts_with(c, "gamut=p3") && (c == pi.cmdline || c[-1] == ' ');
 		/*
 		 * ufs=3: served as ufs=2. The kernel reads its references through this service, then its own driver takes
@@ -4328,6 +4665,31 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		if (*q == KERNEL_LIVE_MAGIC) {
 			kernel_live = (const struct kernel_live *)q;
 			break;
+		}
+	}
+	/* core0=1: the kernel's box for this core (above), if it has one, and only with a kernel on another core to watch */
+	if (core0_requested) {
+		for (uint64_t *q = (uint64_t *)kern_lo; q + 8 <= (uint64_t *)kern_hi; q++) {
+			if (q[0] == LOADER_CORE_MAGIC && q[1] + slide == (uint64_t)(uintptr_t)q) {
+				core_box = (struct loader_core_box *)q;
+				break;
+			}
+		}
+		if (core_box == NULL || kernel_live == NULL || kernel_mpidr == this_mpidr || !more_cores) {
+			print("core0=1: %s: this core stays the loader's\n", core_box == NULL ? "the kernel has no box for it (patch 1511)" :
+			    kernel_live == NULL ? "the kernel shows no signs of life to watch" : kernel_mpidr == this_mpidr ?
+			    "the kernel starts on this core itself" : "the kernel is given one core (no cpus=)");
+			core_box = NULL;
+		} else {
+			int n = core_number(PLAT, this_mpidr);
+
+			core_box->mpidr = n >= 0 ? core_mpidr(PLAT, n) : this_mpidr;
+			core_box->state = LOADER_CORE_NONE;
+			core_box->entry = 0;
+			core_box->back = (uint64_t)(uintptr_t)&core0_return_stub;
+			core_box->wdt_pa = core_box->wdt_count = 0;
+			print("core0=1: this core (%x) goes to the kernel when it asks (after its switch to its own UFS driver); box at %x\n",
+			    core_box->mpidr, (uint64_t)(uintptr_t)core_box);
 		}
 	}
 	for (const char *c = pi.cmdline; *c; c++) {
@@ -4665,7 +5027,13 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 					continue;
 				}
 				if ((plat->parked_cores >> core) & 1) {
-					print("core %x is the boot loader's (parked): not the kernel's\n", mpidr);
+					if (!core1_requested) {
+						print("core %x is the boot loader's (parked): not the kernel's\n", mpidr);
+						continue;
+					}
+					/* core1=1: core 1, which S-Boot parks, listed for the kernel to try (seen: CPU_ON answers 0, it never comes) */
+					print("core %x is parked by the boot loader; core1=1: listed for the kernel to try\n", mpidr);
+					cpu_mpidr[cpu_count++] = mpidr;
 					continue;
 				}
 				state = psci_call(PSCI_AFFINITY_INFO, mpidr, 0, 0);
@@ -4675,6 +5043,10 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 					print("core %x is not off (the firmware says %d): not the kernel's to take\n", mpidr, (uint64_t)state);
 				}
 			}
+		}
+		if (core_box != NULL && cpu_count < 8) {
+			/* last: the kernel starts it only once the loader is done with it */
+			cpu_mpidr[cpu_count++] = core_box->mpidr;
 		}
 		print("cores for the kernel, in the order it takes them:");
 		for (int i = 0; i < cpu_count; i++) {
