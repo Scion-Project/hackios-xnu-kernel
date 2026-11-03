@@ -753,18 +753,23 @@ iounmap(void *address)
  * the radio and says the radio's address of (lx_os_radio_memory()). That piece is not behind
  * the processor's cache: there is nothing to do between our writing and the radio's reading,
  * or the other way round. The first part of it is handed out for good, a stretch at a time
- * (rings); the rest is slots of one size, taken and given back (buffers).
+ * (rings); the rest is slots, taken and given back (buffers): many of 4 KB, and at the end a few
+ * of 16 KB for the buffers that do not fit in those (brcmfmac's control buffers are 8 KB).
  */
 #define POOL_SIZE	(44u << 20)
 #define POOL_RINGS	(12u << 20)		/* (the data path's rings and link descriptors come to about 6 MB) */
 #define POOL_SLOT	4096u
-#define POOL_SLOTS	((POOL_SIZE - POOL_RINGS) / POOL_SLOT)
+#define POOL_BIG	16384u
+#define POOL_BIGS	64u
+#define POOL_BIG_AT	(POOL_SIZE - POOL_BIGS * POOL_BIG)
+#define POOL_SLOTS	((POOL_BIG_AT - POOL_RINGS) / POOL_SLOT)
 
 static struct {
 	uint8_t *memory;
 	unsigned long long address;		/* the radio's, of the first byte */
 	uint32_t rings_used;
 	uint32_t free_slots[POOL_SLOTS], free_count;
+	uint32_t free_bigs[POOL_BIGS], free_big_count;
 } pool;
 
 int
@@ -781,6 +786,10 @@ lx_pool_init(void)
 		pool.free_slots[i] = POOL_SLOTS - 1 - i;
 	}
 	pool.free_count = POOL_SLOTS;
+	for (uint32_t i = 0; i < POOL_BIGS; i++) {
+		pool.free_bigs[i] = POOL_BIGS - 1 - i;
+	}
+	pool.free_big_count = POOL_BIGS;
 	printf("lx: %u MB for the radio to read and write; it knows them from %#llx on\n", POOL_SIZE >> 20, pool.address);
 	return (0);
 }
@@ -879,11 +888,11 @@ linuxkpi_dev_alloc_skb(size_t size, gfp_t gfp)
 {
 	size_t all = roundup2(sizeof(struct sk_buff), 64) + sizeof(struct skb_shared_info) + 64;
 	struct sk_buff *skb;
-	uint8_t *raw;
-	uint32_t slot;
+	uint8_t *raw, *data;
+	bool big = size + NET_SKB_PAD > POOL_SLOT;
 
-	if (size + NET_SKB_PAD > POOL_SLOT) {
-		printf("lx: a buffer of %zu bytes is asked for; the slots are %u\n", size, POOL_SLOT);
+	if (size + NET_SKB_PAD > POOL_BIG) {
+		printf("lx: a buffer of %zu bytes is asked for; the biggest slots are %u\n", size, POOL_BIG);
 		return (NULL);
 	}
 	raw = lkpi_kmalloc(all, gfp);
@@ -891,20 +900,22 @@ linuxkpi_dev_alloc_skb(size_t size, gfp_t gfp)
 		return (NULL);
 	}
 	lx_os_lock();
-	if (pool.free_count == 0) {
+	if ((big ? pool.free_big_count : pool.free_count) == 0) {
 		lx_os_unlock();
 		lkpi_kfree(raw);
-		printf("lx: no buffer left\n");
+		printf("lx: no buffer of %u KB left\n", (big ? POOL_BIG : POOL_SLOT) >> 10);
 		return (NULL);
 	}
-	slot = pool.free_slots[--pool.free_count];
+	data = big ? pool.memory + POOL_BIG_AT + (size_t)pool.free_bigs[--pool.free_big_count] * POOL_BIG :
+	    pool.memory + POOL_RINGS + (size_t)pool.free_slots[--pool.free_count] * POOL_SLOT;
 	lx_os_unlock();
 	skb = (struct sk_buff *)roundup2((uintptr_t)raw, 64);
+	bzero(skb, all - ((uint8_t *)skb - raw));
 	skb->m = raw;				/* (the field FreeBSD keeps for what is behind a buffer) */
-	skb->prev = skb->next = skb;
+	skb->prev = skb->next = NULL;		/* (on no list: brcmu_pkt_buf_free_skb() warns of one that is) */
 	skb->shinfo = (struct skb_shared_info *)((uint8_t *)skb + roundup2(sizeof(struct sk_buff), 64));
 	skb->truesize = size + NET_SKB_PAD;
-	skb->head = skb->data = pool.memory + POOL_RINGS + (size_t)slot * POOL_SLOT;
+	skb->head = skb->data = data;
 	skb_reset_tail_pointer(skb);
 	skb->end = skb->head + size + NET_SKB_PAD;
 	skb_reserve(skb, NET_SKB_PAD);
@@ -917,7 +928,11 @@ linuxkpi_kfree_skb(struct sk_buff *skb)
 	if (skb == NULL) {
 		return;
 	}
-	if (in_pool(skb->head, 1) && skb->head >= pool.memory + POOL_RINGS) {
+	if (in_pool(skb->head, 1) && skb->head >= pool.memory + POOL_BIG_AT) {
+		lx_os_lock();
+		pool.free_bigs[pool.free_big_count++] = (uint32_t)((skb->head - (pool.memory + POOL_BIG_AT)) / POOL_BIG);
+		lx_os_unlock();
+	} else if (in_pool(skb->head, 1) && skb->head >= pool.memory + POOL_RINGS) {
 		lx_os_lock();
 		pool.free_slots[pool.free_count++] = (uint32_t)((skb->head - (pool.memory + POOL_RINGS)) / POOL_SLOT);
 		lx_os_unlock();
@@ -1273,8 +1288,9 @@ linux_dmi_first_match(const struct dmi_system_id *list)
 void
 lx_memory_say(void)
 {
-	lx_tell("lx: memory: %ld pieces of the kernel's out, %ld KB; of the radio's %u MB: %u KB of rings, %u of %u buffers out\n",
-	    allocations, allocated >> 10, POOL_SIZE >> 20, pool.rings_used >> 10, POOL_SLOTS - pool.free_count, POOL_SLOTS);
+	lx_tell("lx: memory: %ld pieces of the kernel's out, %ld KB; of the radio's %u MB: %u KB of rings, %u of %u buffers out, %u of %u big ones\n",
+	    allocations, allocated >> 10, POOL_SIZE >> 20, pool.rings_used >> 10, POOL_SLOTS - pool.free_count, POOL_SLOTS,
+	    POOL_BIGS - pool.free_big_count, POOL_BIGS);
 }
 
 int
