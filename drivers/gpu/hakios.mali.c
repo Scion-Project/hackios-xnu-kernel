@@ -135,6 +135,14 @@
  *   mali_acpm=0      the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
  *   mali_fastmap=0   the GPU walks its tables through its own caches, and every buffer entered is an UPDATE of AS 0
  *   mali_trace=1     a line for every job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
+ *   mali_gov=1       the GPU's clock follows its load (gov_window()): 260, 455 or 572 MHz, the lowest at which the
+ *                    last 16 ms would have kept it busy half the time at most -- up at once, down after five such
+ *                    windows in a row --, and no more than 455 from 85 C on the G3D's sensor, 260 from 95 (tmu=1 or
+ *                    more; 5 C back). The rail stays at step 2's 950 mV, which the S9+ port runs all three at. Needs
+ *                    mali_pll and mali_acpm (both on by default)
+ *   mali_nap_us=US   a job not done after its first 200 us of polling is looked at every US microseconds (50 unless
+ *                    said; 200 before): the GPU's interrupts are not used, and a job's end was seen 100 us late on
+ *                    average, a frame of CoreAnimation's being a dozen jobs and more
  *
  * The user client is opened by the window server's process, backboardd, which does not run as root (PixOS learned that
  * on another phone): nothing here or in hakios.mali.cpp asks for root.
@@ -162,6 +170,7 @@ extern uint64_t kvtophys(vm_offset_t va);                       /* pmap_paddr_t 
 extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);   /* osfmk/arm64/caches_asm.s */
 extern vm_offset_t phystokv(uint64_t pa);
 extern boolean_t pmap_valid_address(uint64_t addr);             /* memory the kernel manages */
+extern int hakios_scanout_carved(uint64_t phys);                /* the DPU's pool (hakios.exynos_dpu.c; stubs.c) */
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern void HakiosMaliStart(void);                              /* drivers/gpu/hakios.mali.cpp */
 extern uint32_t gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShown;   /* hakios.mali.cpp */
@@ -233,6 +242,7 @@ static const struct g3d_rate { uint32_t mhz, m, p, s; } g3d_rates[] = {
 	{ 572, 176, 4, 1 },                     /* 1144 */
 };
 static uint32_t mali_mhz = 260;
+static bool pll_quiet;                          /* the governor's switches: a line only when one fails */
 static uint32_t mali_pll = 1;                   /* mali_pll=0: PLL_G3D as the boot left it */
 
 #define DTZPC_SMC               0x82000410u     /* Samsung's SiP call, SMC_CMD_PREPARE_PD_ONOFF */
@@ -713,8 +723,11 @@ map_page(uint64_t gpu, uint64_t phys)
 	if (gpu >= (1ull << GPU_VA_BITS)) {
 		return false;
 	}
-	if (phys == 0 || !pmap_valid_address(phys)) {
-		/* the GPU is given memory the kernel manages, and nothing else (a register block, memory of the firmware's) */
+	if (phys == 0 || (!pmap_valid_address(phys) && !hakios_scanout_carved(phys))) {
+		/*
+		 * the GPU is given memory the kernel manages, and nothing else (a register block, memory of the firmware's) --
+		 * but for the scan-out pool of the DPU driver (fb_zc: the display surfaces the window server draws into)
+		 */
 		if (pt_refused++ < 4) {
 			printf("mali: physical address %#llx is not memory the kernel manages: not entered at %#llx\n", phys, gpu);
 		}
@@ -802,8 +815,11 @@ pll_switch(const struct g3d_rate *r)
 	uint32_t old_con0 = rd(cmu_g3d, PLL_CON0), old_locktime = rd(cmu_g3d, PLL_LOCKTIME), v;
 	const char *failed;
 
-	say("mali: %u: PLL_G3D to %u MHz (M %u, P %u, S %u): PLL_CON2 = %#x, PLL_LOCKTIME = %u, the G3D on the oscillator, "
-	    "the PLL relocked, the G3D back on it\n", step, r->mhz, r->m, r->p, r->s, PLL_CON2_LOCK, r->p * PLL_LOCK_FACTOR);
+	if (!pll_quiet) {
+		say("mali: %u: PLL_G3D to %u MHz (M %u, P %u, S %u): PLL_CON2 = %#x, PLL_LOCKTIME = %u, the G3D on the "
+		    "oscillator, the PLL relocked, the G3D back on it\n", step, r->mhz, r->m, r->p, r->s, PLL_CON2_LOCK,
+		    r->p * PLL_LOCK_FACTOR);
+	}
 	wr(cmu_g3d, PLL_CON2, PLL_CON2_LOCK);
 	wr(cmu_g3d, PLL_LOCKTIME, r->p * PLL_LOCK_FACTOR);
 	wr(cmu_g3d, PLL_CON0, rd(cmu_g3d, PLL_CON0) & ~MUX_SEL);
@@ -825,7 +841,9 @@ pll_switch(const struct g3d_rate *r)
 		failed = "the mux did not move back to the PLL";
 		goto restore;
 	}
-	(void)pll_say("switched");
+	if (!pll_quiet) {
+		(void)pll_say("switched");
+	}
 	return true;
 
 restore:
@@ -1312,6 +1330,7 @@ static LCK_MTX_DECLARE(mali_job_lock, &mali_lock_group);
  * every frame's rendering.
  */
 static int mali_wait_event;
+static uint32_t mali_nap_us = 50;       /* boot-arg mali_nap_us (10 to 1000) */
 static LCK_MTX_DECLARE(mali_wait_lock, &mali_lock_group);
 
 static bool
@@ -1332,7 +1351,7 @@ wait_job(uint32_t at, uint32_t mask, uint32_t want, uint32_t ms)
 		}
 		uint64_t nap;
 
-		clock_interval_to_deadline(200, NSEC_PER_USEC, &nap);
+		clock_interval_to_deadline(mali_nap_us, NSEC_PER_USEC, &nap);
 		lck_mtx_lock(&mali_wait_lock);
 		(void)lck_mtx_sleep_deadline(&mali_wait_lock, LCK_SLEEP_DEFAULT, (event_t)&mali_wait_event, THREAD_UNINT, nap);
 		lck_mtx_unlock(&mali_wait_lock);
@@ -1671,6 +1690,192 @@ static uint64_t mali_queued_seq, mali_done_seq;
 static bool mali_worker_started;
 static LCK_MTX_DECLARE(mali_queue_lock, &mali_lock_group);
 
+/*
+ * The last second, for the display's line (fps_log, MiniIOMobileFramebuffer.cpp): how long the GPU ran jobs, how many,
+ * how long they waited in the queue; with mali_queue_lock held.
+ */
+static uint64_t sec_busy, sec_queued;
+static uint32_t sec_jobs;
+
+/* PLL_G3D's rate as its registers say, in MHz; 26 when the G3D is on the oscillator */
+static uint32_t
+pll_mhz(void)
+{
+	uint32_t con0 = rd(cmu_g3d, PLL_CON0), m = (con0 >> 16) & 0x3ff, p = (con0 >> 8) & 0x3f, s = con0 & 7;
+
+	if (!(con0 & MUX_SEL)) {
+		return (uint32_t)(PLL_FIN_KHZ / 1000);
+	}
+	return p != 0 ? (uint32_t)(PLL_FIN_KHZ * m / ((uint64_t)p << s) / 1000) : 0;
+}
+
+/*
+ * mali_gov=1: the GPU's clock after its load, as drivers/power/hakios.exynos_cpufreq.c sets the cores': every window of
+ * GOV_WINDOW_MS, the share of it the GPU ran jobs; the lowest of the three rates at which that would have been
+ * GOV_TARGET% at most, at once if higher, after GOV_DOWN windows in a row if lower; never above what the G3D's
+ * temperature allows. The switch is pll_switch(), between two jobs (this thread runs them, one at a time) and under
+ * mali_job_lock, so that nothing touches the GPU while its clock moves (the G3D is on the 26 MHz oscillator for some
+ * microseconds). Three failed switches in a row and the governor stops, the clock left where it is.
+ */
+#define GOV_WINDOW_MS   16
+#define GOV_TARGET      50              /* low: a frame waits for its jobs, the sooner done the better */
+#define GOV_DOWN        5
+#define GOV_IDLE_MS     50              /* asleep with no jobs: a window ends anyway, the clock may come down */
+#define GOV_CAP1_MC     85000           /* the G3D's sensor: 455 MHz at most from here */
+#define GOV_CAP2_MC     95000           /* 260 MHz from here */
+#define GOV_HYST_MC     5000
+#define GOV_NOT_READ_MC (-273000)
+#define GOV_LEVELS      ((unsigned)(sizeof(g3d_rates) / sizeof(g3d_rates[0])))
+extern int32_t hakios_exynos_tmu_zone_mc(unsigned zone);       /* 2: the G3D's (hakios.exynos_tmu.c; stubs.c) */
+static uint32_t mali_gov;
+static bool gov_on;
+static unsigned gov_level, gov_cap = GOV_LEVELS - 1, gov_down, gov_failed;
+static uint64_t gov_since, gov_busy;
+static uint32_t gov_switches, gov_ups, gov_downs, gov_capped;
+
+/* which of the rates PLL_G3D runs at; GOV_LEVELS when none */
+static unsigned
+gov_level_now(void)
+{
+	for (unsigned i = 0; i < GOV_LEVELS; i++) {
+		if (pll_is(&g3d_rates[i])) {
+			return i;
+		}
+	}
+	return GOV_LEVELS;
+}
+
+static void
+gov_start(void)
+{
+	if (!mali_gov) {
+		return;
+	}
+	if (!mali_pll || !mali_acpm || !acpm_ok || (gov_level = gov_level_now()) >= GOV_LEVELS) {
+		say("mali: mali_gov=1: not started (mali_pll=%u, mali_acpm=%u, ACPM %s, PLL_G3D %s one of the three rates)\n",
+		    mali_pll, mali_acpm, acpm_ok ? "answers" : "does not answer", gov_level < GOV_LEVELS ? "at" : "NOT at");
+		return;
+	}
+	gov_on = true;
+	gov_since = mach_absolute_time();
+	say("mali: mali_gov=1: the GPU's clock follows its load from %u MHz: %u%% of a %u ms window wanted at most; no more "
+	    "than %u MHz from %d C on the G3D's sensor, %u MHz from %d C\n", g3d_rates[gov_level].mhz, GOV_TARGET, GOV_WINDOW_MS,
+	    g3d_rates[1].mhz, GOV_CAP1_MC / 1000, g3d_rates[0].mhz, GOV_CAP2_MC / 1000);
+}
+
+static void
+gov_set(unsigned level)
+{
+	bool switched;
+
+	if (level == gov_level || level >= GOV_LEVELS) {
+		return;
+	}
+	lck_mtx_lock(&mali_job_lock);
+	pll_quiet = true;
+	switched = pll_switch(&g3d_rates[level]);
+	pll_quiet = false;
+	lck_mtx_unlock(&mali_job_lock);
+	if (switched) {
+		gov_ups += level > gov_level;
+		gov_downs += level < gov_level;
+		gov_level = level;
+		gov_switches++;
+		gov_failed = 0;
+		return;
+	}
+	if ((gov_level = gov_level_now()) >= GOV_LEVELS || ++gov_failed >= 3) {
+		gov_on = false;
+		say("mali: mali_gov: PLL_G3D did not switch to %u MHz (%u times in a row; it runs at %u MHz): the governor stops\n",
+		    g3d_rates[level].mhz, gov_failed, pll_mhz());
+	}
+}
+
+/* `busy` more of the GPU's time at `now` (mach_absolute_time); a window that has ended decides. No locks held. */
+static void
+gov_window(uint64_t now, uint64_t busy)
+{
+	uint64_t window, elapsed;
+	unsigned want, cap;
+	uint32_t load;
+	int32_t mc;
+
+	if (!gov_on) {
+		return;
+	}
+	gov_busy += busy;
+	nanoseconds_to_absolutetime((uint64_t)GOV_WINDOW_MS * NSEC_PER_MSEC, &window);
+	elapsed = now - gov_since;
+	if (elapsed < window) {
+		return;
+	}
+	load = (uint32_t)(gov_busy >= elapsed ? 100 : gov_busy * 100 / elapsed);
+	gov_since = now;
+	gov_busy = 0;
+	mc = hakios_exynos_tmu_zone_mc(2);
+	cap = GOV_LEVELS - 1;
+	if (mc != GOV_NOT_READ_MC) {
+		if (mc >= GOV_CAP1_MC || (gov_cap <= 1 && mc >= GOV_CAP1_MC - GOV_HYST_MC)) {
+			cap = 1;
+		}
+		if (mc >= GOV_CAP2_MC || (gov_cap == 0 && mc >= GOV_CAP2_MC - GOV_HYST_MC)) {
+			cap = 0;
+		}
+	}
+	if (cap != gov_cap) {
+		say("mali: mali_gov: the G3D at %d.%d C: %u MHz at most now\n", mc / 1000, mc % 1000 / 100, g3d_rates[cap].mhz);
+		gov_capped += cap < gov_cap;
+		gov_cap = cap;
+	}
+	for (want = 0; want + 1 < GOV_LEVELS &&
+	    (uint64_t)load * g3d_rates[gov_level].mhz > (uint64_t)GOV_TARGET * g3d_rates[want].mhz; want++) {
+	}
+	want = want > cap ? cap : want;
+	if (want > gov_level || gov_level > cap) {
+		gov_down = 0;
+		gov_set(want);
+	} else if (want < gov_level) {
+		if (++gov_down >= GOV_DOWN) {
+			gov_down = 0;
+			gov_set(want);
+		}
+	} else {
+		gov_down = 0;
+	}
+}
+
+/*
+ * fps_log (MiniIOMobileFramebuffer.cpp), once a second: the GPU's time running jobs since the last call, the jobs, their
+ * time in the queue before they ran (ns), the clock (MHz) and the governor's switches; the G3D's temperature
+ * (millidegrees). 0 when the GPU is not there for programs.
+ */
+int hakios_mali_second(uint64_t *busy_ns, uint32_t *jobs, uint64_t *queued_ns, uint32_t *mhz, uint32_t *switches,
+    int32_t *g3d_mc);
+
+int
+hakios_mali_second(uint64_t *busy_ns, uint32_t *jobs, uint64_t *queued_ns, uint32_t *mhz, uint32_t *switches,
+    int32_t *g3d_mc)
+{
+	uint64_t busy, queued;
+
+	if (reached < STEPS) {
+		return 0;
+	}
+	lck_mtx_lock(&mali_queue_lock);
+	busy = sec_busy;
+	queued = sec_queued;
+	*jobs = sec_jobs;
+	sec_busy = sec_queued = 0;
+	sec_jobs = 0;
+	lck_mtx_unlock(&mali_queue_lock);
+	absolutetime_to_nanoseconds(busy, busy_ns);
+	absolutetime_to_nanoseconds(queued, queued_ns);
+	*mhz = pll_mhz();
+	*switches = gov_on ? gov_switches : 0;
+	*g3d_mc = hakios_exynos_tmu_zone_mc(2);
+	return gov_on ? 2 : 1;
+}
+
 static void
 mali_worker(__unused void *parameter, __unused wait_result_t result)
 {
@@ -1680,11 +1885,23 @@ mali_worker(__unused void *parameter, __unused wait_result_t result)
 
 		lck_mtx_lock(&mali_queue_lock);
 		while (mali_queue_count == 0) {
-			lck_mtx_sleep(&mali_queue_lock, LCK_SLEEP_DEFAULT, (event_t)&mali_queue_count, THREAD_UNINT);
+			uint64_t deadline;
+
+			if (!gov_on || gov_level == 0) {
+				lck_mtx_sleep(&mali_queue_lock, LCK_SLEEP_DEFAULT, (event_t)&mali_queue_count, THREAD_UNINT);
+				continue;
+			}
+			clock_interval_to_deadline(GOV_IDLE_MS, NSEC_PER_MSEC, &deadline);
+			if (lck_mtx_sleep_deadline(&mali_queue_lock, LCK_SLEEP_DEFAULT, (event_t)&mali_queue_count, THREAD_UNINT,
+			    deadline) == THREAD_TIMED_OUT && mali_queue_count == 0) {
+				lck_mtx_unlock(&mali_queue_lock);
+				gov_window(mach_absolute_time(), 0);    /* (idle: the clock may come down) */
+				lck_mtx_lock(&mali_queue_lock);
+			}
 		}
 		chain = mali_queue[mali_queue_head].chain;
 		seq = mali_queue[mali_queue_head].seq;
-		uint64_t queued = mali_queue[mali_queue_head].queued;
+		uint64_t queued = mali_queue[mali_queue_head].queued, job_began = mach_absolute_time();
 		fragment = mali_queue[mali_queue_head].fragment;
 		lck_mtx_unlock(&mali_queue_lock);
 
@@ -1723,13 +1940,19 @@ mali_worker(__unused void *parameter, __unused wait_result_t result)
 			}
 		}
 
+		uint64_t ended = mach_absolute_time();
+
 		lck_mtx_lock(&mali_queue_lock);
 		mali_queue_head = (mali_queue_head + 1) % MALI_QUEUE;
 		mali_queue_count--;
 		mali_done_seq = seq;
+		sec_jobs++;
+		sec_busy += ended - job_began;
+		sec_queued += job_began - queued;
 		lck_mtx_unlock(&mali_queue_lock);
 		wakeup((caddr_t)&mali_done_seq);
 		wakeup((caddr_t)&mali_queue_head);       /* (room in the queue) */
+		gov_window(ended, ended - job_began);
 	}
 }
 
@@ -1833,6 +2056,7 @@ mali_thread(__unused void *parameter, __unused wait_result_t result)
 		return;
 	}
 	say("mali: came up to step %u of %u: the GPU is there for programs (HakiosMali)\n", reached, STEPS);
+	gov_start();
 	for (;;) {
 		delay(60 * 1000 * 1000);
 		printf("mali: step %u of %u; user space says %u%s; %u clients, %u buffers, %u job chains (%u failed), "
@@ -1877,6 +2101,9 @@ hakios_mali_init(void)
 	(void)PE_parse_boot_argn("mali_pll", &mali_pll, sizeof(mali_pll));
 	(void)PE_parse_boot_argn("mali_mhz", &mali_mhz, sizeof(mali_mhz));
 	(void)PE_parse_boot_argn("mali_acpm", &mali_acpm, sizeof(mali_acpm));
+	(void)PE_parse_boot_argn("mali_gov", &mali_gov, sizeof(mali_gov));
+	(void)PE_parse_boot_argn("mali_nap_us", &mali_nap_us, sizeof(mali_nap_us));
+	mali_nap_us = mali_nap_us < 10 ? 10 : mali_nap_us > 1000 ? 1000 : mali_nap_us;
 	if (!PE_parse_boot_argn("mali", &last_step, sizeof(last_step)) || last_step == 0) {
 		return;
 	}

@@ -13,7 +13,8 @@ driver MALI
 	file    iokit/Kernel/hakios.mali.cpp iokitcpp
 	requires EXYNOS_ACPM
 	help    the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the
-	help    IOKit service Mesa's panfrost draws through. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported
+	help    IOKit service Mesa's panfrost draws through; mali_gov=1 sets its clock (260, 455, 572 MHz) after its load and
+	help    the G3D's temperature. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported
 
 standard bsd/dev/hakios.vgpu.c
 	help    the virtio GPU (AVF): the 2D display path, the cursor queue and the device's interrupts (patches 1202, 1300-1305)
@@ -33,7 +34,8 @@ driver EXYNOS_DPU
 	file    bsd/dev/hakios.exynos_dpu.c
 	help    the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's
 	help    refresh, no tearing (fb_flip=1), and the iPhone's picture enlarged to the panel by the DPP's VGF0 scaler
-	help    instead of the processor (fb_dpp=1); fps_log=1 reads its refresh count. Off unless asked for
+	help    instead of the processor (fb_dpp=1); with fb_zc=1 the window server's display surfaces are made of its
+	help    pool and scanned out as they are, nothing copied; fps_log=1 reads its refresh count. Off unless asked for
 
 driver S6E3HA8
 	file    bsd/dev/hakios.s6e3ha8.c

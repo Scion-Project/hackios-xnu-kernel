@@ -117,6 +117,14 @@ public:
 	task_t                          clientTask;     /* whose memory it is (not held: only compared) */
 	mach_vm_address_t               clientAddress;  /* ... and where it is there */
 	uint8_t *                       kpixels;        /* where the pixel memory starts in the kernel, either way */
+	/*
+	 * ... or, with fb_zc, a display surface of the window server's made of the scan-out pool (hakios_scanout_carve():
+	 * physically contiguous, below 4 GB, mapped write-combined everywhere): the display controller scans it out as it
+	 * is (MiniIOMobileFramebuffer.cpp). `memory` is then the page of shared state alone. scanPhys 0: an ordinary one.
+	 */
+	IOMemoryDescriptor *            scan;
+	IOMemoryMap *                   scanMap;
+	uint64_t                        scanPhys;
 	uint32_t                        drawn;          /* the GPU's last submission that names the pixels (0: none; hakios.gpu.cpp) */
 	/*
 	 * ... and the Mali's (drivers/gpu/hakios.mali.cpp): the number of its last job that names the pixels (0: none), or
@@ -174,6 +182,13 @@ bool            MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t millisecond
 bool            HakiosMaliDrawn(MiniIOSurface * surface, uint64_t milliseconds);
 MiniIOSurface * MiniIOSurfaceCreateSimple(uint32_t width, uint32_t height, uint32_t pixelFormat);
 void            MiniIOSurfaceDrop(MiniIOSurface * surface);
+/*
+ * fb_zc (the display's driver): display surfaces of this size, 'BGRA', made by the window server, are to be made of the
+ * scan-out pool from now on (0 x 0: no longer).
+ */
+void            MiniIOSurfaceScanout(uint32_t width, uint32_t height);
+/* The display holds a surface on the panel (+1) and lets go of it (-1): its use count, as IOSurfaceIsInUse() reads it. */
+void            MiniIOSurfaceUse(MiniIOSurface * surface, int delta);
 /* A Mach send right for the surface in the task (what IOSurfaceCreateMachPort gives); 0 on failure. */
 mach_port_name_t MiniIOSurfaceMakeSendRight(task_t task, MiniIOSurface * surface);
 

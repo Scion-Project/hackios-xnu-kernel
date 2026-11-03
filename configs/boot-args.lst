@@ -159,6 +159,7 @@ fb_pri	k
 fb_queue	k
 fb_tcoal	k
 fb_threads	k
+fb_zc	k
 fbheight	k
 fbscale	k
 fbtrace	k
@@ -240,7 +241,9 @@ mali	k
 mali_acpm	k
 mali_fastmap	k
 mali_flush	k
+mali_gov	k
 mali_mhz	k
+mali_nap_us	k
 mali_pll	k
 mali_trace	k
 max77705	k

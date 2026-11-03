@@ -85,6 +85,10 @@ int hakios_scanout_flip(unsigned index);
 int hakios_scanout_latched(void);
 void hakios_scanout_detach(const char *why);
 uint32_t hakios_scanout_refreshes(void);
+int hakios_scanout_carve(uint64_t bytes, uint64_t *phys);
+void hakios_scanout_uncarve(uint64_t phys);
+int hakios_scanout_carved(uint64_t phys);
+int hakios_scanout_show(uint64_t phys, uint32_t rowbytes);
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -296,6 +300,18 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
  */
 #define SCAN_MEMORY_PA          0xD4000000ULL
 #define SCAN_MEMORY_END         0xE1900000ULL   /* secure_camera */
+/*
+ * The rest of the gap, from 48 MB on (the three buffers above take 34 MB at most, fb_flip's of the panel's size), is a
+ * pool for fb_zc: the window server's own display surfaces are made of it (MiniIOSurface.cpp), so that VGF0 scans out
+ * the very surface CoreAnimation's frame was drawn into, and nothing is copied (MiniIOMobileFramebuffer.cpp). Slots of
+ * 12 MB, one surface each: the iPhone's 1125 x 2436 at 4544 or 4608 bytes a row is 11 MB. 14 slots.
+ */
+#define SCAN_POOL_PA            (SCAN_MEMORY_PA + (48ULL << 20))
+#define SCAN_SLOT               (12ULL << 20)
+#define SCAN_SLOTS              ((unsigned)((SCAN_MEMORY_END - SCAN_POOL_PA) / SCAN_SLOT))
+static uint32_t pool_used;              /* a bit for every slot given out (SCAN_SLOTS <= 32) */
+static uint32_t scan_rowbytes;          /* the buffers' row length as attached: a flip back to them restores it */
+static uint32_t shown_rowbytes;         /* what the IDMA reads now */
 
 int
 hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t *phys)
@@ -306,9 +322,9 @@ hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t *phys)
 		say("exynos_dpu: memory: not the S9's DECON as expected: no buffers of its own\n");
 		return -1;
 	}
-	if (SCAN_MEMORY_PA + step * count > SCAN_MEMORY_END) {
+	if (SCAN_MEMORY_PA + step * count > SCAN_POOL_PA) {
 		say("exynos_dpu: memory: %u buffers of %llu bytes do not fit between %#llx and %#llx\n", count, bytes,
-		    SCAN_MEMORY_PA, SCAN_MEMORY_END);
+		    SCAN_MEMORY_PA, SCAN_POOL_PA);
 		return -1;
 	}
 	for (unsigned k = 0; k < count; k++) {
@@ -316,6 +332,73 @@ hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t *phys)
 	}
 	say("exynos_dpu: memory: %u buffers of %llu bytes at %#llx to %#llx (the device tree's gap below secure_camera at "
 	    "%#llx)\n", count, bytes, SCAN_MEMORY_PA, SCAN_MEMORY_PA + step * count, SCAN_MEMORY_END);
+	return 0;
+}
+
+/*
+ * fb_zc: a slot of the pool for a surface of `bytes` (physically contiguous, below 4 GB, outside XNU's RAM: the caller
+ * maps it write-combined). 0 and its address in `phys`; -1 when the DPU is not the S9's or no slot is free. Called by
+ * MiniIOSurface with its own lock held: nothing here sleeps.
+ */
+int
+hakios_scanout_carve(uint64_t bytes, uint64_t *phys)
+{
+	if (probed <= 0 || bytes == 0 || bytes > SCAN_SLOT) {
+		return -1;
+	}
+	for (unsigned k = 0; k < SCAN_SLOTS; k++) {
+		uint32_t used = __atomic_load_n(&pool_used, __ATOMIC_RELAXED);
+
+		while ((used & (1u << k)) == 0) {
+			if (__atomic_compare_exchange_n(&pool_used, &used, used | (1u << k), 0, __ATOMIC_SEQ_CST,
+			    __ATOMIC_SEQ_CST)) {
+				*phys = SCAN_POOL_PA + SCAN_SLOT * k;
+				return 0;
+			}
+		}
+	}
+	return -1;
+}
+
+void
+hakios_scanout_uncarve(uint64_t phys)
+{
+	if (hakios_scanout_carved(phys)) {
+		unsigned k = (unsigned)((phys - SCAN_POOL_PA) / SCAN_SLOT);
+
+		__atomic_fetch_and(&pool_used, ~(1u << k), __ATOMIC_SEQ_CST);
+	}
+}
+
+/* Is `phys` in the pool? (The Mali's tables take it, though the kernel does not manage it: drivers/gpu/hakios.mali.c.) */
+int
+hakios_scanout_carved(uint64_t phys)
+{
+	return probed > 0 && phys >= SCAN_POOL_PA && phys < SCAN_POOL_PA + SCAN_SLOT * SCAN_SLOTS;
+}
+
+/*
+ * fb_zc: VGF0 to scan out a surface of the pool from the next refresh on, `rowbytes` a row (its size stays the
+ * display's, as attached). As hakios_scanout_flip(): the caller has waited for the flip before to be taken.
+ */
+int
+hakios_scanout_show(uint64_t phys, uint32_t rowbytes)
+{
+	vm_offset_t i;
+
+	if (mode != 2 || (phys & 0xff) || (rowbytes & 3) || !hakios_scanout_carved(phys) ||
+	    rowbytes / 4 < (rd(idma(channel_type), IDMA_IMG_SIZE) & 0x3fff) || rowbytes / 4 > 0xffff) {
+		return -1;
+	}
+	i = idma(channel_type);
+	if (rowbytes != shown_rowbytes) {
+		wr(i, IDMA_SRC_SIZE, (rd(i, IDMA_SRC_SIZE) & 0xffff0000u) | (rowbytes / 4));
+		shown_rowbytes = rowbytes;
+	}
+	wr(i, IDMA_BASE_Y, (uint32_t)phys);
+	wr(i, IDMA_BASE_C, (uint32_t)phys);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	wr(decon, SHADOW_REQ, rd(decon, SHADOW_REQ) | SHADOW_ALL);
 	return 0;
 }
 
@@ -340,6 +423,11 @@ hakios_scanout_flip(unsigned index)
 		return -1;
 	}
 	i = idma(channel_type);
+	if (mode == 2 && shown_rowbytes != scan_rowbytes) {
+		/* (back from a surface of fb_zc's, whose rows may be shorter) */
+		wr(i, IDMA_SRC_SIZE, (rd(i, IDMA_SRC_SIZE) & 0xffff0000u) | (scan_rowbytes / 4));
+		shown_rowbytes = scan_rowbytes;
+	}
 	wr(i, IDMA_BASE_Y, (uint32_t)buffers[index]);
 	wr(i, IDMA_BASE_C, (uint32_t)buffers[index]);
 	__asm__ volatile ("dsb sy" ::: "memory");
@@ -559,6 +647,7 @@ hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t w
 		return 0;
 	}
 	if (want == 2 && attach_vgf0(phys[shown], width, height, rowbytes) == 0) {
+		scan_rowbytes = shown_rowbytes = rowbytes;
 		say("exynos_dpu: VGF0 scales %ux%u to the panel; flips between %u buffers\n", width, height, count);
 		return 0;
 	}

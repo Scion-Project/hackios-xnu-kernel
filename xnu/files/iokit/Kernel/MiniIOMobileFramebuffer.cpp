@@ -253,6 +253,18 @@ static TUNABLE(uint32_t, gTouchLat, "touch_lat", 0);
 static TUNABLE(uint32_t, gFlip, "fb_flip", 0);
 static TUNABLE(uint32_t, gDPP, "fb_dpp", 0);
 static TUNABLE(uint32_t, gFpsLog, "fps_log", 0);
+/*
+ * Boot-arg fb_zc=1 (with fb_dpp=1): nothing copied. The window server's display surfaces -- the display's size, one plane
+ * of 'BGRA', made by backboardd -- are made of the DPU driver's scan-out pool (MiniIOSurface.cpp, MiniIOSurfaceScanout():
+ * physically contiguous, below 4 GB, write-combined), the GPU draws CoreAnimation's frame into one, and a frame whose
+ * only layer is such a surface over the whole display is shown by pointing VGF0 at it (hakios_scanout_show()) at the
+ * next refresh, after the flip before has been taken: no copy into a buffer of the scan-out's, which took 1.5 to 4 ms of
+ * the presenter's every frame. The surface is held, and its use count raised (IOSurfaceIsInUse()), from its flip until
+ * another one's has been taken. A frame of any other kind -- more than one layer, a part of the display, a surface of
+ * ordinary memory, or the very surface on the panel drawn into again -- is copied as before. fps_log says how many went
+ * which way ("zc: N in place, N copied, N into the one shown").
+ */
+static TUNABLE(uint32_t, gZeroCopy, "fb_zc", 0);
 #define SCAN_BUFFERS    3
 #define FLIP_STUCK_MS   100
 #define NO_BUFFER       (~0u)
@@ -262,6 +274,9 @@ int hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t * phys);
 int hakios_scanout_attach(int mode, const uint64_t * phys, unsigned count, uint32_t width, uint32_t height,
     uint32_t rowbytes, unsigned shown);
 int hakios_scanout_flip(unsigned index);
+int hakios_scanout_show(uint64_t phys, uint32_t rowbytes);
+int hakios_mali_second(uint64_t * busy_ns, uint32_t * jobs, uint64_t * queued_ns, uint32_t * mhz, uint32_t * switches,
+    int32_t * g3d_mc);
 int hakios_scanout_latched(void);
 void hakios_scanout_detach(const char * why);
 uint32_t hakios_scanout_refreshes(void);
@@ -435,6 +450,14 @@ public:
 	uint32_t        fScanWidth, fScanHeight, fScanRowBytes;
 	uint32_t        fBootWidth, fBootHeight, fBootRowBytes;
 	bool            fScanSaid;              /* the first frame into a scan-out buffer has been told of */
+	/* fb_zc: the surface VGF0 scans out now, and the one flipped to and not yet taken (each held, its use count raised) */
+	MiniIOSurface * fZcFront, * fZcPending;
+	bool            fZcSaid;
+	bool            fZcFrame;               /* show(): this frame is scanned out as it is: drawLayer() draws nothing */
+	uint32_t        fFpsZc, fFpsZcCopied, fFpsZcBusy;       /* fps_log: frames shown in place, copied, drawn into the one shown */
+	/* fps_log: refreshes a moving picture missed (no new frame though frames were coming), and the longest gap */
+	uint64_t        fFpsLastShow, fFpsGapMax;
+	uint32_t        fFpsMissed;
 	/* fps_log: this second's counts */
 	uint32_t        fFpsPresents, fFpsShown, fFpsFlips, fFpsLost, fFpsHeld, fFpsPartial, fFpsIdle, fFpsRefreshes;
 	thread_t        fSwapThread;            /* fps_log: the thread the last swap came from, and how the kernel classed it */
@@ -470,6 +493,9 @@ public:
 	void scanSetup(void);
 	bool scanBegin(bool covered);
 	bool scanEnd(void);
+	bool scanLatch(void);
+	bool zcShow(const uint8_t * swap, MiniIOSurface ** surfaces);
+	void zcLetGo(MiniIOSurface ** which);
 	void scanDrop(const char * why);
 	void drawLayers(const uint8_t * swap, MiniIOSurface ** surfaces);
 	static void fpsFired(thread_call_param_t self, thread_call_param_t unused);
@@ -986,6 +1012,10 @@ IOMobileFramebuffer::drawLayer(MiniIOSurface * s, const int32_t * src, const int
 	bool filter = gFilter == 1 || (gFilter == 2 && fSettling);
 	RowJob job;
 
+	if (fZcFrame) {
+		return;                         /* (fb_zc: the display controller reads the surface itself) */
+	}
+
 	if (sw <= 0 || sh <= 0) {
 		sx = sy = 0;
 		sw = (int32_t) s->info.width;
@@ -1450,6 +1480,13 @@ IOMobileFramebuffer::scanSetup(void)
 	scanSay("MiniIOMobileFramebuffer: %s: %u buffers of %ux%u, %u bytes a row, at %#llx %#llx %#llx (%s); taken at the "
 	    "first frame drawn\n", name, SCAN_BUFFERS, width, height, rowbytes, fScanPhys[0], fScanPhys[1], fScanPhys[2],
 	    carve ? "the DPU driver's, below 4 GB" : "IOKit's");
+	if (gZeroCopy && want == 2 && carve) {
+		MiniIOSurfaceScanout(fWidth, fHeight);
+		scanSay("MiniIOMobileFramebuffer: fb_zc: the window server's display surfaces (%ux%u 'BGRA') made of the scan-out "
+		    "pool from now on, and scanned out as they are\n", fWidth, fHeight);
+	} else if (gZeroCopy) {
+		scanSay("MiniIOMobileFramebuffer: fb_zc: needs fb_dpp=1 and the DPU driver's memory: frames are copied\n");
+	}
 }
 
 /*
@@ -1478,11 +1515,16 @@ IOMobileFramebuffer::scanBegin(bool covered)
 	fPanelHeight = fScanHeight;
 	fRowBytes = fScanRowBytes;
 	if (!covered) {
+		/* (fb_zc: what is shown may be a surface: the newest flipped to) */
+		MiniIOSurface * shown = fZcPending != NULL ? fZcPending : fScanPending == NO_BUFFER ? fZcFront : NULL;
+
 		fFpsPartial++;
 		for (uint32_t y = 0; y < fPanelHeight; y++) {
 			uint8_t * to = fBase + (size_t) y * fRowBytes;
 
-			if (fScanFront < fScanCount) {
+			if (shown != NULL) {
+				memcpy(to, shown->pixels() + (size_t) y * shown->info.bytesPerRow, (size_t) fPanelWidth * 4);
+			} else if (fScanFront < fScanCount) {
 				memcpy(to, fScanBase[fScanFront] + (size_t) y * fRowBytes, (size_t) fPanelWidth * 4);
 			} else {
 				bzero(to, (size_t) fPanelWidth * 4);
@@ -1522,20 +1564,117 @@ IOMobileFramebuffer::scanEnd(void)
 		}
 		return true;
 	}
-	if (fScanPending != NO_BUFFER) {
-		for (unsigned ms = 0; !hakios_scanout_latched(); ms++) {
-			if (ms >= FLIP_STUCK_MS) {
-				scanDrop("a flip not taken in 100 ms");
-				return false;
-			}
-			IOSleep(1);
-		}
-		fScanFront = fScanPending;
-		fScanPending = NO_BUFFER;
-		fFpsFlips++;
+	if (!scanLatch()) {
+		return false;
 	}
 	hakios_scanout_flip(fScanTarget);
 	fScanPending = fScanTarget;
+	waited = mach_absolute_time() - began;
+	fFpsWait += waited;
+	fFpsWaitMax = waited > fFpsWaitMax ? waited : fFpsWaitMax;
+	return true;
+}
+
+/*
+ * The flip asked for last -- into a buffer of the scan-out's, or (fb_zc) to a surface -- once the DECON has taken it (at
+ * a refresh): what it showed becomes the front, and a surface shown before is let go. False, and the scan-out given up,
+ * if it is not taken within FLIP_STUCK_MS.
+ */
+bool
+IOMobileFramebuffer::scanLatch(void)
+{
+	if (fScanPending == NO_BUFFER && fZcPending == NULL) {
+		return true;
+	}
+	for (unsigned ms = 0; !hakios_scanout_latched(); ms++) {
+		if (ms >= FLIP_STUCK_MS) {
+			scanDrop("a flip not taken in 100 ms");
+			return false;
+		}
+		IOSleep(1);
+	}
+	zcLetGo(&fZcFront);
+	if (fScanPending != NO_BUFFER) {
+		fScanFront = fScanPending;
+		fScanPending = NO_BUFFER;
+	} else {
+		fZcFront = fZcPending;
+		fZcPending = NULL;
+		fScanFront = NO_BUFFER;         /* (no buffer of the scan-out's is shown: all three can be drawn into) */
+	}
+	fFpsFlips++;
+	return true;
+}
+
+/* fb_zc: a surface the panel no longer shows: its use count down, let go of */
+void
+IOMobileFramebuffer::zcLetGo(MiniIOSurface ** which)
+{
+	if (*which != NULL) {
+		MiniIOSurfaceUse(*which, -1);
+		MiniIOSurfaceDrop(*which);
+		*which = NULL;
+	}
+}
+
+/*
+ * fb_zc: a frame shown with nothing copied, if it is one that can be: its only layer, the whole of a surface of the
+ * scan-out pool, over the whole display, and not the surface on the panel now or about to be (CoreAnimation drawing
+ * again into what is shown: that frame is copied, so that what reaches the panel is whole). False: copy it.
+ */
+bool
+IOMobileFramebuffer::zcShow(const uint8_t * swap, MiniIOSurface ** surfaces)
+{
+	MiniIOSurface * s = surfaces[0];
+	int32_t src[4], dst[4];
+	uint64_t began, waited;
+
+	if (!gZeroCopy || fScanMode != 2 || s == NULL || s->scanPhys == 0) {
+		return false;
+	}
+	for (unsigned layer = 1; layer < SWAP_LAYERS; layer++) {
+		if (swapWord(swap, SWAP_SURFACE(layer)) != 0) {
+			fFpsZcCopied++;
+			return false;
+		}
+	}
+	memcpy(src, swap + SWAP_SOURCE(0), sizeof(src));
+	memcpy(dst, swap + SWAP_DEST(0), sizeof(dst));
+	if (s->info.width != fWidth || s->info.height != fHeight || s->info.bytesPerElement != 4 || s->info.planeCount != 0 ||
+	    !(src[2] <= 0 || src[3] <= 0 || (src[0] == 0 && src[1] == 0 && (uint32_t) src[2] == fWidth &&
+	    (uint32_t) src[3] == fHeight)) || !(dst[2] <= 0 || dst[3] <= 0 || (dst[0] == 0 && dst[1] == 0 &&
+	    (uint32_t) dst[2] == fWidth && (uint32_t) dst[3] == fHeight))) {
+		fFpsZcCopied++;
+		return false;
+	}
+	if (s == fZcFront || s == fZcPending) {
+		fFpsZcBusy++;
+		fFpsZcCopied++;
+		return false;
+	}
+	began = mach_absolute_time();
+	if (!scanLatch()) {
+		return false;
+	}
+	s = MiniIOSurfaceCopy(s->sid);          /* (held for as long as it is on the panel) */
+	if (s == NULL) {
+		return false;
+	}
+	MiniIOSurfaceUse(s, 1);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	if (hakios_scanout_show(s->scanPhys + s->info.offset, s->info.bytesPerRow) != 0) {
+		MiniIOSurfaceUse(s, -1);
+		MiniIOSurfaceDrop(s);
+		fFpsZcCopied++;
+		return false;
+	}
+	fZcPending = s;
+	fFpsZc++;
+	if (!fZcSaid) {
+		fZcSaid = true;
+		scanSay("MiniIOMobileFramebuffer: fb_zc: the first frame scanned out as it is: surface %u at %#llx, %u bytes a row\n",
+		    s->sid, s->scanPhys + s->info.offset, s->info.bytesPerRow);
+	}
 	waited = mach_absolute_time() - began;
 	fFpsWait += waited;
 	fFpsWaitMax = waited > fFpsWaitMax ? waited : fFpsWaitMax;
@@ -1561,6 +1700,8 @@ IOMobileFramebuffer::scanDrop(const char * why)
 	fPanelHeight = fBootHeight;
 	fRowBytes = fBootRowBytes;
 	fScanFront = fScanPending = fScanTarget = NO_BUFFER;
+	zcLetGo(&fZcFront);                     /* (the boot framebuffer is shown now, no surface) */
+	zcLetGo(&fZcPending);
 }
 
 /*
@@ -1578,6 +1719,17 @@ IOMobileFramebuffer::scanned(uintptr_t * base, uint32_t * width, uint32_t * heig
 
 	if (mode <= 0) {
 		return 0;
+	}
+	/* (fb_zc: a surface on the panel; the one asked for once taken. Read unlocked: see above) */
+	MiniIOSurface * surface = fZcPending != NULL && hakios_scanout_latched() ? fZcPending : fZcFront;
+
+	if (surface != NULL && pending >= fScanCount) {
+		*base = (uintptr_t) surface->pixels();
+		*width = surface->info.width;
+		*height = surface->info.height;
+		*rowbytes = surface->info.bytesPerRow;
+		*index = 0;
+		return mode;
 	}
 	shown = pending < fScanCount && hakios_scanout_latched() ? pending : front;
 	if (shown >= fScanCount || fScanBase[shown] == NULL) {
@@ -1610,7 +1762,10 @@ void
 IOMobileFramebuffer::fpsLine(void)
 {
 	uint32_t presents, lost, held, shown, flips, partial, same, undrawn, refreshes = hakios_scanout_refreshes(), refreshed;
-	uint64_t draw, drawMax, wait, waitMax, deadline;
+	uint32_t zc, zcCopied, zcBusy, missed, jobs = 0, mhz = 0, switches = 0;
+	uint64_t draw, drawMax, wait, waitMax, deadline, gapMax, busy = 0, queued = 0;
+	int32_t g3d = 0;
+	int gpu;
 	const char * mode;
 	char line[320];
 
@@ -1630,6 +1785,13 @@ IOMobileFramebuffer::fpsLine(void)
 	waitMax = fFpsWaitMax;
 	same = fFpsSameSurface;
 	undrawn = fFpsUndrawn;
+	zc = fFpsZc;
+	zcCopied = fFpsZcCopied;
+	zcBusy = fFpsZcBusy;
+	missed = fFpsMissed;
+	gapMax = fFpsGapMax;
+	fFpsZc = fFpsZcCopied = fFpsZcBusy = fFpsMissed = 0;
+	fFpsGapMax = 0;
 	fFpsShown = fFpsFlips = fFpsPartial = fFpsSameSurface = fFpsUndrawn = 0;
 	fFpsDraw = fFpsDrawMax = fFpsWait = fFpsWaitMax = 0;
 	mode = fScanMode == 2 ? "dpp: VGF0 scales" : fScanMode == 1 ? "flip" : fScanMode < 0 ? "flip/dpp not yet taken" :
@@ -1646,6 +1808,20 @@ IOMobileFramebuffer::fpsLine(void)
 		    "notifications sent; %u from the surface before, %u not done by the GPU; %s\n", presents, shown, flips, lost,
 		    held, shown ? micros(draw) / shown : 0, micros(drawMax), shown ? micros(wait) / shown : 0, micros(waitMax),
 		    refreshed, partial, (int) told, same, undrawn, mode);
+		loader_log_line(line);
+		IOLog("%s", line);
+		/*
+		 * the second line: refreshes missed while frames came (and the longest gap between two), fb_zc's frames, and
+		 * the GPU's second (drivers/gpu/hakios.mali.c): its share of the time running jobs, its time a frame shown, its
+		 * jobs and their wait in the queue, its clock and the G3D's temperature
+		 */
+		gpu = hakios_mali_second(&busy, &jobs, &queued, &mhz, &switches, &g3d);
+		snprintf(line, sizeof(line), "fps: %u refreshes missed while moving, the longest gap %llu.%llu ms; zc: %u in "
+		    "place, %u copied, %u into the one shown; gpu: %s%llu%% busy, %llu us a frame shown, %u jobs (%llu us each, "
+		    "%llu us queued), %u MHz%s, %u switches, G3D %d C\n", missed, gapMax / NSEC_PER_MSEC,
+		    gapMax / (NSEC_PER_MSEC / 10) % 10, zc, zcCopied, zcBusy, gpu ? "" : "none; ", busy / (NSEC_PER_SEC / 100),
+		    shown ? busy / 1000 / shown : 0, jobs, jobs ? busy / 1000 / jobs : 0, jobs ? queued / 1000 / jobs : 0, mhz,
+		    gpu == 2 ? " (mali_gov)" : "", switches, g3d / 1000);
 		loader_log_line(line);
 		IOLog("%s", line);
 	} else if (fFpsIdle++ == 0) {
@@ -1707,6 +1883,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	bool scanned;                           /* (fb_flip/fb_dpp: drawn into a buffer of the scan-out's) */
 	MiniIOSurface * recorded = NULL;
 	uint32_t undrawn = 0;                   /* (fps_log: layers shown before the GPU was done with them) */
+	bool inPlace;                           /* (fb_zc: the surface scanned out as it is: drawLayer() draws nothing) */
 	bool report;
 
 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
@@ -1761,6 +1938,22 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 		}
 	}
 	fLastFrame = began;
+	/*
+	 * fps_log: refreshes missed while the picture moved -- frames coming, less than FRAME_PAUSE apart, but more than a
+	 * refresh apart: each refresh in between showed the frame before again -- and the longest such gap
+	 */
+	if (fFpsLastShow != 0) {
+		uint64_t gap, period = NSEC_PER_SEC / refreshHz();
+
+		absolutetime_to_nanoseconds(began - fFpsLastShow, &gap);
+		if (gap < (uint64_t) FRAME_PAUSE * NSEC_PER_MSEC) {
+			uint64_t periods = (gap + period / 2) / period;
+
+			fFpsMissed += periods > 1 ? (uint32_t) (periods - 1) : 0;
+			fFpsGapMax = gap > fFpsGapMax ? gap : fFpsGapMax;
+		}
+	}
+	fFpsLastShow = began;
 	report = fSwapsShown < 8;
 	/*
 	 * fps_log: a frame from the very surface the frame before came from (CoreAnimation drawing again into what is being
@@ -1773,7 +1966,9 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 		fLastSurface = swapWord(swap, SWAP_SURFACE(0));
 	}
 	/* (fb_flip/fb_dpp: into a buffer of its own, from the second picture on: the first is the console's end) */
-	scanned = fGraphics && scanBegin(coversDisplay(swap, surfaces, fWidth, fHeight));
+	inPlace = fGraphics && zcShow(swap, surfaces);
+	fZcFrame = inPlace;
+	scanned = !inPlace && fGraphics && scanBegin(coversDisplay(swap, surfaces, fWidth, fHeight));
 	if (report) {
 		IOLog("MiniIOMobileFramebuffer: swap %u (#%u): surfaces %u %u %u %u, layers set 0x%x cleared 0x%x\n",
 		    swapWord(swap, SWAP_ID), fSwapsShown, swapWord(swap, SWAP_SURFACE(0)), swapWord(swap, SWAP_SURFACE(1)),
@@ -1831,6 +2026,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	if (recorded != NULL) {
 		record(recorded);
 	}
+	fZcFrame = false;
 	fFpsShown++;
 	fFpsDraw += drawn - began;
 	fFpsDrawMax = drawn - began > fFpsDrawMax ? drawn - began : fFpsDrawMax;
