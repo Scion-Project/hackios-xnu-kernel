@@ -95,21 +95,42 @@ static uint8_t  gFBCalls[128];          /* how many calls of each selector were 
 
 /*
  * The display user space is told about. The system carries the identity of the iPhone X
- * (see the loader), and Darwin knows what screen that phone has: with any other size
- * MobileGestalt reports an unknown screen class and the user interface has no layout for it.
- * So the display is always the iPhone's, and a swap scales the picture to the panel that is
- * really there (in QEMU the loader makes the panel exactly this size and nothing is scaled).
- * Boot-args fbwidth= and fbheight= change the size reported.
+ * (see the loader), and Darwin draws whatever size of screen IOMobileFramebuffer reports: UIKit and
+ * SpringBoard lay themselves out in points, as wide and as tall as the display is. What is fixed is
+ * the status bar: UIKit picks it by the screen's exact geometry, and has one for a phone with the
+ * iPhone X's sensor housing only at Apple's widths (_UIStatusBarVisualProvider_Split1125, 1080, 1170,
+ * 1242, 828, 1284); at any other it draws a red bar saying "rdar://45025538" ("No status bar visual
+ * provider for screen ..."). UIKit takes the one named by UIStatusBarVisualProviderClassName in the
+ * defaults instead, which user space sets from the display's width (userland's libhakios.sb).
+ * MobileGestalt's main-screen-class is -1 for any size not Apple's (MGIOMFBSupport.c: "screen
+ * parameters are unexpected"), and MobileGestalt answers from its cache on /var, made at an earlier
+ * boot, until that is made again: main-screen-width and -height can be an earlier size's.
+ *
+ * So by default (fb_native=1), on a panel wider than 1125 pixels whose shape is not the iPhone's,
+ * the display is 375 points wide, the iPhone's own width, and as many points tall as the panel's
+ * shape makes, at 3 pixels a point. On the Galaxy S9's 1440 x 2960 (18.5:9; the S9+'s and the Note9's
+ * are the same) that is 375 x 771 points, 1125 x 2313 pixels, enlarged by the DPU (fb_dpp) 1.28 times
+ * across and 1.2797 down: 0.02 % apart, nothing visibly squeezed and no black bars. The iPhone's own
+ * 1125 x 2436 (19.5:9) on that panel was stretched 1.28 across and 1.215 down.
+ * Why not fewer points: at 360 x 740 points (1080 x 2220, the panel's FHD+ and exactly its shape) the
+ * keyboard is cut off on the right, "p", backspace and "search" with it (the S9, 3 November). The
+ * width of 375 points is one the keyboard is whole at.
+ * In QEMU (the loader makes the panel 1125 x 2436) and on panels 1125 pixels wide or less the display
+ * stays the iPhone's 1125 x 2436 (untried there; fbwidth= and fbheight= give any size).
+ * Boot-args fbwidth= and fbheight= give the size outright (the iPhone's for the one not given).
+ * Boot-arg fb_native=0: the iPhone's 1125 x 2436 on every panel, as before (the picture stretched to the panel's shape).
  */
 #define kFBDefaultWidth         1125
 #define kFBDefaultHeight        2436
 #define kFBDotsPerInch          458
+#define kFBNativePointsWide     375                     /* the iPhone's own width; narrower cuts the keyboard off */
 
-static TUNABLE(uint32_t, gFBWidth, "fbwidth", kFBDefaultWidth);
-static TUNABLE(uint32_t, gFBHeight, "fbheight", kFBDefaultHeight);
+static TUNABLE(uint32_t, gFBWidth, "fbwidth", 0);
+static TUNABLE(uint32_t, gFBHeight, "fbheight", 0);
+static TUNABLE(uint32_t, gFBNative, "fb_native", 1);
 /*
- * Boot-arg fbscale=2: the same 375 x 812 points drawn at two pixels a point instead of three.
- * Everything that is drawn is drawn by the processor, and this is 2.25 times fewer pixels to
+ * Boot-arg fbscale=2: the same points (375 x 812, or fb_native's) drawn at two pixels a point instead of
+ * three. Everything that is drawn is drawn by the processor, and this is 2.25 times fewer pixels to
  * draw; the picture is then enlarged to the panel and is that much less sharp.
  */
 #define kFBPointsWide           375
@@ -259,7 +280,7 @@ static TUNABLE(uint32_t, gTouchLat, "touch_lat", 0);
  * stand-ins of drivers/core/hakios.stubs.c say no and nothing changes).
  *   fb_flip=1  three buffers of the panel's size (the boot framebuffer and two more); the scaling on the processor, as
  *              without it.
- *   fb_dpp=1   three buffers of the display's size (the iPhone's 1125 x 2436): a frame is copied into one, not scaled,
+ *   fb_dpp=1   three buffers of the display's size (on the S9 1125 x 2313, fb_native): a frame is copied into one, not scaled,
  *              and the DPU's VGF0 scaler enlarges it to the panel. fb_filter means nothing then (the scaler filters).
  * A frame is flipped only once the flip before it has been taken (at a refresh), so frames reach the panel at most once
  * a refresh, and a buffer is drawn into only when it is neither shown nor about to be. Either mode falls back to
@@ -452,6 +473,8 @@ public:
 	IOLock *        fLock;
 	uint8_t *       fBase;                  /* the boot framebuffer: the panel */
 	uint32_t        fPanelWidth, fPanelHeight, fRowBytes;
+	uint32_t        fPointsWide, fPointsHigh;   /* the display in points, at kFBDefaultScale (fbscale draws them at another) */
+	bool            fNative;                    /* fb_native chose the display's shape */
 	uint32_t        fWidth, fHeight;        /* the display as user space sees it */
 	MiniIOSurface * fDefaultSurface;
 	uint32_t        fSwapID;
@@ -561,6 +584,7 @@ public:
 
 	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
 	void publishModes(void);
+	void chooseDisplaySize(void);
 	void publishRefresh(void);
 	MiniIOSurface * defaultSurface(void);
 	void present(const uint8_t * swap);
@@ -625,6 +649,40 @@ setNumber(OSDictionary * dict, const char * key, uint64_t value)
  */
 #define kFBTimingID     1
 #define kFBColorID      1
+
+/*
+ * The display's size (see fb_native above): fbwidth and fbheight as given, else the panel's own shape 375 points wide at
+ * 3 pixels a point where the panel is wider than that and not already the iPhone's shape, else the iPhone's 1125 x 2436.
+ */
+void
+IOMobileFramebuffer::chooseDisplaySize(void)
+{
+	/* the panel's shape against the iPhone's: w / h against 1125 / 2436, as w * 2436 against h * 1125 */
+	uint64_t across = (uint64_t) fPanelWidth * kFBDefaultHeight, down = (uint64_t) fPanelHeight * kFBDefaultWidth;
+	uint64_t apart = across > down ? across - down : down - across;
+	uint32_t points;
+
+	fNative = false;
+	fWidth = kFBDefaultWidth;
+	fHeight = kFBDefaultHeight;
+	if (gFBWidth != 0 || gFBHeight != 0) {
+		fWidth = gFBWidth != 0 ? gFBWidth : kFBDefaultWidth;
+		fHeight = gFBHeight != 0 ? gFBHeight : kFBDefaultHeight;
+	} else if (gFBNative != 0 && fPanelWidth > kFBNativePointsWide * kFBDefaultScale && fPanelHeight > fPanelWidth &&
+	    100 * apart > down) {
+		/* the panel's shape further than 1 % from the iPhone's: as many points tall as it makes, to the nearest */
+		points = (uint32_t) ((2 * (uint64_t) kFBNativePointsWide * fPanelHeight + fPanelWidth) / (2 * (uint64_t) fPanelWidth));
+		fWidth = kFBNativePointsWide * kFBDefaultScale;
+		fHeight = points * kFBDefaultScale;
+		fNative = true;
+	}
+	fPointsWide = fWidth / kFBDefaultScale;
+	fPointsHigh = fHeight / kFBDefaultScale;
+	if (fPointsWide == 0 || fPointsHigh == 0) {
+		fPointsWide = kFBPointsWide;
+		fPointsHigh = kFBPointsHigh;
+	}
+}
 
 /*
  * The refresh the window server clocks its frames by: the property IOMFBDisplayRefresh, a dictionary of the shortest
@@ -749,14 +807,13 @@ IOMobileFramebuffer::start(IOService * provider)
 	fPanelWidth = vinfo.v_width;
 	fPanelHeight = vinfo.v_height;
 	fRowBytes = vinfo.v_rowbytes;
-	fWidth = gFBWidth ? gFBWidth : fPanelWidth;
-	fHeight = gFBHeight ? gFBHeight : fPanelHeight;
+	chooseDisplaySize();
 	if (gFBScale != 0 && gFBScale != kFBDefaultScale) {
 		static const char * const places[][2] = { { "/chosen", "display-scale" }, { "/product", "artwork-scale-factor" } };
 		uint32_t scale = gFBScale;
 
-		fWidth = kFBPointsWide * scale;
-		fHeight = kFBPointsHigh * scale;
+		fWidth = fPointsWide * scale;
+		fHeight = fPointsHigh * scale;
 		/* what the loader's device tree says about the scale is where MobileGestalt has it from */
 		for (unsigned i = 0; i < sizeof(places) / sizeof(places[0]); i++) {
 			IORegistryEntry * node = IORegistryEntry::fromPath(places[i][0], gIODTPlane);
@@ -771,8 +828,8 @@ IOMobileFramebuffer::start(IOService * provider)
 	fColumnWeight = IONewZero(uint16_t, fPanelWidth);
 	fDiff = gDiff != 0;
 	fDiffLeft = fDiffTop = ~0u;
-	IOLog("MiniIOMobileFramebuffer: display %ux%u on a panel of %ux%u (%u bytes per row)\n", fWidth, fHeight,
-	    fPanelWidth, fPanelHeight, fRowBytes);
+	IOLog("MiniIOMobileFramebuffer: display %ux%u (%ux%u points) on a panel of %ux%u (%u bytes per row)%s\n", fWidth,
+	    fHeight, fPointsWide, fPointsHigh, fPanelWidth, fPanelHeight, fRowBytes, fNative ? ": the panel's own shape (fb_native)" : "");
 	fBootBase = fBase;
 	fBootWidth = fPanelWidth;
 	fBootHeight = fPanelHeight;
@@ -2656,7 +2713,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 		if (args->scalarOutputCount < 1) {
 			return kIOReturnBadArgument;
 		}
-		out[0] = kFBDotsPerInch * fOwner->fWidth / kFBDefaultWidth;
+		out[0] = kFBDotsPerInch * fOwner->fWidth / (fOwner->fPointsWide * kFBDefaultScale);
 		args->scalarOutputCount = 1;
 		return kIOReturnSuccess;
 

@@ -2551,11 +2551,12 @@ brightness_bridge(const char *arguments)
  *
  * Before the table, for the built-in screen, UIKit reads UIStatusBarVisualProviderClassName from
  * the defaults of com.apple.UIKit (which take the global domain too) and uses that class as it is,
- * on any build (the os_variant check there only adds the command line's arguments). So: on a
- * screen 1125 pixels wide the key is removed and Apple's own choice stands; on any other, it names
+ * on any build (the os_variant check there only adds the command line's arguments). So: on the
+ * iPhone X's own 1125 x 2436 the key is removed and Apple's own choice stands; on any other, it names
  * the Split layout of Apple's phone nearest in width (in points, at the same scale) -- 1242 pixels
  * at 3x is the iPhone XS Max's, 414 points; 1080 at 3x is the mini's layout, which UIKit draws
- * at 0.96 and so spans 360 points. The width is the framebuffer's own (the active pixels
+ * at 0.96 and so spans 360 points. 1125 wide but not 2436 tall names Split1125 too: left to itself UIKit
+ * drew the pink strip there as well (1125 x 2313 on the S9, 3 November). The size is the framebuffer's own (the active pixels
  * of its timing, TimingElements, which is what the window server and so UIKit get), not
  * MobileGestalt's main-screen-width: MobileGestalt answers from the cache it keeps on /var, and on
  * a kept data volume that still says 1125 after a kernel with another size. Written to the global domain because an application in
@@ -2587,7 +2588,7 @@ status_bar_provider(void)
 	CFTypeRef s = answer != NULL ? answer(CFSTR("main-screen-scale")) : NULL;
 	io_service_t fb = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOMobileFramebuffer"));
 	CFTypeRef timings = fb != IO_OBJECT_NULL ? IORegistryEntryCreateCFProperty(fb, CFSTR("TimingElements"), NULL, 0) : NULL;
-	double width = 0, scale = 0, best = 1e9;
+	double width = 0, height = 0, scale = 0, best = 1e9;
 	const char *choice = NULL;
 
 	if (timings != NULL && CFGetTypeID(timings) == CFArrayGetTypeID() && CFArrayGetCount(timings) > 0) {
@@ -2597,8 +2598,16 @@ status_bar_provider(void)
 		CFTypeRef active = horizontal != NULL && CFGetTypeID(horizontal) == CFDictionaryGetTypeID() ?
 		    CFDictionaryGetValue(horizontal, CFSTR("Active")) : NULL;
 
+		CFTypeRef vertical = CFGetTypeID(timing) == CFDictionaryGetTypeID() ?
+		    CFDictionaryGetValue(timing, CFSTR("VerticalAttributes")) : NULL;
+		CFTypeRef rows = vertical != NULL && CFGetTypeID(vertical) == CFDictionaryGetTypeID() ?
+		    CFDictionaryGetValue(vertical, CFSTR("Active")) : NULL;
+
 		if (active != NULL && CFGetTypeID(active) == CFNumberGetTypeID()) {
 			CFNumberGetValue(active, kCFNumberDoubleType, &width);
+		}
+		if (rows != NULL && CFGetTypeID(rows) == CFNumberGetTypeID()) {
+			CFNumberGetValue(rows, kCFNumberDoubleType, &height);
 		}
 	}
 	if (timings != NULL) {
@@ -2618,7 +2627,7 @@ status_bar_provider(void)
 		    "UIKit chooses alone\n", width, scale);
 		return;
 	}
-	if (width != 1125 || scale != 3) {
+	if (width != 1125 || height != 2436 || scale != 3) {
 		for (unsigned i = 0; i < sizeof(splits) / sizeof(splits[0]); i++) {
 			double d = width / scale - splits[i].points;
 
@@ -2637,7 +2646,7 @@ status_bar_provider(void)
 		CFPreferencesSetValue(key, NULL, kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 	}
 	CFPreferencesSynchronize(kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-	say("hakios: SpringBoard: the status bar: screen %.0f pixels wide at %.0fx, %s\n", width, scale,
+	say("hakios: SpringBoard: the status bar: screen %.0f x %.0f pixels at %.0fx, %s\n", width, height, scale,
 	    choice != NULL ? choice : "UIKit's own choice (Split1125)");
 }
 

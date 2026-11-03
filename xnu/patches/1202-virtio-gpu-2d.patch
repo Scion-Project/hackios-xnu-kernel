@@ -110,9 +110,9 @@ index 14f1430..b6ab814 100644
 +	fPanelWidth = gVGPU ? vgpuWidth : vinfo.v_width;
 +	fPanelHeight = gVGPU ? vgpuHeight : vinfo.v_height;
 +	fRowBytes = gVGPU ? vgpuStride : vinfo.v_rowbytes;
- 	fWidth = gFBWidth ? gFBWidth : fPanelWidth;
- 	fHeight = gFBHeight ? gFBHeight : fPanelHeight;
+ 	chooseDisplaySize();
  	if (gFBScale != 0 && gFBScale != kFBDefaultScale) {
+ 		static const char * const places[][2] = { { "/chosen", "display-scale" }, { "/product", "artwork-scale-factor" } };
 @@ -1375,6 +1390,9 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
  	}
  	drawn = mach_absolute_time();

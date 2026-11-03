@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 605 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 606 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -467,7 +467,7 @@ CONFIG_TOUCHSCREEN=y
 # CONFIG_VIRTIO_INPUT is not set
 
 #
-# GPU and display (104)
+# GPU and display (105)
 #
 
 # rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone) [needs fw-gpu/ from the phone]
@@ -524,7 +524,7 @@ CONFIG_GPU=y
 # which pixels of the panel each frame changed (it costs: the panel's memory is slow to read)
 # CONFIG_FB_DIFF is not set
 
-# three buffers of the display's size (the iPhone's 1125 x 2436): a frame is copied into one, not scaled
+# three buffers of the display's size (on the S9 1125 x 2313, fb_native): a frame is copied into one, not scaled
 # CONFIG_FB_DPP is not set
 
 # the picture is scaled to the panel nearest neighbour, as it once was
@@ -538,6 +538,9 @@ CONFIG_GPU=y
 
 # how often the panel is really refreshed
 # CONFIG_FB_MEASURE is not set
+
+# the iPhone's 1125 x 2436 on every panel, as before (the picture stretched to the panel's shape)
+# CONFIG_FB_NATIVE is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_PRI is not set
@@ -569,7 +572,7 @@ CONFIG_GPU=y
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FBHEIGHT is not set
 
-# the same 375 x 812 points drawn at two pixels a point instead of three
+# the same points (375 x 812, or fb_native's) drawn at two pixels a point instead of three
 # CONFIG_FBSCALE is not set
 
 # log the first N calls of every selector (default 3)
