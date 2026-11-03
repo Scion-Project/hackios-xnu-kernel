@@ -14,6 +14,8 @@ Where to start:
 - [Installing beside Android](dual-boot.md): HakiOS as a second system on the POCO X5 Pro, a menu at every start, your data kept.
 - [U-Boot](u-boot.md): the loader started by U-Boot instead of Silicium's UEFI, from RAM, with nothing of the vendor's.
 - [Reference](reference/drivers.md): every driver, configuration symbol and boot argument, made from the source.
+- [The passcode](passcode.md): Settings' passcode and the lock screen, on a key store with no Secure Enclave (it locks the
+  screen, it does not encrypt), and how to get back in (`passcode_reset=1`).
 
 ## What works
 

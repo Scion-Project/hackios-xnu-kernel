@@ -313,6 +313,9 @@ PANEL	arg	panel	GPU and display	k	hakios.s6e3ha8.c	the driver: without it nothin
 PANEL_BRIGHTNESS	arg	panel_brightness	GPU and display	k	hakios.s6e3ha8.c	a brightness of 0-255 set once at start
 PANEL_GAMMA	arg	panel_gamma	GPU and display	k	hakios.s6e3ha8.c	gamma and AOR sent (the default)
 PANEL_GAMMA_LOG	arg	panel_gamma_log	GPU and display	k	hakios.s6e3ha8.c	all 74 rows in the log, as Android's kernel prints them at start ("gamma[nits] : ...") to set beside Android's log of the same phone
+PASSCODE_DEBUG	arg	passcode_debug	User space	u	passcoded.m	
+PASSCODE_RESET	arg	passcode_reset	User space	k	MiniAppleKeyStore.cpp	
+PASSCODE_SELFTEST	arg	passcode_selftest	User space	k	MiniAppleKeyStore.cpp	
 PMIC_LIST	arg	pmic_list	Chip, thermal and PMIC	k	hakios.pmic.c	only the clock, not the inventory of every block
 POSTER_RETRY	arg	poster_retry	User space	u	poster_retry.c	
 PRESS_POWER	arg	press_power	Touch and buttons	k	hakios.buttons.c	a short press of the power key that many seconds after boot, and another ten seconds later, given to Darwin as the key's own are (hakios_touch_post):

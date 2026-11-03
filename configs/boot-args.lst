@@ -333,6 +333,9 @@ panel	k
 panel_brightness	k
 panel_gamma	k
 panel_gamma_log	k
+passcode_debug	u
+passcode_reset	k
+passcode_selftest	k
 pmic	k
 pmic_list	k
 poster_retry	u

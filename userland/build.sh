@@ -274,6 +274,9 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		$DYN -o obj/rwtouch src/rwtouch.c
 		# the kernel's thermal pressure passed on to iOS (src/thermald.c)
 		$DYN -o obj/thermald src/thermald.c
+		# the stand-in for keybagd's XPC service: setting, changing and removing a passcode reaches the
+		# kernel's key store through it (src/passcoded.m, com.hakios.passcoded.plist)
+		$DYN -fobjc-arc -framework Foundation -framework IOKit -o obj/passcoded src/passcoded.m
 		$DYN -framework CoreFoundation -framework AudioToolbox -framework AVFoundation -lobjc -o obj/sound_test src/sound_test.c
 		$DYN -framework CoreFoundation -lMobileGestalt -o obj/mg_test src/mg_test.c
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/torch_test src/torch_test.c
@@ -489,6 +492,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/mali_test ] && cp obj/mali_test root/bin/      # (likewise)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
+	[ -f obj/passcoded ] && cp obj/passcoded root/bin/
 	[ -f obj/cputop ] && cp obj/cputop root/bin/
 	[ -f obj/poster_retry ] && cp obj/poster_retry root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
@@ -673,7 +677,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	# the system image, so mkjobs.py judges "is this daemon's program there" by the listing of the volume
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
-	cp com.hakios.demo.plist com.hakios.wifi.plist com.hakios.thermald.plist root/LaunchDaemons/
+	cp com.hakios.demo.plist com.hakios.wifi.plist com.hakios.thermald.plist com.hakios.passcoded.plist root/LaunchDaemons/
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $DARWIN/rootfs.slt ] && VOLUME="--root-volume $DARWIN/rootfs.slt"
 	[ -n "$DARWIN_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $DARWIN/rootfs root/LaunchDaemons $DARWIN_JOBS
