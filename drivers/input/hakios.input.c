@@ -253,3 +253,144 @@ hakios_input_init(void)
 	hakios_adsp_init();
 	hakios_mpss_init();
 }
+
+/*
+ * The USB console's "touch X Y" and "touch X1 Y1 X2 Y2 [MS]" (drivers/core/hakios.dwc3.c): a tap, or a swipe over MS
+ * milliseconds (300 if not given), put into the queue as the panel's driver would, so that the phone can be worked
+ * from the console with nobody at it (with "shot" to see what it did); and "button lock|home|up|down", a press of
+ * that button as its driver would give it (the side button wakes a screen that has gone dark). X and Y are thousandths of the screen's width
+ * and height (0-1000) from its top left, whatever the panel. Finger 9, which the panels' drivers do not use.
+ */
+#include <kern/thread.h>
+
+extern kern_return_t thread_terminate(thread_t thread);
+
+#define CONSOLE_FINGER  9
+
+static struct {
+	uint32_t x[2], y[2], ms;
+	unsigned points;
+	volatile bool busy;
+} console_touch;
+
+static void
+console_touch_runs(__unused void *parameter, __unused wait_result_t result)
+{
+	uint32_t steps = console_touch.points == 2 ? console_touch.ms / 16 + 1 : 0;
+	uint32_t x0 = console_touch.x[0] * 65535 / 1000, y0 = console_touch.y[0] * 65535 / 1000;
+	uint32_t x1 = console_touch.x[1] * 65535 / 1000, y1 = console_touch.y[1] * 65535 / 1000;
+	char line[96];
+
+	hakios_touch_post(HAKIOS_TOUCH_DOWN, CONSOLE_FINGER, x0, y0);
+	for (uint32_t i = 1; i <= steps; i++) {
+		delay_for_interval(console_touch.ms / steps ? console_touch.ms / steps : 1, NSEC_PER_MSEC);
+		hakios_touch_post(HAKIOS_TOUCH_MOVE, CONSOLE_FINGER, (uint32_t)((int64_t)x0 + ((int64_t)x1 - x0) * i / steps),
+		    (uint32_t)((int64_t)y0 + ((int64_t)y1 - y0) * i / steps));
+	}
+	if (steps == 0) {
+		delay_for_interval(80, NSEC_PER_MSEC);
+	}
+	hakios_touch_post(HAKIOS_TOUCH_UP, CONSOLE_FINGER, steps ? x1 : x0, steps ? y1 : y0);
+	snprintf(line, sizeof(line), "usb: touch: %s done\n", steps ? "the swipe" : "the tap");
+	loader_log_line(line);
+	console_touch.busy = false;
+	thread_terminate(current_thread());
+}
+
+static void
+console_button_runs(void *parameter, __unused wait_result_t result)
+{
+	uint32_t which = (uint32_t)(uintptr_t)parameter;
+
+	hakios_touch_post(HAKIOS_BUTTON_DOWN, which, 0, 0);
+	delay_for_interval(120, NSEC_PER_MSEC);
+	hakios_touch_post(HAKIOS_BUTTON_UP, which, 0, 0);
+	loader_log_line("usb: button: pressed and let go\n");
+	console_touch.busy = false;
+	thread_terminate(current_thread());
+}
+
+void
+hakios_input_console_button(const char *arg)
+{
+	static const struct { const char *name; uint32_t which; } buttons[] = {
+		{ "lock", HAKIOS_BUTTON_LOCK }, { "home", HAKIOS_BUTTON_HOME },
+		{ "up", HAKIOS_BUTTON_VOLUME_UP }, { "down", HAKIOS_BUTTON_VOLUME_DOWN },
+	};
+	thread_t thread;
+
+	for (unsigned i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
+		if (strcmp(arg, buttons[i].name) != 0) {
+			continue;
+		}
+		if (console_touch.busy) {
+			loader_log_line("usb: button: a touch or a press is under way\n");
+			return;
+		}
+		console_touch.busy = true;
+		if (kernel_thread_start(console_button_runs, (void *)(uintptr_t)buttons[i].which, &thread) != KERN_SUCCESS) {
+			console_touch.busy = false;
+			loader_log_line("usb: button: no thread for it\n");
+			return;
+		}
+		thread_set_thread_name(thread, "touch-console");
+		thread_deallocate(thread);
+		return;
+	}
+	loader_log_line("usb: button lock|home|up|down: a press of that button\n");
+}
+
+void
+hakios_input_console_touch(const char *arg)
+{
+	uint32_t v[5] = { 0 };
+	unsigned n = 0;
+	bool digits = false;
+	thread_t thread;
+
+	for (const char *p = arg;; p++) {
+		if (*p >= '0' && *p <= '9' && n < 5) {
+			v[n] = v[n] * 10 + (uint32_t)(*p - '0');
+			digits = true;
+			if (v[n] > 100000) {
+				n = 9;
+				break;
+			}
+		} else if (*p == ' ' || *p == 0) {
+			if (digits) {
+				n++;
+				digits = false;
+			}
+			if (*p == 0) {
+				break;
+			}
+		} else {
+			n = 9;
+			break;
+		}
+	}
+	if ((n != 2 && n != 4 && n != 5) || v[0] > 1000 || v[1] > 1000 || (n >= 4 && (v[2] > 1000 || v[3] > 1000)) ||
+	    (n == 5 && (v[4] < 16 || v[4] > 5000))) {
+		loader_log_line("usb: touch X Y (a tap) or touch X1 Y1 X2 Y2 [MS] (a swipe, 300 ms by default): X and Y in "
+		    "thousandths of the screen's width and height, from its top left\n");
+		return;
+	}
+	if (console_touch.busy) {
+		loader_log_line("usb: touch: one is under way\n");
+		return;
+	}
+	console_touch.busy = true;
+	console_touch.x[0] = v[0];
+	console_touch.y[0] = v[1];
+	console_touch.x[1] = v[2];
+	console_touch.y[1] = v[3];
+	console_touch.points = n >= 4 ? 2 : 1;
+	console_touch.ms = n == 5 ? v[4] : 300;
+	if (kernel_thread_start(console_touch_runs, NULL, &thread) != KERN_SUCCESS) {
+		console_touch.busy = false;
+		loader_log_line("usb: touch: no thread for it\n");
+		return;
+	}
+	thread_set_thread_name(thread, "touch-console");
+	thread_deallocate(thread);
+}

@@ -67,6 +67,12 @@
  *                     self-test's and the fence test's results, the mode (native, or fallen back to ufs=2 and why),
  *                     reads, writes and refusals with the first three refusals' reasons. Said by itself too when
  *                     the host configures the link (ufs=3 only)
+ *   wifi ...          the radio and en0: wifi, wifi scan, wifi ip, wifi ping [A.B.C.D] [SIZE], wifi dns NAME [A.B.C.D],
+ *                     wifi tcp HOST [PORT [PATH]], wifi stat, wifi names [off] (drivers/wifi/hakios.wifi.c, hakios.sta.c,
+ *                     drivers/net/hakios.net.c: what each does is said there)
+ *   touch X Y [X2 Y2 [MS]]  a tap, or a swipe over MS milliseconds, given to iOS as the panel's are (X and Y in
+ *                     thousandths of the screen's width and height): the phone worked from here, "shot" to see it
+ *   button NAME       a press of lock, home, up or down, as its driver would give it
  *   return            end the run: the data volume saved, the drivers given back, the loader restarts the phone (into
  *                     TWRP on the S9). Done on a thread call of its own; should that not have ended the run after
  *                     RETURN_FORCE_SECONDS (the save or a driver's stop waiting on something under load), the poll goes
@@ -134,6 +140,12 @@ extern void hakios_wifi_report(bool first);
 extern void hakios_sta_console_scan(void);
 extern void hakios_net_console_ip(void);            /* hakios.net.c */
 extern void hakios_net_console_ping(const char *arg);
+extern void hakios_net_console_dns(const char *arg);
+extern void hakios_net_console_tcp(const char *arg);
+extern void hakios_net_console_stat(void);
+extern void hakios_net_console_names(const char *arg);
+extern void hakios_input_console_touch(const char *arg);  /* hakios.input.c */
+extern void hakios_input_console_button(const char *arg);
 extern void hakios_abox_console(const char *arg);  /* sys/hakios.exynos_abox.h */
 extern void hakios_cs47l93_console(const char *arg);       /* sys/hakios.cs47l93.h */
 extern void hakios_adsp_stop(void);
@@ -1305,8 +1317,12 @@ console(char *line)
 		    "swipe [l|r|u|d|lr|ud] [N] [MS] [GAP] (a finger drawn across the screen N times, MS each, GAP apart; default "
 		    "lr 6 250 1000), "
 		    "wifi (the radio's log kept, and its driver's state now), wifi scan (a scan of every channel by the station, and "
-		    "the access points heard), wifi ip (en0's address and gateway), wifi ping [A.B.C.D] (four echo requests; the gateway "
-		    "by default), return (end the run)\n");
+		    "the access points heard), wifi ip (en0's address and gateway), wifi ping [A.B.C.D] [SIZE] (four echo requests; the "
+		    "gateway by default, 64 bytes), wifi dns NAME [A.B.C.D] (a DNS question; DHCP's server by default), wifi tcp HOST "
+		    "[PORT [PATH]] (a TCP connection and an HTTP GET, the bytes back), wifi stat (en0's frames by size and kind, IP, UDP "
+		    "and TCP counts), wifi names [off] (DNS questions and answers, TCP connections, as they come), touch X Y "
+		    "[X2 Y2 [MS]] (a tap or a swipe, in thousandths of the screen), button lock|home|up|down (a press), return (end "
+		    "the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
 		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
 		    "%llu shots\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out, ring_dropped,
@@ -1333,8 +1349,20 @@ console(char *line)
 			to++;
 		}
 		hakios_net_console_ping(to);
+	} else if (strcmp(line, "wifi") == 0 && strncmp(arg, "dns", 3) == 0 && (arg[3] == 0 || arg[3] == ' ')) {
+		hakios_net_console_dns(arg + 3 + (arg[3] == ' '));
+	} else if (strcmp(line, "wifi") == 0 && strncmp(arg, "tcp", 3) == 0 && (arg[3] == 0 || arg[3] == ' ')) {
+		hakios_net_console_tcp(arg + 3 + (arg[3] == ' '));
+	} else if (strcmp(line, "wifi") == 0 && strcmp(arg, "stat") == 0) {
+		hakios_net_console_stat();
+	} else if (strcmp(line, "wifi") == 0 && strncmp(arg, "names", 5) == 0 && (arg[5] == 0 || arg[5] == ' ')) {
+		hakios_net_console_names(arg + 5 + (arg[5] == ' '));
 	} else if (strcmp(line, "wifi") == 0) {
 		hakios_wifi_report(false);
+	} else if (strcmp(line, "touch") == 0) {
+		hakios_input_console_touch(arg);
+	} else if (strcmp(line, "button") == 0) {
+		hakios_input_console_button(arg);
 	} else if (strcmp(line, "log") == 0) {
 		con("usb: the kernel's log from its start:\n");
 		(void)loader_log_tap_set(tap, history);
