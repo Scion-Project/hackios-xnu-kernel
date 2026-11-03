@@ -1,0 +1,215 @@
+diff --git a/bsd/dev/arm64/sysctl.c b/bsd/dev/arm64/sysctl.c
+--- a/bsd/dev/arm64/sysctl.c
++++ b/bsd/dev/arm64/sysctl.c
+@@ -415,3 +415,14 @@
+ #endif /* ML_IO_SIMULATE_STRETCHED_ENABLED */
+ 
+ #endif /* ML_IO_TIMEOUTS_ENABLED */
++
++/*
++ * HakiOS (Galaxy S9, patch 1511): whether EL0's cache maintenance by VA is trapped and done by the kernel with a clean
++ * first (osfmk/arm/arm_init.c, hakios_ucache_apply()), and how many such instructions it has done (osfmk/arm64/sleh.c).
++ */
++extern uint32_t hakios_ucache_trap;
++extern uint64_t hakios_ucache_ops;
++SYSCTL_UINT(_machdep, OID_AUTO, hakios_ucache_trap, CTLFLAG_KERN | CTLFLAG_RD | CTLFLAG_LOCKED, &hakios_ucache_trap, 0,
++    "EL0 cache maintenance by VA trapped (SCTLR_EL1.UCI clear) for the Exynos M3s");
++SYSCTL_QUAD(_machdep, OID_AUTO, hakios_ucache_ops, CTLFLAG_KERN | CTLFLAG_RD | CTLFLAG_LOCKED, &hakios_ucache_ops,
++    "EL0 cache maintenance instructions done by the kernel with a clean first");
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -371,6 +371,72 @@
+ 		__builtin_arm_wsr("pan", 0);
+ 	}
+ }
++/*
++ * HakiOS (Galaxy S9, patch 1511): code that user space writes and then runs (JavaScriptCore's JIT, WebCore's CSS
++ * selector compiler, any other JIT) made visible to the Exynos M3s' instruction fetch.
++ *
++ * iOS makes new code executable with sys_icache_invalidate() (libsystem_platform), which on 16.5 is DSB ISH, IC IVAU
++ * for every 64-byte line, DSB ISH and ISB -- no DC CVAU -- and sys_dcache_flush() is a DSB alone. Apple's cores, like
++ * the S9's Cortex-A55s (CLIDR_EL1 0x82000023: LoUU 0), unify instructions and data at their L1, so nothing has to be
++ * cleaned for instruction fetch to see a store. The M3s do not (CLIDR_EL1 0x0b200123: LoUU 1): a line of new code
++ * still dirty in an M3's L1 data cache is not what that M3 fetches, and it runs the stale bytes under it. On the
++ * phone (3 November, cpus=6) every WebContent process died this way at its first style resolution: SIGSEGV, pc 0,
++ * lr in the code the CSS selector compiler had just written (WebCore::Document::resolveStyle), hundreds in a row, and
++ * Safari loaded no page. With the two A55s alone (cpus=2) it did not happen; CTR_EL0 is the same on both (0x84448004).
++ *
++ * So with an M3 running, SCTLR_EL1.UCI is cleared on every core: EL0's cache maintenance by VA (IC IVAU, DC CVAU,
++ * DC CVAC, DC CIVAC, DC CVAP, DC CVADP) traps (ESR EC 0x18), and hakios_user_cache_op() in sleh.c does it for the
++ * process with the clean the M3 needs: DC CVAC of the line (to the point of coherency, broadcast, which the clusters
++ * honour: cohtest's steps 4 and 5), then the IC IVAU, through the kernel's alias of the page. (Linux does the same for
++ * the Cortex-A53's errata 819472 and others: ARM64_WORKAROUND_CLEAN_CACHE.) A JIT pays one trap for each 64-byte line
++ * it makes executable. Every core, not only the M3s: a thread may write code on an M3 and make it executable on an A55.
++ *
++ * Boot-arg ucache_trap: 0 never, 1 always; unset, when m3_prep is 3 or more (the M3s are started, so every core traps
++ * from the first) or when a core itself needs the clean (hakios_core_needs_pou_clean(); then from that core on).
++ * Applied on every core as it starts and as it wakes (start.s writes SCTLR_EL1_DEFAULT, UCI set, each time).
++ */
++uint32_t hakios_ucache_trap;
++static int hakios_ucache_mode = -1;     /* 0 never, 1 always, 2 decided by m3_prep and the core's own registers */
++
++/* Must this core's data cache be cleaned for its instruction fetch to see a store? Not with CTR_EL0.IDC, nor when
++ * CLIDR_EL1's LoUU and LoUIS are 0 (as Linux reads them): the A55s, QEMU's Cortex-A76, Apple's cores. The M3s: yes. */
++static bool
++hakios_core_needs_pou_clean(void)
++{
++	uint64_t ctr = __builtin_arm_rsr64("CTR_EL0"), clidr = __builtin_arm_rsr64("CLIDR_EL1");
++
++	if ((ctr >> 28) & 0x1) {
++		return false;
++	}
++	return ((clidr >> 27) & 0x7) != 0 || ((clidr >> 21) & 0x7) != 0;
++}
++
++static void
++hakios_ucache_apply(void)
++{
++	if (hakios_ucache_mode < 0) {
++		uint32_t on = 0, m3 = 0;
++
++		if (PE_parse_boot_argn("ucache_trap", &on, sizeof(on))) {
++			hakios_ucache_mode = on ? 1 : 0;
++		} else {
++			hakios_ucache_mode = 2;
++			if (PE_parse_boot_argn("m3_prep", &m3, sizeof(m3)) && m3 >= 3) {
++				hakios_ucache_trap = 1;
++			}
++		}
++		if (hakios_ucache_mode == 1) {
++			hakios_ucache_trap = 1;
++		}
++	}
++	if (hakios_ucache_mode == 2 && hakios_core_needs_pou_clean()) {
++		hakios_ucache_trap = 1;
++	}
++	if (hakios_ucache_trap) {
++		__builtin_arm_wsr64("SCTLR_EL1", __builtin_arm_rsr64("SCTLR_EL1") & ~(1ULL << 26));   /* UCI */
++		__builtin_arm_isb(15);          /* ISB SY */
++	}
++}
+ extern void loader_log_cpu_facts(void);
+ 
+ void
+@@ -579,6 +645,7 @@
+ 	}
+ 	hakios_pan_apply();
+ #endif  /* __ARM_PAN_AVAILABLE__ */
++	hakios_ucache_apply();          /* patch 1511 */
+ 
+ 	arm_vm_init(xmaxmem, args);
+ 	loader_checkpoint(17);
+@@ -735,6 +802,7 @@
+ #if __ARM_PAN_AVAILABLE__
+ 	hakios_pan_apply();
+ #endif
++	hakios_ucache_apply();          /* patch 1511 */
+ 
+ #ifdef __arm64__
+ 	configure_timer_apple_regs();
+@@ -871,6 +939,7 @@
+ #if __ARM_PAN_AVAILABLE__
+ 	hakios_pan_apply();
+ #endif
++	hakios_ucache_apply();          /* patch 1511 */
+ 
+ 	machine_set_current_thread(cpu_data_ptr->cpu_active_thread);
+ 
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -144,6 +144,7 @@
+ static void handle_mach_continuous_time_trap(arm_saved_state_t *);
+ 
+ static void handle_msr_trap(arm_saved_state_t *state, uint32_t esr);
++static bool hakios_user_cache_op(arm_saved_state_t *state, uint32_t esr);
+ #if __has_feature(ptrauth_calls)
+ static void handle_pac_fail(arm_saved_state_t *state, uint32_t esr) __dead2;
+ #endif
+@@ -716,6 +717,9 @@
+ 		break;
+ 
+ 	case ESR_EC_MSR_TRAP:
++		if (hakios_user_cache_op(state, esr)) {    /* patch 1511 */
++			break;
++		}
+ 		handle_msr_trap(state, esr);
+ 		break;
+ /**
+@@ -1705,6 +1709,75 @@
+ 	saved_state64(state)->x[0] = now;
+ }
+ 
++
++/*
++ * HakiOS (Galaxy S9, patch 1511): EL0's cache maintenance by VA, trapped because osfmk/arm/arm_init.c cleared
++ * SCTLR_EL1.UCI (hakios_ucache_apply(): the Exynos M3s need new code cleaned from their L1 data cache before they can
++ * fetch it, and iOS's sys_icache_invalidate() never cleans). Done here for the process, on the kernel's alias of the
++ * page (the caches are physically tagged for data and VIPT without aliases for instructions at 16 KB pages, so the
++ * alias reaches the same lines, and a page unmapped meanwhile cannot fault the kernel): DC CVAC (DC CIVAC for a DC
++ * CIVAC) of the line, then IC IVAU of it for an IC IVAU. A line that is not mapped, or not RAM, is passed over, as a
++ * no-op. Returns false for anything else, which handle_msr_trap() takes as before.
++ */
++extern uint32_t hakios_ucache_trap;     /* osfmk/arm/arm_init.c, patch 1511 */
++extern char *proc_name_address(struct proc *p);
++extern int task_pid(task_t task);
++uint64_t hakios_ucache_ops;              /* machdep.hakios_ucache_ops (bsd/dev/arm64/sysctl.c) */
++
++/* the ISS of a trapped SYS instruction: Op0 [21:20], Op2 [19:17], Op1 [16:14], CRn [13:10], Rt [9:5], CRm [4:1], dir [0] */
++#define HAKIOS_SYS_ISS_MASK     0x003ffc1fu                     /* everything but Rt */
++#define HAKIOS_SYS_CACHE(crm)   ((1u << 20) | (1u << 17) | (3u << 14) | (7u << 10) | ((uint32_t)(crm) << 1))
++
++static bool
++hakios_user_cache_op(arm_saved_state_t *state, uint32_t esr)
++{
++	uint32_t iss = ESR_ISS(esr), op = iss & HAKIOS_SYS_ISS_MASK, rt = (iss >> 5) & 0x1f;
++	bool icache = false;
++
++	if (!hakios_ucache_trap || !is_saved_state64(state) || PSR64_IS_KERNEL(get_saved_state_cpsr(state))) {
++		return false;
++	}
++	switch (op) {
++	case HAKIOS_SYS_CACHE(5):       /* IC IVAU */
++		icache = true;
++		break;
++	case HAKIOS_SYS_CACHE(10):      /* DC CVAC */
++	case HAKIOS_SYS_CACHE(11):      /* DC CVAU */
++	case HAKIOS_SYS_CACHE(12):      /* DC CVAP */
++	case HAKIOS_SYS_CACHE(13):      /* DC CVADP */
++	case HAKIOS_SYS_CACHE(14):      /* DC CIVAC */
++		break;
++	default:
++		return false;
++	}
++
++	uint64_t va = (rt == 31 ? 0 : get_saved_state_reg(state, rt)) & ~63ULL;
++	pmap_paddr_t pa = pmap_find_pa_nofault(vm_map_pmap(current_map()), va);
++
++	if (pa != 0 && pmap_valid_address(pa)) {
++		vm_offset_t kva = phystokv(pa) & ~63UL;
++
++		if (op == HAKIOS_SYS_CACHE(14)) {
++			__asm__ volatile ("dc civac, %0" : : "r"(kva) : "memory");
++		} else {
++			__asm__ volatile ("dc cvac, %0" : : "r"(kva) : "memory");
++		}
++		__builtin_arm_dsb(DSB_ISH);
++		if (icache) {
++			__asm__ volatile ("ic ivau, %0" : : "r"(kva) : "memory");
++			__builtin_arm_dsb(DSB_ISH);
++		}
++	}
++	if (hakios_ucache_ops++ == 0) {     /* machdep.hakios_ucache_ops; the first one said */
++		struct proc *proc = get_bsdtask_info(current_task());
++
++		printf("ucache_trap: the first cache maintenance by VA from user space (%s, %s[%d]) done for it, the data cleaned "
++		    "to the point of coherency first, for the Exynos M3s (patch 1511)\n", icache ? "IC IVAU" : "DC",
++		    proc ? proc_name_address(proc) : "?", task_pid(current_task()));
++	}
++	add_saved_state_pc(state, 4);
++	return true;
++}
+ 
+ __attribute__((noreturn))
+ static void
