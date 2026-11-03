@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 588 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 589 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -780,7 +780,7 @@ CONFIG_GPU=y
 # CONFIG_VBLUR is not set
 
 #
-# Audio and battery (60)
+# Audio and battery (61)
 #
 
 # the audio DSP; the battery level in the UI and charging state come through it [needs fw-audio/ from the phone]
@@ -842,6 +842,9 @@ CONFIG_SOUND=4
 
 # leave SYSPOWER_CTRL ("DRAM on") and the ACLK/BCLK_UAIF1 Q-channels alone while streaming (1: set)
 # CONFIG_ABOX_SYSPOWER is not set
+
+# read by hakios.exynos_abox.c (kernel)
+# CONFIG_ABOX_TONE is not set
 
 # RDMA0's VOL_FACTOR [23:0] (none: 0x800000 if it reads 0, else left)
 # CONFIG_ABOX_VOL is not set
