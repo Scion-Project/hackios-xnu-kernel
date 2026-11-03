@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 558 symbols in 19 groups; 53 are set, 44 of them drivers built in.
+# 559 symbols in 19 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (51)
+# Drivers built in (52)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -117,6 +117,9 @@ CONFIG_HAKIOS_EXYNOS_KEYS=y
 
 # the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this file ... [hakios.s6sy761.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C, CONFIG_HAKIOS_EXYNOS_ACPM]
 CONFIG_HAKIOS_S6SY761=y
+
+# the Galaxy S9's sensors behind its sensor hub, the MCU of the BCM4775 GNSS chip on USI_CHUB00's SPI: powered, its ... [hakios.ssp.c; requires CONFIG_HAKIOS_EXYNOS_SPI, CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_SSP is not set
 
 # QMI messages over the IPC router: how the Wi-Fi firmware's service and the modem's are spoken to [hakios.qmi.c]
 CONFIG_HAKIOS_QMI=y

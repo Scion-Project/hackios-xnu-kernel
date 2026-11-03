@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **510 arguments**: 445 read by the kernel, 17 by the loader, 59 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **520 arguments**: 455 read by the kernel, 17 by the loader, 59 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -322,6 +322,21 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_settle` | K | `hakios.camera.c` | `CONFIG_CAM_SETTLE` |  |
 | `cam_shutter` | K | `hakios.camera.c` | `CONFIG_CAM_SHUTTER` |  |
 | `cam_vblank` | K | `hakios.camera.c` | `CONFIG_CAM_VBLANK` |  |
+
+## Sensors (10)
+
+| Argument | Layer | Read by | Configuration | Set by |
+|---|---|---|---|---|
+| `shub` | K | `hakios.ssp.c` | `CONFIG_SHUB` |  |
+| `shub_chub_on` | K | `hakios.ssp.c` | `CONFIG_SHUB_CHUB_ON` |  |
+| `shub_div` | K | `hakios.ssp.c` | `CONFIG_SHUB_DIV` |  |
+| `shub_hello` | K | `hakios.ssp.c` | `CONFIG_SHUB_HELLO` |  |
+| `shub_keep` | K | `hakios.ssp.c` | `CONFIG_SHUB_KEEP` |  |
+| `shub_log` | K | `hakios.ssp.c` | `CONFIG_SHUB_LOG` |  |
+| `shub_ms` | K | `hakios.ssp.c` | `CONFIG_SHUB_MS` |  |
+| `shub_req_len` | K | `hakios.ssp.c` | `CONFIG_SHUB_REQ_LEN` |  |
+| `shub_req_rpc` | K | `hakios.ssp.c` | `CONFIG_SHUB_REQ_RPC` |  |
+| `shub_sensors` | K | `hakios.ssp.c` | `CONFIG_SHUB_SENSORS` |  |
 
 ## Touch and buttons (17)
 

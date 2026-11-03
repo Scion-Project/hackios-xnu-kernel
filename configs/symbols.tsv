@@ -331,6 +331,16 @@ SCSND_ADDR	arg	scsnd.addr	User space	k	hakios.scsnd.c
 SCSND_SIZE	arg	scsnd.size	User space	k	hakios.scsnd.c	
 SECURITY	arg	security	User space	k	1002-avf-security-level.patch	
 SERIAL	arg	serial	Loader	l	loader.c	
+SHUB	arg	shub	Sensors	k	hakios.ssp.c	
+SHUB_CHUB_ON	arg	shub_chub_on	Sensors	k	hakios.ssp.c	
+SHUB_DIV	arg	shub_div	Sensors	k	hakios.ssp.c	
+SHUB_HELLO	arg	shub_hello	Sensors	k	hakios.ssp.c	
+SHUB_KEEP	arg	shub_keep	Sensors	k	hakios.ssp.c	at the end of the steps, or when one fails, power the hub off again (NSTDBY low); default 1
+SHUB_LOG	arg	shub_log	Sensors	k	hakios.ssp.c	every SPI frame's first bytes in the log (very loud; the first 40 frames are always logged)
+SHUB_MS	arg	shub_ms	Sensors	k	hakios.ssp.c	their period in ms (default 20; light, proximity and pressure 200)
+SHUB_REQ_LEN	arg	shub_req_len	Sensors	k	hakios.ssp.c	
+SHUB_REQ_RPC	arg	shub_req_rpc	Sensors	k	hakios.ssp.c	
+SHUB_SENSORS	arg	shub_sensors	Sensors	k	hakios.ssp.c	
 SMALL_CORES	arg	small_cores	CPU, memory and boot	k	(patch)	
 SMALL_CORES_AFTER	arg	small_cores_after	CPU, memory and boot	k	GenericARMPE.cpp	
 SOC_CMD_DB	hex	soc_cmd_db	Cellular	k	hakios.mpss.c	

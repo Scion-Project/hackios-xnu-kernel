@@ -353,6 +353,16 @@ scsnd.addr	k
 scsnd.size	k
 security	k
 serial	l
+shub	k
+shub_chub_on	k
+shub_div	k
+shub_hello	k
+shub_keep	k
+shub_log	k
+shub_ms	k
+shub_req_len	k
+shub_req_rpc	k
+shub_sensors	k
 small_cores	k
 small_cores_after	k
 soc_cmd_db	k
