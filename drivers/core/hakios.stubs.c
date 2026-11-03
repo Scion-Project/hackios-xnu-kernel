@@ -169,6 +169,7 @@ bool hakios_wifi_network(__unused uint8_t *name, __unused unsigned *name_length,
 void hakios_exynos_abox_init(void) {}
 void hakios_exynos_abox_quiesce(void) {}
 void hakios_abox_set_amp(__unused const struct hakios_abox_amp *amp) {}   /* an amplifiers' driver built without ABOX's */
+void hakios_abox_console(__unused const char *arg) {}   /* the USB console's "abox": nothing to drive */
 #endif
 #ifndef HAKIOS_MAX98512
 void hakios_max98512_quiesce(void) {}

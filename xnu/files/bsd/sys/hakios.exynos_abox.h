@@ -43,11 +43,13 @@ struct hakios_abox_amp {
 	const char *name;
 	int (*start)(uint32_t rate, uint32_t slot_bits, uint32_t channels);   /* after UAIF1's clocks run; 0 or an errno */
 	void (*stop)(void);                                                    /* before they stop */
+	void (*status)(const char *when);   /* may be NULL: what the amplifiers say of themselves, into the log */
 };
 void hakios_abox_set_amp(const struct hakios_abox_amp *amp);              /* NULL: none */
 
 void hakios_exynos_abox_init(void);    /* boot-arg abox=N on the Galaxy S9: the first N steps of ABOX's speaker path */
 void hakios_exynos_abox_quiesce(void); /* loader_return(): RDMA0 and UAIF1 stopped, if they run */
+void hakios_abox_console(const char *arg);      /* the USB console's "abox" (hakios.dwc3.c): status, tone, r, w, set */
 #endif
 
 /*
@@ -61,6 +63,10 @@ void hakios_exynos_abox_quiesce(void); /* loader_return(): RDMA0 and UAIF1 stopp
 #define ABOX_GPIO_PA            0x17C60000u     /* pinctrl@17C60000: gpb0, gpb1, gpb2 (GPIO_AUD) */
 #define ABOX_SYSMMU_PA          0x17E00000u     /* sysmmu@17E00000, "Abox", ABOX's iommus */
 #define ABOX_PMU_PA             0x14060000u     /* the PMU (system-controller@14060000) */
+/* abox_rmem (the device tree's reserved-memory for ABOX, 0xFB200000 + 0x2800000): below 4 GB, kept out of UEFI and XNU
+ * by the loader (starlte's keep_out); the ring goes at its start when no RAM below 4 GB is the kernel's */
+#define ABOX_RMEM_PA            0xFB200000u
+#define ABOX_RMEM_SIZE          0x02800000u
 #define ABOX_DTZPC_ARG          0x17C10204u     /* pd-aud's need_smc: the DTZPC restore's argument */
 
 /*
@@ -164,6 +170,7 @@ void hakios_exynos_abox_quiesce(void); /* loader_return(): RDMA0 and UAIF1 stopp
 #define MMU_CFG                 0x004
 #define MMU_STATUS              0x008
 #define MMU_VERSION             0x034
+#define MMU_PT_BASE             0x00C           /* REG_PT_BASE_PPN: the page table's page number (exynos-iommu.h) */
 #define MMU_CTRL_TRANSLATE      (1u << 2)
 #define MMU_CTRL_BLOCK          (1u << 1)
 #define MMU_CTRL_DISABLE        0x0u
@@ -181,6 +188,7 @@ void hakios_exynos_abox_quiesce(void); /* loader_return(): RDMA0 and UAIF1 stopp
 #define ABOX_REMAP_ADDR         0x0028          /* 0x17D00000: the CPU's address 0 is the SRAM */
 #define ABOX_DYN_CLOCK_OFF      0x0030          /* [30:0], resets to 0x7FFFFFFF */
 #define ABOX_QCHANNEL_DISABLE   0x0038          /* bit = enum qchannel: 0 CA7, 1 ACLK, 2..5 BCLK_UAIF0..3, 6 BCLK_DSIF ... */
+#define QCHANNEL_ACLK           (1u << 1)       /* 1: ABOX's bus clock never gated (the T570 work keeps it so while it plays) */
 #define QCHANNEL_BCLK_UAIF1     (1u << 3)       /* 1: never gated. Samsung sets it for UAIF0 (the codec) while it plays */
 #define ABOX_ROUTE_CTRL0        0x0040          /* UAIFn SPK at [4n+3:4n]: 1 SIFS0, 2 SIFS1, 3 SIFS2, 12 SIFMS; DSIF [23:20] */
 #define ROUTE_UAIF1_SHIFT       4
@@ -277,6 +285,21 @@ void hakios_exynos_abox_quiesce(void); /* loader_return(): RDMA0 and UAIF1 stopp
 #define RDMA_SBACK_LIMIT        0x20
 #define RDMA_STATUS             0x30
 #define RDMA_ENABLE             (1u << 0)
+/*
+ * CTRL0's other fields, from the Galaxy Tab Active3's (SM-T570, the same Exynos 9810) firmware-less A-Box work, which
+ * read them out of calliope's own RDMA accessors (github.com/exynos-linux/samsung-gtactive3wifi docs/re/abox.md, patch
+ * 0106; read for facts only): BUF_TYPE 4, BUF_UPDATE 5 (calliope sets it with every new buffer), FORMAT [12:8] (the
+ * abox_get_format() code, 0x9 for 16-bit stereo), EXPAND 13 (16-bit mono to stereo), FUNC [18:16] (0 run, 1 pause).
+ * SBANK_LIMIT (0x20) [13:7]: the sample bank's size in 128-byte units, as calliope sets it. Not run there on hardware
+ * either: what the S9 does with them is in AUDIO.md.
+ */
+#define RDMA_BUF_TYPE           (1u << 4)
+#define RDMA_BUF_UPDATE         (1u << 5)
+#define RDMA_FORMAT_SHIFT       8
+#define RDMA_FORMAT_MASK        (0x1Fu << RDMA_FORMAT_SHIFT)
+#define RDMA_EXPAND             (1u << 13)
+#define RDMA_FUNC_MASK          (7u << 16)
+#define RDMA_SBANK_LIMIT_SHIFT  7
 #define RDMA_BURST_SHIFT        19
 #define RDMA_BURST_MASK         (0xFu << RDMA_BURST_SHIFT)
 #define RDMA_VOL_MASK           0xFFFFFFu

@@ -36,7 +36,7 @@
  *
  * What is written, in what order (the first revision's numbering; in Android's order, in which each register goes to
  * 0x39 and then to 0x3A):
- *   configure: start()'s steps 1-3, and max98512=2 at boot (as for 48 kHz, 2 x 16 bits)
+ *   configure: start()'s steps 1-3 when not done already for its width, and max98512=2 at boot (as for 48 kHz, 2 x 16 bits)
  *     GLOBAL_SHDN 0; SOFT_RESET 1, then REV_ID answering again and GLOBAL_SHDN [0], AMP_EN [0] reading 0
  *       (max98512_probe: its software reset; the shutdown before it is this driver's)
  *     MEAS_EN 0 (the IV sense off: Android turns it on for DSM, which does not run here); PCM_TX_HIZ_CTRL_A/B 0xFF;
@@ -269,6 +269,7 @@ static LCK_MTX_DECLARE(bus_lock, &max98512_lock_group);        /* one transfer a
 static LCK_MTX_DECLARE(amp_lock, &max98512_lock_group);        /* one start, stop or step at a time; the state below */
 static bool broken;             /* a write did not read back, or the bus failed: no more writing (but to shut down) */
 static bool playing;            /* unmuted by start(), until stop() */
+static uint32_t configured_bits;  /* configure() done for this width and nothing written since but mute/unmute: 0 none */
 static unsigned starts, refusals;
 
 /* a moment `us' microseconds from now, by the clock: a loop bounded by it spins, where delay() would sleep a tick */
@@ -656,6 +657,8 @@ mute(void)
 static int
 amp_start(uint32_t rate, uint32_t slot_bits, uint32_t channels)
 {
+	uint64_t t0 = mach_absolute_time(), us;
+	bool again = configured_bits == slot_bits;
 	int error = 0;
 
 	lck_mtx_lock(&amp_lock);
@@ -668,10 +671,18 @@ amp_start(uint32_t rate, uint32_t slot_bits, uint32_t channels)
 			mute();
 			playing = false;
 		}
-		if (configure(slot_bits, channels) && unmute()) {
+		/*
+		 * The reset and the whole set-up only when the amplifiers are not set up for this width already (the first
+		 * start, or after max98512=2's set-up for another one): a start is then only unmute(), a few writes, so that
+		 * the beginning of a short sound (a click; ABOX starts the amplifiers when iOS's first loud frames arrive)
+		 * is not spent on I2C. stop() (mute) leaves the set-up as it is.
+		 */
+		if ((configured_bits == slot_bits || configure(slot_bits, channels)) && unmute()) {
+			configured_bits = slot_bits;
 			playing = true;
 			starts++;
 		} else {
+			configured_bits = 0;
 			mute();
 			error = EIO;
 		}
@@ -680,9 +691,11 @@ amp_start(uint32_t rate, uint32_t slot_bits, uint32_t channels)
 		refusals++;
 	}
 	lck_mtx_unlock(&amp_lock);
+	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &us);
+	us /= 1000;
 	if (error == 0) {
-		say("max98512: on: %u Hz, %u x %u bits, I2S; top +%d dB, bottom +%d dB, both at -3 dB digital (start %u)\n", rate,
-		    channels, slot_bits, 3 * amps[0].gain, 3 * amps[1].gain, starts);
+		say("max98512: on: %u Hz, %u x %u bits, I2S; top +%d dB, bottom +%d dB, both at -3 dB digital (start %u, %s, %llu us)\n",
+		    rate, channels, slot_bits, 3 * amps[0].gain, 3 * amps[1].gain, starts, again ? "unmuted only" : "set up first", us);
 	} else {
 		say("max98512: start (%u Hz, %u x %u bits) refused: %s (%u so far)\n", rate, channels, slot_bits,
 		    error == EINVAL ? "not 48000 Hz, 2 channels of 16, 24 or 32 bits" : broken ? "writing has ended for this run" :
@@ -737,8 +750,42 @@ hakios_max98512_quiesce(void)
 	playing = false;
 }
 
+/*
+ * What the amplifiers say of themselves (ABOX's reports while it plays, and the console's "abox"): the interrupts' raw
+ * and live state (INT_RAW1-3, INT_STATE1-3: the clock monitor, thermal and over-current flags), the enables, the level,
+ * the measurement ADC's three channels (MEAS_ADC_CH0-2_READ, with MEAS_ADC_CFG 0x07 all three converting), the
+ * brownout state and the boost's output as the envelope tracker reads it (ENV_TRACK_BOOST_VOUT_READ): with a tone
+ * playing the boost follows the signal, so a reading that moves away from the idle one is the amplifier's own word
+ * that it plays. Only read; no lock but the bus's (a start or stop may run at the same time: the numbers are then
+ * those of a moment of it).
+ */
+static void
+amp_status(const char *when)
+{
+	static const uint16_t regs[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, GLOBAL_SHDN, AMP_EN, SPK_GAIN, AMP_VOL_CTRL,
+		                         0x4A, 0x4B, 0x4C, 0x4F, 0x85 };
+	char line[sizeof(regs) / sizeof(regs[0]) * 3 + 1];
+
+	for (unsigned i = 0; i < 2; i++) {
+		const struct amp *a = &amps[i];
+		unsigned used = 0;
+
+		if (a->revision == 0) {
+			continue;
+		}
+		for (unsigned r = 0; r < sizeof(regs) / sizeof(regs[0]); r++) {
+			uint8_t v = 0;
+
+			snprintf(line + used, sizeof(line) - used, get(a, regs[r], &v) == 0 ? " %02x" : " ??", (unsigned)v);
+			used += 3;
+		}
+		say("max98512: %s, %s: INT_RAW1-3 INT_STATE1-3, GLOBAL_SHDN AMP_EN SPK_GAIN AMP_VOL, ADC_CH0-2 BROWNOUT, BOOST_VOUT:%s\n",
+		    a->name, when, line);
+	}
+}
+
 static const struct hakios_abox_amp amp_hook = {
-	.name = "max98512", .start = amp_start, .stop = amp_stop,
+	.name = "max98512", .start = amp_start, .stop = amp_stop, .status = amp_status,
 };
 
 /* ---- the steps ---- */
@@ -777,6 +824,7 @@ amp_thread(void *arg, __unused wait_result_t result)
 	say("max98512: 2: both reset and set up as for 48 kHz, 2 x 16 bits, I2S; shut down and muted\n");
 	lck_mtx_lock(&amp_lock);
 	ok = configure(16, 2);
+	configured_bits = ok ? 16 : 0;
 	if (!ok) {
 		mute();
 	}
