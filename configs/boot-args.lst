@@ -435,6 +435,7 @@ touch_poll_us	k
 touch_rate	k
 touch_spi_hz	k
 touchscreen	k
+ucache_trap	k
 ufs	kl
 ufs_bench	k
 ufs_check	k

@@ -236,7 +236,7 @@ LOADER_PLATFORM	arg	loader_platform	Loader	l	loader.c
 M3_DIAG	arg	m3_diag	User space	k	1509-m3-diag-and-pan-off.patch	
 M3_FLUSH	arg	m3_flush	User space	k	1509-m3-diag-and-pan-off.patch	
 M3_IDS	arg	m3_ids	User space	k	1509-m3-diag-and-pan-off.patch	
-M3_PREP	arg	m3_prep	User space	k	1510-isa-floor.patch,hakios.exynos_m3.c	
+M3_PREP	arg	m3_prep	User space	k	1510-isa-floor.patch,1511-m3-user-cache-pou.patch,hakios.exynos_m3.c	
 MACHINE_NAME	arg	machine_name	CPU, memory and boot	k	GenericARMPE.cpp	
 MALI	arg	mali	GPU and display	k	hakios.mali.c	the first N of the GPU's nine steps of bring-up (9: all, then served); 0 or none: left alone
 MALI_ACPM	arg	mali_acpm	GPU and display	k	hakios.mali.c	the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
@@ -407,6 +407,7 @@ TOUCH_LAT	arg	touch_lat	GPU and display	ku	MiniIOMobileFramebuffer.cpp,eagl.c,ha
 TOUCH_POLL_US	arg	touch_poll_us	Touch and buttons	k	hakios.goodix.c	
 TOUCH_RATE	arg	touch_rate	Touch and buttons	k	hakios.goodix.c	the chip reports twice as often (Xiaomi's game mode; 240 otherwise)
 TOUCH_SPI_HZ	arg	touch_spi_hz	Touch and buttons	k	hakios.goodix.c	the bus at N Hz (Android's device tree gives the chip 5 MHz)
+UCACHE_TRAP	arg	ucache_trap	User space	k	1511-m3-user-cache-pou.patch	
 UFS_BENCH	arg	ufs_bench	Storage and APFS	k	hakios.ufs.c	what one request through the loader costs, by size
 UFS_CHECK	arg	ufs_check	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE	arg	ufs_native	Storage and APFS	kl	hakios.ufs.c,hakios.ufshc.c,loader.c	this kernel's own UFS driver has the controller for the run, no loader (1: beside UEFI's; 5: only look)
