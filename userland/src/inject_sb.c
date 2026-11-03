@@ -26,6 +26,8 @@
  *     window server here shows as a black screen: see poster_switcher_allowed().
  *   - With brightness_bridge=1 the brightness the user sets reaches the panel, which CoreBrightness
  *     alone never does here: see brightness_bridge().
+ *   - The status bar is Apple's notch layout on a screen of any width, not the pink "rdar:45025538"
+ *     strip UIKit draws for a screen missing from its table: see status_bar_provider().
  *   - Darwin notifications as a remote control, for scripts (rwtouch notify NAME):
  *       com.hakios.unlock      what the lock screen does after "swipe up to open"
  *       com.hakios.layers      write down the layers SpringBoard has on the screen: see layers()
@@ -2531,6 +2533,114 @@ brightness_bridge(const char *arguments)
 	dispatch_resume(timer);
 }
 
+/*
+ * The status bar's layout, for a screen of whatever width the kernel gives us.
+ *
+ * UIKit picks the status bar of a phone with a notch from a table of Apple's screens
+ * (+[_UIStatusBarVisualProvider_Split visualProviderSubclassForScreen:visualProviderInfo:], 20F66):
+ * a _UIStatusBarVisualProvider_SplitNNNN is taken only if the screen is exactly NNNN pixels wide
+ * (_nativeDisplayBounds, to 1e-4) AND the notch it was drawn around is exactly the screen's exclusion
+ * area. Ours is the iPhone X's (artwork subtype 2436: 209 x 30 points), so the one entry that can
+ * ever match is Split1125 -- and only on a screen 1125 pixels wide. On any other width nothing
+ * matches, and with the "Jindo" feature on there is no generic answer either; +[_UIStatusBar ...]
+ * then logs "No status bar visual provider for screen ... Please see rdar://45025538." and draws
+ * _UIStatusBarVisualProvider_Fallback: a pink strip with a flushed face and "rdar:45025538" where
+ * the time should be. That is what a framebuffer of the S9's own shape (1188 or 1242 pixels wide)
+ * showed on the home screen. It is not an internal build being detected; it is a screen that is not
+ * in the table.
+ *
+ * Before the table, for the built-in screen, UIKit reads UIStatusBarVisualProviderClassName from
+ * the defaults of com.apple.UIKit (which take the global domain too) and uses that class as it is,
+ * on any build (the os_variant check there only adds the command line's arguments). So: on a
+ * screen 1125 pixels wide the key is removed and Apple's own choice stands; on any other, it names
+ * the Split layout of Apple's phone nearest in width (in points, at the same scale) -- 1242 pixels
+ * at 3x is the iPhone XS Max's, 414 points; 1080 at 3x is the mini's layout, which UIKit draws
+ * at 0.96 and so spans 360 points. The width is the framebuffer's own (the active pixels
+ * of its timing, TimingElements, which is what the window server and so UIKit get), not
+ * MobileGestalt's main-screen-width: MobileGestalt answers from the cache it keeps on /var, and on
+ * a kept data volume that still says 1125 after a kernel with another size. Written to the global domain because an application in
+ * a container reads com.apple.UIKit from its container but the global domain from mobile's own;
+ * written at every start, so a kernel with another screen size is followed and a stale choice
+ * never stays behind on a kept data volume. UIKit says "WARNING: Using overridden status bar visual
+ * provider class" once per process when the key is there; that is the expected line.
+ */
+static void
+status_bar_provider(void)
+{
+	/*
+	 * The points each layout spans on a screen of that scale. Split1080 (the 12 and 13 mini) is laid
+	 * out for 375 points and declares +referenceScreenScale 2.88; UIKit draws it at 2.88 / the
+	 * screen's native scale (+[_UIStatusBar _effectiveScaleForVisualProviderClass:targetScreen:]),
+	 * so on a 3x screen it spans 375 x 0.96 = 360 points -- exactly a 1080-pixel screen at 3x.
+	 */
+	static const struct { const char *name; double points, scale; } splits[] = {
+		{ "_UIStatusBarVisualProvider_Split1080", 360, 3 },    /* iPhone 12, 13 mini, drawn at 0.96 */
+		{ "_UIStatusBarVisualProvider_Split1125", 375, 3 },    /* iPhone X, XS, 11 Pro */
+		{ "_UIStatusBarVisualProvider_Split1170", 390, 3 },    /* iPhone 12, 13 */
+		{ "_UIStatusBarVisualProvider_Split1242", 414, 3 },    /* iPhone XS Max, 11 Pro Max */
+		{ "_UIStatusBarVisualProvider_Split1284", 428, 3 },    /* iPhone 12, 13 Pro Max */
+		{ "_UIStatusBarVisualProvider_Split828", 414, 2 },     /* iPhone XR, 11 */
+	};
+	void *gestalt = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_NOW);
+	CFTypeRef (*answer)(CFStringRef) = gestalt != NULL ? (CFTypeRef (*)(CFStringRef))dlsym(gestalt, "MGCopyAnswer") : NULL;
+	CFStringRef key = CFSTR("UIStatusBarVisualProviderClassName");
+	CFTypeRef s = answer != NULL ? answer(CFSTR("main-screen-scale")) : NULL;
+	io_service_t fb = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOMobileFramebuffer"));
+	CFTypeRef timings = fb != IO_OBJECT_NULL ? IORegistryEntryCreateCFProperty(fb, CFSTR("TimingElements"), NULL, 0) : NULL;
+	double width = 0, scale = 0, best = 1e9;
+	const char *choice = NULL;
+
+	if (timings != NULL && CFGetTypeID(timings) == CFArrayGetTypeID() && CFArrayGetCount(timings) > 0) {
+		CFTypeRef timing = CFArrayGetValueAtIndex(timings, 0);
+		CFTypeRef horizontal = CFGetTypeID(timing) == CFDictionaryGetTypeID() ?
+		    CFDictionaryGetValue(timing, CFSTR("HorizontalAttributes")) : NULL;
+		CFTypeRef active = horizontal != NULL && CFGetTypeID(horizontal) == CFDictionaryGetTypeID() ?
+		    CFDictionaryGetValue(horizontal, CFSTR("Active")) : NULL;
+
+		if (active != NULL && CFGetTypeID(active) == CFNumberGetTypeID()) {
+			CFNumberGetValue(active, kCFNumberDoubleType, &width);
+		}
+	}
+	if (timings != NULL) {
+		CFRelease(timings);
+	}
+	if (fb != IO_OBJECT_NULL) {
+		IOObjectRelease(fb);
+	}
+	if (s != NULL && CFGetTypeID(s) == CFNumberGetTypeID()) {
+		CFNumberGetValue(s, kCFNumberDoubleType, &scale);
+	}
+	if (s != NULL) {
+		CFRelease(s);
+	}
+	if (width <= 0 || scale <= 0) {
+		say("hakios: SpringBoard: the status bar: no screen size (framebuffer width %.0f, MobileGestalt scale %.0f); "
+		    "UIKit chooses alone\n", width, scale);
+		return;
+	}
+	if (width != 1125 || scale != 3) {
+		for (unsigned i = 0; i < sizeof(splits) / sizeof(splits[0]); i++) {
+			double d = width / scale - splits[i].points;
+
+			if (splits[i].scale == scale && (d < 0 ? -d : d) < best) {
+				best = d < 0 ? -d : d;
+				choice = splits[i].name;
+			}
+		}
+	}
+	if (choice != NULL) {
+		CFStringRef value = CFStringCreateWithCString(NULL, choice, kCFStringEncodingUTF8);
+
+		CFPreferencesSetValue(key, value, kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+		CFRelease(value);
+	} else {
+		CFPreferencesSetValue(key, NULL, kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	}
+	CFPreferencesSynchronize(kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	say("hakios: SpringBoard: the status bar: screen %.0f pixels wide at %.0fx, %s\n", width, scale,
+	    choice != NULL ? choice : "UIKit's own choice (Split1125)");
+}
+
 __attribute__((constructor))
 static void
 hakios_springboard_init(void)
@@ -2558,6 +2668,7 @@ hakios_springboard_init(void)
 		return;
 	}
 	caenv();
+	status_bar_provider();
 	/*
 	 * The tweaks of the package manager's prefix, if one is installed: ElleKit's loader
 	 * (/var/jb/usr/lib/TweakLoader.dylib) reads /var/jb/usr/lib/TweakInject and opens the tweaks
