@@ -477,10 +477,19 @@ lx_link_transmit(mbuf_t packet, size_t length)
 	return true;
 }
 
+/* "wifi stat": the queue to the driver's thread */
+static void
+lx_link_counts(char *line, size_t room)
+{
+	snprintf(line, room, "to the radio's driver: %u frames queued, %u taken, %llu dropped (the queue full)", lx_queue_in,
+	    lx_queue_out, lx_queue_dropped);
+}
+
 static struct hakios_net_link lx_link = {
 	.name = "the phone's radio (ath11k)",
 	.wireless = true,
 	.transmit = lx_link_transmit,
+	.counts = lx_link_counts,
 };
 
 void
@@ -530,8 +539,8 @@ lx_os_net_link(int up)
 void
 lx_os_net_input(const unsigned char *frame, unsigned long length)
 {
-	if (lx_link_attached && length <= HAKIOS_NET_FRAME_MAX) {
-		hakios_net_input(frame, length);
+	if (lx_link_attached) {
+		hakios_net_input(frame, length);        /* (one that is too big is counted, and said, there) */
 	}
 }
 

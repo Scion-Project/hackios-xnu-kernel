@@ -47,6 +47,8 @@ struct hakios_net_link {
 	 * leaves it NULL.
 	 */
 	unsigned        (*poll)(void);
+	/* Optional. A few words of what the link has counted, for the USB console's "wifi stat" (no newline). */
+	void            (*counts)(char *line, size_t room);
 };
 
 /* Make en<unit> on top of that link (the structure must stay). One link per unit, once: false if there is one already. */
