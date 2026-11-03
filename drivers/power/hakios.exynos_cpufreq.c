@@ -61,8 +61,8 @@
  * ceiling, the online count's limit, 1794000 without temperatures, the thermal ceiling, the lowest level at 96 C -- and
  * when it ends the rate comes down as the load's would (the down windows).
  * A core that has never been idle
- * since start is taken as not started (cores 0 and 1 are not the kernel's at all): it counts neither for the load nor as
- * online. Every change is read back from the APM (hakios_acpm_dvfs_get); a rate read back above the ceiling is logged
+ * since start is taken as not started (a core the kernel was not given, or not yet: the loader's core 0 until its
+ * handover with core0=1): it counts neither for the load nor as online. Every change is read back from the APM (hakios_acpm_dvfs_get); a rate read back above the ceiling is logged
  * and the next level down asked for. The APM of the S9 answers FREQ_GET with 0 for both CPU domains (main-1102 and the
  * fixed-rate runs before it: "dvfs: the M3s (cpucl1): 0 kHz (0) -> asked 2106000 kHz (0) -> now 0 kHz (0)"; Samsung's
  * own cpufreq driver reads its rate from the CAL's cache, never from the APM). Taken as a rate, that 0 stopped the
@@ -452,7 +452,7 @@ set_rate(struct cluster *c, uint32_t khz, uint32_t max)
 
 /*
  * The rate a core of the cluster really runs at, in MHz: this thread moved to the first of its cores the scheduler has
- * (one that has been idle: cores 0 and 1 are not the kernel's), and a chain of 32 dependent additions run SPIN_LOOPS
+ * (one that has been idle: a core not yet the kernel's has not), and a chain of 32 dependent additions run SPIN_LOOPS
  * times with interrupts off -- one addition a cycle on both the A55 and the M3, the loop's own subtraction and branch
  * beside them -- timed with mach_absolute_time. 0 when there is no such core. Back on any core afterwards.
  */

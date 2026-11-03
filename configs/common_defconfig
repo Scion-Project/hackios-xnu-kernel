@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 603 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 605 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -1506,8 +1506,14 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_USTACKS_TNAME is not set
 
 #
-# Loader (8)
+# Loader (10)
 #
+
+# this core -- the one the loader stays on while the kernel runs on others (bootcpu=) -- given to the kernel
+# CONFIG_CORE0 is not set
+
+# core 1, which S-Boot uses for its own display work, listed for the kernel all the same
+# CONFIG_CORE1 is not set
 
 # read by loader.c (loader)
 # CONFIG_CPUMASK is not set

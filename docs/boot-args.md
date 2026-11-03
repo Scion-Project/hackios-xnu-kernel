@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **552 arguments**: 485 read by the kernel, 18 by the loader, 62 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **554 arguments**: 486 read by the kernel, 20 by the loader, 62 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -535,10 +535,12 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ustacks_threads` | K | `user_exception_trace.c` | `CONFIG_USTACKS_THREADS` |  |
 | `ustacks_tname` | K | `user_exception_trace.c` | `CONFIG_USTACKS_TNAME` |  |
 
-## Loader (9)
+## Loader (11)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
+| `core0` | KL | `1513-psci-loader-core.patch`, `loader.c` | `CONFIG_CORE0` |  |
+| `core1` | L | `loader.c` | `CONFIG_CORE1` |  |
 | `cpumask` | L | `loader.c` | `CONFIG_CPUMASK` |  |
 | `cpus` | L | `loader.c` | `CONFIG_CPUS` |  |
 | `extra_ram` | KL | `1512-arm-extra-ram.patch`, `loader.c` | `CONFIG_EXTRA_RAM` |  |

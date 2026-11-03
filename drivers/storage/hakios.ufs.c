@@ -186,6 +186,14 @@ _Static_assert(__builtin_offsetof(struct loader_block, ask) == 128,
 #define UFS_PAGE           0x4000UL
 #define UFS_TIMEOUT_MS     20000        /* core 0 answers in well under a second; this is for a dead loader */
 
+/*
+ * core0=1 (patch 1513, osfmk/arm64/psci_smp.c): once this kernel's own driver has the controller (ufs=3's switch) the
+ * loader's core is asked for, and once it is the kernel's, nothing is asked of the loader any more.
+ */
+extern void hakios_loader_core_take(void);
+extern int hakios_loader_core_taken(void);
+static uint32_t ufs_loader_gone_said;
+
 static volatile struct loader_block *ufs_page;
 static uint8_t *ufs_buffer;             /* the loader's data buffer: filled by it for a read, here for a write */
 static uint32_t ufs_buffer_size, ufs_parts, ufs_seq;
@@ -392,6 +400,15 @@ ufs_request(uint32_t op, uint32_t part, uint64_t lba, uint64_t count, uint8_t *d
 	int64_t status;
 
 	if (ufs_dead) {
+		return EIO;
+	}
+	if (hakios_loader_core_taken()) {
+		/* core0=1: the loader's core is the kernel's now (patch 1513), and nobody is there to answer */
+		if (ufs_loader_gone_said++ == 0) {
+			printf("ufs: a request to the loader (%s), whose core is the kernel's now: refused, not waited on\n",
+			    op == BLOCK_OP_READ ? "a read" : "a write");
+		}
+		ufs_errors++;
 		return EIO;
 	}
 	if (op == BLOCK_OP_READ) {
@@ -3369,11 +3386,12 @@ ufs_nufs_start(void)
 		goto out;
 	}
 	nufs_say("ufs: nufs: step 5: switched: every read%s through this kernel's own driver from now on; the loader is asked "
-	    "for nothing (core 0 stays the loader's)\n", window ? ", and USERDATA's writes," : "");
+	    "for nothing (its core the kernel's with core0=1, else the loader's)\n", window ? ", and USERDATA's writes," : "");
 	nufs_sum.step = 5;
 	ufs_native_mapped = true;
 	ufs_native_on = true;
 	ufs_nufs_on = true;
+	hakios_loader_core_take();      /* core0=1: the loader's core (nothing happens without it) */
 out:
 	nufs_soak_free();
 	nufs_free_units();
