@@ -122,6 +122,8 @@ void hakios_s2mpb02_torch_quiesce(void) {}
 #endif
 #ifndef HAKIOS_BCM4361_BT
 void hakios_bcm4361_bt_init(void) {}
+extern void loader_log_line(const char *line);
+void hakios_bt_console(__unused const char *arg) { loader_log_line("usb: bt: this kernel has no Bluetooth driver (BCM4361_BT)\n"); }
 #endif
 #ifndef HAKIOS_SSP
 void hakios_ssp_init(void) {}

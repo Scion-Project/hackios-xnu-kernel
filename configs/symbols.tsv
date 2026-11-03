@@ -78,10 +78,13 @@ BRCMFMAC_TCM_IDX	arg	brcmfmac_tcm_idx	Wi-Fi	k	lx_brcmf.c	the rings' indices stay
 BRIGHTNESS_BRIDGE	arg	brightness_bridge	User space	u	inject_sb.c	the brightness the user sets (Control Center's slider, Settings) is taken to the panel
 BT	arg	bt	User space	k	hakios.bcm4361_bt.c,hakios.bt.c	
 BT_AGAIN	arg	bt_again	User space	k	hakios.bt.c	the second look this many seconds later (0: no second look; 30)
+BT_BAUD	arg	bt_baud	User space	k	hakios.bcm4361_bt.c	
 BT_EXPANDER_RESET	arg	bt_expander_reset	User space	k	hakios.bcm4361_bt.c	at bt=2 and up, take the expander out of reset if it is held there
 BT_HCD	arg	bt_hcd	User space	k	hakios.bcm4361_bt.c	the patch file's name in fw/ (default bcm4361B2.hcd); without it, the phone's own from VENDOR
 BT_KEEP	arg	bt_keep	User space	k	hakios.bcm4361_bt.c	leave the chip powered at the end (default: BT_EN and BT_WAKE low once the steps are done or one fails)
 BT_MODULE	arg	bt_module	User space	k	hakios.bcm4361_bt.c	murata or semco: which patch (bcm4361B2_<m>.hcd; default: the module Wi-Fi read in OTP, else a guess)
+BT_SCAN	arg	bt_scan	User space	k	hakios.bcm4361_bt.c	
+BT_TTY	arg	bt_tty	User space	k	hakios.bcm4361_bt.c	
 BT_UART_MHZ	arg	bt_uart_mhz	User space	k	hakios.bcm4361_bt.c	UART_BT's clock in MHz, if bt=1 shows the divider or mux not as Android leaves them (default 200)
 BT_VENDOR	arg	bt_vendor	User space	k	hakios.bcm4361_bt.c	never read the patch from the phone's VENDOR partition (default: read it there with ufs=2)
 BT_VENDOR_PART	arg	bt_vendor_part	User space	k	hakios.bcm4361_bt.c	the partition the patch is read from (default VENDOR)

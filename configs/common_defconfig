@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 578 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 581 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -52,7 +52,7 @@ CONFIG_HAKIOS_EXYNOS_ABOX=y
 # the Bluetooth half of the WCN6750: step one, a read-only look at its three pins (bt=1) [hakios.bt.c]
 CONFIG_HAKIOS_BT=y
 
-# the Galaxy S9's Bluetooth, stage 1: the BCM4361's Bluetooth half on UART_BT, powered by BT_EN on the PCAL6524 ... [hakios.bcm4361_bt.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
+# the Galaxy S9's Bluetooth: the BCM4361's Bluetooth half on UART_BT (out of its USI reset), powered by BT_EN on the ... [hakios.bcm4361_bt.c, hakios.bt_node.cpp; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 CONFIG_HAKIOS_BCM4361_BT=y
 
 # the cameras (cam=N): the sensors on the CCI bus and the ISP's interface. The sensors, their tables (fw-camera/) and ... [hakios.camera.c]
@@ -1510,7 +1510,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (77)
+# User space (80)
 #
 
 # read by inject_sb.c (user space)
@@ -1528,6 +1528,9 @@ CONFIG_MODEM_AGAIN=y
 # the second look this many seconds later (0: no second look; 30)
 # CONFIG_BT_AGAIN is not set
 
+# read by hakios.bcm4361_bt.c (kernel)
+# CONFIG_BT_BAUD is not set
+
 # at bt=2 and up, take the expander out of reset if it is held there
 # CONFIG_BT_EXPANDER_RESET is not set
 
@@ -1539,6 +1542,12 @@ CONFIG_MODEM_AGAIN=y
 
 # murata or semco: which patch (bcm4361B2_<m>.hcd; default: the module Wi-Fi read in OTP, else a guess)
 # CONFIG_BT_MODULE is not set
+
+# read by hakios.bcm4361_bt.c (kernel)
+# CONFIG_BT_SCAN is not set
+
+# read by hakios.bcm4361_bt.c (kernel)
+# CONFIG_BT_TTY is not set
 
 # UART_BT's clock in MHz, if bt=1 shows the divider or mux not as Android leaves them (default 200)
 # CONFIG_BT_UART_MHZ is not set

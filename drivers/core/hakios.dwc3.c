@@ -132,6 +132,7 @@ extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_wifi_report(bool first);
 extern void hakios_sta_console_scan(void);
+extern void hakios_bt_console(const char *arg);
 extern void hakios_net_console_ip(void);            /* hakios.net.c */
 extern void hakios_net_console_ping(const char *arg);
 extern void hakios_abox_console(const char *arg);  /* sys/hakios.exynos_abox.h */
@@ -1307,7 +1308,8 @@ console(char *line)
 		    "lr 6 250 1000), "
 		    "sensors [on N | off N | fake X Y Z S | pins | retry ...] (the S9's sensor hub and its sensors' last samples, shub=N), "
 		    "wifi (the radio's log kept, and its driver's state now), wifi scan (a scan of every channel by the station, and "
-		    "the access points heard), wifi ip (en0's address and gateway), wifi ping [A.B.C.D] (four echo requests; the gateway "
+		    "the access points heard), bt (the S9's Bluetooth at bt=7: its state), bt scan (an inquiry and an LE scan: the devices "
+		    "heard), wifi ip (en0's address and gateway), wifi ping [A.B.C.D] (four echo requests; the gateway "
 		    "by default), return (end the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
 		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
@@ -1351,6 +1353,8 @@ console(char *line)
 		hakios_cs47l93_console(arg);
 	} else if (strcmp(line, "sensors") == 0) {
 		hakios_ssp_console(arg);
+	} else if (strcmp(line, "bt") == 0) {
+		hakios_bt_console(arg);
 	} else if (strcmp(line, "ufs") == 0) {
 		hakios_ufs_summary("asked on the USB console", 1);
 	} else if (strcmp(line, "return") == 0) {
