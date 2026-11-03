@@ -101,6 +101,7 @@ cam_s9_bayer	k
 cam_s9_exp	k
 cam_s9_gain	k
 cam_s9_ipclk	k
+cam_s9_ispdiv	k
 cam_s9_mmu_probe	k
 cam_s9_pack12	k
 cam_s9_probe	k
