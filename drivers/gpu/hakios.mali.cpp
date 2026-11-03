@@ -208,7 +208,8 @@ static uint32_t gMaliFlush = 1;
 static void
 flushSurface(MiniIOSurface * s)
 {
-	if (gMaliFlush && s != NULL && s->kpixels != NULL && s->info.allocSize != 0) {
+	/* (a surface of fb_zc's scan-out pool is write-combined everywhere: no line of it is in a cache) */
+	if (gMaliFlush && s != NULL && s->kpixels != NULL && s->info.allocSize != 0 && s->scanPhys == 0) {
 		FlushPoC_DcacheRegion((vm_offset_t) s->kpixels, s->info.allocSize);
 	}
 }
@@ -459,7 +460,9 @@ HakiosMaliUserClient::surfaceBuffer(struct mali_surface * request)
 		return kIOReturnUnsupported;
 	}
 	size = round_page_64(s->info.allocSize);
-	memory = IOSubMemoryDescriptor::withSubRange(s->memory, PAGE_SIZE, size, kIODirectionInOut);
+	/* (fb_zc: the pixels are the scan-out pool's, not the pages after the shared state) */
+	memory = s->scan != NULL ? IOSubMemoryDescriptor::withSubRange(s->scan, 0, size, kIODirectionInOut) :
+	    IOSubMemoryDescriptor::withSubRange(s->memory, PAGE_SIZE, size, kIODirectionInOut);
 	if (memory == NULL || size == 0 || size > MALI_BUFFER_MAX) {
 		OSSafeReleaseNULL(memory);
 		MiniIOSurfaceDrop(s);
@@ -490,7 +493,8 @@ HakiosMaliUserClient::surfaceBuffer(struct mali_surface * request)
 		MiniIOSurfaceDrop(s);
 		return kIOReturnSuccess;
 	}
-	b = newBuffer(s->memory, PAGE_SIZE, size, &request->handle, PANFROST_BO_NOEXEC);
+	b = s->scan != NULL ? newBuffer(s->scan, 0, size, &request->handle, PANFROST_BO_NOEXEC) :
+	    newBuffer(s->memory, PAGE_SIZE, size, &request->handle, PANFROST_BO_NOEXEC);
 	if (b == NULL) {
 		memory->release();
 		MiniIOSurfaceDrop(s);
@@ -541,7 +545,8 @@ HakiosMaliUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, I
 	if (b != NULL) {
 		b->memory->retain();
 		*memory = b->memory;
-		*options = 0;
+		/* (fb_zc: the scan-out pool is no memory of the kernel's, and would be mapped as a device's: write-combined) */
+		*options = b->surface != NULL && b->surface->scan != NULL ? kIOMapWriteCombineCache : 0;
 		ret = kIOReturnSuccess;
 	}
 	IOLockUnlock(gMaliLock);

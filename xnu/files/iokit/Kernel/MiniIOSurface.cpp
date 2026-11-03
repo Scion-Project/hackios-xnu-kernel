@@ -151,6 +151,53 @@ static thread_call_t    gSurfaceClearing;
 static uint32_t         gSurfacesGivenAgain;    /* for MiniIOSurfaceCost() */
 /* boot-arg surf_clear=0: kept memory is given out as it is (to see what the clearing costs; a surface is then not all zeroes) */
 static TUNABLE(uint32_t, gSurfaceClear, "surf_clear", 1);
+/*
+ * fb_zc (MiniIOMobileFramebuffer.cpp): the window server's display surfaces made of the scan-out pool of the S9's DPU
+ * driver (drivers/gpu/hakios.exynos_dpu.c), for the display controller to scan them out with nothing copied. Which
+ * ones: of the size the display's driver says (MiniIOSurfaceScanout()), one plane of 'BGRA', made by backboardd; at most
+ * as many as the pool has slots (14), the others ordinary. Write-combined in every mapping, the kernel's, the window
+ * server's and the GPU's: the Mali and the DPU read memory, not the processors' caches.
+ */
+extern "C" {
+int hakios_scanout_carve(uint64_t bytes, uint64_t * phys);
+void hakios_scanout_uncarve(uint64_t phys);
+}
+static uint32_t gScanoutWidth, gScanoutHeight;
+static uint32_t gScanoutMade, gScanoutRefused;
+
+void
+MiniIOSurfaceScanout(uint32_t width, uint32_t height)
+{
+	gScanoutWidth = width;
+	gScanoutHeight = height;
+}
+
+static bool
+scanoutWanted(uint32_t width, uint32_t height, uint32_t format, uint32_t bpe, uint32_t ew, uint32_t eh, uint32_t planes,
+    uint32_t bpr, uint32_t offset)
+{
+	char name[32] = "";
+
+	if (gScanoutWidth == 0 || width != gScanoutWidth || height != gScanoutHeight || format != 'BGRA' || bpe != 4 ||
+	    ew != 1 || eh != 1 || planes != 0 || (bpr & 3) != 0 || bpr < width * 4 || (offset & 0xff) != 0) {
+		return false;
+	}
+	proc_selfname(name, sizeof(name));
+	return strcmp(name, "backboardd") == 0;
+}
+
+void
+MiniIOSurfaceUse(MiniIOSurface * s, int delta)
+{
+	if (s == NULL || gSurfaceLock == NULL) {
+		return;
+	}
+	IOLockLock(gSurfaceLock);
+	s->useCount[0] += delta;
+	s->shared()->useCount = (uint64_t) s->useCount[1] << 32 | s->useCount[0];
+	IOLockUnlock(gSurfaceLock);
+}
+
 /* boot-arg surf_wrap=0: surfaces around the client's pictures refused, as before methodWrapClientImage (for comparing) */
 static TUNABLE(uint32_t, gSurfaceWrap, "surf_wrap", 1);
 
@@ -287,6 +334,13 @@ MiniIOSurface::free(void)
 
 	OSSafeReleaseNULL(values);
 	OSSafeReleaseNULL(clientMap);
+	if (scanPhys != 0) {
+		/* (the display holds a surface it shows: nobody scans this memory out any more) */
+		OSSafeReleaseNULL(scanMap);
+		OSSafeReleaseNULL(scan);
+		hakios_scanout_uncarve(scanPhys);
+		scanPhys = 0;
+	}
 	if (client != NULL) {
 		client->complete();
 		client->release();
@@ -632,7 +686,27 @@ surfaceCreate(OSDictionary * props, IOReturn * error)
 		}
 	}
 
-	s->memory = surfaceMemory((vm_size_t) PAGE_SIZE + (wrapped ? 0 : alloc));
+	if (wrapped == NULL && scanoutWanted(width, height, format, bpe, ew, eh, planeCount, bpr, offset)) {
+		uint64_t phys = 0;
+
+		if (hakios_scanout_carve(alloc, &phys) == 0) {
+			s->scan = IOMemoryDescriptor::withPhysicalAddress((IOPhysicalAddress) phys, alloc, kIODirectionInOut);
+			s->scanMap = s->scan != NULL ? s->scan->createMappingInTask(kernel_task, 0, kIOMapAnywhere |
+			    kIOMapWriteCombineCache) : NULL;
+			if (s->scanMap == NULL) {
+				OSSafeReleaseNULL(s->scan);
+				hakios_scanout_uncarve(phys);
+			} else {
+				s->scanPhys = phys;
+				bzero((void *) s->scanMap->getVirtualAddress(), alloc);
+			}
+		}
+		if (s->scanPhys == 0 && gScanoutRefused++ < 4) {
+			IOLog("MiniIOSurface: fb_zc: a display surface (%ux%u, %u bytes a row) not made of the scan-out pool: %s\n",
+			    width, height, bpr, s->scan == NULL ? "no slot free" : "not mapped");
+		}
+	}
+	s->memory = surfaceMemory((vm_size_t) PAGE_SIZE + (wrapped || s->scanPhys ? 0 : alloc));
 	if (s->memory == NULL) {
 		IOLog("MiniIOSurface: no memory for %u bytes (%u surfaces, %llu MB in use)\n", alloc, gSurfaceCount,
 		    gSurfaceBytes >> 20);
@@ -642,7 +716,11 @@ surfaceCreate(OSDictionary * props, IOReturn * error)
 	}
 	s->kbase = (uint8_t *) s->memory->getBytesNoCopy();
 	s->values = OSDictionary::withCapacity(4);
-	s->kpixels = s->kbase + PAGE_SIZE;
+	s->kpixels = s->scanPhys != 0 ? (uint8_t *) s->scanMap->getVirtualAddress() : s->kbase + PAGE_SIZE;
+	if (s->scanPhys != 0 && gScanoutMade++ < 16) {
+		IOLog("MiniIOSurface: fb_zc: a display surface (%ux%u, %u bytes a row, %u bytes) made of the scan-out pool at "
+		    "%#llx\n", width, height, bpr, alloc, s->scanPhys);
+	}
 	if (wrapped != NULL) {
 		s->clientTask = current_task();
 		s->clientAddress = wrapped->unsigned64BitValue();
@@ -1034,11 +1112,24 @@ IOSurfaceRootUserClient::addRef(MiniIOSurface * surface)
 		IOLog("MiniIOSurface: cannot map surface %u (%u bytes) into the client\n", surface->sid, surface->info.allocSize);
 		return NULL;
 	}
+	IOMemoryMap * scanMap = NULL;
+
+	if (surface->scan != NULL) {
+		/* (fb_zc: the pixels are the pool's, write-combined here too) */
+		scanMap = surface->scan->createMappingInTask(fTask, 0, kIOMapAnywhere | kIOMapWriteCombineCache);
+		if (scanMap == NULL) {
+			IOLog("MiniIOSurface: cannot map the pixels of surface %u (the scan-out pool's) into the client\n", surface->sid);
+			map->release();
+			return NULL;
+		}
+	}
 	ref = &fRefs[fRefCount++];
 	bzero(ref, sizeof(*ref));
 	ref->surface = surface;
 	ref->map = map;
-	if (surface->client != NULL && surface->clientTask != fTask) {
+	if (scanMap != NULL) {
+		ref->pixelMap = scanMap;
+	} else if (surface->client != NULL && surface->clientTask != fTask) {
 		ref->pixelMap = surface->client->createMappingInTask(fTask, 0, kIOMapAnywhere);
 	}
 	surfaceHold(surface);
@@ -1084,7 +1175,7 @@ IOSurfaceRootUserClient::returnSurface(struct minisurf_client_ref * ref, bool kn
 	memcpy(r + 1, s->planes, size - sizeof(*r));
 	r->shared = address;
 	r->aux = address + MINISURF_AUX_OFFSET;
-	r->base = known ? ~0ULL : s->client == NULL ? address + PAGE_SIZE :
+	r->base = known ? ~0ULL : s->client == NULL && s->scan == NULL ? address + PAGE_SIZE :
 	    ref->pixelMap != NULL ? ref->pixelMap->getAddress() : s->clientAddress;
 	args->structureOutputSize = size;
 	return kIOReturnSuccess;

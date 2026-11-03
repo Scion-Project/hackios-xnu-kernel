@@ -200,6 +200,14 @@ int hakios_scanout_flip(__unused unsigned index) { return -1; }
 int hakios_scanout_latched(void) { return 1; }
 void hakios_scanout_detach(__unused const char *why) {}
 uint32_t hakios_scanout_refreshes(void) { return 0; }
+int hakios_scanout_carve(uint64_t bytes, uint64_t *phys);
+void hakios_scanout_uncarve(uint64_t phys);
+int hakios_scanout_carved(uint64_t phys);
+int hakios_scanout_show(uint64_t phys, uint32_t rowbytes);
+int hakios_scanout_carve(__unused uint64_t bytes, __unused uint64_t *phys) { return -1; }
+void hakios_scanout_uncarve(__unused uint64_t phys) {}
+int hakios_scanout_carved(__unused uint64_t phys) { return 0; }
+int hakios_scanout_show(__unused uint64_t phys, __unused uint32_t rowbytes) { return -1; }
 #endif
 
 #ifndef HAKIOS_USB_GADGET
@@ -264,6 +272,14 @@ void hakios_adreno_minute(void) {}
 
 #ifndef HAKIOS_MALI
 void hakios_mali_init(void) {}
+/* the display's fps_log line (MiniIOMobileFramebuffer.cpp): no Mali, nothing to say of it */
+int hakios_mali_second(uint64_t *busy_ns, uint32_t *jobs, uint64_t *queued_ns, uint32_t *mhz, uint32_t *switches,
+    int32_t *g3d_mc);
+int hakios_mali_second(__unused uint64_t *busy_ns, __unused uint32_t *jobs, __unused uint64_t *queued_ns,
+    __unused uint32_t *mhz, __unused uint32_t *switches, __unused int32_t *g3d_mc) { return 0; }
+/* a frame given to the display (MiniIOMobileFramebuffer.cpp present()), for mali_gov_frame: no Mali, no floor */
+void hakios_mali_frame(void);
+void hakios_mali_frame(void) {}
 #endif
 
 #ifndef HAKIOS_WIFI

@@ -31,6 +31,7 @@
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
+#include <sys/sysctl.h>
 
 extern "C" {
 #include <console/video_console.h>
@@ -169,6 +170,10 @@ static TUNABLE(uint32_t, gRefreshHz, "fb_hz", kFBRefreshHz);
  * this system CoreAnimation draws at half the rate it is told unless something asks it for more: told 120 it gave 60
  * (tools/frames.py: frames every 16.7 ms, with or without CADisableMinimumFrameDurationOnPhone, CA_FORCE_120HZ and
  * CA_ENABLE_HIGH_FRAME_RATE_RESTRICTION=0, 30 October). The refreshes themselves still come at fb_hz.
+ * fb_ca_hz=120 on the S9 (fb_hz 60, fb_zc=1; the USB console's "swipe", 8 strokes): refreshes missed while the finger moved
+ * the home screen 3 to 9 in about 115 frames, against 16 to 25 in 99 told 60; in all 17 to 24 in 390 frames of motion
+ * against 43 to 53 in 355. What is left is where CoreAnimation goes to 30 a second by itself: the last 300 ms of a page's
+ * slide (SpringBoard's commits 33.3 ms apart there).
  */
 static TUNABLE(uint32_t, gCARefreshHz, "fb_ca_hz", 0);
 static TUNABLE(uint32_t, gOnTheBeat, "fb_beat", 1);
@@ -196,6 +201,11 @@ extern "C" boolean_t mach_timer_coalescing_enabled;
 extern "C" int proc_get_effective_thread_policy(thread_t thread, int flavor);
 extern "C" kern_return_t thread_policy_get(thread_t thread, thread_policy_flavor_t flavor, thread_policy_t policy_info,
     mach_msg_type_number_t * count, boolean_t * get_default);
+extern "C" kern_return_t thread_policy_set(thread_t thread, thread_policy_flavor_t flavor, thread_policy_t policy_info,
+    mach_msg_type_number_t count);
+extern "C" uint64_t thread_get_runtime_self(void);
+extern "C" int cpu_number(void);
+extern "C" void hakios_mali_frame(void);        /* hakios.mali.c (stubs.c without it): mali_gov_frame's floor */
 #define POLICY_DARWIN_BG        0x21                    /* TASK_POLICY_DARWIN_BG (kern/policy_internal.h, IMP_TASK_POLICY_*) */
 #define POLICY_LATENCY_QOS      0x2F                    /* TASK_POLICY_LATENCY_QOS */
 /* the refresh notifications sent (vsync()), all user clients together: for fps_log */
@@ -253,6 +263,59 @@ static TUNABLE(uint32_t, gTouchLat, "touch_lat", 0);
 static TUNABLE(uint32_t, gFlip, "fb_flip", 0);
 static TUNABLE(uint32_t, gDPP, "fb_dpp", 0);
 static TUNABLE(uint32_t, gFpsLog, "fps_log", 0);
+/*
+ * Boot-arg fb_zc=1 (with fb_dpp=1): nothing copied. The window server's display surfaces -- the display's size, one plane
+ * of 'BGRA', made by backboardd -- are made of the DPU driver's scan-out pool (MiniIOSurface.cpp, MiniIOSurfaceScanout():
+ * physically contiguous, below 4 GB, write-combined), the GPU draws CoreAnimation's frame into one, and a frame whose
+ * only layer is such a surface over the whole display is shown by pointing VGF0 at it (hakios_scanout_show()) at the
+ * next refresh, after the flip before has been taken: no copy into a buffer of the scan-out's, which took 1.5 to 4 ms of
+ * the presenter's every frame. The surface is held, and its use count raised (IOSurfaceIsInUse()), from its flip until
+ * another one's has been taken. A frame of any other kind -- more than one layer, a part of the display, a surface of
+ * ordinary memory, or the very surface on the panel drawn into again -- is copied as before. fps_log says how many went
+ * which way ("zc: N in place, N copied, N into the one shown").
+ */
+static TUNABLE(uint32_t, gZeroCopy, "fb_zc", 0);
+/*
+ * fb_zc's surfaces, as the iPhone's display driver keeps them (boot-arg fb_zc_hold, kern.hakios.fb_zc_hold while it runs;
+ * a sum, 3 by default; 0 is how fb_zc first was):
+ *   1  in use from SwapEnd on: a display surface's use count (IOSurfaceIsInUse()) is raised when its swap is handed over,
+ *      not only once it is on the panel, and comes down when the presenter is done with the frame; it stays up while the
+ *      surface is shown, as an iPhone's driver keeps it. (CoreAnimation did not make a third surface for it: two in turn
+ *      either way, fps_log's "N surfaces in turn". It goes by SwapWait, see fb_swapwait.)
+ *   2  let go at the refresh: the presenter watches for the flip it asked for to be taken (every FLIP_POLL_US while it
+ *      has no frame to show), and lets the surface shown before go then, not when the next frame comes; and a frame drawn
+ *      into the surface on the panel (or about to be) is not copied: it is already where the panel reads, and a copy,
+ *      read back from write-combined memory, took 5 to 9 ms of the presenter's. Without it about half the frames were
+ *      counted "into the one shown" and copied (PR 160's first run); they were not: the surface's flip had been taken
+ *      long before, it was only let go of at the next frame. With it, on the S9 swiping the home screen (the USB console's
+ *      "swipe"), 0 frames of 564 copied and 0 into the one shown.
+ */
+static uint32_t gZcHold = 3;
+#define FLIP_POLL_US    1000
+/*
+ * Boot-arg fb_rt=1 (kern.hakios.fb_rt): the thread that hands the swaps over (backboardd's render thread, CoreAnimation's
+ * frames) is made real-time at its first swap, as an iPhone's is (a period of a refresh, fb_rt_us of work in it, default
+ * 8000): the scheduler gives it a processor at once and the faster cores first. 0 by default.
+ */
+static uint32_t gRenderRT = 0, gRenderRTMicros = 8000;
+/*
+ * Boot-arg fb_swapwait=1 (kern.hakios.fb_swapwait): SwapWait as the iPhone's driver answers it -- not at once, but once the
+ * swap it names is on the panel (its flip taken at a refresh, or the frame drawn where the panel reads it), two refreshes
+ * at most. backboardd asks it with the number of a swap it handed over: so it does not draw into the surface the panel
+ * still reads. 0 by default: at once, as before. fps_log counts the calls either way ("swapwait: ...").
+ * backboardd asks twice a swap, for the one it has just handed over and for the one before. Waited for (with fb_zc_hold 3,
+ * the flips seen at the refresh), a third of the calls waited 5 to 6 ms, the render thread's frame went from 8.5 to
+ * 14.9 ms, and CoreAnimation fell to half its rate more often: 35 refreshes missed in 367 frames of the swipe test
+ * against 17 to 24 in 390 without it (3 November). So it is off; the surfaces' use counts say the same thing.
+ */
+static uint32_t gSwapWait = 0;
+SYSCTL_DECL(_kern_hakios);
+SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_zc_hold, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gZcHold, 0,
+    "fb_zc: 1 surfaces in use from SwapEnd on, 2 let go at the refresh and not copied when drawn into again (3: both)");
+SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_swapwait, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gSwapWait, 0,
+    "SwapWait waits until the swap is on the panel (1)");
+SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_rt, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gRenderRT, 0,
+    "the render thread made real-time at its next swap (1)");
 #define SCAN_BUFFERS    3
 #define FLIP_STUCK_MS   100
 #define NO_BUFFER       (~0u)
@@ -262,6 +325,9 @@ int hakios_scanout_memory(uint64_t bytes, unsigned count, uint64_t * phys);
 int hakios_scanout_attach(int mode, const uint64_t * phys, unsigned count, uint32_t width, uint32_t height,
     uint32_t rowbytes, unsigned shown);
 int hakios_scanout_flip(unsigned index);
+int hakios_scanout_show(uint64_t phys, uint32_t rowbytes);
+int hakios_mali_second(uint64_t * busy_ns, uint32_t * jobs, uint64_t * queued_ns, uint32_t * mhz, uint32_t * switches,
+    int32_t * g3d_mc);
 int hakios_scanout_latched(void);
 void hakios_scanout_detach(const char * why);
 uint32_t hakios_scanout_refreshes(void);
@@ -378,6 +444,7 @@ public:
 	IOLock *        fSwapLock;              /* around the next five */
 	uint8_t         fSwap[SWAP_QUEUE][SWAP_SIZE];   /* the swaps on their way to the panel (fb_queue), from fSwapFirst on */
 	MiniIOSurface * fSwapSurfaces[SWAP_QUEUE][SWAP_LAYERS]; /* ... their surfaces, held from SwapEnd on: their maker may let go of them */
+	uint8_t         fSwapInUse[SWAP_QUEUE];                 /* ... the layers whose use count SwapEnd raised (fb_zc_hold 1) */
 	unsigned        fSwapFirst, fSwapsWaiting;
 	/*
 	 * ... and not whenever the GPU happens to be done, but on a beat of the refresh rate
@@ -435,6 +502,26 @@ public:
 	uint32_t        fScanWidth, fScanHeight, fScanRowBytes;
 	uint32_t        fBootWidth, fBootHeight, fBootRowBytes;
 	bool            fScanSaid;              /* the first frame into a scan-out buffer has been told of */
+	/* fb_zc: the surface VGF0 scans out now, and the one flipped to and not yet taken (each held, its use count raised) */
+	MiniIOSurface * fZcFront, * fZcPending;
+	bool            fZcSaid;
+	bool            fZcFrame;               /* show(): this frame is scanned out as it is: drawLayer() draws nothing */
+	uint32_t        fFpsZc, fFpsZcCopied, fFpsZcBusy;       /* fps_log: frames shown in place, copied, drawn into the one shown */
+	uint32_t        fFpsZcAgain;                            /* ... of those drawn into the one shown, how many not copied (fb_zc_hold 2) */
+	uint32_t        fFpsZcSurfaces[4], fFpsZcSurfaceCount;  /* ... the different surfaces this second's frames came from (up to 4) */
+	/* fps_log: the render thread (the one that hands the swaps over): its processor time from one swap to the next, the
+	 * processors it handed them over on (a bit for each, and how many on the slower cores) */
+	thread_t        fCpuThread;
+	uint64_t        fCpuLast, fFpsCpu, fFpsCpuMax;
+	uint32_t        fFpsCpuFrames, fFpsCpuMask, fFpsCpuSlow;
+	thread_t        fRTThread;                              /* (fb_rt: the thread last made real-time, or tried) */
+	/* SwapWait (fb_swapwait): the last swap on the panel, the one whose flip waits to be taken; under fSwapLock */
+	uint32_t        fShownID, fFlipID, fLastSwapID;
+	uint32_t        fFpsWaits, fFpsWaitLast, fFpsWaitBefore, fFpsWaitOther, fFpsWaitsSlept, fFpsWaitsTimedOut;
+	uint64_t        fFpsWaitSlept;
+	/* fps_log: refreshes a moving picture missed (no new frame though frames were coming), and the longest gap */
+	uint64_t        fFpsLastShow, fFpsGapMax;
+	uint32_t        fFpsMissed;
 	/* fps_log: this second's counts */
 	uint32_t        fFpsPresents, fFpsShown, fFpsFlips, fFpsLost, fFpsHeld, fFpsPartial, fFpsIdle, fFpsRefreshes;
 	thread_t        fSwapThread;            /* fps_log: the thread the last swap came from, and how the kernel classed it */
@@ -470,6 +557,15 @@ public:
 	void scanSetup(void);
 	bool scanBegin(bool covered);
 	bool scanEnd(void);
+	bool scanLatch(void);
+	void scanTaken(void);
+	bool scanPoll(void);
+	bool flipAsked(void) { return fScanPending != NO_BUFFER || fZcPending != NULL; }
+	void renderThread(void);
+	void markShown(uint32_t id);
+	void swapWait(uint32_t id);
+	bool zcShow(const uint8_t * swap, MiniIOSurface ** surfaces);
+	void zcLetGo(MiniIOSurface ** which);
 	void scanDrop(const char * why);
 	void drawLayers(const uint8_t * swap, MiniIOSurface ** surfaces);
 	static void fpsFired(thread_call_param_t self, thread_call_param_t unused);
@@ -986,6 +1082,10 @@ IOMobileFramebuffer::drawLayer(MiniIOSurface * s, const int32_t * src, const int
 	bool filter = gFilter == 1 || (gFilter == 2 && fSettling);
 	RowJob job;
 
+	if (fZcFrame) {
+		return;                         /* (fb_zc: the display controller reads the surface itself) */
+	}
+
 	if (sw <= 0 || sh <= 0) {
 		sx = sy = 0;
 		sw = (int32_t) s->info.width;
@@ -1167,8 +1267,27 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	if (gFpsLog) {
 		swapSource();
 	}
+	if (gRenderRT) {
+		renderThread();
+	}
 	hakios_exynos_cpufreq_frame();
+	hakios_mali_frame();
+	thread_t me = current_thread();
+	uint64_t runtime = thread_get_runtime_self();
+	int cpu = cpu_number();
+
 	IOLockLock(fSwapLock);
+	/* fps_log: the render thread's processor time since its swap before (a pause of a second or more is not a frame's) */
+	if (me == fCpuThread && fCpuLast != 0 && runtime >= fCpuLast && now - fSwapTime < pause) {
+		uint64_t used = runtime - fCpuLast;
+
+		fFpsCpu += used;
+		fFpsCpuMax = used > fFpsCpuMax ? used : fFpsCpuMax;
+		fFpsCpuFrames++;
+	}
+	fCpuThread = me;
+	fCpuLast = runtime;
+	fFpsCpuMask |= cpu >= 0 && cpu < 32 ? 1u << cpu : 0;
 	fStatSwapsLate += fSwapTime != 0 && now - fSwapTime > period && now - fSwapTime < pause;
 	fSwapTime = now;
 	fStatHeld += fSwapsWaiting >= swapQueue();
@@ -1180,10 +1299,13 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 			fStatLost++;                    /* (the GPU has stopped answering: the frame before is waiting for it) */
 			fFpsLost++;
 			IOLockUnlock(fSwapLock);
+			markShown(swapWord(swap, SWAP_ID));     /* (never will be: nobody waits for it) */
 			return;
 		}
 	}
 	unsigned slot = (fSwapFirst + fSwapsWaiting) % SWAP_QUEUE;
+
+	fLastSwapID = swapWord(swap, SWAP_ID);
 
 	memcpy(fSwap[slot], swap, SWAP_SIZE);
 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
@@ -1193,6 +1315,16 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	}
 	fSwapsWaiting++;
 	IOLockWakeup(fSwapLock, fSwap, true);
+	/* (fb_zc_hold 1: a display surface in use from now on, as the iPhone's driver has it, until the presenter is done) */
+	fSwapInUse[slot] = 0;
+	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
+		MiniIOSurface * held = fSwapSurfaces[slot][layer];
+
+		if (held != NULL && held->scanPhys != 0 && gZeroCopy && (gZcHold & 1)) {
+			MiniIOSurfaceUse(held, 1);
+			fSwapInUse[slot] |= (uint8_t) (1u << layer);
+		}
+	}
 	IOLockUnlock(fSwapLock);
 }
 
@@ -1227,6 +1359,90 @@ IOMobileFramebuffer::swapSource(void)
 	    "not in the background", tier, mach_timer_coalescing_enabled ? "ON: its timers may fire late" : "off");
 }
 
+/*
+ * fb_rt=1: the thread handing the swaps over made real-time, once for each such thread: a period of a refresh, fb_rt_us
+ * of processor time in it, done within the refresh, preemptible. (On an iPhone backboardd's render thread is so; here
+ * it ran at the default priority and could wait behind anything.) The kernel's real-time fail-safe still demotes a
+ * thread that keeps a processor for too long.
+ */
+void
+IOMobileFramebuffer::renderThread(void)
+{
+	thread_t thread = current_thread();
+	thread_time_constraint_policy_data_t rt;
+	uint64_t period, work;
+	kern_return_t kr;
+	char name[32] = "?";
+
+	if (thread == fRTThread) {
+		return;
+	}
+	fRTThread = thread;
+	nanoseconds_to_absolutetime(NSEC_PER_SEC / refreshHz(), &period);
+	nanoseconds_to_absolutetime((uint64_t) (gRenderRTMicros >= 500 && gRenderRTMicros <= 15000 ? gRenderRTMicros : 8000) *
+	    NSEC_PER_USEC, &work);
+	work = work < period ? work : period / 2;
+	rt.period = (uint32_t) period;
+	rt.computation = (uint32_t) work;
+	rt.constraint = (uint32_t) period;
+	rt.preemptible = TRUE;
+	kr = thread_policy_set(thread, THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t) &rt, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+	proc_selfname(name, sizeof(name));
+	scanSay("MiniIOMobileFramebuffer: fb_rt: %s[%d] thread %#llx made real-time (%llu us of every %llu): %d\n", name,
+	    proc_selfpid(), thread_tid(thread), micros(work), micros(period), kr);
+}
+
+/* SwapWait: swap `id` is on the panel (or never will be): whoever waits for it, or for one before it, goes on */
+void
+IOMobileFramebuffer::markShown(uint32_t id)
+{
+	if (id == 0) {
+		return;
+	}
+	IOLockLock(fSwapLock);
+	if ((int32_t) (id - fShownID) > 0) {
+		fShownID = id;
+	}
+	IOLockWakeup(fSwapLock, &fShownID, false);
+	IOLockUnlock(fSwapLock);
+}
+
+/*
+ * SwapWait for swap `id`: counted for fps_log (the last swap handed over, the one before it, or another), and with
+ * fb_swapwait=1 waited for until it is on the panel, two refreshes at most.
+ */
+void
+IOMobileFramebuffer::swapWait(uint32_t id)
+{
+	uint64_t began = mach_absolute_time(), deadline;
+	bool slept = false;
+
+	IOLockLock(fSwapLock);
+	fFpsWaits++;
+	if (id != 0 && id == fLastSwapID) {
+		fFpsWaitLast++;
+	} else if (id != 0 && id + 1 == fLastSwapID) {
+		fFpsWaitBefore++;
+	} else {
+		fFpsWaitOther++;
+	}
+	if (gSwapWait && id != 0 && (int32_t) (id - fLastSwapID) <= 0) {
+		clock_interval_to_deadline(2 * 1000000 / refreshHz(), NSEC_PER_USEC, &deadline);
+		while ((int32_t) (id - fShownID) > 0) {
+			slept = true;
+			if (IOLockSleepDeadline(fSwapLock, &fShownID, deadline, THREAD_UNINT) == THREAD_TIMED_OUT) {
+				fFpsWaitsTimedOut += (int32_t) (id - fShownID) > 0;
+				break;
+			}
+		}
+	}
+	if (slept) {
+		fFpsWaitsSlept++;
+		fFpsWaitSlept += mach_absolute_time() - began;
+	}
+	IOLockUnlock(fSwapLock);
+}
+
 void
 IOMobileFramebuffer::presenterMain(void * self, wait_result_t result __unused)
 {
@@ -1238,6 +1454,7 @@ IOMobileFramebuffer::presenter(void)
 {
 	static uint8_t swap[SWAP_SIZE];         /* (one thread) */
 	MiniIOSurface * surfaces[SWAP_LAYERS] = { NULL };
+	uint8_t inUse = 0;                      /* (fb_zc_hold 1: the layers whose use count SwapEnd raised) */
 	bool unsettled = false;                 /* the frame on the panel was drawn unfiltered, and its surfaces are held */
 
 	for (;;) {
@@ -1245,6 +1462,18 @@ IOMobileFramebuffer::presenter(void)
 		while (fSwapsWaiting == 0) {
 			uint64_t deadline;
 
+			/* (fb_zc_hold 2: a flip asked for is watched, and what it replaces let go of, at the refresh it is taken) */
+			if ((gZcHold & 2) && gZeroCopy && fScanMode == 2 && flipAsked()) {
+				clock_interval_to_deadline(FLIP_POLL_US, NSEC_PER_USEC, &deadline);
+				if (IOLockSleepDeadline(fSwapLock, fSwap, deadline, THREAD_UNINT) == THREAD_TIMED_OUT && fSwapsWaiting == 0) {
+					IOLockUnlock(fSwapLock);
+					IOLockLock(fLock);              /* (as show() holds it about the scan-out's state) */
+					(void) scanPoll();
+					IOLockUnlock(fLock);
+					IOLockLock(fSwapLock);
+				}
+				continue;
+			}
 			if (!unsettled) {
 				IOLockSleep(fSwapLock, fSwap, THREAD_UNINT);
 				continue;
@@ -1261,23 +1490,32 @@ IOMobileFramebuffer::presenter(void)
 		/* the frame before is done with now, settled or not */
 		for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
 			if (surfaces[layer] != NULL) {
+				if (inUse & (1u << layer)) {
+					MiniIOSurfaceUse(surfaces[layer], -1);
+				}
 				MiniIOSurfaceDrop(surfaces[layer]);
 				surfaces[layer] = NULL;
 			}
 		}
+		inUse = 0;
 		IOLockLock(fSwapLock);
 		memcpy(swap, fSwap[fSwapFirst], SWAP_SIZE);
 		memcpy(surfaces, fSwapSurfaces[fSwapFirst], sizeof(surfaces));
+		inUse = fSwapInUse[fSwapFirst];
 		IOLockUnlock(fSwapLock);
 		show(swap, surfaces);
 		unsettled = gFilter == 2 && fScanMode != 2 && fScanMode != -2;     /* (the DPU's scaler filters) */
 		if (!unsettled) {
 			for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
 				if (surfaces[layer] != NULL) {
+					if (inUse & (1u << layer)) {
+						MiniIOSurfaceUse(surfaces[layer], -1);
+					}
 					MiniIOSurfaceDrop(surfaces[layer]);
 					surfaces[layer] = NULL;
 				}
 			}
+			inUse = 0;
 		}
 		MiniIOSurfaceClearKept();               /* (the next frame is some milliseconds away) */
 	}
@@ -1450,6 +1688,17 @@ IOMobileFramebuffer::scanSetup(void)
 	scanSay("MiniIOMobileFramebuffer: %s: %u buffers of %ux%u, %u bytes a row, at %#llx %#llx %#llx (%s); taken at the "
 	    "first frame drawn\n", name, SCAN_BUFFERS, width, height, rowbytes, fScanPhys[0], fScanPhys[1], fScanPhys[2],
 	    carve ? "the DPU driver's, below 4 GB" : "IOKit's");
+	(void) PE_parse_boot_argn("fb_zc_hold", &gZcHold, sizeof(gZcHold));
+	(void) PE_parse_boot_argn("fb_rt", &gRenderRT, sizeof(gRenderRT));
+	(void) PE_parse_boot_argn("fb_swapwait", &gSwapWait, sizeof(gSwapWait));
+	(void) PE_parse_boot_argn("fb_rt_us", &gRenderRTMicros, sizeof(gRenderRTMicros));
+	if (gZeroCopy && want == 2 && carve) {
+		MiniIOSurfaceScanout(fWidth, fHeight);
+		scanSay("MiniIOMobileFramebuffer: fb_zc: the window server's display surfaces (%ux%u 'BGRA') made of the scan-out "
+		    "pool from now on, and scanned out as they are\n", fWidth, fHeight);
+	} else if (gZeroCopy) {
+		scanSay("MiniIOMobileFramebuffer: fb_zc: needs fb_dpp=1 and the DPU driver's memory: frames are copied\n");
+	}
 }
 
 /*
@@ -1478,11 +1727,16 @@ IOMobileFramebuffer::scanBegin(bool covered)
 	fPanelHeight = fScanHeight;
 	fRowBytes = fScanRowBytes;
 	if (!covered) {
+		/* (fb_zc: what is shown may be a surface: the newest flipped to) */
+		MiniIOSurface * shown = fZcPending != NULL ? fZcPending : fScanPending == NO_BUFFER ? fZcFront : NULL;
+
 		fFpsPartial++;
 		for (uint32_t y = 0; y < fPanelHeight; y++) {
 			uint8_t * to = fBase + (size_t) y * fRowBytes;
 
-			if (fScanFront < fScanCount) {
+			if (shown != NULL) {
+				memcpy(to, shown->pixels() + (size_t) y * shown->info.bytesPerRow, (size_t) fPanelWidth * 4);
+			} else if (fScanFront < fScanCount) {
 				memcpy(to, fScanBase[fScanFront] + (size_t) y * fRowBytes, (size_t) fPanelWidth * 4);
 			} else {
 				bzero(to, (size_t) fPanelWidth * 4);
@@ -1522,20 +1776,170 @@ IOMobileFramebuffer::scanEnd(void)
 		}
 		return true;
 	}
-	if (fScanPending != NO_BUFFER) {
-		for (unsigned ms = 0; !hakios_scanout_latched(); ms++) {
-			if (ms >= FLIP_STUCK_MS) {
-				scanDrop("a flip not taken in 100 ms");
-				return false;
-			}
-			IOSleep(1);
-		}
-		fScanFront = fScanPending;
-		fScanPending = NO_BUFFER;
-		fFpsFlips++;
+	if (!scanLatch()) {
+		return false;
 	}
 	hakios_scanout_flip(fScanTarget);
 	fScanPending = fScanTarget;
+	waited = mach_absolute_time() - began;
+	fFpsWait += waited;
+	fFpsWaitMax = waited > fFpsWaitMax ? waited : fFpsWaitMax;
+	return true;
+}
+
+/*
+ * The flip asked for last -- into a buffer of the scan-out's, or (fb_zc) to a surface -- once the DECON has taken it (at
+ * a refresh): what it showed becomes the front, and a surface shown before is let go. False, and the scan-out given up,
+ * if it is not taken within FLIP_STUCK_MS.
+ */
+bool
+IOMobileFramebuffer::scanLatch(void)
+{
+	if (fScanPending == NO_BUFFER && fZcPending == NULL) {
+		return true;
+	}
+	for (unsigned ms = 0; !hakios_scanout_latched(); ms++) {
+		if (ms >= FLIP_STUCK_MS) {
+			scanDrop("a flip not taken in 100 ms");
+			return false;
+		}
+		IOSleep(1);
+	}
+	scanTaken();
+	return true;
+}
+
+/* The flip asked for has been taken: what it showed becomes the front, and a surface shown before is let go. */
+void
+IOMobileFramebuffer::scanTaken(void)
+{
+	zcLetGo(&fZcFront);
+	markShown(fFlipID);
+	if (fScanPending != NO_BUFFER) {
+		fScanFront = fScanPending;
+		fScanPending = NO_BUFFER;
+	} else {
+		fZcFront = fZcPending;
+		fZcPending = NULL;
+		fScanFront = NO_BUFFER;         /* (no buffer of the scan-out's is shown: all three can be drawn into) */
+	}
+	fFpsFlips++;
+}
+
+/*
+ * fb_zc_hold 2: the flip asked for, if the DECON has taken it by now (no wait): the surface it replaced is let go of at
+ * once, so that CoreAnimation may draw into it again, and a frame from it is not taken for one drawn into what is shown.
+ * True if no flip is waiting any more.
+ */
+bool
+IOMobileFramebuffer::scanPoll(void)
+{
+	if (!flipAsked()) {
+		return true;
+	}
+	if (fScanMode <= 0 || !hakios_scanout_latched()) {
+		return false;
+	}
+	scanTaken();
+	return true;
+}
+
+/* fb_zc: a surface the panel no longer shows: its use count down, let go of */
+void
+IOMobileFramebuffer::zcLetGo(MiniIOSurface ** which)
+{
+	if (*which != NULL) {
+		MiniIOSurfaceUse(*which, -1);
+		MiniIOSurfaceDrop(*which);
+		*which = NULL;
+	}
+}
+
+/*
+ * fb_zc: a frame shown with nothing copied, if it is one that can be: its only layer, the whole of a surface of the
+ * scan-out pool, over the whole display, and not the surface on the panel now or about to be (CoreAnimation drawing
+ * again into what is shown: that frame is copied, so that what reaches the panel is whole). False: copy it.
+ */
+bool
+IOMobileFramebuffer::zcShow(const uint8_t * swap, MiniIOSurface ** surfaces)
+{
+	MiniIOSurface * s = surfaces[0];
+	int32_t src[4], dst[4];
+	uint64_t began, waited;
+
+	if (!gZeroCopy || fScanMode != 2 || s == NULL || s->scanPhys == 0) {
+		return false;
+	}
+	for (unsigned i = 0; i < 4; i++) {
+		if (i == fFpsZcSurfaceCount) {
+			fFpsZcSurfaces[fFpsZcSurfaceCount++] = s->sid;
+			break;
+		}
+		if (fFpsZcSurfaces[i] == s->sid) {
+			break;
+		}
+	}
+	for (unsigned layer = 1; layer < SWAP_LAYERS; layer++) {
+		if (swapWord(swap, SWAP_SURFACE(layer)) != 0) {
+			fFpsZcCopied++;
+			return false;
+		}
+	}
+	memcpy(src, swap + SWAP_SOURCE(0), sizeof(src));
+	memcpy(dst, swap + SWAP_DEST(0), sizeof(dst));
+	if (s->info.width != fWidth || s->info.height != fHeight || s->info.bytesPerElement != 4 || s->info.planeCount != 0 ||
+	    !(src[2] <= 0 || src[3] <= 0 || (src[0] == 0 && src[1] == 0 && (uint32_t) src[2] == fWidth &&
+	    (uint32_t) src[3] == fHeight)) || !(dst[2] <= 0 || dst[3] <= 0 || (dst[0] == 0 && dst[1] == 0 &&
+	    (uint32_t) dst[2] == fWidth && (uint32_t) dst[3] == fHeight))) {
+		fFpsZcCopied++;
+		return false;
+	}
+	if (gZcHold & 2) {
+		(void) scanPoll();
+	}
+	if (s == fZcPending || (s == fZcFront && !flipAsked())) {
+		fFpsZcBusy++;
+		if (gZcHold & 2) {
+			/*
+			 * Drawn into the surface the panel reads now, or will from the next refresh on: it is shown already, as it
+			 * is. A copy would show the same picture a refresh later, and cost the presenter 5 to 9 ms.
+			 */
+			fFpsZcAgain++;
+			fFpsZc++;
+			return true;
+		}
+		fFpsZcCopied++;
+		return false;
+	}
+	if (s == fZcFront && !(gZcHold & 2)) {
+		fFpsZcBusy++;
+		fFpsZcCopied++;
+		return false;
+	}
+	/* (fb_zc_hold 2: the surface on the panel, a copy of an older frame flipped to over it: shown again once that is taken) */
+	began = mach_absolute_time();
+	if (!scanLatch()) {
+		return false;
+	}
+	s = MiniIOSurfaceCopy(s->sid);          /* (held for as long as it is on the panel) */
+	if (s == NULL) {
+		return false;
+	}
+	MiniIOSurfaceUse(s, 1);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	if (hakios_scanout_show(s->scanPhys + s->info.offset, s->info.bytesPerRow) != 0) {
+		MiniIOSurfaceUse(s, -1);
+		MiniIOSurfaceDrop(s);
+		fFpsZcCopied++;
+		return false;
+	}
+	fZcPending = s;
+	fFpsZc++;
+	if (!fZcSaid) {
+		fZcSaid = true;
+		scanSay("MiniIOMobileFramebuffer: fb_zc: the first frame scanned out as it is: surface %u at %#llx, %u bytes a row\n",
+		    s->sid, s->scanPhys + s->info.offset, s->info.bytesPerRow);
+	}
 	waited = mach_absolute_time() - began;
 	fFpsWait += waited;
 	fFpsWaitMax = waited > fFpsWaitMax ? waited : fFpsWaitMax;
@@ -1561,6 +1965,8 @@ IOMobileFramebuffer::scanDrop(const char * why)
 	fPanelHeight = fBootHeight;
 	fRowBytes = fBootRowBytes;
 	fScanFront = fScanPending = fScanTarget = NO_BUFFER;
+	zcLetGo(&fZcFront);                     /* (the boot framebuffer is shown now, no surface) */
+	zcLetGo(&fZcPending);
 }
 
 /*
@@ -1578,6 +1984,17 @@ IOMobileFramebuffer::scanned(uintptr_t * base, uint32_t * width, uint32_t * heig
 
 	if (mode <= 0) {
 		return 0;
+	}
+	/* (fb_zc: a surface on the panel; the one asked for once taken. Read unlocked: see above) */
+	MiniIOSurface * surface = fZcPending != NULL && hakios_scanout_latched() ? fZcPending : fZcFront;
+
+	if (surface != NULL && pending >= fScanCount) {
+		*base = (uintptr_t) surface->pixels();
+		*width = surface->info.width;
+		*height = surface->info.height;
+		*rowbytes = surface->info.bytesPerRow;
+		*index = 0;
+		return mode;
 	}
 	shown = pending < fScanCount && hakios_scanout_latched() ? pending : front;
 	if (shown >= fScanCount || fScanBase[shown] == NULL) {
@@ -1610,15 +2027,36 @@ void
 IOMobileFramebuffer::fpsLine(void)
 {
 	uint32_t presents, lost, held, shown, flips, partial, same, undrawn, refreshes = hakios_scanout_refreshes(), refreshed;
-	uint64_t draw, drawMax, wait, waitMax, deadline;
+	uint32_t zc, zcCopied, zcBusy, missed, jobs = 0, mhz = 0, switches = 0;
+	uint32_t zcAgain, zcSurfaces, cpuFrames, cpuMask, waits, waitLast, waitBefore, waitOther, waitsSlept, waitsTimedOut;
+	uint64_t waitSlept;
+	uint64_t cpu, cpuMax;
+	uint64_t draw, drawMax, wait, waitMax, deadline, gapMax, busy = 0, queued = 0;
+	int32_t g3d = 0;
+	int gpu;
 	const char * mode;
-	char line[320];
+	char line[400];
 
 	IOLockLock(fSwapLock);
 	presents = fFpsPresents;
 	lost = fFpsLost;
 	held = fFpsHeld;
 	fFpsPresents = fFpsLost = fFpsHeld = 0;
+	cpu = fFpsCpu;
+	cpuMax = fFpsCpuMax;
+	cpuFrames = fFpsCpuFrames;
+	cpuMask = fFpsCpuMask;
+	fFpsCpu = fFpsCpuMax = 0;
+	fFpsCpuFrames = fFpsCpuMask = 0;
+	waits = fFpsWaits;
+	waitLast = fFpsWaitLast;
+	waitBefore = fFpsWaitBefore;
+	waitOther = fFpsWaitOther;
+	waitsSlept = fFpsWaitsSlept;
+	waitsTimedOut = fFpsWaitsTimedOut;
+	waitSlept = fFpsWaitSlept;
+	fFpsWaits = fFpsWaitLast = fFpsWaitBefore = fFpsWaitOther = fFpsWaitsSlept = fFpsWaitsTimedOut = 0;
+	fFpsWaitSlept = 0;
 	IOLockUnlock(fSwapLock);
 	IOLockLock(fLock);
 	shown = fFpsShown;
@@ -1630,6 +2068,16 @@ IOMobileFramebuffer::fpsLine(void)
 	waitMax = fFpsWaitMax;
 	same = fFpsSameSurface;
 	undrawn = fFpsUndrawn;
+	zc = fFpsZc;
+	zcCopied = fFpsZcCopied;
+	zcBusy = fFpsZcBusy;
+	zcAgain = fFpsZcAgain;
+	zcSurfaces = fFpsZcSurfaceCount;
+	fFpsZcAgain = fFpsZcSurfaceCount = 0;
+	missed = fFpsMissed;
+	gapMax = fFpsGapMax;
+	fFpsZc = fFpsZcCopied = fFpsZcBusy = fFpsMissed = 0;
+	fFpsGapMax = 0;
 	fFpsShown = fFpsFlips = fFpsPartial = fFpsSameSurface = fFpsUndrawn = 0;
 	fFpsDraw = fFpsDrawMax = fFpsWait = fFpsWaitMax = 0;
 	mode = fScanMode == 2 ? "dpp: VGF0 scales" : fScanMode == 1 ? "flip" : fScanMode < 0 ? "flip/dpp not yet taken" :
@@ -1646,6 +2094,33 @@ IOMobileFramebuffer::fpsLine(void)
 		    "notifications sent; %u from the surface before, %u not done by the GPU; %s\n", presents, shown, flips, lost,
 		    held, shown ? micros(draw) / shown : 0, micros(drawMax), shown ? micros(wait) / shown : 0, micros(waitMax),
 		    refreshed, partial, (int) told, same, undrawn, mode);
+		loader_log_line(line);
+		IOLog("%s", line);
+		/*
+		 * the second line: refreshes missed while frames came (and the longest gap between two), fb_zc's frames, and
+		 * the GPU's second (drivers/gpu/hakios.mali.c): its share of the time running jobs, its time a frame shown, its
+		 * jobs and their wait in the queue, its clock and the G3D's temperature
+		 */
+		gpu = hakios_mali_second(&busy, &jobs, &queued, &mhz, &switches, &g3d);
+		snprintf(line, sizeof(line), "fps: %u refreshes missed while moving, the longest gap %llu.%llu ms; zc: %u in "
+		    "place, %u copied, %u into the one shown; gpu: %s%llu%% busy, %llu us a frame shown, %u jobs (%llu us each, "
+		    "%llu us queued), %u MHz%s, %u switches, G3D %d C\n", missed, gapMax / NSEC_PER_MSEC,
+		    gapMax / (NSEC_PER_MSEC / 10) % 10, zc, zcCopied, zcBusy, gpu ? "" : "none; ", busy / (NSEC_PER_SEC / 100),
+		    shown ? busy / 1000 / shown : 0, jobs, jobs ? busy / 1000 / jobs : 0, jobs ? queued / 1000 / jobs : 0, mhz,
+		    gpu == 2 ? " (mali_gov)" : "", switches, g3d / 1000);
+		loader_log_line(line);
+		IOLog("%s", line);
+		/*
+		 * the third: the render thread's processor time a frame against the GPU's (the line before): which of the two a
+		 * frame waits for; and where fb_zc's frames came from -- how many surfaces in turn, how many drawn into the one
+		 * shown were shown as they were (fb_zc_hold 2) -- and on which processors the swaps were handed over (a bit each)
+		 */
+		snprintf(line, sizeof(line), "fps: cpu: the render thread %llu us a frame, %llu at most, %u frames, on cpus %#x%s; "
+		    "gpu %llu us a frame; zc: %u surfaces in turn, %u drawn into the one shown not copied; fb_zc_hold %u; swapwait: "
+		    "%u (%u for the last swap, %u the one before, %u other), %u waited %llu us each, %u for 2 refreshes%s\n",
+		    cpuFrames ? micros(cpu) / cpuFrames : 0, micros(cpuMax), cpuFrames, cpuMask, gRenderRT ? " (fb_rt)" : "",
+		    shown ? busy / 1000 / shown : 0, zcSurfaces, zcAgain, gZcHold, waits, waitLast, waitBefore, waitOther, waitsSlept,
+		    waitsSlept ? micros(waitSlept) / waitsSlept : 0, waitsTimedOut, gSwapWait ? " (fb_swapwait)" : "");
 		loader_log_line(line);
 		IOLog("%s", line);
 	} else if (fFpsIdle++ == 0) {
@@ -1707,6 +2182,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	bool scanned;                           /* (fb_flip/fb_dpp: drawn into a buffer of the scan-out's) */
 	MiniIOSurface * recorded = NULL;
 	uint32_t undrawn = 0;                   /* (fps_log: layers shown before the GPU was done with them) */
+	bool inPlace;                           /* (fb_zc: the surface scanned out as it is: drawLayer() draws nothing) */
 	bool report;
 
 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
@@ -1761,6 +2237,22 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 		}
 	}
 	fLastFrame = began;
+	/*
+	 * fps_log: refreshes missed while the picture moved -- frames coming, less than FRAME_PAUSE apart, but more than a
+	 * refresh apart: each refresh in between showed the frame before again -- and the longest such gap
+	 */
+	if (fFpsLastShow != 0) {
+		uint64_t gap, period = NSEC_PER_SEC / refreshHz();
+
+		absolutetime_to_nanoseconds(began - fFpsLastShow, &gap);
+		if (gap < (uint64_t) FRAME_PAUSE * NSEC_PER_MSEC) {
+			uint64_t periods = (gap + period / 2) / period;
+
+			fFpsMissed += periods > 1 ? (uint32_t) (periods - 1) : 0;
+			fFpsGapMax = gap > fFpsGapMax ? gap : fFpsGapMax;
+		}
+	}
+	fFpsLastShow = began;
 	report = fSwapsShown < 8;
 	/*
 	 * fps_log: a frame from the very surface the frame before came from (CoreAnimation drawing again into what is being
@@ -1773,7 +2265,9 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 		fLastSurface = swapWord(swap, SWAP_SURFACE(0));
 	}
 	/* (fb_flip/fb_dpp: into a buffer of its own, from the second picture on: the first is the console's end) */
-	scanned = fGraphics && scanBegin(coversDisplay(swap, surfaces, fWidth, fHeight));
+	inPlace = fGraphics && zcShow(swap, surfaces);
+	fZcFrame = inPlace;
+	scanned = !inPlace && fGraphics && scanBegin(coversDisplay(swap, surfaces, fWidth, fHeight));
 	if (report) {
 		IOLog("MiniIOMobileFramebuffer: swap %u (#%u): surfaces %u %u %u %u, layers set 0x%x cleared 0x%x\n",
 		    swapWord(swap, SWAP_ID), fSwapsShown, swapWord(swap, SWAP_SURFACE(0)), swapWord(swap, SWAP_SURFACE(1)),
@@ -1831,6 +2325,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	if (recorded != NULL) {
 		record(recorded);
 	}
+	fZcFrame = false;
 	fFpsShown++;
 	fFpsDraw += drawn - began;
 	fFpsDrawMax = drawn - began > fFpsDrawMax ? drawn - began : fFpsDrawMax;
@@ -1839,6 +2334,12 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 		drawLayers(swap, surfaces);
 	}
 	fSwapsShown++;
+	/* (SwapWait: on the panel now, or once the flip asked for is taken) */
+	if (flipAsked()) {
+		fFlipID = swapWord(swap, SWAP_ID);
+	} else {
+		markShown(swapWord(swap, SWAP_ID));
+	}
 	if (gTouchLat) {
 		hakios_tl("tl: v %u ready %llu shown %llu done %llu\n", swapWord(swap, SWAP_ID), micros(ready), micros(shown),
 		    micros(drawn));
@@ -2153,11 +2654,12 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 		fOwner->present((const uint8_t *) args->structureInput);
 		return kIOReturnSuccess;
 
-	case kFBMethodSwapWait:                         /* a swap is on the screen as soon as it is made */
+	case kFBMethodSwapWait:                         /* in: the swap; at once, or (fb_swapwait=1) once it is on the panel */
 		if (gTouchLat) {
 			hakios_tl("tl: w %llu %#llx %#llx at %llu\n", args->scalarInputCount > 0 ? in[0] : 0,
 			    args->scalarInputCount > 1 ? in[1] : 0, args->scalarInputCount > 2 ? in[2] : 0, micros(mach_absolute_time()));
 		}
+		fOwner->swapWait(args->scalarInputCount > 0 ? (uint32_t) in[0] : 0);
 		return kIOReturnSuccess;
 	case kFBMethodSwapSignal:
 	case kFBMethodSwapCancel:
