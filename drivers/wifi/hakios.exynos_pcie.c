@@ -42,7 +42,7 @@
  * panic the link may be down, and a request that never completes could keep the log from the loader. Nothing here writes a PMIC: the radio's supplies are the battery's and
  * always-on rails that Android does not switch either (the wlan node has no regulator).
  * Step 6 opens the radio's way to memory (dma_path_open(), below): the data path's gates, the PCIe SysMMU (0x11420000)
- * clocked and passing addresses through, and with wifi_pcie_coherent=1 the I/O coherency bits of SYSREG_FSYS1 (+0x700).
+ * clocked (its registers read and set to pass addresses through only with wifi_pcie_mmu_probe=1), and with wifi_pcie_coherent=1 the I/O coherency bits of SYSREG_FSYS1 (+0x700).
  * Not done here: translation by the SysMMU (Android's 1:1 table), MSI, the IA sequencer that retrains the CDR on an exit
  * from L1.2 (and L1 substates themselves).
  *
@@ -706,10 +706,12 @@ hakios_exynos_pcie_intx(bool on)
  * whatever it then does with it. Left off (wifi-a4: a read of the SysMMU's CTRL stopped the bus, "Kernel data abort",
  * ESR 0x96000610, a synchronous external abort), nothing that crosses it would get through either.
  *
- * The SysMMU itself is read only while its gate is forced on here: CTRL 0 is the bypass (Android's disable), 5
- * translating, 7 and 3 blocking. This kernel shows the radio memory at its physical addresses, so the SysMMU must pass
- * them through: anything but 0 is set to 0 (wifi_pcie_mmu_bypass=0 leaves it). The fault registers are the ones of
- * Samsung's exynos-pcie-iommu.h (AR 0x70/0x78, AW 0x80/0x88), nothing between.
+ * The SysMMU's own registers are not touched by default: wifi-a5 (its gate forced on, 00300000) read them at step 6
+ * (CTRL 4, set to 0) but a later read from the interrupt poller (hakios_exynos_pcie_say_dma()) stopped the bus again,
+ * a synchronous external abort. Its gate is still forced on, harmless, as the radio's DMA may cross the block in
+ * bypass. wifi_pcie_mmu_probe=1 reads them (step 6 and say_dma): CTRL 0 is the bypass (Android's disable), 5
+ * translating, 7 and 3 blocking; anything but 0 is then set to 0 (wifi_pcie_mmu_bypass=0 leaves it). The fault
+ * registers are the ones of Samsung's exynos-pcie-iommu.h (AR 0x70/0x78, AW 0x80/0x88), nothing between.
  *
  * SYSREG_FSYS1 +0x700 (PCIE_SYSREG_SHARABILITY_CTRL, bits 9:8 for channel 0): 3 makes the radio's reads and writes
  * shareable, so that they look in the processors' caches (Android's use-cache-coherency = "true",
@@ -732,7 +734,7 @@ static const struct { uint16_t gate, qch; const char *name; } dma_path[] = {
 	{ 0x209c, 0x3070, "SYSREG_FSYS1" },
 };
 static vm_offset_t mmu, fsys1_sysreg;
-static bool mmu_clocked, coherent;
+static bool mmu_clocked, mmu_probe, coherent;
 
 static void
 say_kept(const char *format, ...) __printflike(1, 2);
@@ -754,20 +756,24 @@ say_kept(const char *format, ...)
 static void
 dma_path_open(void)
 {
-	uint32_t bypass = 1, want_coherent = 0, v;
+	uint32_t bypass = 1, want_coherent = 0, probe = 0, v;
 
 	PE_parse_boot_argn("wifi_pcie_mmu_bypass", &bypass, sizeof(bypass));
 	PE_parse_boot_argn("wifi_pcie_coherent", &want_coherent, sizeof(want_coherent));
-	if (mmu == 0) {
-		mmu = ml_io_map(SYSMMU_PA, 0x1000);
+	PE_parse_boot_argn("wifi_pcie_mmu_probe", &probe, sizeof(probe));
+	mmu_probe = probe != 0;
+	if (fsys1_sysreg == 0) {
 		fsys1_sysreg = ml_io_map(SYSREG_FSYS1_PA, 0x1000);
+	}
+	if (mmu_probe && mmu == 0) {
+		mmu = ml_io_map(SYSMMU_PA, 0x1000);
 	}
 	for (unsigned i = 0; i < sizeof(dma_path) / sizeof(dma_path[0]); i++) {
 		bool closed, force;
 
 		v = rd(cmu, dma_path[i].gate);
 		closed = (v & GATE_MANUAL) && !(v & GATE_CG_VAL);
-		/* the SysMMU's clock is switched on as Android does, closed or hardware-run: its registers are read below */
+		/* the SysMMU's clock is switched on as Android does, closed or hardware-run (its registers: mmu_probe only) */
 		force = closed || dma_path[i].gate == GATE_SYSMMU;
 		say("exynos_pcie: 6: the data path: gate %s (+%#x) %08x%s, Q-channel %08x\n", dma_path[i].name,
 		    dma_path[i].gate, v, closed ? ": CLOSED" : "", dma_path[i].qch ? rd(cmu, dma_path[i].qch) : 0);
@@ -780,7 +786,9 @@ dma_path_open(void)
 			mmu_clocked = (v & GATE_MANUAL) && (v & GATE_CG_VAL);
 		}
 	}
-	if (mmu != 0 && mmu_clocked) {
+	if (!mmu_probe) {
+		say("exynos_pcie: 6: the PCIe SysMMU's registers are left alone (wifi_pcie_mmu_probe=1 reads them)\n");
+	} else if (mmu != 0 && mmu_clocked) {
 		v = rd(mmu, 0x000);
 		say("exynos_pcie: 6: the PCIe SysMMU: CTRL %08x CFG %08x STATUS %08x VERSION %08x (CTRL 0: addresses passed through)\n",
 		    v, rd(mmu, 0x004), rd(mmu, 0x008), rd(mmu, 0x034));
@@ -823,7 +831,7 @@ hakios_exynos_pcie_say_dma(const char *when)
 	if (cmu != 0) {
 		say_kept("exynos_pcie: %s: SysMMU gate %08x Q-channel %08x\n", when, rd(cmu, GATE_SYSMMU), rd(cmu, 0x306c));
 	}
-	if (mmu != 0 && mmu_clocked) {
+	if (mmu_probe && mmu != 0 && mmu_clocked) {
 		say_kept("exynos_pcie: %s: SysMMU CTRL %08x CFG %08x STATUS %08x VERSION %08x INT_STATUS %08x; "
 		    "fault AR %08x (info %08x), AW %08x (info %08x)\n", when,
 		    rd(mmu, 0x000), rd(mmu, 0x004), rd(mmu, 0x008), rd(mmu, 0x034), rd(mmu, 0x060),

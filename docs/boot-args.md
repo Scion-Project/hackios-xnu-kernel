@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **479 arguments**: 416 read by the kernel, 16 by the loader, 57 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **480 arguments**: 417 read by the kernel, 16 by the loader, 57 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -113,7 +113,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 |---|---|---|---|---|
 | `privs` | K | `kern_minimac.c` | `CONFIG_PRIVS` |  |
 
-## Wi-Fi (48)
+## Wi-Fi (49)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -148,6 +148,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `wifi_pcie` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE` |  |
 | `wifi_pcie_coherent` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_COHERENT` |  |
 | `wifi_pcie_mmu_bypass` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_MMU_BYPASS` |  |
+| `wifi_pcie_mmu_probe` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_MMU_PROBE` |  |
 | `wifi_pcie_tries` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_TRIES` |  |
 | `wifi_pcie_ungate` | K | `hakios.exynos_pcie.c` | `CONFIG_WIFI_PCIE_UNGATE` |  |
 | `wifi_psk` | K | `hakios.brcmfmac.c` | `CONFIG_WIFI_PSK` |  |
