@@ -54,5 +54,6 @@ driver EXYNOS_ABOX
 driver CS47L93
 	file    bsd/dev/hakios.cs47l93.c
 	requires EXYNOS_SPI EXYNOS_ACPM
+	default n
 	help    the Galaxy S9's audio codec, a Cirrus CS47L93 on PERIC0's SPI (cs47l93=N of 6 steps: 1 a look, 2 powered and
 	help    its ID read, 3 the jack, 4 its clocks, 5 the main microphone, 6 AIF1 to ABOX's UAIF0, recorded by "abox rec")
