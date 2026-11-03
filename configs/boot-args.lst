@@ -170,6 +170,7 @@ fb_filter	k
 fb_flip	k
 fb_hz	k
 fb_measure	k
+fb_native	k
 fb_pri	k
 fb_queue	k
 fb_rt	k
