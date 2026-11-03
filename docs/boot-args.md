@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **503 arguments**: 438 read by the kernel, 17 by the loader, 59 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **507 arguments**: 442 read by the kernel, 17 by the loader, 59 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -227,7 +227,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `soc_pas_mpss` | K | `hakios.mpss.c` | `CONFIG_SOC_PAS_MPSS` |  |
 | `soc_smem` | K | `hakios.mpss.c`, `hakios.socinfo.c` | `CONFIG_SOC_SMEM` |  |
 
-## Audio and battery (51)
+## Audio and battery (55)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -236,11 +236,15 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `abox_burst` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_BURST` |  |
 | `abox_dvfs` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_DVFS` |  |
 | `abox_gain` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_GAIN` |  |
+| `abox_mmu_off` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_MMU_OFF` |  |
 | `abox_rdma_ctrl0` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_RDMA_CTRL0` |  |
 | `abox_rdma_ctrl1` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_RDMA_CTRL1` |  |
+| `abox_rdma_fmt` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_RDMA_FMT` |  |
+| `abox_ring_pa` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_RING_PA` |  |
 | `abox_route` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_ROUTE` |  |
 | `abox_sbank` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_SBANK` |  |
 | `abox_secs` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_SECS` |  |
+| `abox_syspower` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_SYSPOWER` |  |
 | `abox_vol` | K | `hakios.exynos_abox.c` | `CONFIG_ABOX_VOL` |  |
 | `adsp` | K | `hakios.adsp.c` | `CONFIG_ADSP` |  |
 | `adsp_again` | K | `hakios.adsp.c` | `CONFIG_ADSP_AGAIN` |  |

@@ -1,7 +1,7 @@
 /*
  * The Galaxy S9's speakers (starlte, Exynos 9810), the SoC's side: ABOX, Samsung's audio block, driven from the AP with
  * its own CPU off ("bypass", no firmware). What iOS plays goes memory -> RDMA0 -> SPUS (ABOX's stream bus, chain 0, no
- * ASRC) -> SIFS0 (the mixer) -> UAIF1, an I2S master, -> the two MAX98512 amplifiers. The amplifiers' I2C is another
+ * ASRC) -> SIFS1 (not the mixer, SIFS0: see abox_route) -> UAIF1, an I2S master, -> the two MAX98512 amplifiers. The amplifiers' I2C is another
  * driver's, reached only through the hook of sys/hakios.exynos_abox.h, which also has UAIF1's format and every register
  * fact used here (FACT or INFERRED, with the file it comes from). Only with boot-arg abox=N on this phone (the SoC's
  * registers at 0x10000000); every address below is the S9's.
@@ -21,10 +21,12 @@
  *   4  pins     gpb1-0..3 to UAIF1 (function 2, pull 1), then the pads' retention released (PMU 0x4170 bit 28, 0x1424 bit 0)
  *   5  UAIF1    master, I2S, 2 x 16 bits (CTRL0 0x01000014, CTRL1 0x0984F000); then on for 50 ms with nothing routed to
  *               it: its status, and whether BCLK and LRCLK toggle at the pins (gpb1's DAT sampled)
- *   6  route    SPUS chain 0: RDMA0 in, no ASRC, out to SIFS0 (SPUS_CTRL0 [3:0] = 2); the mixer's format 16-bit stereo
- *               (SPUS_CTRL1 [4:0] = 9); UAIF1 from SIFS0 (ROUTE_CTRL0 [7:4] = 1); the mixer flushed (SPUS_CTRL2 bit 0);
- *               SPUS's sample banks read, and RDMA0's given 512 bytes if it has none (SBANK_RDMA0 SIZE, 0x17C50220)
- *   7  stream   ABOX's SysMMU checked to pass addresses through; a ring of 8 periods of 512 frames below 4 GB; RDMA0
+ *   6  route    SPUS chain 0: RDMA0 in, no ASRC, out to SIFS1 (SPUS_CTRL0 [3:0] = 0, SPUS_CTRL1 [18:16] = 0); UAIF1
+ *               from SIFS1 (ROUTE_CTRL0 [7:4] = 2) (with abox_route=0 the mixer, SIFS0, instead); SPUS's sample banks
+ *               read, and RDMA0's given 512 bytes if it has none (SBANK_RDMA0 SIZE, 0x17C50220)
+ *   7  stream   ABOX's SysMMU switched to pass addresses through (the boot leaves it translating); SYSPOWER_CTRL 1 and
+ *               the ACLK and BCLK_UAIF1 Q-channels held on; a ring of 8 periods of 512 frames below 4 GB (in abox_rmem,
+ *               the kernel's RAM being above it); RDMA0
  *               programmed (its burst length 8 if it reads 0); UAIF1 on, then RDMA0 on (Samsung's order); the amplifiers started; a tone (1 kHz, -20 dBFS,
  *               both channels) for abox_secs, through the speakers' guard; RDMA0's status every millisecond at first
  *               and every second after; then the amplifiers stopped, RDMA0 off, UAIF1 off
@@ -37,7 +39,10 @@
  * Boot-args:
  *   abox=N             the first N of ABOX's eight steps (1 only looks, 7 plays a tone, 8 serves iOS); 0 or none: left alone
  *   abox_secs=S        how long step 7 plays its tone, 1 to 10 seconds (3)
- *   abox_route=1       UAIF1 from SIFS1 (SPUS OUT0 straight, SPUS_CTRL1 [18:16] = 0, ROUTE_CTRL0 [7:4] = 2) instead of the mixer
+ *   abox_route=0       UAIF1 from SIFS0, the mixer (SPUS_CTRL0 OUT 1, MIXP_FORMAT, ROUTE_CTRL0 [7:4] = 1), instead of SIFS1
+ *                      (SPUS OUT0 straight, SPUS_CTRL1 [18:16] = 0, ROUTE_CTRL0 [7:4] = 2). On the phone the mixer's way
+ *                      stalls: RDMA0 reads 32 bytes and no more (the mixer's sample bank reads 0; calliope would set it up),
+ *                      where SIFS1's runs at 192000 bytes a second (3 November); 1, SIFS1, is the default
  *   abox_rdma_ctrl0=V  bits of RDMA0's CTRL0 besides ENABLE, to try a format there (none: as it reads after reset)
  *   abox_rdma_ctrl1=V  RDMA0's CTRL1 (none: as it reads after reset)
  *   abox_vol=V         RDMA0's VOL_FACTOR [23:0] (none: 0x800000 if it reads 0, else left)
@@ -47,6 +52,15 @@
  *   abox_sbank=BYTES   RDMA0's sample bank in SPUS (step 6), a multiple of 16 up to 16368 (512, set only when it reads 0;
  *                      given, it is set whatever it reads; 0: left as read)
  *   abox_burst=N       RDMA0's CTRL0 BURST_LEN [22:19], 1 to 15 (8, set only when it reads 0; given, set anyway; 0: left)
+ *   abox_mmu_off=0     refuse a translating SysMMU instead of switching it off (1: CTRL 0, as found needed on the S9)
+ *   abox_syspower=0    leave SYSPOWER_CTRL ("DRAM on") and the ACLK/BCLK_UAIF1 Q-channels alone while streaming (1: set)
+ *   abox_rdma_fmt=0    leave RDMA0 CTRL0's FORMAT/FUNC/BUF_UPDATE and SBANK_LIMIT as they read (1: calliope's values)
+ *   abox_ring_pa=PA    the ring at this physical address of abox_rmem (0xFB200000 + 40 MB) instead of the kernel's memory
+ *
+ * THE USB CONSOLE. "abox" on hakios.dwc3.c's console (usb_gadget=5) says the state of the path and the amplifiers' own
+ * status registers, and "abox tone S" makes steps 1-7 again while the phone runs, with what "abox set" changed: a
+ * run on the phone without a new image for every guess. "abox r/w BLOCK OFF" reads and writes registers. See
+ * hakios_abox_console() below.
  *
  * WHERE IT COMES FROM. The S9 kernel (github.com/ExyHyperBrick/android_kernel_samsung_exynos9810, lineage-24.0), GPL-2.0,
  * read for facts and not copied; which part of this file does the work of what there:
@@ -123,7 +137,10 @@
  * running on ABOX's CPU (the device tree's dsm.bin), which does not run here. Every period, silence too, goes through
  * it, reckoned with the amplifiers at Android's loudest (attenuation 0, the most careful), after abox_gain.
  *
- * Status: written; compiled; not yet run on the phone.
+ * Status (3 November, phone 2 of the S9s): steps 1-6 run as written (the AUD domain was on, ABOX answers, PLL_AUD locks,
+ * UAIF1's LRCLK toggles at gpb1-1 at 48 kHz); step 7 then refused the SysMMU the boot leaves on (CTRL 0x4), and the
+ * kernel's own RAM is all above 4 GB. Hence abox_mmu_off, abox_rmem for the ring, and calliope's RDMA fields. AUDIO.md
+ * in the starlte repository has each run.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
@@ -142,6 +159,10 @@
 #include <vm/vm_kern.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
+#ifndef VM_WIMG_WCOMB
+#define VM_WIMG_WCOMB           0x6     /* osfmk/arm/memory_types.h (not reachable from bsd/dev): Normal, uncached */
+#endif
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern uint64_t kvtophys(vm_offset_t va);                               /* pmap_paddr_t */
 extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);       /* osfmk/arm64/caches_asm.s */
@@ -188,10 +209,17 @@ static const char *const step_names[STEPS + 1] = {
 	"", "look", "power", "clocks", "pins", "UAIF1", "route", "stream", "sink",
 };
 
-static uint32_t steps, secs = 3, route_sifs1, bclk_on, gain, dvfs_khz;
+static uint32_t steps, secs = 3, route_sifs1 = 1, bclk_on, gain, dvfs_khz;
 static uint32_t sbank_bytes = 512, burst = 8;   /* Samsung's S10 values (see the header); set when the field reads 0 */
 static bool sbank_given, burst_given;           /* given on the command line: set whatever the field reads */
 static uint32_t rdma_ctrl0 = UINT32_MAX, rdma_ctrl1 = UINT32_MAX, vol = UINT32_MAX;
+/* found on the phone (3 November): the boot leaves ABOX's SysMMU translating (CTRL 0x4), and the T570 work names what
+ * else a stream without calliope needs (sys/hakios.exynos_abox.h) */
+static uint32_t mmu_off = 1;            /* abox_mmu_off: a translating SysMMU switched off (CTRL 0), not refused */
+static uint32_t syspower = 1;           /* abox_syspower: SYSPOWER_CTRL 1 (DRAM on) and the ACLK/BCLK Q-channels kept on */
+static uint32_t rdma_fmt = 1;           /* abox_rdma_fmt: RDMA0 CTRL0's FORMAT, FUNC 0, BUF_UPDATE, SBANK_LIMIT, as calliope */
+static uint32_t ring_pa;                /* abox_ring_pa: the ring at this physical address (below 4 GB, in abox_rmem) */
+static volatile uint32_t busy;          /* a run (boot's or the console's) is going on */
 static uint32_t step;                   /* the step being made, for what is said */
 
 /* ---- the blocks ---------------------------------------------------------------------------------------------------- */
@@ -205,7 +233,7 @@ struct block {
 static struct block pmu = { "PMU", ABOX_PMU_PA, 0x5000, 0 };
 static struct block cmu = { "CMU_AUD", ABOX_CMU_PA, 0x8000, 0 };
 static struct block sysreg = { "SYSREG_AUD", ABOX_SYSREG_PA, 0x1000, 0 };
-static struct block abox = { "ABOX", ABOX_SFR_PA, 0x2000, 0 };
+static struct block abox = { "ABOX", ABOX_SFR_PA, 0x3000, 0 };   /* through the WDMAs (0x2000) */
 static struct block gpio = { "GPIO_AUD", ABOX_GPIO_PA, 0x1000, 0 };
 static struct block mmu = { "SYSMMU_ABOX", ABOX_SYSMMU_PA, 0x1000, 0 };
 
@@ -304,6 +332,9 @@ map_blocks(void)
 	struct block *all[] = { &pmu, &cmu, &sysreg, &abox, &gpio, &mmu };
 
 	for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+		if (all[i]->va != 0) {
+			continue;       /* (a second run, from the console) */
+		}
 		all[i]->va = ml_io_map(all[i]->pa, all[i]->size);
 		if (all[i]->va == 0) {
 			say("abox: cannot map %s at %#x\n", all[i]->name, all[i]->pa);
@@ -332,6 +363,8 @@ smc(uint64_t function, uint64_t first, uint64_t second, uint64_t third)
 static bool on_at_boot, powered_here, pins_set, uaif_on, rdma_on;
 static vm_offset_t area;                /* the ring and its zeroes */
 static uint64_t area_pa;
+static bool area_rmem;                  /* in abox_rmem, mapped once and kept, not the kernel's memory */
+static uint32_t syspower_was, qch_was;  /* SYSPOWER_CTRL and QCHANNEL_DISABLE before a stream */
 static bool area_kept;                  /* RDMA0 did not say it stopped: the memory is never given back */
 
 /* ---- the amplifiers' hook ------------------------------------------------------------------------------------------- */
@@ -796,6 +829,18 @@ bypass_prepare(uint64_t pa, uint32_t ring_bytes, uint32_t period_bytes)
 		(void)poke_bits(&abox, "RDMA0_CTRL0 (BURST_LEN, as Samsung's S10 driver sets it; ENABLE kept 0)", R0(RDMA_CTRL0),
 		    RDMA_BURST_MASK | RDMA_ENABLE, burst << RDMA_BURST_SHIFT);
 	}
+	if (rdma_fmt) {
+		uint32_t limit = ((sbank_bytes + 127) / 128) << RDMA_SBANK_LIMIT_SHIFT;
+
+		/* calliope's set-buffer order (the T570's reading of it): FUNC 0, the buffer, SBANK_LIMIT, then CTRL0's
+		 * FORMAT with BUF_UPDATE, BUF_TYPE and EXPAND 0 */
+		if (sbank_bytes != 0 && (rd(&abox, R0(RDMA_SBACK_LIMIT)) & (0x7Fu << RDMA_SBANK_LIMIT_SHIFT)) == 0) {
+			(void)poke(&abox, "RDMA0_SBANK_LIMIT (128-byte units, as calliope)", R0(RDMA_SBACK_LIMIT), limit);
+		}
+		(void)poke_bits(&abox, "RDMA0_CTRL0 (FUNC 0, FORMAT 16-bit stereo, BUF_UPDATE; ENABLE kept 0)", R0(RDMA_CTRL0),
+		    RDMA_FUNC_MASK | RDMA_FORMAT_MASK | RDMA_BUF_UPDATE | RDMA_BUF_TYPE | RDMA_EXPAND | RDMA_ENABLE,
+		    ABOX_FORMAT(HAKIOS_ABOX_SLOT_BITS, HAKIOS_ABOX_CHANNELS) << RDMA_FORMAT_SHIFT | RDMA_BUF_UPDATE);
+	}
 	if (rdma_ctrl1 != UINT32_MAX) {
 		(void)poke(&abox, "RDMA0_CTRL1 (abox_rdma_ctrl1)", R0(RDMA_CTRL1), rdma_ctrl1);
 	}
@@ -854,6 +899,15 @@ sysmmu_passes(void)
 	(void)peek(&mmu, "MMU_CFG", MMU_CFG);
 	(void)peek(&mmu, "MMU_STATUS", MMU_STATUS);
 	(void)peek(&mmu, "MMU_VERSION", MMU_VERSION);
+	(void)peek(&mmu, "MMU_PT_BASE", MMU_PT_BASE);
+	if ((ctrl & MMU_CTRL_TRANSLATE) && mmu_off) {
+		/* seen on the S9: the boot leaves it at 0x4 with ABOX's CPU on. Linux's CTRL_DISABLE (0) is what a master
+		 * without its SysMMU runs with; nothing but ABOX goes through this one (abox_mmu_off=0: refuse instead) */
+		say("abox: %u: ABOX's SysMMU translates (CTRL %#x), left so by the boot: switched off (CTRL_DISABLE, 0) so that "
+		    "RDMA0's addresses are physical\n", step, ctrl);
+		ctrl = poke(&mmu, "MMU_CTRL", MMU_CTRL, MMU_CTRL_DISABLE);
+		(void)peek(&mmu, "MMU_STATUS", MMU_STATUS);
+	}
 	if (ctrl & MMU_CTRL_TRANSLATE) {
 		say("abox: %u: ABOX's SysMMU translates (CTRL bit 2): RDMA0 would read through tables nobody here made; no stream\n",
 		    step);
@@ -877,13 +931,38 @@ area_alloc(void)
 	ppnum_t max_pnum = (ppnum_t)((0x100000000ull >> PAGE_SHIFT) - 1);
 
 	if (area != 0) {
+		if (area_rmem) {
+			for (uint32_t i = 0; i < AREA_BYTES / 8; i++) {
+				((volatile uint64_t *)area)[i] = 0;
+			}
+		}
 		return true;
 	}
-	if (kmem_alloc_contig(kernel_map, &area, AREA_BYTES, PAGE_MASK, max_pnum, 0, KMA_KOBJECT | KMA_ZERO | KMA_DATA,
-	    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
-		say("abox: %u: no %u KB of contiguous memory below 4 GB\n", step, AREA_BYTES / 1024);
+	if (ring_pa != 0 || kmem_alloc_contig(kernel_map, &area, AREA_BYTES, PAGE_MASK, max_pnum, 0,
+	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+		/* the S9's RAM for the kernel starts above 4 GB (0x880000000): abox_rmem, which the loader keeps out of
+		 * UEFI's and XNU's maps, is ABOX's own below it; mapped write-combined (uncached), as the USB's DMA memory is */
+		uint32_t pa = ring_pa != 0 ? ring_pa : ABOX_RMEM_PA;
+
 		area = 0;
-		return false;
+		if (pa < ABOX_RMEM_PA || pa + AREA_BYTES > ABOX_RMEM_PA + ABOX_RMEM_SIZE || (pa & PAGE_MASK) != 0) {
+			say("abox: %u: no %u KB below 4 GB from the kernel, and %#x is not a page of abox_rmem (%#x + %#x)\n", step,
+			    AREA_BYTES / 1024, pa, ABOX_RMEM_PA, ABOX_RMEM_SIZE);
+			return false;
+		}
+		area = ml_io_map_unmappable(pa, AREA_BYTES, VM_WIMG_WCOMB);
+		if (area == 0) {
+			say("abox: %u: abox_rmem at %#x could not be mapped\n", step, pa);
+			return false;
+		}
+		for (uint32_t i = 0; i < AREA_BYTES / 8; i++) {
+			((volatile uint64_t *)area)[i] = 0;
+		}
+		area_pa = pa;
+		area_rmem = true;
+		say("abox: %u: the ring: %u bytes in abox_rmem at %#llx (kernel %#lx, uncached), then zeroes to %u KB\n", step,
+		    RING_BYTES, area_pa, area, AREA_BYTES / 1024);
+		return true;
 	}
 	area_pa = kvtophys(area);
 	if (area_pa == 0 || area_pa + AREA_BYTES > 0x100000000ull || (area_pa & 0xF) != 0) {
@@ -902,7 +981,7 @@ area_alloc(void)
 static void
 area_free(void)
 {
-	if (area != 0 && !rdma_on && !area_kept) {
+	if (area != 0 && !rdma_on && !area_kept && !area_rmem) {
 		kmem_free(kernel_map, area, AREA_BYTES);
 		area = 0;
 	}
@@ -1061,6 +1140,16 @@ stream_start(void)
 	for (uint32_t p = 0; p < PERIODS; p++) {
 		fill_period(p, SILENT);
 	}
+	if (syspower) {
+		/* the T570 work's stream start: SYSPOWER_CTRL 1 ("DRAM on": ABOX's way out to DRAM kept up) and the bus and
+		 * UAIF1 clocks never gated while it plays */
+		syspower_was = rd(&abox, ABOX_SYSPOWER_CTRL);
+		qch_was = rd(&abox, ABOX_QCHANNEL_DISABLE);
+		(void)poke_bits(&abox, "SYSPOWER_CTRL (DRAM on)", ABOX_SYSPOWER_CTRL, 1, 1);
+		(void)peek(&abox, "SYSPOWER_STATUS", ABOX_SYSPOWER_STATUS);
+		(void)poke_bits(&abox, "QCHANNEL_DISABLE (ACLK, BCLK_UAIF1)", ABOX_QCHANNEL_DISABLE,
+		    QCHANNEL_ACLK | QCHANNEL_BCLK_UAIF1, QCHANNEL_ACLK | QCHANNEL_BCLK_UAIF1);
+	}
 	if (!dma->prepare(area_pa, RING_BYTES, PERIOD_BYTES)) {
 		say("abox: %u: RDMA0 did not take the ring\n", step);
 		return false;
@@ -1100,6 +1189,11 @@ stream_stop(void)
 		uaif1_enable(false);
 	}
 	(void)peek(&abox, "UAIF1_STATUS", ABOX_UAIF_STATUS(1));
+	if (syspower && !rdma_on) {
+		(void)poke_bits(&abox, "QCHANNEL_DISABLE (as it was)", ABOX_QCHANNEL_DISABLE, QCHANNEL_ACLK | QCHANNEL_BCLK_UAIF1,
+		    qch_was);
+		(void)poke_bits(&abox, "SYSPOWER_CTRL (as it was)", ABOX_SYSPOWER_CTRL, 1, syspower_was);
+	}
 	area_free();
 }
 
@@ -1222,6 +1316,9 @@ stream_run(uint64_t tone_until_us, uint64_t until_us)
 				    rd(&cmu, CMU_PLL_CON0), rd(&cmu, CMU_DIV_AUDIF), rd(&cmu, CMU_DIV_UAIF1), clock_writes[0], clock_writes[1],
 				    clock_writes[2]);
 			}
+			if (amp_running != NULL && amp_running->status != NULL && (steps < 8 || reports % 6 == 0)) {
+				amp_running->status("playing");         /* the amplifiers' own word that they play */
+			}
 			last_report = now;
 			read_at_report = read_bytes;
 			reports++;
@@ -1266,6 +1363,8 @@ step_sink(void)
 
 /* ---- the whole ----------------------------------------------------------------------------------------------------- */
 
+static void abox_thread_run(void);
+
 /* what was done, undone: the stream stopped, the pins idle, the domain off if it was off before */
 static void
 put_back(void)
@@ -1291,11 +1390,19 @@ put_back(void)
 static void
 abox_thread(__unused void *arg, __unused wait_result_t result)
 {
+	abox_thread_run();
+	busy = 0;
+	thread_terminate(current_thread());
+}
+
+static void
+abox_thread_run(void)
+{
 	bool (*const fn[STEPS])(void) = { step_look, step_power, step_clocks, step_pins, step_uaif, step_route, step_stream, NULL };
 
 	say("abox: ABOX's speaker path, %u step%s of 8, bypass (ABOX's CPU off, no firmware)\n", steps, steps == 1 ? "" : "s");
 	if (!map_blocks()) {
-		goto out;
+		return;
 	}
 	for (step = 1; step <= steps && step <= STEPS; step++) {
 		say("abox: %u: %s\n", step, step_names[step]);
@@ -1303,7 +1410,7 @@ abox_thread(__unused void *arg, __unused wait_result_t result)
 			step_sink();            /* returns only when the stream could not start or has failed */
 			say("abox: 8: the stream has stopped\n");
 			put_back();
-			goto out;
+			return;
 		}
 		if (!fn[step - 1]()) {
 			say("abox: %u: failed; nothing more is done\n", step);
@@ -1315,8 +1422,6 @@ abox_thread(__unused void *arg, __unused wait_result_t result)
 		say("abox: the first %u step%s done\n", steps, steps == 1 ? "" : "s");
 	}
 	put_back();
-out:
-	thread_terminate(current_thread());
 }
 
 /*
@@ -1370,7 +1475,201 @@ hakios_exynos_abox_init(void)
 	sbank_bytes = sbank_bytes > 0x3FF * 16 ? 0x3FF * 16 : sbank_bytes & ~15u;
 	burst_given = PE_parse_boot_argn("abox_burst", &burst, sizeof(burst));
 	burst = burst > 15 ? 15 : burst;
+	PE_parse_boot_argn("abox_mmu_off", &mmu_off, sizeof(mmu_off));
+	PE_parse_boot_argn("abox_syspower", &syspower, sizeof(syspower));
+	PE_parse_boot_argn("abox_rdma_fmt", &rdma_fmt, sizeof(rdma_fmt));
+	PE_parse_boot_argn("abox_ring_pa", &ring_pa, sizeof(ring_pa));
+	busy = 1;
 	if (kernel_thread_start(abox_thread, NULL, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
+	} else {
+		busy = 0;
+	}
+}
+
+/*
+ * ---- the USB console's "abox" (hakios.dwc3.c) ------------------------------------------------------------------------
+ * Only once abox=N has been given at boot (N of 1 at least: the phone and its blocks are known). What it does:
+ *   abox                     the state now: the AUD domain, ABOX's power, routing, UAIF1, RDMA0, the SysMMU; and the
+ *                            amplifiers' own status registers, when their driver has registered (max98512=3)
+ *   abox tone [S]            steps 1-7 again, now, with the tone for S seconds (1-10; abox_secs), when nothing runs and
+ *                            no stream serves iOS (abox=8)
+ *   abox r BLOCK OFF [N]     N words (1-64) of BLOCK (abox, mmu, cmu, sysreg, gpio, pmu) from OFF
+ *   abox w BLOCK OFF VALUE   one word written to abox, mmu or gpio, and read back (for experiments: never the PMU or CMU)
+ *   abox set NAME VALUE      one of abox_route, _rdma_ctrl0, _rdma_ctrl1, _vol, _bclk_on, _sbank, _burst, _mmu_off,
+ *                            _syspower, _rdma_fmt, _ring_pa, _secs (without the "abox_"), for the next "tone"
+ * Each answer goes into the kernel's log, and so out on the USB console.
+ */
+static const struct {
+	const char *name;
+	uint32_t *value;
+} settable[] = {
+	{ "route", &route_sifs1 }, { "rdma_ctrl0", &rdma_ctrl0 }, { "rdma_ctrl1", &rdma_ctrl1 }, { "vol", &vol },
+	{ "bclk_on", &bclk_on }, { "sbank", &sbank_bytes }, { "burst", &burst }, { "mmu_off", &mmu_off },
+	{ "syspower", &syspower }, { "rdma_fmt", &rdma_fmt }, { "ring_pa", &ring_pa }, { "secs", &secs },
+};
+
+static struct block *
+block_named(const char *name)
+{
+	struct block *all[] = { &abox, &mmu, &cmu, &sysreg, &gpio, &pmu };
+
+	for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+		if (strcmp(name, all[i]->name) == 0 || (strcmp(name, "abox") == 0 && all[i] == &abox) ||
+		    (strcmp(name, "mmu") == 0 && all[i] == &mmu) || (strcmp(name, "cmu") == 0 && all[i] == &cmu) ||
+		    (strcmp(name, "sysreg") == 0 && all[i] == &sysreg) || (strcmp(name, "gpio") == 0 && all[i] == &gpio) ||
+		    (strcmp(name, "pmu") == 0 && all[i] == &pmu)) {
+			return all[i];
+		}
+	}
+	return NULL;
+}
+
+/* the next word of `*p` (spaces skipped), cut off with a 0; "" at the end */
+static char *
+word(char **p)
+{
+	char *w = *p;
+
+	while (*w == ' ') {
+		w++;
+	}
+	*p = w;
+	while (**p != 0 && **p != ' ') {
+		(*p)++;
+	}
+	if (**p != 0) {
+		*(*p)++ = 0;
+	}
+	return w;
+}
+
+static bool
+number(const char *w, uint32_t *v)
+{
+	char *end = NULL;
+	unsigned long long n;
+
+	if (*w == 0) {
+		return false;
+	}
+	n = strtoul(w, &end, 0);
+	if (end == NULL || *end != 0 || n > UINT32_MAX) {
+		return false;
+	}
+	*v = (uint32_t)n;
+	return true;
+}
+
+static void
+console_state(void)
+{
+	uint32_t aud = rd(&pmu, PMU_AUD_STATUS);
+
+	say("abox> AUD_STATUS %#x, ABOX_CPU_CONFIGURATION %#x STATUS %#x; a run %s\n", aud, rd(&pmu, PMU_ABOX_CPU_CONFIG),
+	    rd(&pmu, PMU_ABOX_CPU_STATUS), busy ? "is going on" : "is not going on");
+	if ((aud & 0xF) != 0xF) {
+		say("abox> the AUD domain is not on: nothing of the block is read\n");
+		return;
+	}
+	say("abox> PLL_CON0 %#x, DIV AUDIF %#x, DIV UAIF1 %#x, MUX UAIF1 %#x; gpb1 CON %#x DAT %#x\n", rd(&cmu, CMU_PLL_CON0),
+	    rd(&cmu, CMU_DIV_AUDIF), rd(&cmu, CMU_DIV_UAIF1), rd(&cmu, CMU_MUX_UAIF1), rd(&gpio, GPIO_GPB1 + GPIO_CON),
+	    rd(&gpio, GPIO_GPB1 + GPIO_DAT));
+	say("abox> SYSPOWER_CTRL %#x STATUS %#x, QCHANNEL_DISABLE %#x, ROUTE_CTRL0 %#x, SPUS_CTRL0 %#x CTRL1 %#x, SBANK_RDMA0 %#x\n",
+	    rd(&abox, ABOX_SYSPOWER_CTRL), rd(&abox, ABOX_SYSPOWER_STATUS), rd(&abox, ABOX_QCHANNEL_DISABLE),
+	    rd(&abox, ABOX_ROUTE_CTRL0), rd(&abox, ABOX_SPUS_CTRL0), rd(&abox, ABOX_SPUS_CTRL1), rd(&abox, ABOX_SPUS_SBANK_RDMA(0)));
+	say("abox> UAIF1 CTRL0 %#x CTRL1 %#x STATUS %#x; RDMA0 CTRL0 %#x CTRL1 %#x BUF %#x-%#x OFFSET %#x STR %#x VOL %#x "
+	    "LIMIT %#x STATUS %#x; SysMMU CTRL %#x\n", rd(&abox, ABOX_UAIF_CTRL0(1)), rd(&abox, ABOX_UAIF_CTRL1(1)),
+	    rd(&abox, ABOX_UAIF_STATUS(1)), rd(&abox, R0(RDMA_CTRL0)), rd(&abox, R0(RDMA_CTRL1)), rd(&abox, R0(RDMA_BUF_STR)),
+	    rd(&abox, R0(RDMA_BUF_END)), rd(&abox, R0(RDMA_BUF_OFFSET)), rd(&abox, R0(RDMA_STR_POINT)),
+	    rd(&abox, R0(RDMA_VOL_FACTOR)), rd(&abox, R0(RDMA_SBACK_LIMIT)), rd(&abox, R0(RDMA_STATUS)), rd(&mmu, MMU_CTRL));
+}
+
+void
+hakios_abox_console(const char *arg)
+{
+	char line[128], *p = line, *verb;
+	thread_t thread;
+
+	strlcpy(line, arg != NULL ? arg : "", sizeof(line));
+	verb = word(&p);
+	if (steps == 0 || pmu.va == 0) {
+		say("abox> not started at boot (abox=N, 1 at least): nothing to say\n");
+		return;
+	}
+	if (*verb == 0) {
+		console_state();
+		if (amp_hook != NULL && amp_hook->status != NULL) {
+			amp_hook->status("asked on the console");
+		}
+	} else if (strcmp(verb, "tone") == 0) {
+		uint32_t s = secs;
+
+		(void)number(word(&p), &s);
+		if (!OSCompareAndSwap(0, 1, &busy)) {
+			say("abox> a run is going on (or iOS's stream, abox=8): not now\n");
+			return;
+		}
+		secs = s < 1 ? 1 : s > 10 ? 10 : s;
+		steps = 7;
+		say("abox> steps 1-7, the tone for %u s (route %u, mmu_off %u, syspower %u, rdma_fmt %u, sbank %u, burst %u)\n",
+		    secs, route_sifs1, mmu_off, syspower, rdma_fmt, sbank_bytes, burst);
+		if (kernel_thread_start(abox_thread, NULL, &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+		} else {
+			busy = 0;
+		}
+	} else if (strcmp(verb, "r") == 0 || strcmp(verb, "w") == 0) {
+		struct block *b = block_named(word(&p));
+		uint32_t off = 0, v = 1;
+		bool have = number(word(&p), &off), second = number(word(&p), &v);
+
+		if (b == NULL || b->va == 0 || !have || (off & 3) != 0 || off >= b->size) {
+			say("abox> %s BLOCK OFF ...: BLOCK one of abox, mmu, cmu, sysreg, gpio, pmu; OFF a word inside it\n", verb);
+			return;
+		}
+		if (b != &pmu && (rd(&pmu, PMU_AUD_STATUS) & 0xF) != 0xF) {
+			say("abox> the AUD domain is off: %s not read\n", b->name);
+			return;
+		}
+		if (*verb == 'w') {
+			if (!second || (b != &abox && b != &mmu && b != &gpio)) {
+				say("abox> w BLOCK OFF VALUE: only abox, mmu and gpio are written from here\n");
+				return;
+			}
+			step = 0;
+			(void)poke(b, "(console)", off, v);
+			return;
+		}
+		v = v < 1 ? 1 : v > 64 ? 64 : v;
+		for (uint32_t i = 0; i < v && off + 4 * i < b->size; i += 4) {
+			char row[64];
+			uint32_t n = v - i < 4 ? v - i : 4;
+
+			row[0] = 0;
+			for (uint32_t j = 0; j < n && off + 4 * (i + j) < b->size; j++) {
+				snprintf(row + strlen(row), sizeof(row) - strlen(row), " %08x", rd(b, off + 4 * (i + j)));
+			}
+			say("abox> %s %#x:%s\n", b->name, b->pa + off + 4 * i, row);
+		}
+	} else if (strcmp(verb, "set") == 0) {
+		const char *name = word(&p);
+		uint32_t v;
+
+		if (!number(word(&p), &v)) {
+			say("abox> set NAME VALUE\n");
+			return;
+		}
+		for (unsigned i = 0; i < sizeof(settable) / sizeof(settable[0]); i++) {
+			if (strcmp(name, settable[i].name) == 0) {
+				*settable[i].value = v;
+				say("abox> %s = %#x for the next tone\n", name, v);
+				return;
+			}
+		}
+		say("abox> set: no %s (route, rdma_ctrl0, rdma_ctrl1, vol, bclk_on, sbank, burst, mmu_off, syspower, rdma_fmt, "
+		    "ring_pa, secs)\n", name);
+	} else {
+		say("abox> abox [tone [S] | r BLOCK OFF [N] | w BLOCK OFF VALUE | set NAME VALUE]\n");
 	}
 }

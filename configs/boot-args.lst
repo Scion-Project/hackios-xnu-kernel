@@ -3,11 +3,15 @@ abox_bclk_on	k
 abox_burst	k
 abox_dvfs	k
 abox_gain	k
+abox_mmu_off	k
 abox_rdma_ctrl0	k
 abox_rdma_ctrl1	k
+abox_rdma_fmt	k
+abox_ring_pa	k
 abox_route	k
 abox_sbank	k
 abox_secs	k
+abox_syspower	k
 abox_vol	k
 adreno	k
 adreno_blind	k
