@@ -13,6 +13,7 @@
  * There can be two interfaces: en0 for the Wi-Fi (or virtio), en1 for the modem's packets
  * through the IPA (hakios.cell.c); each has its link, its state and its thread.
  */
+#include <stdarg.h>
 #include <kern/clock.h>
 #include <kern/locks.h>
 #include <kern/thread.h>
@@ -425,4 +426,266 @@ hakios_net_init(void)
 	PE_parse_boot_argn("net_trace", &net_trace, sizeof(net_trace));
 	PE_parse_boot_argn("net_names", &net_names, sizeof(net_names));
 	hakios_virtio_net_init();
+}
+
+/*
+ * ---- the USB console's "wifi ip" and "wifi ping A.B.C.D" (drivers/core/hakios.dwc3.c) ------------------------------
+ * What en0 was given (configd's DHCP, once the radio has joined and said its link is up), and whether the network
+ * answers: four ICMP echo requests from an ICMP datagram socket of the kernel's own (the kind ping uses without root),
+ * a second for each answer. With no address, the default route's gateway.
+ */
+#include <net/route.h>
+#include <netinet/in_systm.h>
+#include <netinet/ip.h>
+#include <netinet/ip_icmp.h>
+#include <sys/kpi_socket.h>
+#include <sys/socket.h>
+
+extern void loader_log_line(const char *line);
+extern kern_return_t thread_terminate(thread_t thread);
+
+static void
+console_say(const char *format, ...)
+{
+	char line[200];
+	va_list ap;
+
+	va_start(ap, format);
+	vsnprintf(line, sizeof(line), format, ap);
+	va_end(ap);
+	loader_log_line(line);
+}
+
+static void
+ipv4_text(struct in_addr a, char *text, size_t room)
+{
+	const uint8_t *b = (const uint8_t *)&a.s_addr;
+
+	snprintf(text, room, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+}
+
+/* en0's first IPv4 address and mask; false without */
+static bool
+en0_ipv4(struct in_addr *address, struct in_addr *mask)
+{
+	ifnet_t ifp = NULL;
+	ifaddr_t *list = NULL;
+	bool found = false;
+
+	if (ifnet_find_by_name("en0", &ifp) != 0 || ifp == NULL) {
+		return false;
+	}
+	if (ifnet_get_address_list_family(ifp, &list, AF_INET) == 0 && list != NULL) {
+		for (unsigned i = 0; list[i] != NULL && !found; i++) {
+			struct sockaddr_in a = { 0 }, m = { 0 };
+
+			if (ifaddr_address(list[i], (struct sockaddr *)&a, sizeof(a)) == 0 && a.sin_family == AF_INET) {
+				*address = a.sin_addr;
+				mask->s_addr = ifaddr_netmask(list[i], (struct sockaddr *)&m, sizeof(m)) == 0 ? m.sin_addr.s_addr : 0;
+				found = true;
+			}
+		}
+		ifnet_free_address_list(list);
+	}
+	ifnet_release(ifp);
+	return found;
+}
+
+/* the default route's gateway, if there is one */
+static bool
+default_gateway(struct in_addr *gateway, char *interface, size_t room)
+{
+	struct sockaddr_in any = { .sin_len = sizeof(any), .sin_family = AF_INET };
+	struct rtentry *rt = rtalloc1((struct sockaddr *)&any, 0, 0);
+	bool found = false;
+
+	if (rt == NULL) {
+		return false;
+	}
+	RT_LOCK(rt);
+	if ((rt->rt_flags & RTF_GATEWAY) != 0 && rt->rt_gateway != NULL && rt->rt_gateway->sa_family == AF_INET) {
+		*gateway = ((struct sockaddr_in *)(void *)rt->rt_gateway)->sin_addr;
+		if (rt->rt_ifp != NULL) {
+			snprintf(interface, room, "%s%u", ifnet_name(rt->rt_ifp), ifnet_unit(rt->rt_ifp));
+		} else {
+			snprintf(interface, room, "?");
+		}
+		found = true;
+	}
+	RT_UNLOCK(rt);
+	rtfree(rt);
+	return found;
+}
+
+void
+hakios_net_console_ip(void)
+{
+	struct in_addr address, mask, gateway;
+	char a[16], m[16], g[16], via[IFNAMSIZ + 4];
+	struct net_if *n = net_if_unit(0);
+
+	if (n == NULL) {
+		console_say("usb: wifi ip: there is no en0 (the radio's driver did not get to brcmfmac=7)\n");
+		return;
+	}
+	if (!en0_ipv4(&address, &mask)) {
+		console_say("usb: wifi ip: en0's link is %s; no IPv4 address yet (configd's DHCP, once the link is up)\n",
+		    n->up ? "up" : "down");
+		return;
+	}
+	ipv4_text(address, a, sizeof(a));
+	ipv4_text(mask, m, sizeof(m));
+	if (default_gateway(&gateway, via, sizeof(via))) {
+		ipv4_text(gateway, g, sizeof(g));
+	} else {
+		snprintf(g, sizeof(g), "none");
+		via[0] = 0;
+	}
+	console_say("usb: wifi ip: en0's link is %s; address %s, mask %s; the default route's gateway %s%s%s\n",
+	    n->up ? "up" : "down", a, m, g, via[0] ? " on " : "", via);
+}
+
+static uint16_t
+icmp_sum(const uint8_t *p, size_t length)
+{
+	uint32_t sum = 0;
+
+	for (size_t i = 0; i + 1 < length; i += 2) {
+		sum += (uint32_t)(p[i] << 8 | p[i + 1]);
+	}
+	if (length & 1) {
+		sum += (uint32_t)p[length - 1] << 8;
+	}
+	while (sum >> 16) {
+		sum = (sum & 0xffff) + (sum >> 16);
+	}
+	return htons((uint16_t)~sum);
+}
+
+static volatile bool console_pinging;
+
+static void
+ping_runs(void *parameter, __unused wait_result_t result)
+{
+	struct in_addr to = { .s_addr = (in_addr_t)(uintptr_t)parameter };
+	struct sockaddr_in where = { .sin_len = sizeof(where), .sin_family = AF_INET, .sin_addr = to };
+	struct timeval wait = { .tv_sec = 1, .tv_usec = 0 };
+	unsigned answered = 0, seq;
+	socket_t so = NULL;
+	char t[16];
+	errno_t error;
+
+	ipv4_text(to, t, sizeof(t));
+	if ((error = sock_socket_internal(PF_INET, SOCK_DGRAM, IPPROTO_ICMP, NULL, NULL, &so)) != 0) {
+		console_say("usb: wifi ping %s: no ICMP socket: %d\n", t, error);
+		goto out;
+	}
+	(void)sock_setsockopt(so, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait));
+	for (seq = 1; seq <= 4; seq++) {
+		uint8_t packet[64], reply[256];
+		struct icmp *icp = (struct icmp *)(void *)packet;
+		struct iovec iov = { .iov_base = packet, .iov_len = sizeof(packet) };
+		struct msghdr msg = { .msg_name = &where, .msg_namelen = sizeof(where), .msg_iov = &iov, .msg_iovlen = 1 };
+		uint64_t t0 = mach_absolute_time(), ns;
+		size_t done = 0;
+		bool got = false;
+
+		bzero(packet, sizeof(packet));
+		icp->icmp_type = ICMP_ECHO;
+		icp->icmp_id = htons(0x4853);
+		icp->icmp_seq = htons((uint16_t)seq);
+		for (size_t i = 8; i < sizeof(packet); i++) {
+			packet[i] = (uint8_t)i;
+		}
+		icp->icmp_cksum = icmp_sum(packet, sizeof(packet));
+		if ((error = sock_send(so, &msg, 0, &done)) != 0) {
+			console_say("usb: wifi ping %s: %u: not sent: %d%s\n", t, seq, error,
+			    error == ENETUNREACH || error == EHOSTUNREACH ? " (no route: no address yet?)" : "");
+			delay_for_interval(1000, NSEC_PER_MSEC);
+			continue;
+		}
+		do {
+			struct iovec in = { .iov_base = reply, .iov_len = sizeof(reply) };
+			struct msghdr m = { .msg_iov = &in, .msg_iovlen = 1 };
+			size_t hl;
+
+			done = 0;
+			if (sock_receive(so, &m, 0, &done) != 0) {
+				break;  /* the second is up */
+			}
+			hl = done > 0 && (reply[0] >> 4) == 4 ? (size_t)(reply[0] & 15) * 4 : 0;
+			if (done >= hl + 8) {
+				const struct icmp *r = (const struct icmp *)(const void *)(reply + hl);
+
+				if (r->icmp_type == ICMP_ECHOREPLY && r->icmp_id == htons(0x4853) && r->icmp_seq == htons((uint16_t)seq)) {
+					absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+					console_say("usb: wifi ping %s: %u: %zu bytes back in %llu.%03llu ms\n", t, seq, done - hl,
+					    ns / NSEC_PER_MSEC, (ns / NSEC_PER_USEC) % 1000);
+					got = true;
+					answered++;
+				}
+			}
+			absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+		} while (!got && ns < NSEC_PER_SEC);
+		if (!got) {
+			console_say("usb: wifi ping %s: %u: no answer in 1 s\n", t, seq);
+		} else {
+			delay_for_interval(200, NSEC_PER_MSEC);
+		}
+	}
+	console_say("usb: wifi ping %s: %u of 4 answered\n", t, answered);
+	sock_close(so);
+out:
+	console_pinging = false;
+	thread_terminate(current_thread());
+}
+
+void
+hakios_net_console_ping(const char *arg)
+{
+	struct in_addr to = { 0 };
+	unsigned part[4] = { 0 }, n = 0;
+	char via[IFNAMSIZ + 4];
+	thread_t thread;
+	const char *p;
+
+	for (p = arg; *p != 0 && n < 4; p++) {
+		if (*p >= '0' && *p <= '9') {
+			part[n] = part[n] * 10 + (unsigned)(*p - '0');
+			if (part[n] > 255) {
+				break;
+			}
+		} else if (*p == '.' && p > arg && p[-1] != '.') {
+			n++;
+		} else {
+			break;
+		}
+	}
+	if (*arg == 0) {
+		if (!default_gateway(&to, via, sizeof(via))) {
+			console_say("usb: wifi ping: no default route yet (wifi ip); or give an address: wifi ping A.B.C.D\n");
+			return;
+		}
+	} else if (*p != 0 || n != 3) {
+		console_say("usb: wifi ping %s: an IPv4 address A.B.C.D is wanted\n", arg);
+		return;
+	} else {
+		uint8_t *b = (uint8_t *)&to.s_addr;
+
+		for (unsigned i = 0; i < 4; i++) {
+			b[i] = (uint8_t)part[i];
+		}
+	}
+	if (console_pinging) {
+		console_say("usb: wifi ping: one is under way\n");
+		return;
+	}
+	console_pinging = true;
+	if (kernel_thread_start(ping_runs, (void *)(uintptr_t)to.s_addr, &thread) != KERN_SUCCESS) {
+		console_pinging = false;
+		console_say("usb: wifi ping: no thread for it\n");
+		return;
+	}
+	thread_set_thread_name(thread, "net-console-ping");
+	thread_deallocate(thread);
 }

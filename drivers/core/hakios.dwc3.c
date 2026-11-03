@@ -125,6 +125,8 @@ extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_wifi_report(bool first);
 extern void hakios_sta_console_scan(void);
+extern void hakios_net_console_ip(void);            /* hakios.net.c */
+extern void hakios_net_console_ping(const char *arg);
 extern void hakios_adsp_stop(void);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern int hakios_panel_brightness(int level);  /* hakios.backlight.cpp (always built): ENODEV with no panel driver */
@@ -1177,7 +1179,8 @@ console(char *line)
 		    "log (the kernel's log again from its start), shot [N] (the panel's picture, binary: tools/usb-shot.py), "
 		    "camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
 		    "wifi (the radio's log kept, and its driver's state now), wifi scan (a scan of every channel by the station, and "
-		    "the access points heard), return (end the run)\n");
+		    "the access points heard), wifi ip (en0's address and gateway), wifi ping [A.B.C.D] (four echo requests; the gateway "
+		    "by default), return (end the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
 		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
 		    "%llu shots\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out, ring_dropped,
@@ -1193,6 +1196,15 @@ console(char *line)
 		console_bl(arg);
 	} else if (strcmp(line, "wifi") == 0 && strcmp(arg, "scan") == 0) {
 		hakios_sta_console_scan();
+	} else if (strcmp(line, "wifi") == 0 && strcmp(arg, "ip") == 0) {
+		hakios_net_console_ip();
+	} else if (strcmp(line, "wifi") == 0 && strncmp(arg, "ping", 4) == 0 && (arg[4] == 0 || arg[4] == ' ')) {
+		const char *to = arg + 4;
+
+		while (*to == ' ') {
+			to++;
+		}
+		hakios_net_console_ping(to);
 	} else if (strcmp(line, "wifi") == 0) {
 		hakios_wifi_report(false);
 	} else if (strcmp(line, "log") == 0) {
