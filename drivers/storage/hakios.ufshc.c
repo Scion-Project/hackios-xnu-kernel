@@ -218,9 +218,11 @@
  * The S9's default is 1; QEMU's and the POCO's 5.
  *
  * Checked: shared mode run on the POCO (as before this file was made generic). Own mode run in
- * QEMU 11.1 on -device ufs with two ufs-lu units. exynos9810: compiled only, NEVER RUN on the
- * phone; off unless ufs_native=4 ufs_native_soc=exynos9810 is asked for, which nothing does by
- * default, and then at step 1 unless ufs_native_step= says otherwise.
+ * QEMU 11.1 on -device ufs with two ufs-lu units. exynos9810: own mode run on the phone through
+ * ufs=3 (hakios.ufs.c takes the controller after its self-test against the loader's reads; kernel
+ * PR 155), the S9's default, with /private/var kept in USERDATA. ufs_native=4
+ * ufs_native_soc=exynos9810 given by hand (no self-test) starts at step 1 unless ufs_native_step=
+ * says otherwise; nothing uses it.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -237,6 +239,8 @@
 #include <sys/systm.h>
 #include <sys/sysctl.h>
 #include <sys/hakios.pci.h>
+#include <sys/hakios.exynos9810_mem.h>
+#include <sys/hakios.physmap.h>
 #include <vm/vm_kern.h>
 #include <vm/memory_types.h>
 #include "hakios.ufshc.h"
@@ -334,16 +338,13 @@ extern boolean_t ml_set_interrupts_enabled(boolean_t enable);
 /*
  * The S9's own-mode memory (the list, the command descriptors, the slots' buffers): none of XNU's RAM is below
  * 4 GB on the phone (the loader gives XNU the bank from 0x880000000), and the controller is kept to 32-bit
- * addresses (the BSP's DMA mask). So it is physical memory of the lower bank that XNU does not manage, in the
- * device tree's gap between the display's scan-out buffers and secure_camera (0xE1900000) -- the table of that
- * gap is in drivers/camera/hakios.exynos_camera.c (MEM_PA) and xnuloader/loader.c (payload_home): the moved
- * payload and the panic log 0xD0000000-0xD3FFFFFF, the display's scaler buffers 0xD4000000-0xD71DFFFF, the
- * camera's 0xD8000000-0xD87FFFFF; free from 0xD9000000 to 0xE18FFFFF. 4 MB from 0xDA000000 here. Mapped once,
- * write-combined, through IOKit (hakios.ufshc_mem.cpp), never ml_io_map() (io_submap is 8 MB).
+ * addresses (the BSP's DMA mask). So it is physical memory of the lower bank that XNU does not manage: 4 MB from
+ * 0xDA000000, UFS's range in the table of that bank, sys/hakios.exynos9810_mem.h (the payload, the display's and the
+ * camera's below it). Mapped once, write-combined, through IOKit (hakios_physmap_wc(), sys/hakios.physmap.h), never
+ * ml_io_map() (io_submap is 8 MB).
  */
-#define UFSHC_S9_MEM_PA     0xDA000000ULL
-#define UFSHC_S9_MEM_BYTES  (4ULL << 20)
-extern vm_offset_t hakios_ufshc_map(uint64_t pa, uint64_t bytes);      /* hakios.ufshc_mem.cpp */
+#define UFSHC_S9_MEM_PA     EXYNOS9810_MEM_UFS_PA
+#define UFSHC_S9_MEM_BYTES  EXYNOS9810_MEM_SIZE(UFS)
 
 struct ufshc_soc {
 	const char *name;
@@ -3148,7 +3149,7 @@ hc_dma_alloc(vm_size_t size, uint64_t *pa, bool dma32)
 				hc_say("ufs: own: memory %llx-%llx: XNU's RAM, or not below 4 GB: not used\n", lo, lo + n - 1);
 				return 0;
 			}
-			carve_va = hakios_ufshc_map(lo, n);
+			carve_va = hakios_physmap_wc(lo, n);
 			if (carve_va == 0) {
 				hc_say("ufs: own: memory %llx-%llx: could not be mapped\n", lo, lo + n - 1);
 				return 0;

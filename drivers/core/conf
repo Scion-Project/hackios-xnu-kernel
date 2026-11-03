@@ -15,6 +15,10 @@ standard bsd/dev/hakios.stubs.c
 standard iokit/Kernel/hakios.stubs.cpp iokitcpp
 	help    the same, for the calls that are C++ (the display asking whether the GPU is done with a surface)
 
+standard iokit/Kernel/hakios.physmap.cpp iokitcpp
+	help    physical memory XNU does not manage, mapped write-combined through IOKit (sys/hakios.physmap.h): the S9's
+	help    DMA buffers below 4 GB (the camera's, UFS's own mode; sys/hakios.exynos9810_mem.h has where each is)
+
 driver SOCINFO
 	file    bsd/dev/hakios.socinfo.c
 	help    the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC
