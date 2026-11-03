@@ -154,10 +154,13 @@
  *   cam_s9_exp=LINES   the exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
  *   cam_s9_gain=CODE   the analog gain of step 5's frame, 0x20 being 1x (default 0x40, at most 0x200)
  *   cam_s9_pack12=1    the WDMA's PACK12 layout rather than RAW10 as it comes (the BSP sets PACK12 for its V4L2
- *                      SBGGR10 buffers; which of the two is MIPI's four pixels in five bytes is what step 4 shows;
- *                      camshot's debayer reads RAW10 only)
+ *                      SBGGR10 buffers). Without it the WDMA writes each RAW10 pixel in 16 bits, little-endian, the
+ *                      value in [9:0] (the phone, 3 November): camshot's debayer reads only that)
  *   cam_s9_bayer=N     camshot's Bayer order: 0 RGGB, 1 GRBG (the default, the sensor's), 2 GBRG, 3 BGGR
- *   cam_s9_stride=B    camshot's bytes a line of the frame (default: 2040, MIPI's, or 2048 if the WDMA wrote more)
+ *   cam_s9_stride=B    camshot's bytes a line of the frame (default 3264: the WDMA's RAW10 is a pixel in 16 bits)
+ *   cam_s9_ispdiv=D    CLKCMU_ISPPRE_BUS (CSIS1's and its WDMA's clock) = SHARED1_DIV4, 466 MHz, / (D + 1); default
+ *                      1, 233 MHz (Android's own is 466 MHz, D = 0). The boot leaves it at about 50 MHz, too slow:
+ *                      CSIS1 overflows and the WDMA's FIFO fills a few lines into the frame
  *   cam_s9_probe=1     the risky reads too, for the log: CMU_ISPPRE's whole Q-channel sweep with each DBG_NFO (+0x4000),
  *                      and the other three CSISs' DMA commons (read, and their interrupt masks for the pattern's while).
  *                      Off by default: on 3 November the sweep's read of CMU_ISPPRE 0x303C took a synchronous external
@@ -592,6 +595,8 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define TOP_ISPPRE_MUX          0x1094          /* CMU_TOP: MUX_CLKCMU_ISPPRE_BUS [1:0] */
 #define TOP_ISPPRE_DIV          0x1890          /* DIV_CLKCMU_ISPPRE_BUS [3:0] */
 #define TOP_ISPPRE_GATE         0x209C          /* GATE_CLKCMU_ISPPRE_BUS: bit 20 manual, 21 on */
+#define TOP_BUSY                (1u << 16)      /* the mux's and the divider's busy bit */
+#define ISPPRE_MUX_SHARED1_DIV4 1u              /* the mux's parents: 0 SHARED0_DIV4, 1 SHARED1_DIV4, 2 SHARED2_DIV2, 3 */
 #define ISPPRE_CTRL_OPTION      0x0800          /* ISPPRE_CMU_ISPPRE_CONTROLLER_OPTION: [29:28] the CMU's power management */
 #define QCH_FIRST               0x3010          /* QCH_CON_*: 0x3010 (BTM) to 0x3070 (SYSREG), bit 0 enable, 1 clock request */
 #define QCH_LAST                0x3070
@@ -687,6 +692,7 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define HW_FORMAT_UNKNOWN       0x3F
 #define FRAME_W                 1632
 #define FRAME_H                 1224
+#define LINE_BYTES              (FRAME_W * 2)   /* the WDMA's RAW10 (PACK12 off): a pixel in 16 bits, little-endian, [9:0] */
 #define BUF_BYTES               (4u << 20)
 #define CANARY                  0xA5
 /*
@@ -713,6 +719,9 @@ static bool domain_up;                  /* ISPPRE is on and its blocks may be re
 static bool phy_mine, link_on, dma_on, pattern_on, streaming;
 static uint32_t iso_found, dphy_reset_found, top_gate_found, cdma_found[4];
 static bool top_gate_mine, cdma_mine, clocks_mine;
+static uint32_t top_mux_found, top_div_found;
+static bool top_rate_mine;              /* CLKCMU_ISPPRE_BUS's mux and divider are this run's */
+static uint32_t cam_ispdiv = 1;         /* cam_s9_ispdiv: CLKCMU_ISPPRE_BUS = SHARED1_DIV4 (466 MHz) / (1 + this) */
 static uint32_t user_found, isppre_qch_found[NQCHS];
 static vm_offset_t buffer;              /* the frame's (write-combined: MEM_PA's mapping) */
 static uint64_t buffer_pa;
@@ -962,6 +971,14 @@ isp_down(void)
 		say("exynos-camera: ISPPRE: configuration %#x, status %#x\n", rd(pmu, PMU_ISPPRE_CONFIG),
 		    rd(pmu, PMU_ISPPRE_STATUS));
 	}
+	if (top_rate_mine) {
+		/* the divider first, then the mux: the way back goes through the slower of the two */
+		wr(cmu_top, TOP_ISPPRE_DIV, top_div_found);
+		(void)wait_for(cmu_top, TOP_ISPPRE_DIV, TOP_BUSY, 0, 1000, false);
+		wr(cmu_top, TOP_ISPPRE_MUX, top_mux_found);
+		(void)wait_for(cmu_top, TOP_ISPPRE_MUX, TOP_BUSY, 0, 1000, false);
+		top_rate_mine = false;
+	}
 	if (top_gate_mine) {
 		wr(cmu_top, TOP_ISPPRE_GATE, top_gate_found);
 		top_gate_mine = false;
@@ -1087,6 +1104,28 @@ isp_up(void)
 		wr(cmu_top, TOP_ISPPRE_GATE, top_gate_found | GATE_MANUAL | GATE_ON);
 		top_gate_mine = true;
 	}
+	/*
+	 * The bus's rate. The boot leaves CLKCMU_ISPPRE_BUS at its reset setting, mux 2 (SHARED2_DIV2) divided by 16:
+	 * about 50 MHz, and at that rate CSIS1 overflowed and VC0's WDMA filled its FIFO (DMA_ERROR) 28 lines into the
+	 * frame (cam-fix2, 3 November). Android's INT table (cmucal-vclklut.c, vddi's nm level) has mux 1, SHARED1_DIV4,
+	 * undivided: 466 MHz (BUSP, half of it, 233 MHz: blk_isppre). Taken here: mux 1 divided by 1 + cam_s9_ispdiv
+	 * (default 1: 233 MHz, half Android's, no voltage asked of INT). Mux first (to the lower rate), then the divider
+	 */
+	top_mux_found = rd(cmu_top, TOP_ISPPRE_MUX);
+	top_div_found = rd(cmu_top, TOP_ISPPRE_DIV);
+	if ((top_mux_found & 3u) != ISPPRE_MUX_SHARED1_DIV4 || (top_div_found & 0xfu) != cam_ispdiv) {
+		top_rate_mine = true;
+		wr(cmu_top, TOP_ISPPRE_MUX, (top_mux_found & ~3u) | ISPPRE_MUX_SHARED1_DIV4);
+		if (!wait_for(cmu_top, TOP_ISPPRE_MUX, TOP_BUSY, 0, 1000, true)) {
+			say("exynos-camera: 3: CLKCMU_ISPPRE_BUS's mux stays busy (%#x)\n", rd(cmu_top, TOP_ISPPRE_MUX));
+		}
+		wr(cmu_top, TOP_ISPPRE_DIV, (top_div_found & ~0xfu) | cam_ispdiv);
+		if (!wait_for(cmu_top, TOP_ISPPRE_DIV, TOP_BUSY, 0, 1000, true)) {
+			say("exynos-camera: 3: CLKCMU_ISPPRE_BUS's divider stays busy (%#x)\n", rd(cmu_top, TOP_ISPPRE_DIV));
+		}
+	}
+	say("exynos-camera: 3: CLKCMU_ISPPRE_BUS: mux %#x -> %#x, divider %#x -> %#x (SHARED1_DIV4, 466 MHz, / %u)\n",
+	    top_mux_found, rd(cmu_top, TOP_ISPPRE_MUX), top_div_found, rd(cmu_top, TOP_ISPPRE_DIV), cam_ispdiv + 1);
 	user = user_found = rd(cmu_isppre, ISPPRE_BUS_USER);
 	for (uint32_t i = 0; i < NQCHS; i++) {
 		isppre_qch_found[i] = rd(cmu_isppre, qchs[i]);
@@ -1196,8 +1235,8 @@ buffer_report(const char *step)
 	    "%#x\n", step, changed, last, last / FRAME_H, FRAME_H, sum, fnv);
 	say("exynos-camera: %s: its first bytes: %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x "
 	    "%02x; at %u: %02x %02x %02x %02x %02x %02x %02x %02x\n", step, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-	    b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], FRAME_W * 10 / 8, b[2040], b[2041], b[2042], b[2043],
-	    b[2044], b[2045], b[2046], b[2047]);
+	    b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], LINE_BYTES, b[LINE_BYTES], b[LINE_BYTES + 1],
+	    b[LINE_BYTES + 2], b[LINE_BYTES + 3], b[LINE_BYTES + 4], b[LINE_BYTES + 5], b[LINE_BYTES + 6], b[LINE_BYTES + 7]);
 	return last;
 }
 
@@ -1478,41 +1517,35 @@ phy_setup(void)
 	    rd(dphy, DPHY_DCTRL_SD_06 + DPHY_LANE(1)), rd(dphy, DPHY_DCTRL_SD_13 + DPHY_LANE(1)));
 }
 
-/* the mean of a 64 x 64 patch in the middle, read as MIPI RAW10 (four pixels in five bytes) at the stride given */
+/* the mean of a 64 x 64 patch in the middle, read as RAW10 in 16 bits (the WDMA's) at the stride given */
 static void
 patch_mean(uint32_t stride)
 {
 	const uint8_t *b = (const uint8_t *)buffer;
-	uint64_t sum = 0, bytesum = 0;
-	uint32_t lo = 1023, hi = 0, n = 0, nb = 0;
+	uint64_t sum = 0;
+	uint32_t lo = 1023, hi = 0, n = 0, over = 0;
 
-	if (stride < FRAME_W * 10 / 8 || (uint64_t)stride * FRAME_H > BUF_BYTES) {
+	if (stride < LINE_BYTES || (uint64_t)stride * FRAME_H > BUF_BYTES) {
 		say("exynos-camera: 5: a stride of %u does not hold the frame: no patch\n", stride);
 		return;
 	}
 	for (uint32_t y = FRAME_H / 2 - 32; y < FRAME_H / 2 + 32; y++) {
 		const uint8_t *line = b + (uint64_t)y * stride;
 
-		for (uint32_t x = FRAME_W / 2 - 32; x < FRAME_W / 2 + 32; x += 4) {
-			const uint8_t *g = line + (x / 4) * 5;
+		for (uint32_t x = FRAME_W / 2 - 32; x < FRAME_W / 2 + 32; x++) {
+			uint32_t w = (uint32_t)line[2 * x] | ((uint32_t)line[2 * x + 1] << 8);
+			uint32_t p = w & 0x3ff;
 
-			for (uint32_t k = 0; k < 4; k++) {
-				uint32_t p = ((uint32_t)g[k] << 2) | ((g[4] >> (2 * k)) & 3);
-
-				sum += p;
-				lo = p < lo ? p : lo;
-				hi = p > hi ? p : hi;
-				n++;
-			}
-		}
-		for (uint32_t i = stride / 4; i < stride * 3 / 4; i++) {
-			bytesum += line[i];
-			nb++;
+			over += w > 0x3ff;
+			sum += p;
+			lo = p < lo ? p : lo;
+			hi = p > hi ? p : hi;
+			n++;
 		}
 	}
-	say("exynos-camera: 5: THE PATCH (64 x 64 in the middle, MIPI RAW10 at a stride of %u): mean %llu.%02llu of 1023 "
-	    "(about 64 is black), %u to %u; the middle half of those lines' bytes: mean %llu\n", stride, sum / n,
-	    (sum % n) * 100 / n, lo, hi, bytesum / nb);
+	say("exynos-camera: 5: THE PATCH (64 x 64 in the middle, 16-bit RAW10 at a stride of %u): mean %llu.%02llu of 1023 "
+	    "(about 64 is black), %u to %u; %u samples above 10 bits (the fill's 0xA5A5, or not RAW10 in 16 bits)\n", stride,
+	    sum / n, (sum % n) * 100 / n, lo, hi, over);
 }
 
 static bool
@@ -1591,15 +1624,32 @@ sensor_frame(void)
 	/* two frame ends of VC0's WDMA (the first may be the sensor's settling one): 1.5 s at the most */
 	nanoseconds_to_absolutetime(1500 * NSEC_PER_MSEC, &until);
 	until += mach_absolute_time();
-	while (ends < 2 && mach_absolute_time() < until) {
-		src = rd(wdma, VCMN + VCMN_INT_SRC);
-		if (src & DMA_FRM_END0) {
-			wr(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0);
-			ends++;
-			say("exynos-camera: 5: frame end %u of the WDMA (INT_SRC %#x, CSIS1 FRM_CNT_CH0 %u)\n", ends, src,
-			    rd(csis, CSIS_FRM_CNT_CH0));
-		} else {
-			delay_for_interval(1, NSEC_PER_MSEC);
+	/*
+	 * Polled without sleeping, 20 us at a time: all eight frame pointers hold the one buffer, so the output goes off
+	 * the moment the second frame ends, inside the vertical blank (42 lines, 1.1 ms), before the third can write
+	 * over its first lines. A FIFO overflow (DMA_ERROR, bit 12) is said once
+	 */
+	{
+		bool told = false;
+
+		while (ends < 2 && mach_absolute_time() < until) {
+			src = rd(wdma, VCMN + VCMN_INT_SRC);
+			if (src & DMA_FRM_END0) {
+				wr(wdma, VCMN + VCMN_INT_SRC, DMA_FRM_END0 | (src & DMA_FRM_START0));
+				if (++ends == 2) {
+					dma_stop();
+				}
+				say("exynos-camera: 5: frame end %u of the WDMA (INT_SRC %#x, CSIS1 FRM_CNT_CH0 %u, INT_SRC0 %#x)\n",
+				    ends, src, rd(csis, CSIS_FRM_CNT_CH0), rd(csis, CSIS_INT_SRC0));
+			} else {
+				if ((src & DMA_ERROR) && !told) {
+					told = true;
+					say("exynos-camera: 5: DMA_ERROR (the WDMA's FIFO full: INT_SRC %#x, ERR_CODE %#x; CSIS1 INT_SRC0 "
+					    "%#x, FRM_CNT_CH0 %u)\n", src, rd(wdma, VCMN + VCMN_ERR_CODE), rd(csis, CSIS_INT_SRC0),
+					    rd(csis, CSIS_FRM_CNT_CH0));
+				}
+				spin_us(20);
+			}
 		}
 	}
 	dma_stop();
@@ -1628,10 +1678,7 @@ sensor_frame(void)
 		return false;
 	}
 	stride = last / FRAME_H;
-	patch_mean(stride);
-	if (stride != ((FRAME_W * 10 / 8 + 15) & ~15u)) {
-		patch_mean((FRAME_W * 10 / 8 + 15) & ~15u);
-	}
+	patch_mean(stride < LINE_BYTES ? LINE_BYTES : stride);
 	return ends > 0;
 }
 
@@ -1877,8 +1924,8 @@ all_down(void)
  * width and height: 816 x 612), then every Nth of those. The pattern's order is the sensor's GRBG
  * (fimc-is-cis-3h1.c's cis->bayer_order, OTF_INPUT_ORDER_BAYER_GR_BG; cam_s9_bayer=0-3 for RGGB, GRBG, GBRG, BGGR).
  * The black level, 64 of 1023, taken off; a grey-world white balance and an exposure that brings the green's mean to
- * 18 % (both from a coarse pass over every 8th cell); a gamma of 2 (a square root, a table of 1024). RAW10 as MIPI
- * packs it: four pixels in five bytes, the high eight bits of each in the first four, the low two bits in the fifth.
+ * 18 % (both from a coarse pass over every 8th cell); a gamma of 2 (a square root, a table of 1024). RAW10 as the
+ * WDMA writes it with PACK12 off: a pixel in 16 bits, little-endian, the value in [9:0], 3264 bytes a line.
  * The front camera's picture comes out as the sensor sees it (mirrored, perhaps turned): no flip is made here.
  */
 #define BLACK                   64
@@ -1889,17 +1936,14 @@ static const char *const bayer_name[4] = { "RGGB", "GRBG", "GBRG", "BGGR" };
 static const uint8_t bayer_place[4][4] = {      /* the colour of a cell's four places (0 R, 1 G, 2 B), row by row */
 	{ 0, 1, 1, 2 }, { 1, 0, 2, 1 }, { 1, 2, 0, 1 }, { 2, 1, 1, 0 },
 };
-static uint8_t line0[2048], line1[2048];        /* two rows of the frame, copied out of the uncached mapping */
+static uint8_t line0[LINE_BYTES], line1[LINE_BYTES];   /* two rows of the frame, copied out of the uncached mapping */
 static uint8_t out_row[CELLS_W * 3];
 static uint8_t gamma_lut[1024];
 
 static inline uint32_t
 raw10(const uint8_t *line, uint32_t x)
 {
-	const uint8_t *g = line + (x >> 2) * 5;
-	uint32_t k = x & 3;
-
-	return ((uint32_t)g[k] << 2) | ((g[4] >> (2 * k)) & 3);
+	return ((uint32_t)line[2 * x] | ((uint32_t)line[2 * x + 1] << 8)) & 0x3ff;
 }
 
 /* one cell: R, G (the mean of two) and B, the black level taken off */
@@ -1919,8 +1963,8 @@ cell(uint32_t cx, uint32_t rgb[3])
 static void
 rows_get(uint32_t stride, uint32_t cy)
 {
-	memcpy(line0, (const void *)(buffer + (size_t)(2 * cy) * stride), FRAME_W * 10 / 8);
-	memcpy(line1, (const void *)(buffer + (size_t)(2 * cy + 1) * stride), FRAME_W * 10 / 8);
+	memcpy(line0, (const void *)(buffer + (size_t)(2 * cy) * stride), LINE_BYTES);
+	memcpy(line1, (const void *)(buffer + (size_t)(2 * cy + 1) * stride), LINE_BYTES);
 }
 
 static uint32_t
@@ -1952,11 +1996,10 @@ picture(uint32_t n, uint32_t *wp, uint32_t *hp)
 	uint8_t *out = (uint8_t *)(buffer + RGB_OFF);
 
 	if (stride == 0) {
-		/* the WDMA's line, from how far it wrote: MIPI's 2040 bytes, or 2048 if it rounds each line to 16 */
-		stride = frame_last > 2040u * FRAME_H ? 2048 : 2040;
+		stride = LINE_BYTES;    /* the WDMA's RAW10 with PACK12 off: two bytes a pixel, 3264 a line */
 	}
-	if (stride < FRAME_W * 10 / 8 || (uint64_t)stride * FRAME_H > BUF_BYTES) {
-		say("usb: camshot failed: a stride of %u bytes does not hold %u pixels of RAW10\n", stride, FRAME_W);
+	if (stride < LINE_BYTES || (uint64_t)stride * FRAME_H > BUF_BYTES) {
+		say("usb: camshot failed: a stride of %u bytes does not hold %u pixels of RAW10 in 16 bits\n", stride, FRAME_W);
 		return false;
 	}
 	if (frame_last < (uint64_t)stride * (FRAME_H - 1)) {
@@ -2208,6 +2251,10 @@ hakios_exynos_camera_init(void)
 	PE_parse_boot_argn("cam_s9_pack12", &cam_pack12, sizeof(cam_pack12));
 	PE_parse_boot_argn("cam_s9_bayer", &cam_bayer, sizeof(cam_bayer));
 	PE_parse_boot_argn("cam_s9_stride", &cam_stride, sizeof(cam_stride));
+	PE_parse_boot_argn("cam_s9_ispdiv", &cam_ispdiv, sizeof(cam_ispdiv));
+	if (cam_ispdiv > 15) {
+		cam_ispdiv = 1;
+	}
 	PE_parse_boot_argn("cam_s9_probe", &cam_probe, sizeof(cam_probe));
 	PE_parse_boot_argn("cam_s9_mmu_probe", &cam_mmu_probe, sizeof(cam_mmu_probe));
 	{

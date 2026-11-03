@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 544 symbols in 19 groups; 52 are set, 43 of them drivers built in.
+# 545 symbols in 19 groups; 52 are set, 43 of them drivers built in.
 #
 
 #
@@ -1215,7 +1215,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_SOC_SMEM is not set
 
 #
-# Cameras (23)
+# Cameras (24)
 #
 
 # the cameras (5 is what the README uses) [needs fw-camera/ from the phone]
@@ -1263,16 +1263,19 @@ CONFIG_MODEM_AGAIN=y
 # read by hakios.exynos_camera.c (kernel)
 # CONFIG_CAM_S9_IPCLK is not set
 
+# CLKCMU_ISPPRE_BUS (CSIS1's and its WDMA's clock) = SHARED1_DIV4, 466 MHz, / (D + 1); default
+# CONFIG_CAM_S9_ISPDIV is not set
+
 # read by hakios.exynos_camera.c (kernel)
 # CONFIG_CAM_S9_MMU_PROBE is not set
 
-# read by hakios.exynos_camera.c (kernel)
+# the WDMA's PACK12 layout rather than RAW10 as it comes (the BSP sets PACK12 for its V4L2 SBGGR10 buffers)
 # CONFIG_CAM_S9_PACK12 is not set
 
 # the risky reads too, for the log: CMU_ISPPRE's whole Q-channel sweep with each DBG_NFO (+0x4000)
 # CONFIG_CAM_S9_PROBE is not set
 
-# camshot's bytes a line of the frame (default: 2040, MIPI's, or 2048 if the WDMA wrote more)
+# camshot's bytes a line of the frame (default 3264: the WDMA's RAW10 is a pixel in 16 bits)
 # CONFIG_CAM_S9_STRIDE is not set
 
 # read by hakios.camera.c (kernel)
