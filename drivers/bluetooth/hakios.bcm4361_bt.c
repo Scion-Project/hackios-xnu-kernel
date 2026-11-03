@@ -95,6 +95,12 @@
  *          tty.bluetooth; bt_tty=0 leaves them out), the kernel control com.apple.uart.bluetooth (the UART as iOS's
  *          BlueTool and bluetoothd open it) and the "bluetooth" registry entry for iOS's bluetoothd
  *   bt_scan=1        at bt=7, one scan as soon as the chip is up, before the console has it
+ *   bt_addr=<a>      at bt=7, the chip's address, "8c:83:e1:02:ee:e9" (default: the phone's own, the text of
+ *                    /bluetooth/bt_addr in its EFS partition, read only, as Samsung's Android gives it to the chip;
+ *                    bt_addr=0: Broadcom's default 43:61:b2:..., the same in every S9)
+ *   bt_trace=N       at bt=7, the H4 packets on com.apple.uart.bluetooth, both ways, on the console: at most N lines a
+ *                    second (each: the direction, the type, the opcode, event or handle, the length, the first bytes);
+ *                    the packets beyond that are counted and the count said with the next line
  *   bt_keep=1        leave the chip powered at the end (default: BT_EN and BT_WAKE low once the steps are done or one fails)
  *   bt_hcd=<name>    the patch file's name in fw/ (default bcm4361B2.hcd); without it, the phone's own from VENDOR
  *   bt_module=<m>    murata or semco: which patch (bcm4361B2_<m>.hcd; default: the module Wi-Fi read in OTP, else a guess)
@@ -137,6 +143,7 @@
 #include <sys/kern_control.h>
 #include <sys/kpi_mbuf.h>
 #include <sys/sys_domain.h>
+#include <sys/sysctl.h>
 
 #include "hakios.bcm_hci.h"
 
@@ -1383,11 +1390,132 @@ static const struct cdevsw bt_cdevsw = {
  * after its scripts, so a new connection (bluetoothd's) takes the UART from it, as does an open of /dev/cu.bluetooth;
  * the client cut off finds its writes failing with ENXIO.
  */
+/*
+ * bt_trace=N: what goes over com.apple.uart.bluetooth, packet by packet, as the console can take it (N lines a second;
+ * the rest counted). One H4 reader for each direction, fed the bytes as they pass, in whatever pieces they come: the
+ * type byte, the header (command: opcode and length; ACL: handle and flags, length; SCO: handle, length; event: code
+ * and length), then the payload, of which the first bytes are kept for the line. A type byte that is none of the four
+ * is said once and the reader looks for the next one (the stream has lost its framing: that is worth seeing).
+ */
+static uint32_t trace_per_s;
+/*
+ * Also sysctl kern.hakios.bt_trace (the console's "sysctl kern.hakios.bt_trace=60"): the boot-arg is the last of a long
+ * line and the loader cuts what does not fit in the kernel's 607 characters from its end, so it can be lost there.
+ */
+SYSCTL_DECL(_kern_hakios);
+SYSCTL_UINT(_kern_hakios, OID_AUTO, bt_trace, CTLFLAG_RW | CTLFLAG_KERN | CTLFLAG_LOCKED, &trace_per_s, 0,
+    "bt=7: H4 packets on com.apple.uart.bluetooth to the console, at most this many lines a second (0: none)");
+struct h4_trace {
+	const char *dir;                /* "H>" host to chip, "<C" chip to host */
+	uint8_t type;                   /* 0: waiting for a type byte */
+	uint8_t hdr[4], hlen, hneed;
+	uint32_t plen, pgot;
+	uint8_t first[16];
+	uint32_t junk;
+};
+static struct h4_trace trace_out = { .dir = "H>" }, trace_in = { .dir = "<C" };
+static uint64_t trace_window;           /* mach time the current second began */
+static uint32_t trace_lines, trace_skipped;
+
+static void
+trace_line(struct h4_trace *t)
+{
+	char line[200];
+	uint64_t now = mach_absolute_time(), ns;
+	uint32_t keep = t->pgot < sizeof(t->first) ? t->pgot : (uint32_t)sizeof(t->first);
+	int at;
+
+	absolutetime_to_nanoseconds(now - trace_window, &ns);
+	if (ns >= NSEC_PER_SEC) {
+		trace_window = now;
+		trace_lines = 0;
+	}
+	if (trace_lines >= trace_per_s) {
+		trace_skipped++;
+		return;
+	}
+	trace_lines++;
+	absolutetime_to_nanoseconds(now, &ns);
+	at = snprintf(line, sizeof(line), "bt: %llu.%03llu %s ", ns / NSEC_PER_SEC, (ns / NSEC_PER_MSEC) % 1000, t->dir);
+	switch (t->type) {
+	case 1:
+		at += snprintf(line + at, sizeof(line) - at, "cmd %04x", t->hdr[0] | t->hdr[1] << 8);
+		break;
+	case 2:
+		at += snprintf(line + at, sizeof(line) - at, "acl %03x pb%u", (t->hdr[0] | t->hdr[1] << 8) & 0xfff,
+		    (t->hdr[1] >> 4) & 3);
+		break;
+	case 3:
+		at += snprintf(line + at, sizeof(line) - at, "sco %03x", (t->hdr[0] | t->hdr[1] << 8) & 0xfff);
+		break;
+	default:
+		at += snprintf(line + at, sizeof(line) - at, "evt %02x", t->hdr[0]);
+		break;
+	}
+	at += snprintf(line + at, sizeof(line) - at, " len %u:", t->plen);
+	for (uint32_t i = 0; i < keep && at < (int)sizeof(line) - 8; i++) {
+		at += snprintf(line + at, sizeof(line) - at, " %02x", t->first[i]);
+	}
+	if (trace_skipped != 0 && at < (int)sizeof(line) - 40) {
+		at += snprintf(line + at, sizeof(line) - at, " (%u not shown before)", trace_skipped);
+		trace_skipped = 0;
+	}
+	snprintf(line + at, sizeof(line) - at, "\n");
+	(void)say("%s", line);
+}
+
+static void
+trace_bytes(struct h4_trace *t, const uint8_t *b, size_t n)
+{
+	if (trace_per_s == 0) {
+		return;
+	}
+	for (size_t i = 0; i < n; i++) {
+		uint8_t c = b[i];
+
+		if (t->type == 0) {
+			if (c < 1 || c > 4) {
+				if (t->junk++ == 0) {
+					(void)say("bt: %s %02x is not an H4 packet type: the framing is lost; looking for the next\n", t->dir, c);
+				}
+				continue;
+			}
+			if (t->junk != 0) {
+				(void)say("bt: %s %u bytes not a packet\n", t->dir, t->junk);
+				t->junk = 0;
+			}
+			t->type = c;
+			t->hlen = 0;
+			t->hneed = c == 1 ? 3 : c == 2 ? 4 : c == 3 ? 3 : 2;
+			t->pgot = 0;
+			continue;
+		}
+		if (t->hlen < t->hneed) {
+			t->hdr[t->hlen++] = c;
+			if (t->hlen < t->hneed) {
+				continue;
+			}
+			t->plen = t->type == 1 ? t->hdr[2] : t->type == 2 ? (uint32_t)(t->hdr[2] | t->hdr[3] << 8) :
+			    t->type == 3 ? t->hdr[2] : t->hdr[1];
+		} else {
+			if (t->pgot < sizeof(t->first)) {
+				t->first[t->pgot] = c;
+			}
+			t->pgot++;
+		}
+		if (t->hlen == t->hneed && t->pgot == t->plen) {
+			trace_line(t);
+			t->type = 0;
+		}
+	}
+}
+
 static kern_ctl_ref kctl_ref;
 static volatile u_int32_t kctl_unit;
 static uint8_t kctl_rx[256];            /* read from the chip, not yet taken by the socket */
 static size_t kctl_rx_len;
 static uint32_t kctl_bytes_in, kctl_bytes_out;
+static uint32_t kctl_full;               /* times the socket had no room (bt_trace) */
 
 static errno_t
 kctl_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
@@ -1406,6 +1534,8 @@ kctl_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinf
 	kctl_unit = sac->sc_unit;
 	kctl_rx_len = 0;
 	kctl_bytes_in = kctl_bytes_out = 0;
+	trace_out.type = trace_in.type = 0;
+	trace_out.junk = trace_in.junk = 0;
 	fifo_reset();
 	OSCompareAndSwap(0, 1, &kctl_owns);
 	say("bt: com.apple.uart.bluetooth: connected (unit %u) by pid %d, the chip at %u baud\n", sac->sc_unit,
@@ -1443,6 +1573,7 @@ kctl_send(__unused kern_ctl_ref ref, u_int32_t unit, __unused void *unitinfo, mb
 		} else if (!bt_write(buf, n, 2000)) {
 			error = EIO;
 		} else {
+			trace_bytes(&trace_out, buf, n);
 			off += n;
 			kctl_bytes_out += (uint32_t)n;
 		}
@@ -1515,8 +1646,12 @@ kctl_pump(int *in)
 			return;
 		}
 		if (ctl_enqueuedata(kctl_ref, unit, kctl_rx, kctl_rx_len, 0) != 0) {
+			if (trace_per_s != 0 && kctl_full++ % 1000 == 0) {
+				(void)say("bt: com.apple.uart.bluetooth: the reader is behind (%u times): %zu bytes wait\n", kctl_full, kctl_rx_len);
+			}
 			return;                         /* ENOBUFS: the reader is behind; RTS holds the chip meanwhile */
 		}
+		trace_bytes(&trace_in, kctl_rx, kctl_rx_len);
 		kctl_bytes_in += (uint32_t)kctl_rx_len;
 		*in += (int)kctl_rx_len;
 		kctl_rx_len = 0;
@@ -1538,6 +1673,7 @@ kctl_publish(void)
 	reg.ctl_send = kctl_send;
 	reg.ctl_getopt = kctl_getopt;
 	reg.ctl_setopt = kctl_setopt;
+	PE_parse_boot_argn("bt_trace", &trace_per_s, sizeof(trace_per_s));
 	e = ctl_register(&reg, &kctl_ref);
 	say("bt: com.apple.uart.bluetooth: %s (%d)\n", e == 0 ? "the kernel control for BlueTool" : "not registered", e);
 }
@@ -1574,6 +1710,81 @@ bt_tty_publish(void)
 	    link_baud);
 }
 
+/* "8C:83:E1:02:EE:E9" (a line of text, upper or lower case) into HCI's order (the last byte first), or false */
+static bool
+addr_parse(const char *t, size_t n, uint8_t out[6])
+{
+	unsigned at = 0;
+
+	for (int i = 5; i >= 0; i--) {
+		uint8_t v = 0;
+
+		for (int k = 0; k < 2; k++, at++) {
+			char c = at < n ? t[at] : 0;
+
+			v = (uint8_t)(v << 4);
+			if (c >= '0' && c <= '9') {
+				v |= (uint8_t)(c - '0');
+			} else if (c >= 'a' && c <= 'f') {
+				v |= (uint8_t)(c - 'a' + 10);
+			} else if (c >= 'A' && c <= 'F') {
+				v |= (uint8_t)(c - 'A' + 10);
+			} else {
+				return false;
+			}
+		}
+		out[i] = v;
+		if (i > 0 && (at >= n || t[at++] != ':')) {
+			return false;
+		}
+	}
+	return (out[0] | out[1] | out[2] | out[3] | out[4] | out[5]) != 0;
+}
+
+/*
+ * The phone's own address for the chip, as Samsung's Android gives it: the text in /efs/bluetooth/bt_addr (the EFS
+ * partition, read here and never written: drivers/storage/hakios.ext4.c, the phone's storage up as for the patch),
+ * sent with Broadcom's Write_BD_ADDR (0xFC01, the address in HCI's order: btbcm.c:93 btbcm_set_bdaddr()). Without it the
+ * chip answers with Broadcom's default, 43:61:b2:00:1f:ac, which every S9 then has: two phones near each other, or a
+ * headset paired with both, take one for the other. bt_addr=<a> gives one; bt_addr=0 keeps the default.
+ */
+#define HCI_BCM_WRITE_BD_ADDR   0xFC01
+
+static void
+set_own_address(void)
+{
+	char arg[24] = "", a[20];
+	const uint8_t *data = NULL;
+	uint64_t size = 0;
+	uint8_t want[6], ret[255], rl = 0;
+	const char *from;
+
+	if (PE_parse_boot_arg_str("bt_addr", arg, sizeof(arg)) && arg[0] != 0) {
+		if (strcmp(arg, "0") == 0) {
+			say("bt: 7: bt_addr=0: the chip keeps its default address\n");
+			return;
+		}
+		if (!addr_parse(arg, strlen(arg), want)) {
+			say("bt: 7: bt_addr=%s is not an address (xx:xx:xx:xx:xx:xx): the chip keeps its own\n", arg);
+			return;
+		}
+		from = "bt_addr=";
+	} else if (hakios_partition_file("EFS", "/efs", "/bluetooth/bt_addr", 64, &data, &size) == 0 && data != NULL &&
+	    addr_parse((const char *)data, (size_t)size, want)) {
+		from = "the phone's EFS:/bluetooth/bt_addr";
+	} else {
+		say("bt: 7: no address of the phone's own (EFS:/bluetooth/bt_addr not read, or not an address): the chip keeps "
+		    "its default\n");
+		return;
+	}
+	addr_text(want, a, sizeof(a));
+	if (!hci(HCI_BCM_WRITE_BD_ADDR, want, 6, ret, &rl, CMD_TIMEOUT_MS, false)) {
+		say("bt: 7: Write_BD_ADDR (0xFC01) %s from %s: not taken; the chip keeps its default\n", a, from);
+		return;
+	}
+	say("bt: 7: Write_BD_ADDR (0xFC01) %s from %s\n", a, from);
+}
+
 /* bt=7, after the patch: the rate raised, the address read, the chip kept for the console */
 static bool
 stage7(void)
@@ -1597,6 +1808,7 @@ stage7(void)
 			return false;
 		}
 	}
+	set_own_address();
 	if (hci(HCI_READ_BD_ADDR, NULL, 0, ret, &rl, CMD_TIMEOUT_MS, false) && rl >= 6) {
 		memcpy(own_addr, ret, 6);
 	}

@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 589 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 591 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -1528,7 +1528,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (82)
+# User space (84)
 #
 
 # read by inject_sb.c (user space)
@@ -1542,6 +1542,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakios.bcm4361_bt.c, hakios.bt.c (kernel)
 # CONFIG_BT is not set
+
+# read by hakios.bcm4361_bt.c (kernel)
+# CONFIG_BT_ADDR is not set
 
 # the second look this many seconds later (0: no second look; 30)
 # CONFIG_BT_AGAIN is not set
@@ -1563,6 +1566,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakios.bcm4361_bt.c (kernel)
 # CONFIG_BT_SCAN is not set
+
+# read by hakios.bcm4361_bt.c (kernel)
+# CONFIG_BT_TRACE is not set
 
 # read by hakios.bcm4361_bt.c (kernel)
 # CONFIG_BT_TTY is not set

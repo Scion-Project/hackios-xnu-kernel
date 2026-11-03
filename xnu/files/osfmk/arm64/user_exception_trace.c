@@ -124,9 +124,13 @@ user_exception_trace(exception_type_t exception, mach_exception_data_t code, mac
 /*
  * A program calls abort(): say which, and from where. The reason is usually an exception nobody
  * caught, or an assertion; the text of it goes to the program's standard error (boot-arg applog=1
- * puts that on the console), the stack is here.
+ * puts that on the console), the stack is here. Then where every other thread of it is (the
+ * "ustacks:" lines below, all threads, to the loader's log too): a program that aborts because a
+ * watchdog of its own found it stuck (bluetoothd's "Stack Mutex try lock failed") was stuck in one
+ * of those, and x16, the system call number, says in which call.
  */
 void user_abort_trace(void);
+static void ustacks_task(task_t task, struct proc *proc, bool on_abort);
 
 void
 user_abort_trace(void)
@@ -161,6 +165,9 @@ user_abort_trace(void)
 		fp = frame[0];
 	}
 	ut_say("\n");
+	if (proc != NULL) {
+		ustacks_task(task, proc, true);
+	}
 }
 
 /*
@@ -201,19 +208,20 @@ extern void bsd_getthreadname(void *uth, char *buffer);
 extern void loader_log_line(const char *line);
 
 static void
-ustacks_say(const char *line)
+ustacks_say(const char *line, bool on_abort)
 {
 	printf("%s", line);
-	if (ustacks_tname[0] != 0) {
+	if (ustacks_tname[0] != 0 || on_abort) {
 		loader_log_line(line);
 	}
 }
 
+/* on_abort: from user_abort_trace(), every thread whatever the boot-args, with x16 (the system call it is in, if any) */
 static void
-ustacks_task(task_t task, struct proc *proc)
+ustacks_task(task_t task, struct proc *proc, bool on_abort)
 {
 	static struct {
-		uint64_t tid, pc, lr, fp;
+		uint64_t tid, pc, lr, fp, x16;
 		int state;
 		char name[64];          /* (bsd_getthreadname() copies MAXTHREADNAMESIZE, 64) */
 	} snap[USTACKS_MAX_THREADS];
@@ -229,7 +237,8 @@ ustacks_task(task_t task, struct proc *proc)
 	queue_iterate(&task->threads, thread, thread_t, task_threads) {
 		const arm_saved_state_t *state = get_user_regs(thread);
 
-		if (count == USTACKS_MAX_THREADS || count >= ustacks_threads || state == NULL || !is_saved_state64(state)) {
+		if (count == USTACKS_MAX_THREADS || (!on_abort && count >= ustacks_threads) || state == NULL ||
+		    !is_saved_state64(state)) {
 			continue;
 		}
 		snap[count].name[0] = 0;
@@ -237,7 +246,7 @@ ustacks_task(task_t task, struct proc *proc)
 			bsd_getthreadname(get_bsdthread_info(thread), snap[count].name);
 			snap[count].name[63] = 0;
 		}
-		if (ustacks_tname[0] != 0 && strcmp(ustacks_tname, "*") != 0 &&
+		if (!on_abort && ustacks_tname[0] != 0 && strcmp(ustacks_tname, "*") != 0 &&
 		    strnstr(snap[count].name, ustacks_tname, sizeof(snap[count].name)) == NULL) {
 			continue;
 		}
@@ -246,6 +255,7 @@ ustacks_task(task_t task, struct proc *proc)
 		snap[count].pc = get_saved_state_pc(state);
 		snap[count].lr = get_saved_state_lr(state);
 		snap[count].fp = get_saved_state_fp(state);
+		snap[count].x16 = get_saved_state_reg(state, 16);
 		count++;
 	}
 	map = task->map;
@@ -270,7 +280,7 @@ ustacks_task(task_t task, struct proc *proc)
 	absolutetime_to_nanoseconds(mach_absolute_time(), &nanos);
 	snprintf(line, sizeof(line), "ustacks: %s[%d] %u threads, shared cache slide 0x%x, uptime %lu.%03u, at %llu\n",
 	    proc_name_address(proc), proc_pid(proc), count, slide, (unsigned long)secs, (unsigned)usecs / 1000, nanos / 1000);
-	ustacks_say(line);
+	ustacks_say(line, on_abort);
 
 	old_map = vm_map_switch(map);
 	for (unsigned i = 0; i < count; i++) {
@@ -280,6 +290,9 @@ ustacks_task(task_t task, struct proc *proc)
 		at = snprintf(line, sizeof(line), "ustacks:  thread 0x%llx%s%s%s%s: 0x%llx 0x%llx", (unsigned long long)snap[i].tid,
 		    snap[i].name[0] ? " \"" : "", snap[i].name, snap[i].name[0] ? "\"" : "",
 		    (snap[i].state & TH_RUN) ? " (running)" : "", (unsigned long long)snap[i].pc, (unsigned long long)snap[i].lr);
+		if (on_abort) {
+			at += snprintf(line + at, sizeof(line) - at, " x16 %lld", (long long)snap[i].x16);
+		}
 		for (int depth = 0; depth < USTACKS_MAX_FRAMES && plausible_user_address(fp) && (fp & 7) == 0; depth++) {
 			if (copyin((user_addr_t)fp, frame, sizeof(frame)) != 0) {
 				break;
@@ -293,7 +306,7 @@ ustacks_task(task_t task, struct proc *proc)
 			fp = frame[0];
 		}
 		snprintf(line + at, sizeof(line) - at, "\n");
-		ustacks_say(line);
+		ustacks_say(line, on_abort);
 	}
 	vm_map_switch(old_map);
 	vm_map_deallocate(map);
@@ -409,7 +422,7 @@ ustacks_fire(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 		struct proc *proc = get_bsdtask_info(found[i]);
 
 		if (proc != NULL) {
-			ustacks_task(found[i], proc);
+			ustacks_task(found[i], proc, false);
 		}
 		task_deallocate(found[i]);
 	}

@@ -33,7 +33,9 @@
 #                                   BT_HCI_TRANSPORT= for another) and com.apple.BlueTool; BlueTool started with
 #                                   lib/libhakios.bluetool.dylib (src/inject_bluetool.c), which has it run this
 #                                   phone's own scripts, etc/bluetool/ (bluetool/ here), instead of Apple's firmware
-#                                   loading. devices/starlte/BLUETOOTH.md, "iOS"
+#                                   loading; bluetoothd started with lib/libhakios.bluetoothd.dylib
+#                                   (src/inject_bluetoothd.c: its iAP PTY non-blocking, so that an accessory offering
+#                                   iAP does not stop its stack). devices/starlte/BLUETOOTH.md, "iOS"
 #                      EXTRA="..."  more programs for /redwood/bin (files on this machine): one-off
 #                                   diagnostics, which a file given as RC_JOBS can then run
 #                      EXTRA_SHARE="..." directories on this machine to copy whole into /redwood/share,
@@ -185,7 +187,8 @@ INJECT=${INJECT-"/redwood/lib/libhakios.dylib backboardd containermanagerd conta
 /redwood/lib/libhakios.app.dylib Sileo
 /redwood/lib/libhakios.tweaks.dylib Preferences"}
 [ -n "$BT" ] && INJECT="$INJECT
-/redwood/lib/libhakios.bluetool.dylib BlueTool"
+/redwood/lib/libhakios.bluetool.dylib BlueTool
+/redwood/lib/libhakios.bluetoothd.dylib bluetoothd"
 mkdir -p obj
 
 if [ -z "$PREBUILT" ] && ! command -v ld64 >/dev/null; then PREBUILT=1; fi
@@ -385,6 +388,9 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		# ... and inside BlueTool, so that it runs the Galaxy S9's Bluetooth scripts (BT=1, src/inject_bluetool.c)
 		$DYN -dynamiclib -install_name /redwood/lib/libhakios.bluetool.dylib -framework CoreFoundation -lMobileGestalt \
 			-o obj/libhakios.bluetool.dylib src/inject_bluetool.c
+		# ... and inside bluetoothd, so that its iAP PTY cannot stop its stack (BT=1, src/inject_bluetoothd.c)
+		$DYN -dynamiclib -install_name /redwood/lib/libhakios.bluetoothd.dylib \
+			-o obj/libhakios.bluetoothd.dylib src/inject_bluetoothd.c
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libhakios.media.dylib -framework CoreFoundation -framework CoreMedia \
 			-framework CoreVideo -framework IOSurface -lobjc \
 			-o obj/libhakios.media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c
@@ -571,6 +577,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/libhakios.tweaks.dylib ] && cp obj/libhakios.tweaks.dylib root/lib/
 	if [ -n "$BT" ]; then
 		[ -f obj/libhakios.bluetool.dylib ] && cp obj/libhakios.bluetool.dylib root/lib/
+		[ -f obj/libhakios.bluetoothd.dylib ] && cp obj/libhakios.bluetoothd.dylib root/lib/
 		mkdir -p root/etc/bluetool
 		cp bluetool/*.script root/etc/bluetool/
 	fi

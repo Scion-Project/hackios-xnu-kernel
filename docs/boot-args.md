@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **539 arguments**: 473 read by the kernel, 17 by the loader, 61 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **541 arguments**: 475 read by the kernel, 17 by the loader, 61 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -548,7 +548,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (84)
+## User space (86)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -556,6 +556,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `avf_exit` | K | `1001-avf-psci-system-off.patch` | `CONFIG_AVF_EXIT` |  |
 | `brightness_bridge` | U | `inject_sb.c` | `CONFIG_BRIGHTNESS_BRIDGE` |  |
 | `bt` | K | `hakios.bcm4361_bt.c`, `hakios.bt.c` | `CONFIG_BT` |  |
+| `bt_addr` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_ADDR` |  |
 | `bt_again` | K | `hakios.bt.c` | `CONFIG_BT_AGAIN` |  |
 | `bt_baud` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_BAUD` |  |
 | `bt_expander_reset` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_EXPANDER_RESET` |  |
@@ -563,6 +564,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `bt_keep` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_KEEP` |  |
 | `bt_module` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_MODULE` |  |
 | `bt_scan` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_SCAN` |  |
+| `bt_trace` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_TRACE` |  |
 | `bt_tty` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_TTY` |  |
 | `bt_uart_mhz` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_UART_MHZ` |  |
 | `bt_vendor` | K | `hakios.bcm4361_bt.c` | `CONFIG_BT_VENDOR` |  |
