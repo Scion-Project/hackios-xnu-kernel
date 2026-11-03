@@ -128,6 +128,8 @@ CC_FADE	arg	cc_fade	User space	u	inject_sb.c
 COHTEST	arg	cohtest	User space	k	hakios.exynos_m3.c	is the big cluster in the same coherency domain as the A55s once it is started? (off by default)
 COHTEST_DELAY	arg	cohtest_delay	User space	k	hakios.exynos_m3.c	
 CONSOLE_QUIET	arg	console_quiet	User space	k	1003-avf-console-quiet.patch	
+CORE0	arg	core0	Loader	kl	1513-psci-loader-core.patch,loader.c	this core -- the one the loader stays on while the kernel runs on others (bootcpu=) -- given to the kernel
+CORE1	arg	core1	Loader	l	loader.c	core 1, which S-Boot uses for its own display work, listed for the kernel all the same
 CPUFREQ_GOV	arg	cpufreq_gov	User space	k	hakios.exynos_cpufreq.c	run it (0, or none: the fixed rates of cpufreq_lit= and cpufreq_big=)
 CPUFREQ_GOV_BIG_MAX	arg	cpufreq_gov_big_max	User space	k	hakios.exynos_cpufreq.c	
 CPUFREQ_GOV_BIG_MIN	arg	cpufreq_gov_big_min	User space	k	hakios.exynos_cpufreq.c	

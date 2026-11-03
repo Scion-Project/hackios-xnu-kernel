@@ -134,6 +134,8 @@ cc_fade	u
 cohtest	k
 cohtest_delay	k
 console_quiet	k
+core0	kl
+core1	l
 cpufreq	k
 cpufreq_gov	k
 cpufreq_gov_big_max	k

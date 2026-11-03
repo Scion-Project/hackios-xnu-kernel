@@ -1,0 +1,370 @@
+diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
+--- a/osfmk/arm64/psci_smp.c
++++ b/osfmk/arm64/psci_smp.c
+@@ -36,6 +36,7 @@
+ #include <kern/debug.h>
+ #include <kern/kalloc.h>
+ #include <kern/misc_protos.h>
++#include <kern/thread_call.h>
+ #include <libkern/kernel_mach_header.h>
+ #include <machine/atomic.h>
+ #include <arm/caches_internal.h>
+@@ -64,6 +65,7 @@
+ extern void loader_log_line(const char *line);
+ extern int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
+ extern unsigned long gVirtBase, gPhysBase;
++extern unsigned int processor_avail_count;      /* (kern/processor.h) */
+ /*
+  * HakiOS (patch 1508): asked before every CPU_ON; anything but 0 and that core is not started. The Galaxy S9's big
+  * cores need six PMU fields set first (drivers/core/hakios.exynos_m3.c, m3_prep=); elsewhere, and with that driver
+@@ -106,6 +108,56 @@
+ static bool     psci_smp_boot_busy;             /* ... and has begun to */
+ static bool     psci_smp_stopping;              /* every other core switches itself off */
+ 
++/*
++ * HakiOS (patch 1513): the boot loader's own core, the kernel's for the middle of the run (core0=1; the Galaxy S9 with
++ * ufs=3). With bootcpu= the loader stays on the core it started on (core 0) and watches the kernel from there; on the S9
++ * it is also the storage's server (ufs=2) until the kernel's own UFS driver has taken the controller (ufs=3's switch).
++ * With core0=1 the loader lists that core last among the kernel's and writes its MPIDR into this box, which it finds by
++ * the magic and the box's own address in the second word (xnuloader/loader.c, struct loader_core_box: the same layout).
++ *   - psci_smp_start_cpu() does not start that core: it waits, as a core that has not come yet (PROCESSOR_START);
++ *   - the loader, once it only watches, says OFFERED, where the core goes back to and the watchdog to feed;
++ *   - after the switch the UFS driver calls hakios_loader_core_take(): every second for up to a minute, until the loader
++ *     has offered it, then the kernel's segments are cleaned as for CPU_ON, the watchdog is fed, the entry written and
++ *     WANTED said; the loader quiets the core's timers and GIC, says GONE and jumps to the entry with its MMU off, as
++ *     the firmware's CPU_ON would have started it, and the core joins as any other (psci: cpu N: stage 3);
++ *   - from then the Exynos watchdog is fed here, every PSCI_SMP_LOADER_FEED_SECONDS (the loader armed it for 60 s);
++ *   - the loader's storage service is gone: a request to it fails at once (hakios_loader_core_taken(), hakios.ufs.c);
++ *   - on the way out (psci_smp_cpu_off() on that core: psci_smp_stop_others(), a panic, processor_exit()) the core is
++ *     not switched off but given back: RETURNING, then a jump to the loader's core0_return_stub, mapped 1:1 here as
++ *     loader_jump() maps its own stub; the loader takes up its watch again and the kernel's return finds it there.
++ */
++#define LOADER_CORE_MAGIC       0x3045524f434c4458ULL   /* "XDLCORE0" */
++#define LOADER_CORE_NONE        0
++#define LOADER_CORE_OFFERED     1
++#define LOADER_CORE_WANTED      2
++#define LOADER_CORE_GONE        3
++#define LOADER_CORE_RETURNING   4
++#define LOADER_CORE_BACK        5
++#define PSCI_SMP_LOADER_FEED_SECONDS    10
++#define PSCI_SMP_LOADER_ASK_SECONDS     120
++
++struct loader_core_box {
++	uint64_t magic;                 /* LOADER_CORE_MAGIC */
++	uint64_t self;                  /* this box's address: the loader's proof that it found the box and not the number */
++	uint64_t mpidr;                 /* the loader's: the core it gives (~0: none) */
++	volatile uint64_t state;        /* LOADER_CORE_* */
++	uint64_t entry;                 /* ours: where the core enters (physical: LowResetVectorBase) */
++	uint64_t back;                  /* the loader's: where the core goes back to it (physical) */
++	uint64_t wdt_pa, wdt_count;     /* the loader's: the Exynos watchdog fed here while the core is ours, 0: none */
++} __attribute__((aligned(64)));
++
++struct loader_core_box loader_core_box = {
++	.magic = LOADER_CORE_MAGIC, .self = (uint64_t)&loader_core_box, .mpidr = ~0ULL,
++};
++
++static int              psci_smp_loader_cpu = -1;       /* the kernel's number for that core, once it was asked for */
++static uint32_t         psci_smp_loader_wanted;         /* hakios_loader_core_take() was called, maybe before that core had a number */
++static uint32_t         psci_smp_loader_asked;          /* ... and has begun to ask */
++static uint32_t         psci_smp_loader_tries;
++static thread_call_t    psci_smp_loader_call;
++static volatile uint32_t *psci_smp_loader_wdt;          /* WTCNT, mapped */
++void hakios_loader_core_take(void);
++
+ static int64_t
+ psci_call(uint64_t function, uint64_t arg1, uint64_t arg2, uint64_t arg3)
+ {
+@@ -406,6 +458,24 @@
+ 	return ns / 1000;
+ }
+ 
++/* What a core started with its MMU off reads first (see psci_smp_start_cpu()), out to memory. */
++static void
++psci_smp_clean_for_start(void)
++{
++	psci_smp_start_fault.valid = 0;
++	psci_smp_clean_segment("__TEXT");
++	psci_smp_clean_segment("__DATA_CONST");
++	psci_smp_clean_segment("__TEXT_EXEC");
++	psci_smp_clean_segment("__DATA");
++	psci_smp_clean_segment("__BOOTDATA");
++	for (int other = 0; other <= ml_get_max_cpu_number(); other++) {
++		if (cpu_datap(other) != NULL) {
++			CleanPoC_DcacheRegion((vm_offset_t)cpu_datap(other), sizeof(cpu_data_t));
++		}
++	}
++	__builtin_arm_dsb(DSB_SY);
++}
++
+ kern_return_t
+ psci_smp_start_cpu(int cpu)
+ {
+@@ -416,6 +486,30 @@
+ 	uint32_t seen = 0;
+ 	int64_t status;
+ 
++	if (loader_core_box.mpidr != ~0ULL && phys_id == (uint32_t)loader_core_box.mpidr) {
++		uint32_t core0 = 1;
++
++		/*
++		 * patch 1513: the loader's core, the kernel's later (hakios_loader_core_take()); until then it has not come. The
++		 * loader fills the box only for core0=1 or 2, which it reads from the payload's whole command line: the kernel's
++		 * copy (607 characters) may have lost it, so without core0= here it is 1.
++		 */
++		os_atomic_store(&psci_smp_loader_cpu, cpu, seq_cst);
++		os_atomic_store(&psci_smp_cpu_stage[cpu], PSCI_SMP_CPU_ASKED, release);
++		(void) PE_parse_boot_argn("core0", &core0, sizeof(core0));
++		psci_smp_step("psci: cpu %d (MPIDR 0x%x) is the boot loader's core (core0=%u): not started now; it comes %s\n", cpu,
++		    phys_id, core0, core0 == 2 ? "once the loader offers it (core0=2: asked for now, for a loader that serves nothing)" :
++		    "once the storage no longer needs the loader (ufs=3's switch)");
++		if (core0 == 2 || os_atomic_load(&psci_smp_loader_wanted, seq_cst)) {
++			/*
++			 * core0=2, a platform whose loader serves the kernel nothing (QEMU): asked for at once, taken when it is offered.
++			 * Or the storage's switch came first: the slower cores, among them this one, start 28 s into the run
++			 * (GenericARMPE.cpp, small_cores_after=), and ufs=3 may have switched by then.
++			 */
++			hakios_loader_core_take();
++		}
++		return KERN_SUCCESS;
++	}
+ 	if (hakios_psci_cpu_on_prepare(cpu, phys_id) != 0) {
+ 		psci_smp_step("psci: cpu %d (MPIDR 0x%x) is not started: its preparation says no\n", cpu, phys_id);
+ 		printf("psci: cpu %d (MPIDR 0x%x) was not started: its preparation says no\n", cpu, phys_id);
+@@ -429,18 +523,7 @@
+ 	 * every processor, which the reset vector goes through looking for its own.
+ 	 * Clean, not flush: the processors that are running keep using all of it.
+ 	 */
+-	psci_smp_start_fault.valid = 0;
+-	psci_smp_clean_segment("__TEXT");
+-	psci_smp_clean_segment("__DATA_CONST");
+-	psci_smp_clean_segment("__TEXT_EXEC");
+-	psci_smp_clean_segment("__DATA");
+-	psci_smp_clean_segment("__BOOTDATA");
+-	for (int other = 0; other <= ml_get_max_cpu_number(); other++) {
+-		if (cpu_datap(other) != NULL) {
+-			CleanPoC_DcacheRegion((vm_offset_t)cpu_datap(other), sizeof(cpu_data_t));
+-		}
+-	}
+-	__builtin_arm_dsb(DSB_SY);
++	psci_smp_clean_for_start();
+ 
+ 	os_atomic_store(&psci_smp_cpu_stage[cpu], PSCI_SMP_CPU_ASKED, release);
+ 	t1 = mach_absolute_time();
+@@ -526,6 +609,186 @@
+ 	return KERN_FAILURE;
+ }
+ 
++/* ---- patch 1513: the boot loader's core ---- */
++
++static void psci_smp_note(const char *what, int cpu);
++
++/* the Exynos watchdog, fed while the loader's core is ours (the loader feeds it otherwise) */
++static void
++psci_smp_loader_feed(void)
++{
++	if (psci_smp_loader_wdt != NULL && loader_core_box.state == LOADER_CORE_GONE) {
++		*psci_smp_loader_wdt = (uint32_t)loader_core_box.wdt_count;
++		__builtin_arm_dsb(DSB_SY);
++	}
++}
++
++/* 1: the loader's core is the kernel's (asked for, or taken): the loader serves nothing any more */
++int hakios_loader_core_taken(void);
++int
++hakios_loader_core_taken(void)
++{
++	uint64_t state = loader_core_box.state;
++
++	return state == LOADER_CORE_WANTED || state == LOADER_CORE_GONE;
++}
++
++static void
++psci_smp_loader_poll(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
++{
++	int cpu = psci_smp_loader_cpu;
++	uint64_t deadline, t1, state = loader_core_box.state;
++	uint32_t stage, seen = 0;
++
++	if (state == LOADER_CORE_GONE) {
++		/* ours: the watchdog's feeding goes on for as long as it is */
++		psci_smp_loader_feed();
++		clock_interval_to_deadline(PSCI_SMP_LOADER_FEED_SECONDS, NSEC_PER_SEC, &deadline);
++		thread_call_enter_delayed(psci_smp_loader_call, deadline);
++		return;
++	}
++	if (state != LOADER_CORE_OFFERED) {
++		if (state == LOADER_CORE_NONE && ++psci_smp_loader_tries < PSCI_SMP_LOADER_ASK_SECONDS) {
++			clock_interval_to_deadline(1, NSEC_PER_SEC, &deadline);
++			thread_call_enter_delayed(psci_smp_loader_call, deadline);
++		} else if (state == LOADER_CORE_NONE) {
++			psci_smp_step("psci: cpu %d: the loader has not offered its core in %u s: it stays the loader's\n", cpu,
++			    psci_smp_loader_tries);
++		}
++		return;
++	}
++	/* offered: the watchdog's page, fed once before the loader's last feeding runs out */
++	if (loader_core_box.wdt_pa != 0 && psci_smp_loader_wdt == NULL) {
++		vm_offset_t va = ml_io_map(loader_core_box.wdt_pa & ~(uint64_t)PAGE_MASK, PAGE_SIZE);
++
++		if (va != 0) {
++			psci_smp_loader_wdt = (volatile uint32_t *)(va + (loader_core_box.wdt_pa & PAGE_MASK) + 0x8);
++		}
++	}
++	if (loader_core_box.wdt_pa != 0 && psci_smp_loader_wdt == NULL) {
++		psci_smp_step("psci: cpu %d: the watchdog at 0x%llx could not be mapped: the loader's core stays the loader's\n",
++		    cpu, loader_core_box.wdt_pa);
++		return;
++	}
++	psci_smp_clean_for_start();
++	os_atomic_store(&psci_smp_cpu_stage[cpu], PSCI_SMP_CPU_ASKED, release);
++	os_atomic_or(&psci_smp_started, 1u << cpu, relaxed);
++	loader_core_box.entry = ml_static_vtop((vm_offset_t)&LowResetVectorBase);
++	__builtin_arm_dsb(DSB_SY);
++	loader_core_box.state = LOADER_CORE_WANTED;
++	__builtin_arm_dsb(DSB_SY);
++	__builtin_arm_sev();
++	t1 = mach_absolute_time();
++	psci_smp_step("psci: cpu %d (MPIDR 0x%llx): asked of the loader with entry 0x%llx; the watchdog %s\n", cpu,
++	    loader_core_box.mpidr, loader_core_box.entry, loader_core_box.wdt_pa != 0 ? "fed here from now on" : "none");
++	if (psci_smp_loader_wdt != NULL) {
++		*psci_smp_loader_wdt = (uint32_t)loader_core_box.wdt_count;
++		__builtin_arm_dsb(DSB_SY);
++	}
++	clock_interval_to_deadline(PSCI_SMP_START_SECONDS, NSEC_PER_SEC, &deadline);
++	do {
++		stage = os_atomic_load(&psci_smp_cpu_stage[cpu], acquire);
++		if (stage != seen) {
++			seen = stage;
++			psci_smp_step("psci: cpu %d: stage %u after %llu us (the loader: %llu)\n", cpu, stage,
++			    psci_smp_us(mach_absolute_time() - t1), loader_core_box.state);
++		}
++		if (stage >= PSCI_SMP_CPU_RUNNING) {
++			break;
++		}
++		delay_for_interval(1, NSEC_PER_MSEC);
++	} while (mach_absolute_time() < deadline);
++	if (stage >= PSCI_SMP_CPU_RUNNING) {
++		psci_smp_step("psci: cpu %d: the loader's core has joined: %u processors are running (hw.ncpu %u)\n", cpu,
++		    processor_avail_count, ml_get_max_cpu_number() + 1);
++		printf("psci: cpu %d (MPIDR 0x%llx), the boot loader's core, has joined the kernel\n", cpu, loader_core_box.mpidr);
++	} else {
++		psci_smp_step("psci: cpu %d: the loader's core has not joined in %d s (the loader: %llu; stage %u)\n", cpu,
++		    PSCI_SMP_START_SECONDS, loader_core_box.state, stage);
++		printf("psci: cpu %d (MPIDR 0x%llx), the boot loader's core, has not joined\n", cpu, loader_core_box.mpidr);
++	}
++	/* the feeding, every PSCI_SMP_LOADER_FEED_SECONDS while the core is ours */
++	clock_interval_to_deadline(PSCI_SMP_LOADER_FEED_SECONDS, NSEC_PER_SEC, &deadline);
++	thread_call_enter_delayed(psci_smp_loader_call, deadline);
++}
++
++/*
++ * The storage needs the loader no more (hakios.ufs.c, ufs=3's switch): its core is the kernel's, if the loader offers
++ * it (core0=1). Returns at once; the asking is done by a thread call.
++ */
++void
++hakios_loader_core_take(void)
++{
++	uint32_t want = 1;      /* (the loader's box says it was asked for: see psci_smp_start_cpu()) */
++
++	os_atomic_store(&psci_smp_loader_wanted, 1u, seq_cst);
++	if (os_atomic_load(&psci_smp_loader_cpu, seq_cst) < 0 || os_atomic_xchg(&psci_smp_loader_asked, 1u, relaxed)) {
++		return;         /* (a core not numbered yet: psci_smp_start_cpu() calls this again) */
++	}
++	(void) PE_parse_boot_argn("core0", &want, sizeof(want));
++#if ARM_PGSHIFT != 12
++	want = 0;       /* (the way back maps the loader's stub with 4 KB tables, as loader_jump() does) */
++#endif
++	if (want != 1 && want != 2) {
++		psci_smp_step("psci: cpu %d, the boot loader's core: not asked for (core0=%u)\n", psci_smp_loader_cpu, want);
++		return;
++	}
++	psci_smp_step("psci: cpu %d, the boot loader's core: nothing needs the loader any more (core0=%u); asking for it\n",
++	    psci_smp_loader_cpu, want);
++	psci_smp_loader_call = thread_call_allocate_with_options(psci_smp_loader_poll, NULL, THREAD_CALL_PRIORITY_KERNEL,
++	    THREAD_CALL_OPTIONS_ONCE);
++	if (psci_smp_loader_call != NULL) {
++		thread_call_enter(psci_smp_loader_call);
++	}
++}
++
++#if ARM_PGSHIFT == 12
++static uint64_t psci_smp_loader_l1[512] __attribute__((aligned(4096)));
++static uint64_t psci_smp_loader_l2[512] __attribute__((aligned(4096)));
++#endif
++
++/*
++ * On the loader's core, its last thing in the kernel: back to the loader's core0_return_stub, mapped 1:1 through TTBR0
++ * (as loader_jump() maps the loader's return stub); the stub turns the MMU off and takes up the loader's state. Called
++ * with interrupts off, the timer and this core's GIC interface quiet (psci_smp_cpu_off()). Returns only if it cannot.
++ */
++static void
++psci_smp_loader_give_back(void)
++{
++#if ARM_PGSHIFT == 12
++	uint64_t stub = loader_core_box.back, tcr = __builtin_arm_rsr64("TCR_EL1"), t0sz = tcr & 0x3f;
++
++	if (stub == 0 || t0sz < 25 || t0sz > 33 || (stub >> (64 - t0sz)) != 0) {
++		return;
++	}
++	psci_smp_note(" (the boot loader's core) goes back to the loader\n", cpu_number());
++	psci_smp_loader_l1[stub >> 30] = ml_static_vtop((vm_offset_t)psci_smp_loader_l2) | ARM_TTE_TYPE_TABLE | ARM_TTE_VALID;
++	psci_smp_loader_l2[(stub >> 21) & 0x1ff] = (stub & ~0x1fffffULL) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_AP(AP_RWNA) |
++	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITEBACK);
++	loader_core_box.state = LOADER_CORE_RETURNING;
++	__builtin_arm_dsb(DSB_SY);
++
++	register uint64_t r_ttbr0 __asm__("x0") = ml_static_vtop((vm_offset_t)psci_smp_loader_l1);
++	register uint64_t r_tcr __asm__("x4") = tcr;
++	register uint64_t r_stub __asm__("x5") = stub;
++
++	__asm__ volatile (
++                "msr DAIFSet, #0xf\n"
++                "bic x4, x4, #0x80\n"           /* TCR_EL1.EPD0: allow TTBR0 walks */
++                "msr TCR_EL1, x4\n"
++                "msr TTBR0_EL1, x0\n"
++                "isb\n"
++                "tlbi vmalle1\n"
++                "dsb sy\n"
++                "isb\n"
++                "mov x0, #0\n"
++                "br x5\n"
++                : : "r" (r_ttbr0), "r" (r_tcr), "r" (r_stub));
++	__builtin_unreachable();
++#endif
++}
++
+ /*
+  * The calling processor switches itself off. Its interrupted work, if any, is abandoned where
+  * it was: only for the end of the system.
+@@ -540,6 +803,9 @@
+ 	os_atomic_store(&psci_smp_cpu_stage[cpu_number()], PSCI_SMP_CPU_OFF, release);
+ 	__builtin_arm_dsb(DSB_SY);
+ 
++	if (cpu_number() == psci_smp_loader_cpu && loader_core_box.state == LOADER_CORE_GONE) {
++		psci_smp_loader_give_back();    /* patch 1513: not off, back to the loader (returns only if it cannot) */
++	}
+ 	(void) psci_call(PSCI_CPU_OFF, 0, 0, 0);
+ 	for (;;) {
+ 		__builtin_arm_wfi();    /* the firmware refused: stay out of the way all the same */
+@@ -684,4 +950,20 @@
+ 	}
+ }
+ 
++#else /* !defined(GENERIC_PSCI_SMP) */
++
++/* patch 1513: one processor, no loader's core to take (hakios.ufs.c asks all the same) */
++int hakios_loader_core_taken(void);
++int
++hakios_loader_core_taken(void)
++{
++	return 0;
++}
++
++void hakios_loader_core_take(void);
++void
++hakios_loader_core_take(void)
++{
++}
++
+ #endif /* defined(GENERIC_PSCI_SMP) */

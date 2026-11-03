@@ -37,7 +37,7 @@ revision `devices/manifest.conf` pins, so it can lag behind this table.
 
 | | Galaxy S9 | Boot-arguments |
 |---|---|---|
-| Six cores: A55s 2 and 3, and the four Exynos M3s | yes | `cpus=6 bootcpu=2 m3_prep=3 pan=0`; `isa_floor` comes on with `m3_prep=3`. The installer's default is `cpus=2 bootcpu=2` (the two A55s) |
+| All eight cores: the four A55s and the four Exynos M3s | yes | `cpus=8 bootcpu=2 m3_prep=3 pan=0`; `isa_floor` comes on with `m3_prep=3`. Core 0 comes from the loader after `ufs=3`'s switch (`devices/starlte/README.md`, The cores). The installer's default is `cpus=2 bootcpu=2` (the two A55s) |
 | Touch (Samsung S6SY761) | yes | `s6sy761=1` |
 | Battery level and charger state (MAX77705, read only) | yes | `max77705=1` |
 | Vibration | yes | `max77705_haptic=1` |
