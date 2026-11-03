@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 601 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 603 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -1534,7 +1534,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (92)
+# User space (94)
 #
 
 # read by inject_sb.c (user space)
@@ -1639,6 +1639,9 @@ CONFIG_MODEM_AGAIN=y
 # read by 1507-esslog-exynos-snapshot.patch, 1509-m3-diag-and-pan-off.patch (kernel)
 # CONFIG_ESSLOG is not set
 
+# the rear fingerprint sensor's SPI1, whose it is (1 read; 2 also one write each, read back, put back)
+# CONFIG_FP_S9 is not set
+
 # not even with a GPU; gl=1: also without one, by Mesa's software driver (slow; for working on eagl.c in QEMU)
 # CONFIG_GL is not set
 
@@ -1701,6 +1704,9 @@ CONFIG_MODEM_AGAIN=y
 
 # how long a capture may stream at most (default 600, 100 to 2000)
 # CONFIG_IRIS_S9_MS is not set
+
+# the secure monitor's camera calls around the run (0 none; 1 PREPARE; 2 also ISPPRE; 3 SYSREG_PROT)
+# CONFIG_IRIS_S9_SMC is not set
 
 # read by 1510-isa-floor.patch (kernel)
 # CONFIG_ISA_FLOOR is not set

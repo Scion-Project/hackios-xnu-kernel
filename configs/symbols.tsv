@@ -172,6 +172,7 @@ FBHEIGHT	arg	fbheight	GPU and display	k	MiniIOMobileFramebuffer.cpp
 FBSCALE	arg	fbscale	GPU and display	k	MiniIOMobileFramebuffer.cpp	the same 375 x 812 points drawn at two pixels a point instead of three
 FBTRACE	arg	fbtrace	GPU and display	k	MiniIOMobileFramebuffer.cpp	log the first N calls of every selector (default 3)
 FBWIDTH	arg	fbwidth	GPU and display	k	MiniIOMobileFramebuffer.cpp	
+FP_S9	arg	fp_s9	User space	k	hakios.exynos_iris.c	the rear fingerprint sensor's SPI1, whose it is (1 read; 2 also one write each, read back, put back)
 FPS_LOG	arg	fps_log	GPU and display	k	MiniIOMobileFramebuffer.cpp,hakios.ufs.c	a line a second while frames come ("fps: ...", in the loader's log and the kernel's): swaps
 GAMUT	arg	gamut	Loader	l	loader.c	
 GL	arg	gl	User space	u	inject.c,inject_sb.c	not even with a GPU; gl=1: also without one, by Mesa's software driver (slow; for working on eagl.c in QEMU)
@@ -238,6 +239,7 @@ IRIS_S9_EXP	arg	iris_s9_exp	User space	k	hakios.exynos_iris.c	the exposure in li
 IRIS_S9_GAIN	arg	iris_s9_gain	User space	k	hakios.exynos_iris.c	the analog gain, 0x20 being 1x (default 0x20, at most 0x200)
 IRIS_S9_ISPDIV	arg	iris_s9_ispdiv	User space	k	hakios.exynos_iris.c	
 IRIS_S9_MS	arg	iris_s9_ms	User space	k	hakios.exynos_iris.c	how long a capture may stream at most (default 600, 100 to 2000)
+IRIS_S9_SMC	arg	iris_s9_smc	User space	k	hakios.exynos_iris.c	the secure monitor's camera calls around the run (0 none; 1 PREPARE; 2 also ISPPRE; 3 SYSREG_PROT)
 ISA_FLOOR	arg	isa_floor	User space	k	1510-isa-floor.patch	
 KSAMPLE	arg	ksample	Debugging	k	user_exception_trace.c	
 KSAMPLE_US	arg	ksample_us	Debugging	k	user_exception_trace.c	

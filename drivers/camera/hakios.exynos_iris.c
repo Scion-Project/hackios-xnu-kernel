@@ -56,7 +56,7 @@
  *   the domain     ISPPRE (pd-isppre), its DTZPC SMC, CMU_TOP's CLKCMU_ISPPRE_BUS, CMU_ISPPRE's Q-channels (CSIS3's
  *                  0x302C among them), the DMA common of the four CSISs at 0x162F0000: as hakios.exynos_camera.c has
  *                  them, and only while this driver holds them. The SysMMU is never touched (taken as off, pass-through)
- *   the buffer     16 MB below 4 GB, outside XNU's RAM: IRIS in sys/hakios.exynos9810_mem.h (0xDA400000): the raw frame
+ *   the buffer     16 MB below 4 GB, outside XNU's RAM: IRIS in sys/hakios.exynos9810_mem.h (0xD8000000, the front camera's: never together): the raw frame
  *                  (8 MB slot, filled with 0xA5 first), then the picture (RGB, at most 6 MB)
  *
  * THE INFRARED LED (the S2MPB02's second flash channel, FLED2: 0x59 on hsi2c@10920000, the front camera's PMIC)
@@ -97,15 +97,57 @@
  *   iris_s9_exp=LINES  the exposure in lines of 6.56 us (default the table's 0x0339, 825; at most 5075)
  *   iris_s9_gain=CODE  the analog gain, 0x20 being 1x (default 0x20, at most 0x200)
  *   iris_s9_ms=MS      how long a capture may stream at most (default 600, 100 to 2000)
+ *   iris_s9_smc=M      the secure monitor's camera calls around the run (0 none; 1 PREPARE; 2 also ISPPRE; 3 SYSREG_PROT)
+ *   fp_s9=N            the rear fingerprint sensor's SPI1, whose it is (1 read; 2 also one write each, read back, put back)
  *   iris_s9_ispdiv=D   CLKCMU_ISPPRE_BUS = SHARED1_DIV4 (466 MHz) / (D + 1) while the frame is taken (default 0, Android's
  *                      466 MHz: two lanes at 2 Gb/s are 4.6 times the front camera's, which needed 233 MHz)
+ *
+ * THE SECURE MONITOR (iris_s9_smc=M, an experiment; 0 and none: no call). On the phone (3 November) gpg0-7 (iris_en)
+ * and gpp4-6/7 (the sensor's bus) do not keep what the AP writes into them, though the rest of their banks do, and the
+ * sensor does not answer: something above the kernel holds them, most likely EL3 for the iris camera's secure scenario.
+ * Samsung's kernel calls, for that scenario (fimc_is_sensor_s_input, fimc-is-device-sensor_v2.c), MC_SECURE_CAMERA_
+ * PREPARE (0x83000043, 0, 0, 0) before it powers the module up, and UNPREPARE (0x83000044) after; SYSREG_PROT
+ * (0x82002132, 1 / 0) only where NOT_SEPERATED_SYSREG is defined, which is fimc-is-v5_2_0's config, not the 9810's
+ * (v6_0_0): M = 3 tries it anyway. After step 1, before step 2: SMCCC_VERSION and PSCI_VERSION, logged (Carbon answers
+ * PSCI_VERSION itself and passes what it does not know to EL3: smc/smc_handler.c), each pin's register written and read back and put back as found (iris_en stays low:
+ * only its function and its pull are tried, the bus pins' function 3), [M >= 2: the ISPPRE domain and its clocks up and
+ * held for the run], [M = 3: SYSREG_PROT(1)], PREPARE, the pins tried again; then the steps as asked. At the run's end
+ * (and on loader_return), after everything is powered down: UNPREPARE if PREPARE returned 0, [SYSREG_PROT(0)], [ISPPRE
+ * down]. Every return value is logged. The calls take no address: nothing of the secure_camera region (0xE1900000, 30
+ * MB, in neither the bank from 0x880000000 nor the loader's extra_ram ranges) is ever touched, and the iris buffer ends before it.
+ *   What the phone showed (3 November, one kernel, phone 1). Without PREPARE, the sensor does not answer at 0x10. With
+ * M = 1, PREPARE returns 0 and it does: 0x0000 reads 0x5061 (not the 0x5F1x once expected here; no source says which
+ * is right), the version 0xA1, the OTP's test 1 1 1, UNPREPARE returns 0. So the call does reach EL3 and is what lets
+ * the sensor answer. The pins' read-back says nothing about it: gpg0-7 and gpp4-6/7 read as ignoring every write both
+ * before and after PREPARE, while the bus works. The frame does NOT reach memory: at the default exposure the WDMA reports
+ * a frame end and CSIS3 counts frames, with ERR_CODE 0, and every byte of the buffer still holds its 0xA5 (the check
+ * flushes with dc civac first; the front camera's frames do reach this same range). At 2000 lines and gain 0x100, and at 5075 and 0x200,
+ * no frame end is seen at all in the 600 ms; why is not known. Not known either: where the bytes go. PREPARE putting
+ * the CSIS3 path in the secure world, as the secure scenario suggests, would explain it; nothing here proves it. M = 2
+ * and 3 have not been run. No irshot has made a picture, and whether the LED pulsed was not observed.
+ *
+ * THE FINGERPRINT'S BUS (fp_s9=N, an experiment beside the iris one; it needs no iris_s9=). The S9's rear fingerprint
+ * sensor (Egis ET5xx) is on SPI1, spi@10450000 (USI00 of PERIC0, its mode word usi@10411004 "spi"), marked
+ * "secure-mode" in the device tree: Samsung's TA drives it from the secure world. Does the secure world also hold the
+ * block and its pins (gpp0-0..3: CLK, MOSI, MISO, CS, at PERIC0's GPIO + 0x000)? N = 1 reads: the mode word, CMU_PERIC0's
+ * USI00 gates (PCLK 0x20B0, IPCLK 0x20AC, GATE_CLK 0x200C, the divider 0x1804, the Q-channel 0x3020; a gate found
+ * manually off is opened for the reads and closed again), gpp0's CON, DAT and PUD, SPI1's CH_CFG, MODE_CFG and STATUS;
+ * last, the mode word.
+ *   What the phone showed (3 November). THIS PROBE PANICS THE KERNEL: reading SPI1's CH_CFG is a synchronous external
+ * abort (ESR 0x96000410), with USI00's gates open (0x200000) and gpp0's CON, DAT and its four pins' PUD reading 0. An
+ * earlier order died the same way on the mode word at SYSREG_PERIC0 (ESR 0x96000610), after the CMU's reads. So neither
+ * is the normal world's; N = 2's writes and the sensor itself were never reached. The expected end of a run is TWRP.
+ * N = 2 also writes, reads back and puts back: MODE_CFG's TX_RDY_LVL [8:5] (only with both channels found off) and
+ * gpp0-3's pull. Nothing is powered and no SMC is made (none of the MC_FC_FP calls). It runs after the iris camera's
+ * steps (before irshot's wait), or alone.
  *
  * Limits. The S2MPS18 is written only in the three LDOs' control registers, at Android's voltages, on or off, each read
  * back; one found on is left on and as it is, one found on at another voltage stops the run before anything is written.
  * The S2MPB02 is written only in the seven LED registers above, with those values. A write that does not read back, or
  * a byte nobody acknowledges, and everything is powered down and nothing more is written for the run.
  *
- * Status: compiled; NOT RUN on the phone.
+ * Status: run on the phone with iris_s9_smc=1: steps 1 to 3 work; step 4 streams and writes no frame to memory (THE
+ * SECURE MONITOR, above); step 5's picture has never been made. Without iris_s9_smc=, step 2 fails at the sensor.
  *
  * Sources: the phone's device tree (exynos9810-starlte_eur_open_26.dts of the BSP: hsi2c@108D0000 and its
  * fimc-is-secure@10, the hsi2c19-bus pin states, usi@10811024, fimc_is_mclk2_out/_fn, fimc_is_sensor@16260000,
@@ -773,6 +815,7 @@ static uint32_t iso_found, dphy_reset_found, user_found, top_gate_found, top_mux
 static uint32_t isppre_qch_found[NQCHS], cdma_found[4];
 static bool domain_up, domain_mine, clocks_mine, top_gate_mine, top_rate_mine, phy_mine, link_on, dma_on, cdma_mine;
 static bool buffer_busy;
+static bool isp_held;           /* iris_s9_smc >= 2: the domain stays up from before PREPARE to after UNPREPARE */
 
 /* One SMC to EL3 (through Carbon at EL2): x0 back (hakios.exynos_camera.c's) */
 static uint64_t
@@ -809,9 +852,10 @@ dma_stop(void)
 	wr(wdma, DMA_CTRL, rd(wdma, DMA_CTRL) & ~(DMA_ON | DMA_UPDT_PTR_EN));
 	dma_on = false;
 	if (!wait_for(wdma, DMA_ACT_CTRL, DMA_ON, 0, 100000)) {
-		buffer_busy = true;
-		say("exynos_iris: the WDMA was not seen to stop (ACT_CTRL %#x): no more DMA into the buffer this run\n",
-		    rd(wdma, DMA_ACT_CTRL));
+		/* ACT_CTRL takes DMA_CTRL's ON at a frame start, and none comes after the sensor's stream off (seen on the
+		 * phone, 3 November: 0xff11 after a whole frame): the link is stopped next, so nothing more reaches the WDMA */
+		say("exynos_iris: the WDMA's active bit is still set (ACT_CTRL %#x): it changes at the next frame start, and "
+		    "the link is stopped now\n", rd(wdma, DMA_ACT_CTRL));
 	}
 }
 
@@ -855,6 +899,9 @@ isp_down(void)
 	dma_stop();
 	link_stop();
 	phy_off();
+	if (isp_held) {
+		return;
+	}
 	if (cdma_mine && domain_up) {
 		wr(cdma, CDMA_ARB_PRI, cdma_found[0]);
 		wr(cdma, CDMA_CTRL, cdma_found[1]);
@@ -909,6 +956,10 @@ static bool
 isp_up(void)
 {
 	uint64_t answer;
+
+	if (isp_held) {
+		return true;
+	}
 
 	if (pmu == 0) {
 		pmu = ml_io_map(PMU_PA, PMU_SIZE);
@@ -1164,6 +1215,11 @@ capture(void)
 	}
 	memset((void *)buffer, CANARY, RAW_SLOT);
 	cache_flush(buffer, RAW_SLOT);
+	if (*(const volatile uint64_t *)buffer != 0xA5A5A5A5A5A5A5A5ULL) {
+		say("exynos_iris: 4: the buffer does not hold what was written into it (reads %#llx): no capture\n",
+		    *(const volatile uint64_t *)buffer);
+		return false;
+	}
 	wr(wdma, DMA_CTRL, rd(wdma, DMA_CTRL) & ~DMA_FRAMEPTR_MASK);
 	for (uint32_t i = 0; i < 8; i++) {
 		wr(wdma, DMA_ADDR(i), (uint32_t)MEM_PA);
@@ -1261,6 +1317,204 @@ picture(uint32_t n, uint32_t *wp, uint32_t *hp)
 #define SHOTS_MAX       40
 #define SHOT_GAP_MS     2000
 
+/* ---- iris_s9_smc=M: the secure monitor's camera calls (the head: THE SECURE MONITOR) ---- */
+
+#define SMCCC_VERSION           0x80000000u
+#define PSCI_VERSION            0x84000000u
+#define SECCAM_SYSREG_PROT      0x82002132u     /* MC_SECURE_CAMERA_SYSREG_PROT (1 on, 0 off) */
+#define SECCAM_PREPARE          0x83000043u     /* MC_SECURE_CAMERA_PREPARE */
+#define SECCAM_UNPREPARE        0x83000044u     /* MC_SECURE_CAMERA_UNPREPARE */
+
+static uint32_t iris_smc;
+static bool prepared, sysreg_protected;
+
+/* one field of a pin's register written, read back, put back as found: true if it took the write */
+static bool
+pin_try(vm_offset_t bank, uint32_t off, uint32_t shift, uint32_t value, const char *what)
+{
+	uint32_t found = rd(bank, off), want = (found & ~(0xfu << shift)) | (value << shift), got;
+
+	if (want == found) {
+		want = found & ~(0xfu << shift);        /* already so: try 0 instead */
+	}
+	wr(bank, off, want);
+	got = rd(bank, off);
+	wr(bank, off, found);
+	say("exynos_iris: try: %s: found %#x, wrote %#x, read back %#x: %s; put back, %#x\n", what, found, want, got,
+	    got == want ? "TAKEN" : "IGNORED", rd(bank, off));
+	return got == want;
+}
+
+static void
+pins_try(const char *when)
+{
+	bool con, pud, scl, sda;
+
+	con = pin_try(peric0 + GPG0, 0, 4 * IRIS_EN_PIN, 1, "iris_en gpg0-7 CON (an output, DAT low)");
+	pud = pin_try(peric0 + GPG0, 8, 4 * IRIS_EN_PIN, 1, "iris_en gpg0-7 PUD (pull-down)");
+	scl = pin_try(peric1 + GPP4, 0, 4 * 6, 3, "the bus gpp4-6 CON (function 3, I2C)");
+	sda = pin_try(peric1 + GPP4, 0, 4 * 7, 3, "the bus gpp4-7 CON (function 3, I2C)");
+	say("exynos_iris: smc: %s: the pins are %s (iris_en CON %s, PUD %s; gpp4-6 %s, gpp4-7 %s)\n", when,
+	    (con && pud && scl && sda) ? "UNLOCKED" : ((con || pud || scl || sda) ? "partly locked" : "LOCKED"),
+	    con ? "takes" : "ignores", pud ? "takes" : "ignores", scl ? "takes" : "ignores", sda ? "takes" : "ignores");
+}
+
+static void
+smc_begin(void)
+{
+	uint64_t answer;
+
+	say("exynos_iris: smc: iris_s9_smc=%u: %s\n", iris_smc, iris_smc == 1 ? "PREPARE" :
+	    (iris_smc == 2 ? "ISPPRE up, PREPARE" : "ISPPRE up, SYSREG_PROT(1), PREPARE"));
+	answer = smc(SMCCC_VERSION, 0, 0, 0);
+	say("exynos_iris: smc: SMCCC_VERSION (0x80000000) returned %#llx\n", answer);
+	answer = smc(PSCI_VERSION, 0, 0, 0);
+	say("exynos_iris: smc: PSCI_VERSION (0x84000000) returned %#llx (%llu.%llu)\n", answer, (answer >> 16) & 0xffff,
+	    answer & 0xffff);
+	pins_try("before PREPARE");
+	if (iris_smc >= 2) {
+		if (!isp_up()) {
+			say("exynos_iris: smc: the ISPPRE domain did not come up: no PREPARE\n");
+			isp_down();
+			return;
+		}
+		isp_held = true;
+		say("exynos_iris: smc: the ISPPRE domain up and held\n");
+	}
+	if (iris_smc >= 3) {
+		answer = smc(SECCAM_SYSREG_PROT, 1, 0, 0);
+		say("exynos_iris: smc: SYSREG_PROT(1) (0x82002132) returned %#llx\n", answer);
+		if ((uint32_t)answer != 0) {
+			return;
+		}
+		sysreg_protected = true;
+	}
+	answer = smc(SECCAM_PREPARE, 0, 0, 0);
+	say("exynos_iris: smc: PREPARE (0x83000043) returned %#llx\n", answer);
+	prepared = (uint32_t)answer == 0;
+	pins_try("after PREPARE");
+}
+
+/* after the sensor is powered down: what smc_begin did, undone (also from loader_return: no sleeping) */
+static void
+smc_end(void)
+{
+	uint64_t answer;
+
+	if (prepared) {
+		prepared = false;
+		answer = smc(SECCAM_UNPREPARE, 0, 0, 0);
+		say("exynos_iris: smc: UNPREPARE (0x83000044) returned %#llx\n", answer);
+	}
+	if (sysreg_protected) {
+		sysreg_protected = false;
+		answer = smc(SECCAM_SYSREG_PROT, 0, 0, 0);
+		say("exynos_iris: smc: SYSREG_PROT(0) returned %#llx\n", answer);
+	}
+	if (isp_held) {
+		isp_held = false;
+		isp_down();
+	}
+}
+
+/* ---- fp_s9=N: whose is the rear fingerprint sensor's SPI1 (the head: THE FINGERPRINT'S BUS) ---- */
+
+#define CMU_PERIC0_PA           0x10400000UL
+#define SYSREG_PERIC0_PA        0x10410000UL
+#define USI00_SW_CONF           0x1004          /* usi@10411004: 1 UART, 2 SPI, 4 I2C */
+#define FP_SPI_PA               0x10450000UL    /* spi@10450000, SPI1 */
+#define SPI_CH_CFG              0x00
+#define SPI_MODE_CFG            0x08
+#define SPI_STATUS              0x14
+#define GPP0                    0x000           /* PERIC0: gpp0-0..3, the SPI's CLK, MOSI, MISO, CS */
+#define GATE_AUTO               (1u << 28)
+
+static const struct { uint32_t off; const char *name; } fp_gates[] = {
+	{ 0x20B0, "PCLK" }, { 0x20AC, "IPCLK" }, { 0x200C, "GATE_CLK" },
+};
+#define NFPGATES                (sizeof(fp_gates) / sizeof(fp_gates[0]))
+
+static uint32_t fp_level;
+static volatile uint32_t iris_settled;
+
+static void
+fp_probe(void)
+{
+	vm_offset_t cmu, sysreg, spi, gpio;
+	uint32_t found[NFPGATES], ch, mode, status;
+	bool opened[NFPGATES] = { false }, mode_ok = false, pud_ok;
+
+	say("exynos_iris: fp: fp_s9=%u: the rear fingerprint sensor's SPI1 (spi@10450000, USI00, \"secure-mode\")\n", fp_level);
+	cmu = ml_io_map(CMU_PERIC0_PA, 0x4000);
+	sysreg = ml_io_map(SYSREG_PERIC0_PA, 0x2000);
+	spi = ml_io_map(FP_SPI_PA, 0x1000);
+	gpio = peric0 != 0 ? peric0 : ml_io_map(GPIO_PERIC0_PA, 0x1000);
+	if (cmu == 0 || sysreg == 0 || spi == 0 || gpio == 0) {
+		say("exynos_iris: fp: a block could not be mapped\n");
+		return;
+	}
+	if (peric0 == 0) {
+		peric0 = gpio;
+	}
+	for (uint32_t i = 0; i < NFPGATES; i++) {
+		found[i] = rd(cmu, fp_gates[i].off);
+	}
+	say("exynos_iris: fp: 1: CMU_PERIC0 USI00 PCLK %#x, IPCLK %#x, GATE_CLK %#x, divider %#x, Q-channel %#x; gpp0 CON %#x "
+	    "DAT %#x PUD %#x\n", found[0], found[1], found[2], rd(cmu, 0x1804), rd(cmu, 0x3020), rd(gpio, GPP0),
+	    rd(gpio, GPP0 + 4), rd(gpio, GPP0 + 8));
+	for (uint32_t i = 0; i < NFPGATES; i++) {
+		if ((found[i] & GATE_MANUAL) && !(found[i] & GATE_ON) && !(found[i] & GATE_AUTO)) {
+			wr(cmu, fp_gates[i].off, found[i] | GATE_ON);
+			opened[i] = true;
+			say("exynos_iris: fp: 1: USI00's %s was off: opened for the reads (%#x)\n", fp_gates[i].name,
+			    rd(cmu, fp_gates[i].off));
+		}
+	}
+	/* SYSREG_PERIC0's 0x10411004 (USI00's mode word) aborts a read (an external abort, 3 November): it is the last
+	 * thing read, after its own line, so that the log says what the SPI's registers did first */
+	say("exynos_iris: fp: 1: reading SPI1's CH_CFG, MODE_CFG, STATUS (a panic right after this line: SPI1 is not the "
+	    "normal world's)\n");
+	ch = rd(spi, SPI_CH_CFG);
+	mode = rd(spi, SPI_MODE_CFG);
+	status = rd(spi, SPI_STATUS);
+	say("exynos_iris: fp: 1: SPI1 CH_CFG %#x (TX %s, RX %s), MODE_CFG %#x, STATUS %#x\n", ch, (ch & 1) ? "on" : "off",
+	    (ch & 2) ? "on" : "off", mode, status);
+	if (fp_level >= 2) {
+		if ((ch & 3) == 0) {
+			mode_ok = pin_try(spi, SPI_MODE_CFG, 5, 1, "fp: SPI1 MODE_CFG TX_RDY_LVL");
+		} else {
+			say("exynos_iris: fp: 2: a channel is on: MODE_CFG not tried\n");
+		}
+		pud_ok = pin_try(gpio, GPP0 + 8, 4 * 3, 1, "fp: gpp0-3 PUD (the CS's pull)");
+		say("exynos_iris: fp: 2: SPI1's MODE_CFG %s, gpp0-3's pull %s: the bus is %s\n",
+		    (ch & 3) ? "not tried" : (mode_ok ? "takes writes" : "IGNORES writes"),
+		    pud_ok ? "takes writes" : "IGNORES writes",
+		    (mode_ok && pud_ok) ? "the normal world's (writes stick)" :
+		    ((mode_ok || pud_ok) ? "partly held" : "HELD (the secure world's, most likely)"));
+	}
+	for (uint32_t i = 0; i < NFPGATES; i++) {
+		if (opened[i]) {
+			wr(cmu, fp_gates[i].off, found[i]);
+		}
+	}
+	say("exynos_iris: fp: 3: reading USI00's mode word, SYSREG_PERIC0 0x10411004 (it aborted on 3 November: a panic "
+	    "after this line is that again)\n");
+	say("exynos_iris: fp: 3: USI00's mode word %#x (2: SPI)\n", rd(sysreg, USI00_SW_CONF));
+	say("exynos_iris: fp: done\n");
+}
+
+static void
+fp_thread(__unused void *arg, __unused wait_result_t result)
+{
+	while (!__atomic_load_n(&iris_settled, __ATOMIC_ACQUIRE) && !leaving) {
+		delay_for_interval(100, NSEC_PER_MSEC);
+	}
+	if (!leaving) {
+		fp_probe();
+	}
+	thread_terminate(current_thread());
+}
+
 static uint32_t shots_taken;
 static uint64_t shot_last;
 static volatile uint32_t shot_ready, shot_asked, shot_n;
@@ -1353,6 +1607,9 @@ iris_thread(void *arg, __unused wait_result_t result)
 	hakios_hsi2c_reset(&pb02_bus);
 	pb02_ready = true;
 	led_look("1");
+	if (iris_smc != 0) {
+		smc_begin();
+	}
 	if (steps < 2) {
 		goto out;
 	}
@@ -1373,6 +1630,7 @@ iris_thread(void *arg, __unused wait_result_t result)
 		goto out;
 	}
 	shots_enabled = true;
+	__atomic_store_n(&iris_settled, 1, __ATOMIC_RELEASE);
 	__atomic_store_n(&shot_ready, 1, __ATOMIC_RELEASE);
 	say("exynos_iris: 5: ready for the USB console's irshot [N]\n");
 	while (!leaving) {
@@ -1396,7 +1654,9 @@ iris_thread(void *arg, __unused wait_result_t result)
 out:
 	isp_down();
 	power_down();
+	smc_end();
 	say("exynos_iris: the run's steps are done\n");
+	__atomic_store_n(&iris_settled, 1, __ATOMIC_RELEASE);
 	thread_terminate(current_thread());
 }
 
@@ -1405,13 +1665,14 @@ void
 hakios_exynos_iris_quiesce(void)
 {
 	shots_closed = true;
-	if (!powered && !domain_mine && !phy_mine && !link_on && !dma_on) {
+	if (!powered && !domain_mine && !phy_mine && !link_on && !dma_on && !prepared && !sysreg_protected && !isp_held) {
 		return;
 	}
 	leaving = true;
 	stream_stop();
 	isp_down();
 	power_down();
+	smc_end();
 	say("exynos_iris: quiesced\n");
 }
 
@@ -1421,23 +1682,42 @@ hakios_exynos_iris_init(void)
 	uint32_t steps = 0, other = 0;
 	thread_t thread;
 
-	if (!PE_parse_boot_argn("iris_s9", &steps, sizeof(steps)) || steps == 0) {
+	(void)PE_parse_boot_argn("iris_s9", &steps, sizeof(steps));
+	(void)PE_parse_boot_argn("fp_s9", &fp_level, sizeof(fp_level));
+	fp_level = fp_level > 2 ? 2 : fp_level;
+	if (steps == 0 && fp_level == 0) {
 		return;
 	}
 	if (pe_arm_get_soc_base_phys() != 0x10000000) {
 		say("exynos_iris: not an Exynos 9810 (the SoC's registers are not at 0x10000000): nothing done\n");
 		return;
 	}
+	if (fp_level != 0) {
+		if (steps == 0) {
+			iris_settled = 1;
+		}
+		if (kernel_thread_start(fp_thread, NULL, &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+		} else {
+			say("exynos_iris: fp: the thread could not be started\n");
+		}
+		if (steps == 0) {
+			return;
+		}
+	}
 	if ((PE_parse_boot_argn("cam_s9", &other, sizeof(other)) && other != 0) ||
 	    (PE_parse_boot_argn("torch", &other, sizeof(other)) && other != 0)) {
 		say("exynos_iris: iris_s9=%u is not run with cam_s9= or torch= (they own the S2MPB02's bus and the ISPPRE "
 		    "domain): take them out (cam_s9=)\n", steps);
+		__atomic_store_n(&iris_settled, 1, __ATOMIC_RELEASE);
 		return;
 	}
 	PE_parse_boot_argn("iris_s9_exp", &iris_exp, sizeof(iris_exp));
 	PE_parse_boot_argn("iris_s9_gain", &iris_gain, sizeof(iris_gain));
 	PE_parse_boot_argn("iris_s9_ms", &iris_ms, sizeof(iris_ms));
 	PE_parse_boot_argn("iris_s9_ispdiv", &iris_ispdiv, sizeof(iris_ispdiv));
+	PE_parse_boot_argn("iris_s9_smc", &iris_smc, sizeof(iris_smc));
+	iris_smc = iris_smc > 3 ? 3 : iris_smc;
 	iris_gain = iris_gain < 0x20 ? 0x20 : (iris_gain > 0x200 ? 0x200 : iris_gain);
 	iris_ms = iris_ms < 100 ? 100 : (iris_ms > 2000 ? 2000 : iris_ms);
 	iris_ispdiv = iris_ispdiv > 3 ? 3 : iris_ispdiv;
@@ -1445,5 +1725,6 @@ hakios_exynos_iris_init(void)
 		thread_deallocate(thread);
 	} else {
 		say("exynos_iris: the thread could not be started\n");
+		__atomic_store_n(&iris_settled, 1, __ATOMIC_RELEASE);
 	}
 }
