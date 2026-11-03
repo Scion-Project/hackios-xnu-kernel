@@ -158,6 +158,7 @@ display_probe	k
 early_log	k
 epoch	k
 esslog	k
+extra_ram	kl
 exynos_keys	k
 fb_beat	k
 fb_ca_hz	k
