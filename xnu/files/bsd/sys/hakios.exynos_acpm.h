@@ -11,6 +11,7 @@
 
 #define HAKIOS_ACPM_CH_DVFS     0       /* set and get a domain's rate (where Samsung's kernel sends them; see the .c) */
 #define HAKIOS_ACPM_CH_PMIC     2       /* the S2MPS18's registers, over SPEEDY */
+#define HAKIOS_ACPM_CH_ACPM     4       /* the firmware itself (the S9's acpm node's acpm-ipc-channel): its STOP */
 
 #define HAKIOS_ACPM_PMIC_TOP    0       /* the S2MPS18's blocks ("type") */
 #define HAKIOS_ACPM_PMIC_PMIC   1
@@ -47,5 +48,10 @@ bool hakios_exynos_cpufreq_gov_start(void);
  */
 void hakios_exynos_cpufreq_touch(void);
 void hakios_exynos_cpufreq_frame(void);
+/*
+ * Ask the APM to stop before the phone is powered off (Samsung's acpm_enter_wfi(), from exynos_acpm_reboot()): the firmware
+ * goes to WFI and no longer answers. Only on the way to PS_HOLD (drivers/power/hakios.exynos_poweroff.c). 0, or an errno.
+ */
+int hakios_acpm_stop(void);
 
 #endif /* _SYS_HAKIOS_EXYNOS_ACPM_H_ */

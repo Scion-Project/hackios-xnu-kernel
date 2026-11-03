@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 542 symbols in 19 groups; 51 are set, 42 of them drivers built in.
+# 544 symbols in 19 groups; 52 are set, 43 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (48)
+# Drivers built in (49)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -145,8 +145,11 @@ CONFIG_HAKIOS_BATTGUARD=y
 # the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's HSI2C and ... [hakios.max77705.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C, CONFIG_HAKIOS_BATTERY]
 CONFIG_HAKIOS_MAX77705=y
 
-# the Galaxy S9's temperatures: the Exynos 9810's TMU (BIG, LITTLE, G3D, ISP), read with each sensor's fuses (tmu=1), ... [hakios.exynos_tmu.c]
+# the Galaxy S9's temperatures: the Exynos 9810's TMU (BIG, LITTLE, G3D, ISP), read with each sensor's fuses (tmu=1), ... [hakios.exynos_tmu.c; requires CONFIG_HAKIOS_EXYNOS_POWEROFF]
 CONFIG_HAKIOS_EXYNOS_TMU=y
+
+# the Galaxy S9 powered off: PS_HOLD let go in the Exynos 9810's PMU, for the TMU's tmu_off=1 and for a halt ... [hakios.exynos_poweroff.c]
+CONFIG_HAKIOS_EXYNOS_POWEROFF=y
 
 # the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from ... [hakios.ufs.c, hakios.ufshc.c, hakios.ufshc_mem.cpp, hakios.ext4.c]
 CONFIG_HAKIOS_UFS=y
@@ -1304,7 +1307,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_TORCH_SECS is not set
 
 #
-# Chip, thermal and PMIC (18)
+# Chip, thermal and PMIC (19)
 #
 
 # read the chip's identity from the firmware's shared memory: kern.hakios.soc_* (SoC number, revision, board)
@@ -1321,6 +1324,9 @@ CONFIG_MODEM_AGAIN=y
 
 # list every block of the power-management chips the SPMI arbiter shows, and read the PMIC's clock; read only
 # CONFIG_PMIC is not set
+
+# what a halt does: 0 the loader's way (the default), 1 panel off and PS_HOLD, 2 also the APM stopped first
+# CONFIG_HALT_OFF is not set
 
 # only the clock, not the inventory of every block
 # CONFIG_PMIC_LIST is not set

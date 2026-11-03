@@ -60,6 +60,7 @@ power    bsd/dev/hakios.max77705.c
 power    bsd/dev/hakios.exynos_cpufreq.c
 power    bsd/dev/hakios.exynos_tmu.c
 power    bsd/dev/hakios.exynos_tmu.h
+power    bsd/dev/hakios.exynos_poweroff.c
 power    bsd/dev/hakios.cpufreq.c
 
 wifi     bsd/dev/hakios.wifi.c

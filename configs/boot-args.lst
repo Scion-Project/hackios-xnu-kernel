@@ -213,6 +213,7 @@ gpu_log	k
 gpu_recover	k
 gpu_va	k
 hakios_kver	k
+halt_off	k
 haptic	k
 haptic_effect	k
 hv_wdt_pet	k

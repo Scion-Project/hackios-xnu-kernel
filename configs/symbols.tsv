@@ -202,6 +202,7 @@ GPU_KEEP	arg	gpu_keep	GPU and display	k	hakios.gpu.cpp
 GPU_LOG	arg	gpu_log	GPU and display	k	hakios.adreno.c	
 GPU_RECOVER	arg	gpu_recover	GPU and display	k	hakios.adreno.c	a submission the core never finishes does not cost the rest of the run
 GPU_VA	arg	gpu_va	GPU and display	k	hakios.adreno.c	
+HALT_OFF	arg	halt_off	Chip, thermal and PMIC	k	hakios.exynos_poweroff.c	what a halt does: 0 the loader's way (the default), 1 panel off and PS_HOLD, 2 also the APM stopped first
 HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c	
 IMMEDIATE_NMI	arg	immediate_NMI	User space	k	1509-m3-diag-and-pan-off.patch	
 IOAES	arg	ioaes	User space	k	MiniIOAESAccelerator.cpp	no IOAESAccelerator at all, as the kernel was before this driver
