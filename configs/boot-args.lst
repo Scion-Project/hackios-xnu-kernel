@@ -3,6 +3,7 @@ abox_bclk_on	k
 abox_burst	k
 abox_dvfs	k
 abox_gain	k
+abox_mic	k
 abox_mmu_off	k
 abox_rdma_ctrl0	k
 abox_rdma_ctrl1	k
@@ -140,6 +141,8 @@ cpumask	l
 cpus	l
 cs47l93	k
 cs47l93_div	k
+cs47l93_hp	k
+cs47l93_hp_vol	k
 cs47l93_mic_vol	k
 cs_relax_platform_task_ports	k
 ddr	k

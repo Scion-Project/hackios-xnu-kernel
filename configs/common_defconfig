@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 566 symbols in 19 groups; 53 are set, 44 of them drivers built in.
+# 569 symbols in 19 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -777,7 +777,7 @@ CONFIG_GPU=y
 # CONFIG_VBLUR is not set
 
 #
-# Audio and battery (57)
+# Audio and battery (60)
 #
 
 # the audio DSP; the battery level in the UI and charging state come through it [needs fw-audio/ from the phone]
@@ -809,6 +809,9 @@ CONFIG_SOUND=4
 
 # eighths of a dB of gain before the speakers' guard, 0 to 96 (0)
 # CONFIG_ABOX_GAIN is not set
+
+# with abox=8: /dev/hakios-mic, the codec's main microphone for iOS, recorded through UAIF0 and WDMA1
+# CONFIG_ABOX_MIC is not set
 
 # refuse a translating SysMMU instead of switching it off (1: CTRL 0, as found needed on the S9)
 # CONFIG_ABOX_MMU_OFF is not set
@@ -878,6 +881,12 @@ CONFIG_SOUND=4
 
 # read by hakios.cs47l93.c (kernel)
 # CONFIG_CS47L93_DIV is not set
+
+# the headphones (THE HEADPHONES below): Cirrus's register patch at power-up, then, once the six
+# CONFIG_CS47L93_HP is not set
+
+# OUT2's digital volume, 0x80 0 dB, 0.5 dB a step, at most 0x80 (0x68: -12 dB); iOS's own volume
+# CONFIG_CS47L93_HP_VOL is not set
 
 # IN3L's digital volume, 0x80 0 dB, 0.5 dB a step, at most 0xBF (0x90, +8 dB)
 # CONFIG_CS47L93_MIC_VOL is not set

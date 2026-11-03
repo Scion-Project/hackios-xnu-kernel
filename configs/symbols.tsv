@@ -3,6 +3,7 @@ ABOX_BCLK_ON	arg	abox_bclk_on	Audio and battery	k	hakios.exynos_abox.c	ABOX neve
 ABOX_BURST	arg	abox_burst	Audio and battery	k	hakios.exynos_abox.c	RDMA0's CTRL0 BURST_LEN [22:19], 1 to 15 (8, set only when it reads 0; given, set anyway; 0: left)
 ABOX_DVFS	arg	abox_dvfs	Audio and battery	k	hakios.exynos_abox.c	ACPM's AUD DVFS domain (index 9) set to this before step 3 (none: left as found, only read)
 ABOX_GAIN	arg	abox_gain	Audio and battery	k	hakios.exynos_abox.c	eighths of a dB of gain before the speakers' guard, 0 to 96 (0)
+ABOX_MIC	arg	abox_mic	Audio and battery	k	hakios.exynos_abox.c	with abox=8: /dev/hakios-mic, the codec's main microphone for iOS, recorded through UAIF0 and WDMA1
 ABOX_MMU_OFF	arg	abox_mmu_off	Audio and battery	k	hakios.exynos_abox.c	refuse a translating SysMMU instead of switching it off (1: CTRL 0, as found needed on the S9)
 ABOX_RDMA_CTRL0	arg	abox_rdma_ctrl0	Audio and battery	k	hakios.exynos_abox.c	bits of RDMA0's CTRL0 besides ENABLE, to try a format there (none: as it reads after reset)
 ABOX_RDMA_CTRL1	arg	abox_rdma_ctrl1	Audio and battery	k	hakios.exynos_abox.c	RDMA0's CTRL1 (none: as it reads after reset)
@@ -132,6 +133,8 @@ CPULOAD	arg	cpuload	CPU, memory and boot	k	hakios.cpufreq.c	every MS millisecond
 CPUMASK	arg	cpumask	Loader	l	loader.c	
 CS47L93	arg	cs47l93	Audio and battery	k	hakios.cs47l93.c	the first N steps (1 looks, 2 powers the codec and reads its ID, 6 makes the microphone ready)
 CS47L93_DIV	arg	cs47l93_div	Audio and battery	k	hakios.cs47l93.c	
+CS47L93_HP	arg	cs47l93_hp	Audio and battery	k	hakios.cs47l93.c	the headphones (THE HEADPHONES below): Cirrus's register patch at power-up, then, once the six
+CS47L93_HP_VOL	arg	cs47l93_hp_vol	Audio and battery	k	hakios.cs47l93.c	OUT2's digital volume, 0x80 0 dB, 0.5 dB a step, at most 0x80 (0x68: -12 dB); iOS's own volume
 CS47L93_MIC_VOL	arg	cs47l93_mic_vol	Audio and battery	k	hakios.cs47l93.c	IN3L's digital volume, 0x80 0 dB, 0.5 dB a step, at most 0xBF (0x90, +8 dB)
 CS_RELAX_PLATFORM_TASK_PORTS	arg	cs_relax_platform_task_ports	User space	k	1002-avf-security-level.patch	
 DDR	arg	ddr	CPU, memory and boot	k	hakios.cpufreq.c	the memory's bus clock managers ("BCM") in the command database the boot loader left, with what is needed to vote for bandwidth on them -- only read

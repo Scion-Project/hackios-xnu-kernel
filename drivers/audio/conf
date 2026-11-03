@@ -49,10 +49,12 @@ driver EXYNOS_ABOX
 	requires GUARD EXYNOS_ACPM
 	help    the Galaxy S9's speaker path through ABOX, Samsung's audio block, with its CPU off (abox=N, the first N of 8 steps:
 	help    power, clocks, pins, UAIF1, the route, RDMA0 with a tone, then /dev/hakios-audio's sink); the MAX98512s through
-	help    their driver's hook (sys/hakios.exynos_abox.h)
+	help    their driver's hook (sys/hakios.exynos_abox.h); with abox_mic=1 the codec's microphone into /dev/hakios-mic
+	help    through UAIF0 and WDMA1 while iOS listens
 
 driver CS47L93
 	file    bsd/dev/hakios.cs47l93.c
 	requires EXYNOS_SPI EXYNOS_ACPM
 	help    the Galaxy S9's audio codec, a Cirrus CS47L93 on PERIC0's SPI (cs47l93=N of 6 steps: 1 a look, 2 powered and
-	help    its ID read, 3 the jack, 4 its clocks, 5 the main microphone, 6 AIF1 to ABOX's UAIF0, recorded by "abox rec")
+	help    its ID read, 3 the jack, 4 its clocks, 5 the main microphone, 6 AIF1 to ABOX's UAIF0, recorded by "abox rec");
+	help    the headphones (OUT2, the jack watched) only with cs47l93_hp=1
