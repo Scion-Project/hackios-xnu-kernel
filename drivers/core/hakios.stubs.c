@@ -121,6 +121,7 @@ void hakios_exynos_pcie_quiesce(void) {}
 #endif
 #ifndef HAKIOS_BRCMFMAC
 void hakios_brcmfmac_start(void) {}     /* wifi_pcie=6 in a kernel without the S9's radio driver: the link stays as it is */
+const char *hakios_bcm4361_module(void) { return NULL; }       /* nobody reads the module's OTP */
 #endif
 #if !defined(HAKIOS_WIFI) && !defined(HAKIOS_BRCMFMAC)
 extern int vprintf(const char *format, va_list ap) __printflike(1, 0);
@@ -213,6 +214,13 @@ void hakios_ufs_quiesce(void) {}
 void hakios_ufs_summary(const char *when, int how);
 void hakios_ufs_summary(__unused const char *when, __unused int how) {}      /* no flash driver: nothing to say */
 void hakios_var_save_on_return(void) {}         /* no flash, so no data volume to save into it */
+int hakios_partition_file(__unused const char *partition, __unused const char *mount, __unused const char *path,
+    __unused uint64_t max, const uint8_t **data, uint64_t *size)
+{
+	*data = NULL;
+	*size = 0;
+	return ENXIO;                           /* no flash: no partition's file (the drivers say so and go on without) */
+}
 #endif
 
 #ifndef HAKIOS_VIRTIO_BLK
@@ -258,6 +266,8 @@ errno_t hakios_apple80211_ioctl(__unused u_long command, __unused void *data) { 
 void HakiosWLANStart(__unused const char *interface, __unused const uint8_t *address) {}
 void hakios_sta_attach(__unused const struct hakios_sta_ops *ops) {}   /* (hakios.lx.c: a radio's station, nobody to give it to) */
 void hakios_sta_lost(__unused int error) {}
+extern void loader_log_line(const char *line);
+void hakios_sta_console_scan(void) { loader_log_line("usb: wifi scan: this kernel has no station (WIFI_STA)\n"); }
 #endif
 
 #ifndef HAKIOS_ADSP

@@ -128,6 +128,8 @@ extern void hakios_var_save_on_return(void);
 extern void hakios_ufs_summary(const char *when, int how);     /* hakios.ufs.c (or the stub): ufs=3's summary */
 extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
+extern void hakios_wifi_report(bool first);
+extern void hakios_sta_console_scan(void);
 extern void hakios_adsp_stop(void);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern int hakios_panel_brightness(int level);  /* hakios.backlight.cpp (always built): ENODEV with no panel driver */
@@ -282,6 +284,7 @@ static int stage;                       /* how far the bring-up got: 0 none ... 
 static bool started, connected, high_speed;
 static uint32_t busy;                   /* the poll, or the way back to the loader, has the controller */
 static bool want_return;                /* the console asked to end the run */
+static bool wifi_report_said, want_wifi_report;           /* the console is up: the radio's log said again, once (hakios.lx.c) */
 static thread_call_t return_call;       /* ... which end_the_run() does, on a thread of its own */
 static uint64_t return_asked_at;        /* when it was started (mach_absolute_time), 0: not yet */
 #define RETURN_FORCE_SECONDS    15      /* then the poll returns to the loader itself, without the save and the stops */
@@ -539,6 +542,10 @@ apply(const struct usbacm_reply *r)
 			set_state("configured");
 			say("usb: configured (%s speed): /dev/ttyACM* on a Linux host, /dev/cu.usbmodem* on a Mac\n", high_speed ? "high" : "full");
 			hakios_ufs_summary("the USB console is up", 1 | 4);    /* ufs=3 only: what the storage did before the link */
+			if (!wifi_report_said) {
+				wifi_report_said = true;
+				want_wifi_report = true;
+			}
 		} else {
 			set_state("address");
 			say("usb: unconfigured\n");
@@ -1175,7 +1182,9 @@ console(char *line)
 		con("usb: help, stat, uptime, sysctl NAME, sysctl NAME=N, bl (the panel's brightness), bl N (set it, 0-255), "
 		    "log (the kernel's log again from its start), shot [N] (the panel's picture, binary: tools/usb-shot.py), "
 		    "camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
-		    "ufs (the storage's ufs=3 summary), return (end the run)\n");
+		    "ufs (the storage's ufs=3 summary), "
+		    "wifi (the radio's log kept, and its driver's state now), wifi scan (a scan of every channel by the station, and "
+		    "the access points heard), return (end the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
 		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
 		    "%llu shots\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out, ring_dropped,
@@ -1189,6 +1198,10 @@ console(char *line)
 		console_sysctl(arg);
 	} else if (strcmp(line, "bl") == 0) {
 		console_bl(arg);
+	} else if (strcmp(line, "wifi") == 0 && strcmp(arg, "scan") == 0) {
+		hakios_sta_console_scan();
+	} else if (strcmp(line, "wifi") == 0) {
+		hakios_wifi_report(false);
 	} else if (strcmp(line, "log") == 0) {
 		con("usb: the kernel's log from its start:\n");
 		(void)loader_log_tap_set(tap, history);
@@ -1488,6 +1501,10 @@ tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 		}
 	}
 	os_atomic_store(&busy, 0, release);
+	if (want_wifi_report) {
+		want_wifi_report = false;
+		hakios_wifi_report(true);
+	}
 	if (want_return) {
 		return_check();
 	}

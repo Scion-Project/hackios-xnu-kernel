@@ -753,18 +753,23 @@ iounmap(void *address)
  * the radio and says the radio's address of (lx_os_radio_memory()). That piece is not behind
  * the processor's cache: there is nothing to do between our writing and the radio's reading,
  * or the other way round. The first part of it is handed out for good, a stretch at a time
- * (rings); the rest is slots of one size, taken and given back (buffers).
+ * (rings); the rest is slots, taken and given back (buffers): many of 4 KB, and at the end a few
+ * of 16 KB for the buffers that do not fit in those (brcmfmac's control buffers are 8 KB).
  */
 #define POOL_SIZE	(44u << 20)
 #define POOL_RINGS	(12u << 20)		/* (the data path's rings and link descriptors come to about 6 MB) */
 #define POOL_SLOT	4096u
-#define POOL_SLOTS	((POOL_SIZE - POOL_RINGS) / POOL_SLOT)
+#define POOL_BIG	16384u
+#define POOL_BIGS	64u
+#define POOL_BIG_AT	(POOL_SIZE - POOL_BIGS * POOL_BIG)
+#define POOL_SLOTS	((POOL_BIG_AT - POOL_RINGS) / POOL_SLOT)
 
 static struct {
 	uint8_t *memory;
 	unsigned long long address;		/* the radio's, of the first byte */
 	uint32_t rings_used;
 	uint32_t free_slots[POOL_SLOTS], free_count;
+	uint32_t free_bigs[POOL_BIGS], free_big_count;
 } pool;
 
 int
@@ -781,6 +786,10 @@ lx_pool_init(void)
 		pool.free_slots[i] = POOL_SLOTS - 1 - i;
 	}
 	pool.free_count = POOL_SLOTS;
+	for (uint32_t i = 0; i < POOL_BIGS; i++) {
+		pool.free_bigs[i] = POOL_BIGS - 1 - i;
+	}
+	pool.free_big_count = POOL_BIGS;
 	printf("lx: %u MB for the radio to read and write; it knows them from %#llx on\n", POOL_SIZE >> 20, pool.address);
 	return (0);
 }
@@ -860,9 +869,15 @@ lkpi_dma_unmap(struct device *dev, dma_addr_t address, size_t length, enum dma_d
 {
 }
 
+/*
+ * Nothing to clean or invalidate: the pool is uncached, or the radio's reads and writes look in the caches
+ * (hakios_wifi_radio_coherent()). What is left is order: the radio's writes seen before what is read after this, ours
+ * done before it is told.
+ */
 void
 linuxkpi_dma_sync(struct device *dev, dma_addr_t address, size_t length, bus_dmasync_op_t op)
 {
+	__asm__ volatile ("dsb sy" : : : "memory");
 }
 
 /* ---- socket buffers --------------------------------------------------------------------------- */
@@ -873,11 +888,11 @@ linuxkpi_dev_alloc_skb(size_t size, gfp_t gfp)
 {
 	size_t all = roundup2(sizeof(struct sk_buff), 64) + sizeof(struct skb_shared_info) + 64;
 	struct sk_buff *skb;
-	uint8_t *raw;
-	uint32_t slot;
+	uint8_t *raw, *data;
+	bool big = size + NET_SKB_PAD > POOL_SLOT;
 
-	if (size + NET_SKB_PAD > POOL_SLOT) {
-		printf("lx: a buffer of %zu bytes is asked for; the slots are %u\n", size, POOL_SLOT);
+	if (size + NET_SKB_PAD > POOL_BIG) {
+		printf("lx: a buffer of %zu bytes is asked for; the biggest slots are %u\n", size, POOL_BIG);
 		return (NULL);
 	}
 	raw = lkpi_kmalloc(all, gfp);
@@ -885,20 +900,22 @@ linuxkpi_dev_alloc_skb(size_t size, gfp_t gfp)
 		return (NULL);
 	}
 	lx_os_lock();
-	if (pool.free_count == 0) {
+	if ((big ? pool.free_big_count : pool.free_count) == 0) {
 		lx_os_unlock();
 		lkpi_kfree(raw);
-		printf("lx: no buffer left\n");
+		printf("lx: no buffer of %u KB left\n", (big ? POOL_BIG : POOL_SLOT) >> 10);
 		return (NULL);
 	}
-	slot = pool.free_slots[--pool.free_count];
+	data = big ? pool.memory + POOL_BIG_AT + (size_t)pool.free_bigs[--pool.free_big_count] * POOL_BIG :
+	    pool.memory + POOL_RINGS + (size_t)pool.free_slots[--pool.free_count] * POOL_SLOT;
 	lx_os_unlock();
 	skb = (struct sk_buff *)roundup2((uintptr_t)raw, 64);
+	bzero(skb, all - ((uint8_t *)skb - raw));
 	skb->m = raw;				/* (the field FreeBSD keeps for what is behind a buffer) */
-	skb->prev = skb->next = skb;
+	skb->prev = skb->next = NULL;		/* (on no list: brcmu_pkt_buf_free_skb() warns of one that is) */
 	skb->shinfo = (struct skb_shared_info *)((uint8_t *)skb + roundup2(sizeof(struct sk_buff), 64));
 	skb->truesize = size + NET_SKB_PAD;
-	skb->head = skb->data = pool.memory + POOL_RINGS + (size_t)slot * POOL_SLOT;
+	skb->head = skb->data = data;
 	skb_reset_tail_pointer(skb);
 	skb->end = skb->head + size + NET_SKB_PAD;
 	skb_reserve(skb, NET_SKB_PAD);
@@ -911,7 +928,11 @@ linuxkpi_kfree_skb(struct sk_buff *skb)
 	if (skb == NULL) {
 		return;
 	}
-	if (in_pool(skb->head, 1) && skb->head >= pool.memory + POOL_RINGS) {
+	if (in_pool(skb->head, 1) && skb->head >= pool.memory + POOL_BIG_AT) {
+		lx_os_lock();
+		pool.free_bigs[pool.free_big_count++] = (uint32_t)((skb->head - (pool.memory + POOL_BIG_AT)) / POOL_BIG);
+		lx_os_unlock();
+	} else if (in_pool(skb->head, 1) && skb->head >= pool.memory + POOL_RINGS) {
 		lx_os_lock();
 		pool.free_slots[pool.free_count++] = (uint32_t)((skb->head - (pool.memory + POOL_RINGS)) / POOL_SLOT);
 		lx_os_unlock();
@@ -1189,6 +1210,55 @@ explicit_bzero(void *memory, size_t size)
 	bzero(memory, size);
 }
 
+/*
+ * vsnprintf() with Linux's "%pV" (a struct va_format: a format and its arguments, printed in place), which the kernel's
+ * own does not know (it prints the pointer and a V). brcmfmac's errors are "%s: %pV" (__brcmf_err(), the firmware's
+ * console among them); what comes before the %pV may be %s only, which is all that is asked of it.
+ */
+void
+lx_vformat(char *line, size_t size, const char *format, va_list list)
+{
+	const char *pv = format;
+	size_t at = 0;
+
+	while (*pv != 0 && !(pv[0] == '%' && pv[1] == 'p' && pv[2] == 'V')) {
+		pv += pv[0] == '%' && pv[1] == '%' ? 2 : 1;
+	}
+	pv = *pv != 0 ? pv : NULL;
+	if (pv == NULL) {
+		vsnprintf(line, size, format, list);
+		return;
+	}
+	line[0] = 0;
+	for (const char *f = format; f < pv && at + 1 < size; f++) {
+		if (f[0] == '%' && f[1] == 's') {
+			const char *text = va_arg(list, const char *);
+
+			at += strlcpy(line + at, text != NULL ? text : "(null)", size - at);
+			f++;
+		} else if (f[0] == '%' && f[1] == '%') {
+			line[at++] = '%';
+			f++;
+		} else {
+			line[at++] = *f;
+		}
+		at = at < size ? at : size - 1;
+		line[at] = 0;
+	}
+	if (at + 1 < size) {
+		struct va_format *vaf = va_arg(list, struct va_format *);
+		va_list inner;
+
+		va_copy(inner, *vaf->va);
+		vsnprintf(line + at, size - at, vaf->fmt, inner);
+		va_end(inner);
+		at = strlen(line);
+		if (at + 1 < size) {
+			strlcpy(line + at, pv + 3, size - at);	/* (what follows the %pV: no conversions, in brcmfmac) */
+		}
+	}
+}
+
 /* FreeBSD's kernel log, which LinuxKPI's rate-limited messages go to. */
 void
 log(int level, const char *format, ...)
@@ -1197,7 +1267,7 @@ log(int level, const char *format, ...)
 	va_list list;
 
 	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
+	lx_vformat(line, sizeof(line), format, list);
 	va_end(list);
 	lx_os_print(line);
 }
@@ -1218,8 +1288,9 @@ linux_dmi_first_match(const struct dmi_system_id *list)
 void
 lx_memory_say(void)
 {
-	lx_tell("lx: memory: %ld pieces of the kernel's out, %ld KB; of the radio's %u MB: %u KB of rings, %u of %u buffers out\n",
-	    allocations, allocated >> 10, POOL_SIZE >> 20, pool.rings_used >> 10, POOL_SLOTS - pool.free_count, POOL_SLOTS);
+	lx_tell("lx: memory: %ld pieces of the kernel's out, %ld KB; of the radio's %u MB: %u KB of rings, %u of %u buffers out, %u of %u big ones\n",
+	    allocations, allocated >> 10, POOL_SIZE >> 20, pool.rings_used >> 10, POOL_SLOTS - pool.free_count, POOL_SLOTS,
+	    POOL_BIGS - pool.free_big_count, POOL_BIGS);
 }
 
 int

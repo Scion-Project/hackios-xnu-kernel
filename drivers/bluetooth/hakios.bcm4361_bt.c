@@ -81,7 +81,10 @@
  *          read through and checked first (hakios.bcm_hci.h), then sent; HCI_Reset, Read Local Version and Name again:
  *          the LMP subversion and the name now the patch's
  *   bt_keep=1        leave the chip powered at the end (default: BT_EN and BT_WAKE low once the steps are done or one fails)
- *   bt_hcd=<name>    the patch file's name in fw/ (default bcm4361B2.hcd)
+ *   bt_hcd=<name>    the patch file's name in fw/ (default bcm4361B2.hcd); without it, the phone's own from VENDOR
+ *   bt_module=<m>    murata or semco: which patch (bcm4361B2_<m>.hcd; default: the module Wi-Fi read in OTP, else a guess)
+ *   bt_vendor=0      never read the patch from the phone's VENDOR partition (default: read it there with ufs=2)
+ *   bt_vendor_part=<name>  the partition the patch is read from (default VENDOR)
  *   bt_expander_reset=1  at bt=2 and up, take the expander out of reset if it is held there
  *   bt_uart_mhz=<n>  UART_BT's clock in MHz, if bt=1 shows the divider or mux not as Android leaves them (default 200)
  * Each step says what it is about to do before it does it.
@@ -662,10 +665,81 @@ identify(const char *when, struct hci_local_version *v)
 	return true;
 }
 
+/*
+ * The patch from fw/ under its vendor name (devices/starlte/firmware/bt/, DEVICE=starlte), else from the phone's own
+ * VENDOR partition, read at run time (drivers/storage/hakios.ext4.c, with ufs=2), so that
+ * no image carries it: /vendor/firmware/bcm4361B2_<module>.hcd (LineageOS) or /vendor/etc/bluetooth/ (Samsung's Android,
+ * looked in second). Which module the phone has (Murata or SEMCO): bt_module=murata or semco says it; else what Wi-Fi
+ * read from the chip's OTP in this run (hakios_bcm4361_module(), with brcmfmac=2 and up, waited for up to 30 s); else
+ * Murata's is taken first and the log says that it is a guess (the patch's own description, logged below,
+ * names its module: Murata's "Crown 1QW", SEMCO's "Crown E32A"; Wi-Fi's NVRAM is chosen by the same module). For each
+ * module in turn fw/bcm4361B2_<module>.hcd first, then VENDOR's; bt_vendor=0 leaves VENDOR alone. `file` gets the name
+ * used, for the log.
+ */
+static const uint8_t *
+module_patch(char *file, size_t room, uint64_t *size)
+{
+	static const char *const dirs[] = { "/firmware/", "/etc/bluetooth/" };
+	char module[16] = "", partition[24] = "VENDOR", path[96];
+	const char *modules[2] = { "murata", "semco" };
+	const uint8_t *data = NULL;
+	uint32_t enabled = 1;
+	bool guessed;
+
+	PE_parse_boot_argn("bt_vendor", &enabled, sizeof(enabled));
+	PE_parse_boot_arg_str("bt_vendor_part", partition, sizeof(partition));
+	guessed = !PE_parse_boot_arg_str("bt_module", module, sizeof(module)) || module[0] == 0;
+	if (guessed) {
+		uint32_t wifi_steps = 0;
+		const char *read = hakios_bcm4361_module();
+
+		/* Wi-Fi reads the module's ID in the chip's OTP at brcmfmac=2 and up: wait for it, if it is on its way */
+		PE_parse_boot_argn("brcmfmac", &wifi_steps, sizeof(wifi_steps));
+		for (int waited = 0; read == NULL && wifi_steps >= 2 && waited < 30; waited++) {
+			if (waited == 0) {
+				say("bt: 6: waiting up to 30 s for Wi-Fi to read which module the chip is (brcmfmac=%u)\n", wifi_steps);
+			}
+			sleep_ms(1000);
+			read = hakios_bcm4361_module();
+		}
+		if (read != NULL) {
+			strlcpy(module, read, sizeof(module));
+			guessed = false;
+			say("bt: 6: the module is %s's, as Wi-Fi read it from the chip's OTP\n", module);
+		}
+	}
+	if (!guessed) {
+		modules[0] = module;
+		modules[1] = NULL;
+	}
+	for (unsigned m = 0; m < 2 && modules[m] != NULL && data == NULL; m++) {
+		char name[48];
+
+		snprintf(name, sizeof(name), "bcm4361B2_%s.hcd", modules[m]);
+		if ((data = hakios_image_file("fw", name, size, NULL)) != NULL) {
+			snprintf(file, room, "fw/%s", name);
+			say("bt: 6: the patch is fw/%s of the small image%s\n", name, guessed ? ": A GUESS of the module (bt_module="
+			    "murata or semco says which)" : "");
+			break;
+		}
+		for (unsigned d = 0; d < sizeof(dirs) / sizeof(dirs[0]) && data == NULL && enabled != 0; d++) {
+			snprintf(path, sizeof(path), "%sbcm4361B2_%s.hcd", dirs[d], modules[m]);
+			if (hakios_partition_file(partition, "/vendor", path, 1u << 20, &data, size) != 0) {
+				data = NULL;
+			} else {
+				snprintf(file, room, "%s:%s", partition, path);
+				say("bt: 6: the patch is the phone's %s%s\n", path, guessed ? ": A GUESS of the module (bt_module=murata "
+				    "or semco says which)" : "");
+			}
+		}
+	}
+	return data;
+}
+
 static bool
 patch(void)
 {
-	char file[64] = "bcm4361B2.hcd";
+	char file[128] = "bcm4361B2.hcd";
 	const uint8_t *data = NULL;
 	uint64_t size = 0;
 	struct bcm_hcd_info info;
@@ -681,18 +755,26 @@ patch(void)
 			sleep_ms(500);
 		}
 	}
+	if (data != NULL) {
+		char shown[sizeof(file)];
+
+		snprintf(shown, sizeof(shown), "fw/%s", file);
+		strlcpy(file, shown, sizeof(file));
+	} else {
+		data = module_patch(file, sizeof(file), &size);
+	}
 	if (data == NULL) {
-		say("bt: 6: no fw/%s in the small image: put the phone's /vendor/firmware/bcm4361B2_<module>.hcd into fw-bt/ "
-		    "as %s (devices/starlte/BLUETOOTH.md) and rebuild the image\n", file, file);
+		say("bt: 6: no patch: neither fw/%s of the small image nor the phone's VENDOR (/firmware/bcm4361B2_<module>.hcd, "
+		    "with ufs=2; devices/starlte/BLUETOOTH.md)\n", file);
 		return false;
 	}
 	r = bcm_hcd_check(data, (size_t)size, &info);
 	if (r != BCM_HCD_OK) {
-		say("bt: 6: fw/%s (%llu bytes) is not a patch to send: %s (after %u records)\n", file, size, bcm_hcd_error(r),
+		say("bt: 6: %s (%llu bytes) is not a patch to send: %s (after %u records)\n", file, size, bcm_hcd_error(r),
 		    info.records);
 		return false;
 	}
-	say("bt: 6: fw/%s: %llu bytes, %u records: %u Write_RAM (%u bytes), %u other, Launch_RAM at %08x; \"%s\"\n", file,
+	say("bt: 6: %s: %llu bytes, %u records: %u Write_RAM (%u bytes), %u other, Launch_RAM at %08x; \"%s\"\n", file,
 	    size, info.records, info.writes, info.write_bytes, info.others, info.launch_address,
 	    info.name[0] ? info.name : "(no description)");
 	say("bt: 6: Download Minidriver (fc2e), then %u ms\n", MINIDRV_MS);

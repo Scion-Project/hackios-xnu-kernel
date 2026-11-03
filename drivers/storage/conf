@@ -15,6 +15,7 @@ driver UFS
 	file    bsd/dev/hakios.ufs.c
 	file    bsd/dev/hakios.ufshc.c
 	file    iokit/Kernel/hakios.ufshc_mem.cpp iokitcpp
+	file    bsd/dev/hakios.ext4.c
 	help    the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller
 	help    driven from the kernel (ufs_native=): beside UEFI's (1, the POCO), or its own for the run (4; QEMU's -device
 	help    ufs, the S9's with ufs_native_soc=exynos9810 as UEFI left it, never reset, untried), in steps (ufs_native_step=1
@@ -23,7 +24,9 @@ driver UFS
 	help    see tools/provenance.allow. ufs=3 (the S9; off by default, untried): the loader serves as with ufs=2, and the
 	help    kernel's own driver takes the controller after a self-test against the loader's reads (LBA 0, the GPTs, three
 	help    blocks of every partition), falling back to ufs=2 on any difference; every write fenced in the whitelist itself
-	help    (USERDATA only, with ufs_write=1; never EFS, RADIO, BOOT, the GPTs, LBA 0-5, a boot unit); ufs_native_ro=1 all read only
+	help    (USERDATA only, with ufs_write=1; never EFS, RADIO, BOOT, the GPTs, LBA 0-5, a boot unit); ufs_native_ro=1 all read only.
+	help    And a file of one of its ext4 partitions, read only (hakios.ext4.c: the S9's
+	help    VENDOR, where its Wi-Fi and Bluetooth firmware is, read at run time; tools/ext4-test.py)
 
 driver VIRTIO_BLK
 	file    bsd/dev/hakios.virtio_blk.c

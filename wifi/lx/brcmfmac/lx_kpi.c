@@ -217,10 +217,11 @@ device_printf(device_t dev, const char *format, ...)
 	char line[400];
 	va_list list;
 
+	strlcpy(line, "brcmfmac: ", sizeof(line));
 	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
+	lx_vformat(line + 10, sizeof(line) - 10, format, list);
 	va_end(list);
-	printf("brcmfmac: %s", line);
+	lx_os_print(line);		/* (said, and kept for the console's "wifi": hakios.lx.c) */
 	return (0);
 }
 

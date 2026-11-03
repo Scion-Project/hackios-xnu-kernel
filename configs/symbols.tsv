@@ -66,17 +66,21 @@ AVF_EXIT	arg	avf_exit	User space	k	1001-avf-psci-system-off.patch
 BACKLIGHT	arg	backlight	GPU and display	k	hakios.backlight.cpp	
 BATTERY	arg	battery	Audio and battery	kl	hakios.adsp.c,hakios.battery.c,hakios.scfb_battery.c,loader.c	
 BATTMGR	arg	battmgr	Audio and battery	k	hakios.adsp.c	every property once, for the log (which number is which on this phone's firmware)
-BRCMFMAC	arg	brcmfmac	Wi-Fi	k	hakios.brcmfmac.c,lx_brcmf.c	brcmfmac's probe: its PCI device table, BAR0 and BAR1 mapped, bus mastering on, the chip's ID
+BRCMFMAC	arg	brcmfmac	Wi-Fi	k	hakios.bcm4361_bt.c,hakios.brcmfmac.c,lx_brcmf.c	brcmfmac's probe: its PCI device table, BAR0 and BAR1 mapped, bus mastering on, the chip's ID
 BRCMFMAC_DEBUG	arg	brcmfmac_debug	Wi-Fi	k	lx_brcmf.c	
 BRCMFMAC_POLL	arg	brcmfmac_poll	Wi-Fi	k	lx_pci.c	
 BRCMFMAC_POLL_MS	arg	brcmfmac_poll_ms	Wi-Fi	k	lx_pci.c	
+BRCMFMAC_TCM_IDX	arg	brcmfmac_tcm_idx	Wi-Fi	k	lx_brcmf.c	the rings' indices stay in the chip's RAM, not written into ours by its DMA (lx-state.patch)
 BRIGHTNESS_BRIDGE	arg	brightness_bridge	User space	u	inject_sb.c	the brightness the user sets (Control Center's slider, Settings) is taken to the panel
 BT	arg	bt	User space	k	hakios.bcm4361_bt.c,hakios.bt.c	
 BT_AGAIN	arg	bt_again	User space	k	hakios.bt.c	the second look this many seconds later (0: no second look; 30)
 BT_EXPANDER_RESET	arg	bt_expander_reset	User space	k	hakios.bcm4361_bt.c	at bt=2 and up, take the expander out of reset if it is held there
-BT_HCD	arg	bt_hcd	User space	k	hakios.bcm4361_bt.c	the patch file's name in fw/ (default bcm4361B2.hcd)
+BT_HCD	arg	bt_hcd	User space	k	hakios.bcm4361_bt.c	the patch file's name in fw/ (default bcm4361B2.hcd); without it, the phone's own from VENDOR
 BT_KEEP	arg	bt_keep	User space	k	hakios.bcm4361_bt.c	leave the chip powered at the end (default: BT_EN and BT_WAKE low once the steps are done or one fails)
+BT_MODULE	arg	bt_module	User space	k	hakios.bcm4361_bt.c	murata or semco: which patch (bcm4361B2_<m>.hcd; default: the module Wi-Fi read in OTP, else a guess)
 BT_UART_MHZ	arg	bt_uart_mhz	User space	k	hakios.bcm4361_bt.c	UART_BT's clock in MHz, if bt=1 shows the divider or mux not as Android leaves them (default 200)
+BT_VENDOR	arg	bt_vendor	User space	k	hakios.bcm4361_bt.c	never read the patch from the phone's VENDOR partition (default: read it there with ufs=2)
+BT_VENDOR_PART	arg	bt_vendor_part	User space	k	hakios.bcm4361_bt.c	the partition the patch is read from (default VENDOR)
 BUTTONS	arg	buttons	Touch and buttons	k	hakios.buttons.c	
 BUTTONS_STEPS	arg	buttons_steps	Touch and buttons	k	hakios.buttons.c	
 CA_VBL	arg	ca_vbl	User space	u	inject.c	CoreAnimation's frame clock from the display driver's refresh notifications
@@ -414,8 +418,10 @@ WIFI_ASK	arg	wifi_ask	Wi-Fi	k	hakios.wifi.c	step 14 also asks that service a que
 WIFI_BA	arg	wifi_ba	Wi-Fi	k	lx_80211.c	
 WIFI_CAL	arg	wifi_cal	Wi-Fi	k	hakios.wlfw.c	
 WIFI_DIRTY	arg	wifi_dirty	Wi-Fi	k	hakios.wifi.c	
+WIFI_DMA_AT	arg	wifi_dma_at	Wi-Fi	k	hakios.lx.c	
 WIFI_FILE	arg	wifi_file	Wi-Fi	k	hakios.wifi.c	with wifi=1: the network of fw/network is not joined at the start
 WIFI_FINE	arg	wifi_fine	Wi-Fi	k	hakios.wifi.c	such a step waits like that before every single write and call
+WIFI_FW	arg	wifi_fw	Wi-Fi	k	hakios.brcmfmac.c	the station firmware's bcmdhd name, in fw/ or VENDOR (default bcmdhd_sta.bin_b2 for B2)
 WIFI_HOLD	arg	wifi_hold	Wi-Fi	k	lx_bus.c	
 WIFI_IRQ	arg	wifi_irq	Wi-Fi	k	lx_bus.c	
 WIFI_JOIN	arg	wifi_join	Wi-Fi	k	lx_bus.c	
@@ -427,18 +433,26 @@ WIFI_LX_STEP	arg	wifi_lx_step	Wi-Fi	k	lx_base.c
 WIFI_MAC	arg	wifi_mac	Wi-Fi	k	hakios.brcmfmac.c,hakios.wifi.c	the radio's own address for the driver (hakios_wifi_radio_address() below; xl takes it from a file that is not in the repository)
 WIFI_MISSION	arg	wifi_mission	Wi-Fi	k	hakios.wlfw.c	
 WIFI_NEW	arg	wifi_new	Wi-Fi	k	hakios.wifi.c	steps K and later have not been seen to work (default: the last one)
+WIFI_NVRAM	arg	wifi_nvram	Wi-Fi	k	hakios.brcmfmac.c	the NVRAM's name there (default: the module's, from the chip's OTP; else a guess, logged)
 WIFI_PAUSE	arg	wifi_pause	Wi-Fi	k	hakios.wifi.c	
 WIFI_PCIE	arg	wifi_pcie	Wi-Fi	k	hakios.exynos_pcie.c	a look, reading only: the PMU's isolation, CMU_FSYS1's gates and Q-channels, the five pins
+WIFI_PCIE_COHERENT	arg	wifi_pcie_coherent	Wi-Fi	k	hakios.exynos_pcie.c	
+WIFI_PCIE_MMU_BYPASS	arg	wifi_pcie_mmu_bypass	Wi-Fi	k	hakios.exynos_pcie.c	
+WIFI_PCIE_MMU_PROBE	arg	wifi_pcie_mmu_probe	Wi-Fi	k	hakios.exynos_pcie.c	
 WIFI_PCIE_TRIES	arg	wifi_pcie_tries	Wi-Fi	k	hakios.exynos_pcie.c	
 WIFI_PCIE_UNGATE	arg	wifi_pcie_ungate	Wi-Fi	k	hakios.exynos_pcie.c	
+WIFI_PSK	arg	wifi_psk	Wi-Fi	k	hakios.brcmfmac.c	its passphrase, the same way (8 to 63 bytes); never logged, but the command line is the image's
 WIFI_QUIET	arg	wifi_quiet	Wi-Fi	k	lx_bus.c	
 WIFI_RADIO_READ	arg	wifi_radio_read	Wi-Fi	k	hakios.wifi.c	step 16 does read (2: whatever mode the firmware is in)
 WIFI_READY	arg	wifi_ready	Wi-Fi	k	hakios.wlfw.c	
 WIFI_RETURN	arg	wifi_return	Wi-Fi	k	hakios.wifi.c	when all is over, go back to the loader instead of starting the system
 WIFI_SCAN	arg	wifi_scan	Wi-Fi	k	lx_bus.c	
 WIFI_SMMU	arg	wifi_smmu	Wi-Fi	k	hakios.wifi.c	before any step: read what the boot chain has set up in the SMMU for the radio's stream (smmu_look() below; nothing is written)
+WIFI_SSID	arg	wifi_ssid	Wi-Fi	k	hakios.brcmfmac.c	brcmfmac=8 without fw/network: the network's name, a byte as %XX (a space is %20)
 WIFI_STATION	arg	wifi_station	Wi-Fi	k	lx_bus.c	
 WIFI_STEP	arg	wifi_step	Wi-Fi	k	hakios.wifi.c	
+WIFI_VENDOR	arg	wifi_vendor	Wi-Fi	k	hakios.brcmfmac.c	never read the radio's files from the phone's VENDOR partition (default: read them there, ufs=2)
+WIFI_VENDOR_PART	arg	wifi_vendor_part	Wi-Fi	k	hakios.brcmfmac.c	the partition the radio's files are read from (default VENDOR)
 WIFI_WAIT	arg	wifi_wait	Wi-Fi	k	hakios.wifi.c	how long step 11 watches for the DSP to say that it is up (default 10)
 WIFI_WATCH	arg	wifi_watch	Wi-Fi	k	hakios.wifi.c	
 WIFI_WIDE	arg	wifi_wide	Wi-Fi	k	lx_80211.c	

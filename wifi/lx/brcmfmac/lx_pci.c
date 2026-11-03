@@ -272,6 +272,7 @@ lkpi_request_irq(struct device *dev, unsigned int irq, irq_handler_t handler, ir
 	lp.argument = arg;
 	if (lx_os_option("brcmfmac_poll") != 0) {
 		lx_tell("lx: pci: brcmfmac_poll=1: the interrupt is looked at by a thread, not taken by INTx\n");
+		lx_os_pci_say_dma("the interrupt looked at");
 	} else if (lx_brcmf_reached(5) && lx_brcmf_may(5, "the chip's interrupt by INTx: SPI 253 through the root complex's latch")) {
 		lp.line = true;
 		if ((error = lx_os_irq_line_attach(line_fired, NULL)) != 0) {
