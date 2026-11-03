@@ -177,6 +177,7 @@ bool ufshc_available(void);
 void ufshc_set_luns(uint32_t mask);
 int ufshc_read(uint8_t lun, uint64_t offset, uint8_t *dst, uint64_t len);
 void ufshc_report(const char *when);
+bool ufshc_speed(char *buf, size_t size);    /* own mode: MB/s over the last 30 s and the requests' latency, one line */
 void hakios_ufs_quiesce(void);
 
 /* ufs=3's summary (hakios.ufs.c): how it is said */

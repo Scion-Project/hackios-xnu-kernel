@@ -2553,6 +2553,13 @@ hakios_ufs_summary(const char *when, int how)
 	for (uint32_t i = 0; i < 3 && i < nufs_sum.refused; i++) {
 		nufs_summary_line(how, "ufs: nufs: summary: refused #%u: %s\n", i + 1, nufs_sum.refusal[i]);
 	}
+	if (ufs_nufs_on) {
+		char speed[320];
+
+		if (ufshc_speed(speed, sizeof(speed))) {
+			nufs_summary_line(how, "%s", speed);
+		}
+	}
 }
 
 /* fps_log=1 or ufs_native_log=1: the summary every 30 s for the run */
