@@ -246,6 +246,11 @@ haptic_effect	k
 hv_wdt_pet	k
 immediate_NMI	k
 ioaes	k
+iris_s9	k
+iris_s9_exp	k
+iris_s9_gain	k
+iris_s9_ispdiv	k
+iris_s9_ms	k
 isa_floor	k
 ksample	k
 ksample_us	k

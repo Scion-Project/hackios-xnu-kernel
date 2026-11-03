@@ -104,7 +104,7 @@ CAM_GAIN	arg	cam_gain	Cameras	k	hakios.camera.c
 CAM_KEEP_MB	arg	cam_keep_mb	Cameras	k	hakios.camera.c	
 CAM_MODE	arg	cam_mode	Cameras	k	hakios.camera.c	
 CAM_PATTERN	arg	cam_pattern	Cameras	k	hakios.camera.c	
-CAM_S9	arg	cam_s9	Cameras	k	hakios.exynos_camera.c,hakios.s2mpb02_torch.c	the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1
+CAM_S9	arg	cam_s9	Cameras	k	hakios.exynos_camera.c,hakios.exynos_iris.c,hakios.s2mpb02_torch.c	the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1
 CAM_S9_ADDR	hex	cam_s9_addr	Cameras	k	hakios.exynos_camera.c	the sensor's 7-bit I2C address, if not 0x35 (the device tree's) and not found by the scan
 CAM_S9_AE	arg	cam_s9_ae	Cameras	k	hakios.exynos_camera.c	no auto-exposure: the frames as cam_s9_exp and cam_s9_gain have them (default 1: on)
 CAM_S9_AE_FRAMES	arg	cam_s9_ae_frames	Cameras	k	hakios.exynos_camera.c	
@@ -233,6 +233,11 @@ HALT_OFF	arg	halt_off	Chip, thermal and PMIC	k	hakios.exynos_poweroff.c	what a h
 HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c	
 IMMEDIATE_NMI	arg	immediate_NMI	User space	k	1509-m3-diag-and-pan-off.patch	
 IOAES	arg	ioaes	User space	k	MiniIOAESAccelerator.cpp	no IOAESAccelerator at all, as the kernel was before this driver
+IRIS_S9	arg	iris_s9	User space	k	hakios.exynos_iris.c	
+IRIS_S9_EXP	arg	iris_s9_exp	User space	k	hakios.exynos_iris.c	the exposure in lines of 6.56 us (default the table's 0x0339, 825; at most 5075)
+IRIS_S9_GAIN	arg	iris_s9_gain	User space	k	hakios.exynos_iris.c	the analog gain, 0x20 being 1x (default 0x20, at most 0x200)
+IRIS_S9_ISPDIV	arg	iris_s9_ispdiv	User space	k	hakios.exynos_iris.c	
+IRIS_S9_MS	arg	iris_s9_ms	User space	k	hakios.exynos_iris.c	how long a capture may stream at most (default 600, 100 to 2000)
 ISA_FLOOR	arg	isa_floor	User space	k	1510-isa-floor.patch	
 KSAMPLE	arg	ksample	Debugging	k	user_exception_trace.c	
 KSAMPLE_US	arg	ksample_us	Debugging	k	user_exception_trace.c	
@@ -405,7 +410,7 @@ TMU_OFF	arg	tmu_off	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	step 3 powers t
 TMU_POLL	arg	tmu_poll	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	how often to read (200 to 60000; 1000, the BIG zone's polling-delay)
 TMU_STOP	arg	tmu_stop	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	step 3's limit for the SoC's zones (40 to 115; 110)
 TMU_UNGATE	arg	tmu_ungate	Chip, thermal and PMIC	k	hakios.exynos_tmu.c	open the TMU's PCLK gate if the boot left it forced shut
-TORCH	arg	torch	Haptics and torch	kl	hakios.s2mpb02_torch.c,hakios.sccam_torch.c,hakios.torch.c,loader.c	a look, reading only: the bus as found, the chip's ID, the flash block's registers, the two pins
+TORCH	arg	torch	Haptics and torch	kl	hakios.exynos_iris.c,hakios.s2mpb02_torch.c,hakios.sccam_torch.c,hakios.torch.c,loader.c	a look, reading only: the bus as found, the chip's ID, the flash block's registers, the two pins
 TORCH_MAX_S	arg	torch_max_s	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.torch.c	
 TORCH_SECS	arg	torch_secs	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.torch.c	
 TOUCH_FAULT	arg	touch_fault	User space	u	inject.c	the touch screen first made answers no "PrimaryUsagePage" (tests the remake)

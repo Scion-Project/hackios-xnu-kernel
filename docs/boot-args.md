@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **545 arguments**: 478 read by the kernel, 18 by the loader, 62 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **550 arguments**: 483 read by the kernel, 18 by the loader, 62 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -315,7 +315,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_keep_mb` | K | `hakios.camera.c` | `CONFIG_CAM_KEEP_MB` |  |
 | `cam_mode` | K | `hakios.camera.c` | `CONFIG_CAM_MODE` |  |
 | `cam_pattern` | K | `hakios.camera.c` | `CONFIG_CAM_PATTERN` |  |
-| `cam_s9` | K | `hakios.exynos_camera.c`, `hakios.s2mpb02_torch.c` | `CONFIG_CAM_S9` |  |
+| `cam_s9` | K | `hakios.exynos_camera.c`, `hakios.exynos_iris.c`, `hakios.s2mpb02_torch.c` | `CONFIG_CAM_S9` |  |
 | `cam_s9_addr` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_ADDR` |  |
 | `cam_s9_ae` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_AE` |  |
 | `cam_s9_ae_frames` | K | `hakios.exynos_camera.c` | `CONFIG_CAM_S9_AE_FRAMES` |  |
@@ -460,7 +460,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 |---|---|---|---|---|
 | `haptic` | K | `hakios.haptic.c` | `CONFIG_HAPTIC` |  |
 | `haptic_effect` | K | `hakios.haptic.c` | `CONFIG_HAPTIC_EFFECT` |  |
-| `torch` | KL | `hakios.s2mpb02_torch.c`, `hakios.sccam_torch.c`, `hakios.torch.c`, `loader.c` | `CONFIG_TORCH` |  |
+| `torch` | KL | `hakios.exynos_iris.c`, `hakios.s2mpb02_torch.c`, `hakios.sccam_torch.c`, `hakios.torch.c`, `loader.c` | `CONFIG_TORCH` |  |
 | `torch_max_s` | K | `hakios.s2mpb02_torch.c`, `hakios.torch.c` | `CONFIG_TORCH_MAX_S` |  |
 | `torch_secs` | K | `hakios.s2mpb02_torch.c`, `hakios.torch.c` | `CONFIG_TORCH_SECS` |  |
 
@@ -549,7 +549,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (89)
+## User space (94)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -603,6 +603,11 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `gpu3d_size` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_GPU3D_SIZE` |  |
 | `immediate_NMI` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_IMMEDIATE_NMI` |  |
 | `ioaes` | K | `MiniIOAESAccelerator.cpp` | `CONFIG_IOAES` |  |
+| `iris_s9` | K | `hakios.exynos_iris.c` | `CONFIG_IRIS_S9` |  |
+| `iris_s9_exp` | K | `hakios.exynos_iris.c` | `CONFIG_IRIS_S9_EXP` |  |
+| `iris_s9_gain` | K | `hakios.exynos_iris.c` | `CONFIG_IRIS_S9_GAIN` |  |
+| `iris_s9_ispdiv` | K | `hakios.exynos_iris.c` | `CONFIG_IRIS_S9_ISPDIV` |  |
+| `iris_s9_ms` | K | `hakios.exynos_iris.c` | `CONFIG_IRIS_S9_MS` |  |
 | `isa_floor` | K | `1510-isa-floor.patch` | `CONFIG_ISA_FLOOR` |  |
 | `m3_diag` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_DIAG` |  |
 | `m3_flush` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_FLUSH` |  |

@@ -19,7 +19,8 @@
  *   0xDC000000 - 0xDEBFFFFF   Wi-Fi's DMA pool when wifi_dma_at=0xDC000000 is given (hakios.lx.c: 44 MB; off by default)
  *   0xDEC00000 - 0xDFFFFFFF   the display's pool, its third part: one slot (hakios.exynos_dpu.c: four slots in all;
  *                             CoreAnimation keeps two display surfaces)
- *   0xE0000000 - 0xE18FFFFF   free, and NOT for the display: see below
+ *   0xE0000000 - 0xE0FFFFFF   the iris camera's raw frame and picture (hakios.exynos_iris.c; NOT for the display)
+ *   0xE1000000 - 0xE18FFFFF   free, and NOT for the display: see below
  *   0xE1900000 -              secure_camera (the device tree's): the end of the gap
  *   0xF0000000 - 0xFB1FFFFF   the modem's: modem_if, cp_ram_logging (the loader's keep_out)
  *   0xFB200000 - 0xFD9FFFFF   ABOX's abox_rmem; its ring at abox_ring_pa= in it (hakios.exynos_abox.c)
@@ -59,6 +60,8 @@
 #define EXYNOS9810_MEM_DPU_POOL2_PA     0xDEC00000ULL   /* fb_zc's surfaces: one slot */
 #define EXYNOS9810_MEM_DPU_POOL2_END    0xE0000000ULL
 #define EXYNOS9810_MEM_DISPLAY_LIMIT    0xE0000000ULL   /* nothing the display scans out from here up */
+#define EXYNOS9810_MEM_IRIS_PA          0xE0000000ULL   /* the iris camera's frame (the camera's DMA, not the display's) */
+#define EXYNOS9810_MEM_IRIS_END         0xE1000000ULL
 #define EXYNOS9810_MEM_GAP_END          0xE1900000ULL   /* secure_camera */
 #define EXYNOS9810_MEM_MODEM_PA         0xF0000000ULL   /* modem_if, cp_ram_logging: keep out */
 #define EXYNOS9810_MEM_MODEM_END        0xFB200000ULL
@@ -80,11 +83,14 @@ _Static_assert(EXYNOS9810_MEM_BEFORE(WIFI_DMA, DPU_POOL2), "exynos9810 memory: W
 _Static_assert(EXYNOS9810_MEM_DPU_SCAN_END <= EXYNOS9810_MEM_DISPLAY_LIMIT &&
     EXYNOS9810_MEM_DPU_POOL0_END <= EXYNOS9810_MEM_DISPLAY_LIMIT && EXYNOS9810_MEM_DPU_POOL1_END <= EXYNOS9810_MEM_DISPLAY_LIMIT &&
     EXYNOS9810_MEM_DPU_POOL2_END <= EXYNOS9810_MEM_DISPLAY_LIMIT, "exynos9810 memory: the display scans out from 0xE0000000 up");
+_Static_assert(EXYNOS9810_MEM_BEFORE(DPU_POOL2, IRIS), "exynos9810 memory: the display's pool runs into the iris camera's");
+_Static_assert(EXYNOS9810_MEM_IRIS_END <= EXYNOS9810_MEM_GAP_END, "exynos9810 memory: the iris camera's runs into secure_camera");
 _Static_assert(EXYNOS9810_MEM_DISPLAY_LIMIT <= EXYNOS9810_MEM_GAP_END, "exynos9810 memory: the display's limit is past secure_camera");
 _Static_assert(EXYNOS9810_MEM_GAP_END <= EXYNOS9810_MEM_MODEM_PA, "exynos9810 memory: the gap runs into the modem's");
 _Static_assert(EXYNOS9810_MEM_BEFORE(MODEM, ABOX), "exynos9810 memory: the modem's runs into ABOX's");
 _Static_assert(EXYNOS9810_MEM_ABOX_END <= 0x100000000ULL, "exynos9810 memory: above 4 GB");
 _Static_assert(EXYNOS9810_MEM_SIZE(CAMERA) == (32ULL << 20) && EXYNOS9810_MEM_SIZE(UFS) == (4ULL << 20) &&
+    EXYNOS9810_MEM_SIZE(IRIS) == (16ULL << 20) &&
     EXYNOS9810_MEM_SIZE(WIFI_DMA) >= (44ULL << 20), "exynos9810 memory: the sizes are what their drivers lay out");
 
 #endif /* _SYS_HAKIOS_EXYNOS9810_MEM_H_ */

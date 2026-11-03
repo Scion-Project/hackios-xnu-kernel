@@ -62,6 +62,7 @@ extern void hakios_max98512_quiesce(void);
 extern void hakios_exynos_abox_quiesce(void);
 extern void hakios_cs47l93_quiesce(void);
 extern void hakios_exynos_camera_quiesce(void);
+extern void hakios_exynos_iris_quiesce(void);
 extern void hakios_s2mpb02_torch_quiesce(void);
 extern void hakios_exynos_pcie_quiesce(void);
 extern void hakios_ufs_quiesce(void);
@@ -392,6 +393,7 @@ loader_return(void)
 	hakios_cs47l93_quiesce();      /* the S9's audio codec held in reset */
 	hakios_s2mpb02_torch_quiesce(); /* the S9's flashlight off */
 	hakios_exynos_camera_quiesce(); /* the S9's front camera powered down */
+	hakios_exynos_iris_quiesce();   /* the S9's iris camera powered down, its sensor (and so its IR LED) stopped */
 	hakios_exynos_pcie_quiesce();  /* the S9's Wi-Fi chip held in reset, unpowered: no DMA into the loader's memory */
 	/*
 	 * A panic's text is first collected in the panic buffer and only later
