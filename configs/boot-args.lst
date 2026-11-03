@@ -138,6 +138,9 @@ cpufreq_gov_ms	k
 cpuload	k
 cpumask	l
 cpus	l
+cs47l93	k
+cs47l93_div	k
+cs47l93_mic_vol	k
 cs_relax_platform_task_ports	k
 ddr	k
 ddr_rest	k

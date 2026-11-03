@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 555 symbols in 19 groups; 53 are set, 44 of them drivers built in.
+# 558 symbols in 19 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -753,7 +753,7 @@ CONFIG_GPU=y
 # CONFIG_VBLUR is not set
 
 #
-# Audio and battery (54)
+# Audio and battery (57)
 #
 
 # the audio DSP; the battery level in the UI and charging state come through it [needs fw-audio/ from the phone]
@@ -848,6 +848,15 @@ CONFIG_SOUND=4
 
 # every property once, for the log (which number is which on this phone's firmware)
 # CONFIG_BATTMGR is not set
+
+# the first N steps (1 looks, 2 powers the codec and reads its ID, 6 makes the microphone ready)
+# CONFIG_CS47L93 is not set
+
+# read by hakios.cs47l93.c (kernel)
+# CONFIG_CS47L93_DIV is not set
+
+# IN3L's digital volume, 0x80 0 dB, 0.5 dB a step, at most 0xBF (0x90, +8 dB)
+# CONFIG_CS47L93_MIC_VOL is not set
 
 # read by hakios.max77705.c (kernel)
 # CONFIG_MAX77705 is not set
