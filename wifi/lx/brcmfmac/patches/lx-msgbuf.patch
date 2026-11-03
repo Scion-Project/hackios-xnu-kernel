@@ -1,9 +1,9 @@
 What brcmfmac's control messages are, said (HakiOS): the first completions on the control ring as they are, and
 the first ioctls (what was asked, where the response buffer was, how long the response was and its first bytes),
-so a setup that stops at the first ioctl says why.
+so a setup that stops at the first ioctl says why; then a line for each ioctl and each of the firmware's events.
 --- a/brcmfmac/msgbuf.c
 +++ b/brcmfmac/msgbuf.c
-@@ -291,6 +291,30 @@
+@@ -291,6 +291,31 @@
  
  static void brcmf_msgbuf_rxbuf_ioctlresp_post(struct brcmf_msgbuf *msgbuf);
  
@@ -13,7 +13,8 @@ so a setup that stops at the first ioctl says why.
 + * of each, then quiet.
 + */
 +#define LX_MSGBUF_SAY	12
-+static u32 lx_msgbuf_ctl_said, lx_msgbuf_ioctl_said;
++#define LX_MSGBUF_SAY_SHORT	160	/* (then a line each, without the bytes) */
++static u32 lx_msgbuf_ctl_said, lx_msgbuf_ioctl_said, lx_msgbuf_events_said;
 +
 +static void lx_msgbuf_hex(const char *what, const void *data, u32 len)
 +{
@@ -34,7 +35,7 @@ so a setup that stops at the first ioctl says why.
  
  static struct brcmf_msgbuf_pktids *
  brcmf_msgbuf_init_pktids(u32 nr_array_entries,
-@@ -466,6 +490,13 @@
+@@ -466,6 +491,13 @@
  		memcpy(msgbuf->ioctbuf, buf, buf_len);
  	else
  		memset(msgbuf->ioctbuf, 0, buf_len);
@@ -48,7 +49,7 @@ so a setup that stops at the first ioctl says why.
  
  	err = brcmf_commonring_write_complete(commonring);
  	brcmf_commonring_unlock(commonring);
-@@ -507,8 +538,28 @@
+@@ -507,8 +539,40 @@
  	timeout = brcmf_msgbuf_ioctl_resp_wait(msgbuf);
  	if (!timeout) {
  		bphy_err(drvr, "Timeout on response for query command\n");
@@ -57,6 +58,18 @@ so a setup that stops at the first ioctl says why.
 +		       cmd, msgbuf->reqid, msgbuf->ctl_completed, msgbuf->cur_ioctlrespbuf, msgbuf->cur_eventbuf);
  		return -EIO;
  	}
++	if (lx_msgbuf_ioctl_said >= LX_MSGBUF_SAY && lx_msgbuf_ioctl_said < LX_MSGBUF_SAY_SHORT) {	/* (HakiOS) */
++		char name[17];
++		u32 n;
++
++		lx_msgbuf_ioctl_said++;
++		for (n = 0; buf != NULL && (cmd == 262 || cmd == 263) && n < len && n < sizeof(name) - 1 &&
++		     ((char *)buf)[n] >= 0x20 && ((char *)buf)[n] < 0x7f; n++)
++			name[n] = ((char *)buf)[n];
++		name[n] = 0;
++		pr_err("lx: msgbuf: ioctl %u%s%s answered: status %d, %u bytes\n", cmd, n ? " " : "", name,
++		       msgbuf->ioctl_resp_status, msgbuf->ioctl_resp_ret_len);
++	}
 +	if (lx_msgbuf_ioctl_said < LX_MSGBUF_SAY) {	/* (HakiOS) */
 +		struct brcmf_msgbuf_pktids *ids = msgbuf->rx_pktids;
 +		u32 id = msgbuf->ioctl_resp_pktid;
@@ -77,7 +90,22 @@ so a setup that stops at the first ioctl says why.
  
  	skb = brcmf_msgbuf_get_pktid(msgbuf->drvr->bus_if->dev,
  				     msgbuf->rx_pktids,
-@@ -1291,6 +1342,13 @@
+@@ -1135,6 +1199,14 @@
+ 	}
+ 
+ 	skb->protocol = eth_type_trans(skb, ifp->ndev);
++	if (lx_msgbuf_events_said < LX_MSGBUF_SAY_SHORT && skb->len >= 40) {	/* (HakiOS) */
++		const u8 *e = skb->data + 14 + 10;	/* (the Ethernet header, Broadcom's, then the event's) */
++
++		lx_msgbuf_events_said++;
++		pr_err("lx: msgbuf: event %u on interface %u: status %u, reason %u, %u bytes (type %#06x)\n",
++		       get_unaligned_be32(e + 4), event->msg.ifidx, get_unaligned_be32(e + 8), get_unaligned_be32(e + 12),
++		       skb->len, be16_to_cpu(skb->protocol));
++	}
+ 
+ 	brcmf_fweh_process_skb(ifp->drvr, skb, 0, GFP_KERNEL);
+ 
+@@ -1291,6 +1363,13 @@
  	struct msgbuf_common_hdr *msg;
  
  	msg = (struct msgbuf_common_hdr *)buf;
