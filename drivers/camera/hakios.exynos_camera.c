@@ -90,9 +90,10 @@
  *                  DPHY_DCTRL_SDn_06 +0x14B0 [7:0] = the settle, DPHY_DCTRL_SDn_13 +0x14E0 bit 0 = 0 (no skew
  *                  calibration below 1.5 Gb/s) (csi_hw_s_phy_default_value, csi_hw_s_phy_config)
  *   the SysMMU     sysmmu@16310000 ("3AAM, 3AA, PDP": the CSIS nodes' iommus): MMU_CTRL 0x0 (bit 0 on), MMU_CFG 0x4,
- *                  MMU_STATUS 0x8, MMU_VERSION 0x34, read only. Off (its reset state after the domain's power-on), it
- *                  passes the DMA's addresses through: the buffer's physical address is the DMA's. Found on, there
- *                  is no frame: this driver gives it no table
+ *                  MMU_STATUS 0x8, MMU_VERSION 0x34, read only and only with cam_s9_mmu_probe=1. Off (its reset
+ *                  state after the domain's power-on), it passes the DMA's addresses through: the buffer's physical
+ *                  address is the DMA's. Found on, there is no frame: this driver gives it no table. Unprobed (the
+ *                  default), it is taken as off and never touched
  *   the buffer     4 MB below 4 GB (the WDMA's addresses are 32 bits). XNU has no memory there on the S9 (its RAM is
  *                  the bank from 0x880000000: kmem's "below 4 GB" never succeeds), so it is physical memory XNU does
  *                  not manage, in the device tree's gap: 0xD8000000 + 8 MB (the raw frame, then camshot's picture),
@@ -122,7 +123,7 @@
  *   2  writes  the sensor powered up, its model ID, revision, frame count and mode read; powered down again (at 5:
  *              kept up for step 5)
  *   3  writes  the ISPPRE domain on (and its DTZPC restore), its clocks; reads CSIS1's version, its WDMA, the DMA
- *              common and the SysMMU's state
+ *              common (the SysMMU's state with cam_s9_mmu_probe=1)
  *   4  writes  the D-PHY's isolation off and its reset released, CSIS1 reset and set up for 1632 x 1224 RAW10, the
  *              buffer given to VC0's WDMA (a stale DMA abort request in its DMA_CMN_CTRL cleared first), the test
  *              pattern generator on: first as Android has it, CSIS1's link left off (csi_stream_on with pattern_en),
@@ -157,6 +158,14 @@
  *                      camshot's debayer reads RAW10 only)
  *   cam_s9_bayer=N     camshot's Bayer order: 0 RGGB, 1 GRBG (the default, the sensor's), 2 GBRG, 3 BGGR
  *   cam_s9_stride=B    camshot's bytes a line of the frame (default: 2040, MIPI's, or 2048 if the WDMA wrote more)
+ *   cam_s9_probe=1     the risky reads too, for the log: CMU_ISPPRE's whole Q-channel sweep with each DBG_NFO (+0x4000),
+ *                      and the other three CSISs' DMA commons (read, and their interrupt masks for the pattern's while).
+ *                      Off by default: on 3 November the sweep's read of CMU_ISPPRE 0x303C took a synchronous external
+ *                      abort (isp_status(), the phone's cam-fix.img)
+ *   cam_s9_mmu_probe=1 the SysMMU (0x16310000) mapped and read: MMU_CTRL/CFG/STATUS/VERSION in the log, and a SysMMU
+ *                      found translating stops the DMA. Off by default (its clock or Q-channel may be off, and a read
+ *                      then aborts, as the PCIe SysMMU's did): the SysMMU is taken as off, pass-through, and the DMA
+ *                      starts without asking it
  *
  * Limits, whatever asks. The S2MPB02 makes other supplies too (the flash LED, the rear camera's lens motor, the grip
  * sensor, the proximity LED): every write to it goes through one function that takes only the four LDO registers and
@@ -166,7 +175,7 @@
  * A supply found on is left as it is and left on at the end; one found on at another voltage stops the run before
  * anything is written (someone else has it). No other PMIC register is written. The flashlight's driver stays off in a
  * run with cam_s9=N (the same bus, one driver per bus). Nothing of the ISPPRE block is read before its domain is seen
- * on. The DMA is given only the buffer's address, checked to lie below 4 GB, and only with the SysMMU seen off. Every
+ * on. The DMA is given only the buffer's address, checked to lie below 4 GB, and with the SysMMU taken as off (seen off, with cam_s9_mmu_probe=1). Every
  * wait is bounded by the clock.
  *
  * Not written yet (devices/starlte/CAMERA.md): /dev/hakios-camera's frames for libhakios.media's capture device, a ring
@@ -711,6 +720,14 @@ static bool buffer_busy;                /* the WDMA was not seen to stop: no mor
 static uint32_t frame_last;             /* buffer_report()'s: the bytes up to the last one the DMA changed */
 static uint32_t frame_ends;             /* sensor_frame()'s frame ends */
 static uint32_t cam_exp = 1000, cam_gain = 0x40, cam_pack12;
+static uint32_t cam_probe, cam_mmu_probe;      /* cam_s9_probe, cam_s9_mmu_probe: the risky reads, off by default */
+
+/* the SysMMU found translating; never read unless cam_s9_mmu_probe=1 (else taken as off: pass-through) */
+static bool
+mmu_translating(void)
+{
+	return cam_mmu_probe && mmu != 0 && (rd(mmu, MMU_CTRL) & 1);
+}
 
 extern vm_offset_t hakios_exynos_camera_map(uint64_t pa, uint64_t bytes);       /* hakios.exynos_camera_mem.cpp */
 
@@ -966,6 +983,9 @@ isp_status(const char *step)
 	    rd(pmu, PMU_DPU_STATUS), rd(cmu_top, TOP_ISPPRE_MUX), rd(cmu_top, TOP_ISPPRE_DIV), rd(cmu_top, TOP_ISPPRE_GATE),
 	    rd(cmu_isppre, ISPPRE_BUS_USER), rd(cmu_isppre, 0x0108), rd(cmu_isppre, ISPPRE_BUSP_DIV),
 	    rd(cmu_isppre, ISPPRE_CTRL_OPTION), rd(sysreg_isppre, SYSREG_DRCG_EN), rd(sysreg_isppre, DPHY_RESET));
+	if (!cam_probe) {
+		return;         /* the Q-channel sweep aborted on CMU_ISPPRE 0x303C: cam_s9_probe=1 only */
+	}
 	for (uint32_t off = QCH_FIRST; off <= QCH_LAST; off += 4) {
 		uint32_t h = off < 0x3040 ? 0 : 1;
 
@@ -1033,7 +1053,8 @@ isp_up(void)
 	}
 	domain_up = true;
 
-	say("exynos-camera: 3: map CMU_ISPPRE, SYSREG_ISPPRE, CSIS1, its D-PHY, its WDMA, the DMA common and the SysMMU\n");
+	say("exynos-camera: 3: map CMU_ISPPRE, SYSREG_ISPPRE, CSIS1, its D-PHY, its WDMA and the DMA common%s%s\n",
+	    cam_mmu_probe ? ", the SysMMU" : "", cam_probe ? ", the other CSISs' DMA commons" : "");
 	if (cmu_isppre == 0) {
 		cmu_isppre = ml_io_map(CMU_ISPPRE_PA, 0x8000);    /* the Q-channels' debug states are at +0x7010 */
 		sysreg_isppre = ml_io_map(SYSREG_ISPPRE_PA, 0x1000);
@@ -1041,13 +1062,18 @@ isp_up(void)
 		dphy = ml_io_map(CSIS1_PHY_PA, 0x3000);
 		wdma = ml_io_map(CSIS1_WDMA_PA, 0x1000);
 		cdma = ml_io_map(CSIS_DMA_PA, 0x1000);
-		mmu = ml_io_map(SYSMMU_PA, 0x1000);
-		for (uint32_t i = 0; i < 3; i++) {
-			other_cmn[i] = ml_io_map(other_cmn_pa[i] & ~0xfffULL, 0x1000);
+		if (cam_mmu_probe) {
+			mmu = ml_io_map(SYSMMU_PA, 0x1000);
+		}
+		if (cam_probe) {
+			for (uint32_t i = 0; i < 3; i++) {
+				other_cmn[i] = ml_io_map(other_cmn_pa[i] & ~0xfffULL, 0x1000);
+			}
 		}
 	}
-	if (cmu_isppre == 0 || sysreg_isppre == 0 || csis == 0 || dphy == 0 || wdma == 0 || cdma == 0 || mmu == 0 ||
-	    other_cmn[0] == 0 || other_cmn[1] == 0 || other_cmn[2] == 0) {
+	if (cmu_isppre == 0 || sysreg_isppre == 0 || csis == 0 || dphy == 0 || wdma == 0 || cdma == 0 ||
+	    (cam_mmu_probe && mmu == 0) ||
+	    (cam_probe && (other_cmn[0] == 0 || other_cmn[1] == 0 || other_cmn[2] == 0))) {
 		say("exynos-camera: 3: a block could not be mapped\n");
 		return false;
 	}
@@ -1090,8 +1116,12 @@ isp_up(void)
 	    rd(wdma, VCMN + VCMN_INT_SRC),
 	    rd(wdma, VCMN + VCMN_ERR_CODE), rd(cdma, CDMA_ARB_PRI), rd(cdma, CDMA_CTRL), rd(cdma, CDMA_SRAM_SPLIT),
 	    rd(cdma, CDMA_MATRIX), rd(cdma, TP_ENABLE));
-	say("exynos-camera: 3: the SysMMU: MMU_CTRL %#x (bit 0: translating), CFG %#x, STATUS %#x, VERSION %#x\n",
-	    rd(mmu, MMU_CTRL), rd(mmu, MMU_CFG), rd(mmu, MMU_STATUS), rd(mmu, MMU_VERSION));
+	if (cam_mmu_probe) {
+		say("exynos-camera: 3: the SysMMU: MMU_CTRL %#x (bit 0: translating), CFG %#x, STATUS %#x, VERSION %#x\n",
+		    rd(mmu, MMU_CTRL), rd(mmu, MMU_CFG), rd(mmu, MMU_STATUS), rd(mmu, MMU_VERSION));
+	} else {
+		say("exynos-camera: 3: the SysMMU is not read (cam_s9_mmu_probe=1 reads it): taken as off, pass-through\n");
+	}
 	if ((rd(csis, CSIS_VERSION) == 0 || rd(csis, CSIS_VERSION) == 0xffffffffu)) {
 		say("exynos-camera: 3: CSIS1's version reads %#x: is its clock there?\n", rd(csis, CSIS_VERSION));
 	}
@@ -1289,12 +1319,16 @@ dma_log(const char *step)
 {
 	snap_take();
 	say("exynos-camera: %s: WDMA CTRL %#x, ACT_CTRL %#x, FCNTSEQ_STAT %#x; its common: INT_SRC %#x (frame start [7:4], "
-	    "end [11:8], error 12, abort done 16), ERR_CODE %#x, CRC %#x, CMN_CTRL %#x; the others' INT_SRC (VC0 ACT_CTRL): "
-	    "CSIS0 %#x (%#x), CSIS2 %#x (%#x), CSIS3 %#x (%#x); the pattern %#x\n", step, rd(wdma, DMA_CTRL),
-	    rd(wdma, DMA_ACT_CTRL), rd(wdma, DMA_FCNTSEQ_STAT), rd(wdma, VCMN + VCMN_INT_SRC), rd(wdma, VCMN + VCMN_ERR_CODE),
-	    rd(wdma, VCMN + VCMN_CRC_RESULT), rd(wdma, VCMN + VCMN_CMN_CTRL), rd(other_cmn[0], 0x400 + VCMN_INT_SRC),
-	    rd(other_cmn[0], DMA_ACT_CTRL), rd(other_cmn[1], 0x400 + VCMN_INT_SRC), rd(other_cmn[1], DMA_ACT_CTRL),
-	    rd(other_cmn[2], 0x400 + VCMN_INT_SRC), rd(other_cmn[2], DMA_ACT_CTRL), rd(cdma, TP_ENABLE));
+	    "end [11:8], error 12, abort done 16), ERR_CODE %#x, CRC %#x, CMN_CTRL %#x; the pattern %#x\n", step,
+	    rd(wdma, DMA_CTRL), rd(wdma, DMA_ACT_CTRL), rd(wdma, DMA_FCNTSEQ_STAT), rd(wdma, VCMN + VCMN_INT_SRC),
+	    rd(wdma, VCMN + VCMN_ERR_CODE), rd(wdma, VCMN + VCMN_CRC_RESULT), rd(wdma, VCMN + VCMN_CMN_CTRL),
+	    rd(cdma, TP_ENABLE));
+	if (cam_probe) {
+		say("exynos-camera: %s: the others' INT_SRC (VC0 ACT_CTRL): CSIS0 %#x (%#x), CSIS2 %#x (%#x), CSIS3 %#x (%#x)\n",
+		    step, rd(other_cmn[0], 0x400 + VCMN_INT_SRC), rd(other_cmn[0], DMA_ACT_CTRL),
+		    rd(other_cmn[1], 0x400 + VCMN_INT_SRC), rd(other_cmn[1], DMA_ACT_CTRL),
+		    rd(other_cmn[2], 0x400 + VCMN_INT_SRC), rd(other_cmn[2], DMA_ACT_CTRL));
+	}
 	say("exynos-camera: %s: CSIS1 INT_SRC0 %#x (frame start [27:24], end [23:20], SOT [19:16], lost FS [15:12], lost FE "
 	    "[11:8], overflow 4, wrong config 3, ECC 2, CRC 1, ID 0), INT_SRC1 %#x (V/H size mismatch [15:12]/[11:8]), "
 	    "FRM_CNT_CH0 %u, PHY_STATUS %#x\n", step, rd(csis, CSIS_INT_SRC0), rd(csis, CSIS_INT_SRC1),
@@ -1307,6 +1341,9 @@ static uint32_t other_mask_found[3];
 static void
 others_watch(bool on)
 {
+	if (!cam_probe) {
+		return;         /* the other CSISs are not touched unless cam_s9_probe=1 */
+	}
 	for (uint32_t i = 0; i < 3; i++) {
 		if (on) {
 			other_mask_found[i] = rd(other_cmn[i], 0x400 + VCMN_INT_MASK);
@@ -1335,7 +1372,7 @@ pattern_frame(void)
 	uint32_t last, cmn;
 	bool ended;
 
-	if (rd(mmu, MMU_CTRL) & 1) {
+	if (mmu_translating()) {
 		say("exynos-camera: 4: the SysMMU is on (MMU_CTRL %#x): the WDMA's addresses would be translated by a table "
 		    "this driver did not make; no DMA\n", rd(mmu, MMU_CTRL));
 		return false;
@@ -1359,9 +1396,12 @@ pattern_frame(void)
 		wr(wdma, VCMN + VCMN_CMN_CTRL, cmn & ~1u);
 	}
 	say("exynos-camera: 4: before: WDMA ACT_CTRL %#x (bit 16: aborted, bit 0: active), DMA_CMN_CTRL %#x -> %#x (bit 0: "
-	    "abort request); CSIS1 CLK_CTRL %#x; the DMA common: CTRL %#x, CLK_CTRL %#x; the SysMMU: CTRL %#x, CFG %#x, "
-	    "STATUS %#x\n", rd(wdma, DMA_ACT_CTRL), cmn, rd(wdma, VCMN + VCMN_CMN_CTRL), rd(csis, CSIS_CLK_CTRL),
-	    rd(cdma, CDMA_CTRL), rd(cdma, CDMA_CLK_CTRL), rd(mmu, MMU_CTRL), rd(mmu, MMU_CFG), rd(mmu, MMU_STATUS));
+	    "abort request); CSIS1 CLK_CTRL %#x; the DMA common: CTRL %#x, CLK_CTRL %#x\n", rd(wdma, DMA_ACT_CTRL), cmn,
+	    rd(wdma, VCMN + VCMN_CMN_CTRL), rd(csis, CSIS_CLK_CTRL), rd(cdma, CDMA_CTRL), rd(cdma, CDMA_CLK_CTRL));
+	if (cam_mmu_probe) {
+		say("exynos-camera: 4: the SysMMU: CTRL %#x, CFG %#x, STATUS %#x\n", rd(mmu, MMU_CTRL), rd(mmu, MMU_CFG),
+		    rd(mmu, MMU_STATUS));
+	}
 	others_watch(true);
 	dma_start();
 	pattern_on_now();
@@ -1483,7 +1523,7 @@ sensor_frame(void)
 	uint64_t until, start;
 
 	frame_ends = 0;
-	if (rd(mmu, MMU_CTRL) & 1) {
+	if (mmu_translating()) {
 		say("exynos-camera: 5: the SysMMU is on (MMU_CTRL %#x): no DMA\n", rd(mmu, MMU_CTRL));
 		return false;
 	}
@@ -2013,7 +2053,7 @@ shot_run(uint32_t n, bool pattern)
 		got = false;
 		why = "the ISPPRE domain or its blocks (step 3)";
 	} else {
-		if (rd(mmu, MMU_CTRL) & 1) {
+		if (mmu_translating()) {
 			got = false;
 			why = "the SysMMU is on";
 		} else {
@@ -2168,6 +2208,8 @@ hakios_exynos_camera_init(void)
 	PE_parse_boot_argn("cam_s9_pack12", &cam_pack12, sizeof(cam_pack12));
 	PE_parse_boot_argn("cam_s9_bayer", &cam_bayer, sizeof(cam_bayer));
 	PE_parse_boot_argn("cam_s9_stride", &cam_stride, sizeof(cam_stride));
+	PE_parse_boot_argn("cam_s9_probe", &cam_probe, sizeof(cam_probe));
+	PE_parse_boot_argn("cam_s9_mmu_probe", &cam_mmu_probe, sizeof(cam_mmu_probe));
 	{
 		uint32_t addr = 0;
 
