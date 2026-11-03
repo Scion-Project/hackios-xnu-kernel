@@ -1,16 +1,22 @@
 /*
- * The Galaxy S9's Bluetooth, stage 1 (starlte, Exynos 9810): the Bluetooth half of the Broadcom BCM4361 on its UART, as
- * far as the chip answering HCI commands, taking Broadcom's patch (the .hcd file of the user's own phone) and saying
- * what it runs after it. No host stack: nothing here pairs, scans or carries a byte of anyone's data, and nothing is
- * handed to iOS (devices/starlte/BLUETOOTH.md says what stage 2 would need). Only with boot-arg bt=N on this phone (the
- * SoC's registers at 0x10000000); nothing is touched without it. The POCO's bt=N is drivers/bluetooth/hakios.bt.c, which
- * is not in the S9's kernel.
+ * The Galaxy S9's Bluetooth (starlte, Exynos 9810): the Bluetooth half of the Broadcom BCM4361 on its UART. The chip is
+ * powered, answers HCI, takes Broadcom's patch (the .hcd file of the user's own phone), is raised to 4 Mbaud with flow
+ * control, and then stays up for the USB console ("bt", "bt scan": an inquiry and an LE scan) and for user space, as
+ * /dev/cu.bluetooth (a tty carrying H4, what iOS's bluetoothd opens on an iPhone whose controller is on a UART) and a
+ * "bluetooth" registry entry with the chip's address (hakios.bt_node.cpp). No host stack in the kernel. Only with boot-arg
+ * bt=N on this phone (the SoC's registers at 0x10000000); nothing is touched without it. The POCO's bt=N is
+ * drivers/bluetooth/hakios.bt.c, which is not in the S9's kernel. Seen working on phone 2, 3 November 2026: every step
+ * below, the SEMCO module's patch (BCM4347B2 ROM, "BCM4361B2 Crown E32A ANT1 [Version: 0110.0232]" after it), 4 Mbaud,
+ * and a scan that heard the LE devices around.
  *
  * What is where (Samsung's device tree for the S9, exynos9810-starlte_eur_open_26.dts of its kernel, and its drivers):
  *   UART_BT      0x10840000  uart@10840000 (dts 9480-9495): Samsung's "uart1", /dev/ttySAC1 to Android
  *                            (init.samsungexynos9810.rc:637), the port bcm43xx.c's low-power code names (BT_UPORT 1,
  *                            bcm43xx.c:46). Not a USI block: its clocks are PERIC1's UART_BT (below), but the serial
  *                            driver treats it as "usi-serial-v2" (USI_CON 0xC4, USI_OPTION 0xC8). A 256-byte FIFO.
+ *                            The boot loader leaves it held in reset: USI_CON reads 1 at bt=1 on the phone (as on the
+ *                            Tab Active3's mainline port, exynos-linux/samsung-gtactive3wifi 0068/0073), and nothing of
+ *                            it works until bt=3 writes USI_CON 1 then 0 and USI_OPTION 2
  *                            Its interrupt (SPI 422) is not used: this polls.
  *   CMU_PERIC1   0x10800000  UART_BT's clocks (cmucal-sfr.c): gates GATE_CLK_PERIC1_UART_BT +0x2034 (1612),
  *                            RSTNSYNC_CLK_PERIC1_UART_BT +0x201C (1571), UART_BT_IPCLK +0x20C4 (1601), UART_BT_PCLK
@@ -63,8 +69,10 @@
  * baud, 8N1, with RTS/CTS (hci_bcm.c:817 init_speed; samsung.c:1268-1274); HCI_Reset (0x0C03, btbcm.c:173) and Read Local
  * Version (0x1001, 209); the patch: Download Minidriver (0xFC2E), 50 ms, the .hcd's records sent one by one as commands,
  * each answered before the next, then 250 ms after the last, Launch_RAM (btbcm.c:106-167); then HCI_Reset and Read Local
- * Version again. The baud rate is never raised (0xFC18, hci_bcm.c:117): 108 KB at 115200 takes about ten seconds, and one
- * less thing can go wrong. BT_EN high and 100 ms before the first byte (bcm43xx.c:96-99); low to power it off (112).
+ * Version again; the patch goes at 115200 (108 KB, about ten seconds). Then (bt=7) the rate: hci_bcm.c's bcm_set_baudrate()
+ * sends 0xFC45 (the UART clock at 48 MHz) above 3 Mbaud, which this module's BCM4347B2 refuses (status 01, unknown
+ * command) and does not need: 0xFC18 with 4000000, answered at the old rate, then the UART to 4 Mbaud (UBRDIV 2,
+ * UFRACVAL 2 from 200 MHz: exact). BT_EN high and 100 ms before the first byte (bcm43xx.c:96-99); low to power it off (112).
  *
  *   bt=1   a look, reading only: UART_BT's clocks and pins, BT_WAKE, BT_HOST_WAKE, the expander's reset pin and bus as
  *          found; UART_BT's registers if its clocks are open (a block whose clock is off can stop the bus)
@@ -80,6 +88,12 @@
  *          /vendor/firmware/bcm4361B2_murata.hcd or _semco.hcd, whichever its module is, devices/starlte/BLUETOOTH.md),
  *          read through and checked first (hakios.bcm_hci.h), then sent; HCI_Reset, Read Local Version and Name again:
  *          the LMP subversion and the name now the patch's
+ *   bt=7   ... the rate raised (bt_baud=, default 4000000; if the chip does not answer at it, it is started and patched
+ *          again and kept at 115200), the address read, and the chip kept powered: the USB console's "bt" (its state) and
+ *          "bt scan" (Set Event Mask with LE Meta, Write Inquiry Mode 2, a general inquiry of 7.7 s, an active LE scan of
+ *          5 s, every device heard listed once, with its RSSI and name), /dev/cu.bluetooth (also uart.bluetooth and
+ *          tty.bluetooth; bt_tty=0 leaves them out) and the "bluetooth" registry entry for iOS's bluetoothd
+ *   bt_scan=1        at bt=7, one scan as soon as the chip is up, before the console has it
  *   bt_keep=1        leave the chip powered at the end (default: BT_EN and BT_WAKE low once the steps are done or one fails)
  *   bt_hcd=<name>    the patch file's name in fw/ (default bcm4361B2.hcd); without it, the phone's own from VENDOR
  *   bt_module=<m>    murata or semco: which patch (bcm4361B2_<m>.hcd; default: the module Wi-Fi read in OTP, else a guess)
@@ -90,8 +104,8 @@
  * Each step says what it is about to do before it does it.
  *
  * What was checked: compiled, with the driver on and off; every register, bit and number above against the BSP files
- * named with them (the PR has the table); the H4 framing, the events, the .hcd reading and the divisor on a computer by
- * tools/bcm_hci_test.c (tools/bcm-hci-test.sh). It has not run on the phone, nor in QEMU (which has no such UART or
+ * named with them; the H4 framing, the events, the .hcd reading and the divisor on a computer by tools/bcm_hci_test.c
+ * (tools/bcm-hci-test.sh); and on phone 2 (SEMCO module), bt=7 end to end. Not in QEMU (which has no such UART or
  * expander: bt=N must not be given there).
  *
  * Sources (Samsung's GPL kernel for the S9, Scion-Project/android_kernel_samsung_exynos9810 at e5906667068e, read for
@@ -105,6 +119,7 @@
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
+#include <libkern/OSAtomic.h>
 #include <libkern/libkern.h>
 #include <mach/mach_time.h>
 #include <mach/mach_types.h>
@@ -112,6 +127,12 @@
 #include <sys/hakios.exynos_hsi2c.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
+#include <sys/conf.h>
+#include <sys/fcntl.h>
+#include <sys/proc.h>
+#include <sys/tty.h>
+#include <sys/ttycom.h>
+#include <miscfs/devfs/devfs.h>
 
 #include "hakios.bcm_hci.h"
 
@@ -119,6 +140,7 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern kern_return_t thread_terminate(thread_t thread);
 extern void loader_log_line(const char *line);
+extern void HakiosBTNodeStart(const uint8_t *hci_address, uint32_t speed);
 extern void delay(int usec);
 extern const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
 
@@ -231,6 +253,9 @@ static bool powered;                    /* BT_EN driven high by this run */
 static bool i2c_up;
 static struct h4_rx rx;
 static uint32_t rx_errors;
+static bool accept_status;              /* hci_start(): a Command Status of 0 ends the wait */
+static void scan_event(const uint8_t *event);
+static bool scanning;
 
 static inline uint32_t
 rd(vm_offset_t base, uint32_t off)
@@ -632,6 +657,13 @@ hci(uint16_t opcode, const uint8_t *param, uint8_t plen, uint8_t *ret, uint8_t *
 			say("bt: command %04x refused: status %02x\n", opcode, status);
 			return false;
 		}
+		if (accept_status && hci_command_status(rx.event, &op, &status) && op == opcode) {
+			return true;
+		}
+		if (scanning) {
+			scan_event(rx.event);
+			continue;
+		}
 		if (!quiet) {
 			say("bt: while waiting for %04x: event %02x, %u bytes, passed over\n", opcode, rx.event[0], rx.event[1]);
 		}
@@ -807,6 +839,593 @@ patch(void)
 	return true;
 }
 
+/* ---- bt=7: the link at speed, the chip kept, and the USB console's "bt" ---------------------------------------- */
+
+#define BCM_UPDATE_BAUD         0xFC18  /* hci_bcm.c:117: two zero bytes, the rate le32 */
+#define BCM_UART_CLOCK          0xFC45  /* hci_bcm.c:106: 1 = 48 MHz, needed above 3 Mbaud */
+#define HCI_SET_EVENT_MASK      0x0C01
+#define HCI_WRITE_INQUIRY_MODE  0x0C45
+#define HCI_READ_BD_ADDR        0x1009
+#define HCI_INQUIRY             0x0401
+#define HCI_LE_SET_SCAN_PARAMS  0x200B
+#define HCI_LE_SET_SCAN_ENABLE  0x200C
+#define UTRSTAT_TX_EMPTY        (1u << 2)
+#define SCAN_MAX                48
+
+static uint32_t link_baud = BAUD;
+static struct hci_local_version running;
+static uint8_t own_addr[6];
+static volatile bool resident;          /* the chip powered, patched and answering: the console may use it */
+static volatile SInt32 busy;            /* one user of the UART at a time */
+static bool inquiry_done;
+
+struct seen {
+	uint8_t  addr[6];               /* as HCI sends it, little-endian */
+	uint8_t  le;                    /* 0 BR/EDR, 1 LE */
+	uint8_t  addr_type;
+	int8_t   rssi;
+	uint32_t cod;
+	uint16_t hits;
+	char     name[33];
+};
+static struct seen seen[SCAN_MAX];
+static unsigned nseen, nreports;
+
+/* the UART's rate, once what it is sending has gone */
+static bool
+uart_set_baud(uint32_t baud)
+{
+	struct exynos_uart_div d;
+	uint64_t until = deadline_ms(50);
+
+	if (!exynos_uart_divisor(uart_mhz * 1000000u, baud, &d)) {
+		say("bt: no divisor for %u baud from %u MHz\n", baud, uart_mhz);
+		return false;
+	}
+	while (!(rd(uart, UTRSTAT) & UTRSTAT_TX_EMPTY) && mach_absolute_time() < until) {
+	}
+	wr(uart, UBRDIV, d.ubrdiv);
+	wr(uart, UFRACVAL, d.fracval);
+	say("bt: the UART at %u baud: UBRDIV %u UFRACVAL %u (%u from %u MHz)\n", baud, d.ubrdiv, d.fracval, d.actual, uart_mhz);
+	return true;
+}
+
+/* hci_bcm.c's bcm_set_baudrate(): the clock at 48 MHz above 3 Mbaud, 0xFC18 answered at the old rate, then ours */
+static bool
+raise_baud(uint32_t baud)
+{
+	uint8_t p[6] = { 0, 0, (uint8_t)baud, (uint8_t)(baud >> 8), (uint8_t)(baud >> 16), (uint8_t)(baud >> 24) };
+	uint8_t clock = 1, ret[255], rl = 0;
+	struct hci_local_version v;
+
+	if (baud > 3000000) {
+		say("bt: 7: Write_UART_Clock_Setting (fc45) 48 MHz\n");
+		if (!hci(BCM_UART_CLOCK, &clock, 1, NULL, NULL, CMD_TIMEOUT_MS, false)) {
+			say("bt: 7: fc45 not taken (the BCM4347B2 of this module has no such command): going on without it\n");
+		}
+	}
+	say("bt: 7: Update_UART_Baud_Rate (fc18) %u, then the UART to it\n", baud);
+	if (!hci(BCM_UPDATE_BAUD, p, sizeof(p), NULL, NULL, CMD_TIMEOUT_MS, false)) {
+		return false;
+	}
+	if (!uart_set_baud(baud)) {
+		return false;
+	}
+	sleep_ms(10);
+	fifo_reset();
+	link_baud = baud;
+	if (!hci(HCI_READ_LOCAL_VERSION, NULL, 0, ret, &rl, CMD_TIMEOUT_MS, false) || !hci_local_version(ret, rl, &v)) {
+		say("bt: 7: no answer at %u baud (%u receive errors)\n", baud, rx_errors);
+		return false;
+	}
+	say("bt: 7: at %u baud, flow control on: Read Local Version answers (LMP subversion %04x, HCI revision %04x)\n",
+	    baud, v.lmp_subver, v.hci_rev);
+	return true;
+}
+
+static void
+addr_text(const uint8_t *a, char *out, size_t cap)
+{
+	snprintf(out, cap, "%02x:%02x:%02x:%02x:%02x:%02x", a[5], a[4], a[3], a[2], a[1], a[0]);
+}
+
+/* a name from EIR or advertising data: 0x09 complete name, else 0x08 shortened */
+static void
+ad_name(const uint8_t *ad, unsigned len, char *name, size_t cap)
+{
+	bool complete = false;
+
+	for (unsigned i = 0; i + 1 < len && ad[i] != 0; i += 1u + ad[i]) {
+		unsigned l = ad[i], type = ad[i + 1], k = 0;
+
+		if (i + 1 + l > len || l < 2 || (type != 0x08 && type != 0x09) || (complete && type == 0x08)) {
+			continue;
+		}
+		for (unsigned j = 0; j < l - 1 && k + 1 < cap; j++) {
+			uint8_t c = ad[i + 2 + j];
+
+			name[k++] = (c >= 0x20 && c < 0x7f) ? (char)c : '?';
+		}
+		name[k] = 0;
+		complete = type == 0x09;
+	}
+}
+
+static struct seen *
+seen_at(const uint8_t *addr, uint8_t le)
+{
+	for (unsigned i = 0; i < nseen; i++) {
+		if (seen[i].le == le && memcmp(seen[i].addr, addr, 6) == 0) {
+			return &seen[i];
+		}
+	}
+	if (nseen == SCAN_MAX) {
+		return NULL;
+	}
+	memset(&seen[nseen], 0, sizeof(seen[0]));
+	memcpy(seen[nseen].addr, addr, 6);
+	seen[nseen].le = le;
+	seen[nseen].rssi = 127;
+	return &seen[nseen++];
+}
+
+static void
+heard(const uint8_t *addr, uint8_t le, uint8_t addr_type, int rssi, uint32_t cod, const uint8_t *ad, unsigned adlen)
+{
+	struct seen *s = seen_at(addr, le);
+
+	nreports++;
+	if (s == NULL) {
+		return;
+	}
+	s->hits++;
+	s->addr_type = addr_type;
+	if (rssi != 127) {
+		s->rssi = (int8_t)rssi;
+	}
+	if (cod != 0) {
+		s->cod = cod;
+	}
+	if (ad != NULL && adlen != 0) {
+		char name[sizeof(s->name)] = "";
+
+		ad_name(ad, adlen, name, sizeof(name));
+		if (name[0] != 0) {
+			strlcpy(s->name, name, sizeof(s->name));
+		}
+	}
+}
+
+/* Inquiry Result (02), with RSSI (22), Extended (2f), Inquiry Complete (01), LE Advertising Report (3e/02) */
+static void
+scan_event(const uint8_t *event)
+{
+	unsigned len = event[1];
+	const uint8_t *p = event + 2;
+
+	switch (event[0]) {
+	case 0x01:
+		inquiry_done = true;
+		break;
+	case 0x02:
+		for (unsigned i = 0; len >= 1 && i < p[0] && 1 + 14 * (i + 1) <= len; i++) {
+			const uint8_t *r = p + 1 + 14 * i;
+
+			heard(r, 0, 0, 127, (uint32_t)r[9] | (uint32_t)r[10] << 8 | (uint32_t)r[11] << 16, NULL, 0);
+		}
+		break;
+	case 0x22:
+		for (unsigned i = 0; len >= 1 && i < p[0] && 1 + 14 * (i + 1) <= len; i++) {
+			const uint8_t *r = p + 1 + 14 * i;
+
+			heard(r, 0, 0, (int8_t)r[13], (uint32_t)r[8] | (uint32_t)r[9] << 8 | (uint32_t)r[10] << 16, NULL, 0);
+		}
+		break;
+	case 0x2F:
+		if (len >= 15) {
+			const uint8_t *r = p + 1;
+
+			heard(r, 0, 0, (int8_t)r[13], (uint32_t)r[8] | (uint32_t)r[9] << 8 | (uint32_t)r[10] << 16, r + 14,
+			    len - 15);
+		}
+		break;
+	case 0x3E:
+		if (len >= 2 && p[0] == 0x02) {
+			unsigned n = p[1], at = 2;
+
+			for (unsigned i = 0; i < n && at + 10 <= len; i++) {
+				unsigned dlen = p[at + 8];
+
+				if (at + 10 + dlen > len) {
+					break;
+				}
+				heard(p + at + 2, 1, p[at + 1], (int8_t)p[at + 9 + dlen], 0, p + at + 9, dlen);
+				at += 10 + dlen;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+/* events for a while, each to the scan */
+static void
+collect(uint32_t ms, volatile bool *until_set)
+{
+	uint64_t until = deadline_ms(ms);
+
+	while (mach_absolute_time() < until && (until_set == NULL || !*until_set)) {
+		int c = bt_getc();
+
+		if (c < 0) {
+			sleep_ms(1);
+			continue;
+		}
+		if (h4_rx_byte(&rx, (uint8_t)c) == H4_RX_EVENT) {
+			scan_event(rx.event);
+		}
+	}
+}
+
+/* a command whose Command Status says it started (an inquiry) */
+static bool
+hci_start(uint16_t opcode, const uint8_t *param, uint8_t plen)
+{
+	bool ok;
+
+	accept_status = true;
+	ok = hci(opcode, param, plen, NULL, NULL, CMD_TIMEOUT_MS, true);
+	accept_status = false;
+	return ok;
+}
+
+/*
+ * A scan: Set Event Mask with LE Meta (bit 61) on, Write Inquiry Mode 2 (results with RSSI and EIR, so names), a general
+ * inquiry (LAP 9e8b33) of 6 x 1.28 s, then an active LE scan of 5 s; every device heard, once, at the end.
+ */
+static void
+bt_scan(void)
+{
+	static const uint8_t mask[8] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0x1f, 0x00, 0x20 };
+	static const uint8_t mode = 2, inquiry[5] = { 0x33, 0x8b, 0x9e, 6, 0 };
+	static const uint8_t le_params[7] = { 1, 0x60, 0x00, 0x30, 0x00, 0, 0 }, le_on[2] = { 1, 1 }, le_off[2] = { 0, 0 };
+	unsigned classic = 0;
+
+	nseen = 0;
+	nreports = 0;
+	inquiry_done = false;
+	scanning = true;
+	say("bt: scan: Set Event Mask (LE Meta on), Write Inquiry Mode 2; an inquiry of 7.7 s, then an LE scan of 5 s\n");
+	if (!hci(HCI_SET_EVENT_MASK, mask, sizeof(mask), NULL, NULL, CMD_TIMEOUT_MS, false) ||
+	    !hci(HCI_WRITE_INQUIRY_MODE, &mode, 1, NULL, NULL, CMD_TIMEOUT_MS, false)) {
+		say("bt: scan: the chip refused its setup\n");
+	}
+	if (hci_start(HCI_INQUIRY, inquiry, sizeof(inquiry))) {
+		collect(10000, &inquiry_done);
+		say("bt: scan: the inquiry %s, %u reports\n", inquiry_done ? "ended (Inquiry Complete)" : "not ended in 10 s",
+		    nreports);
+	} else {
+		say("bt: scan: Inquiry (0401) not started\n");
+	}
+	classic = nseen;
+	if (hci(HCI_LE_SET_SCAN_PARAMS, le_params, sizeof(le_params), NULL, NULL, CMD_TIMEOUT_MS, false) &&
+	    hci(HCI_LE_SET_SCAN_ENABLE, le_on, sizeof(le_on), NULL, NULL, CMD_TIMEOUT_MS, false)) {
+		collect(5000, NULL);
+		(void)hci(HCI_LE_SET_SCAN_ENABLE, le_off, sizeof(le_off), NULL, NULL, CMD_TIMEOUT_MS, true);
+	} else {
+		say("bt: scan: the LE scan not started\n");
+	}
+	scanning = false;
+	say("bt: scan: %u devices (%u BR/EDR, %u LE), %u reports, %u receive errors\n", nseen, classic, nseen - classic,
+	    nreports, rx_errors);
+	for (unsigned i = 0; i < nseen; i++) {
+		char a[20];
+
+		addr_text(seen[i].addr, a, sizeof(a));
+		if (seen[i].le) {
+			say("bt:   %s LE %s rssi %d, %u heard \"%s\"\n", a, seen[i].addr_type ? "random" : "public",
+			    seen[i].rssi == 127 ? 0 : seen[i].rssi, seen[i].hits, seen[i].name);
+		} else {
+			say("bt:   %s BR/EDR class %06x rssi %d \"%s\"\n", a, seen[i].cod, seen[i].rssi == 127 ? 0 : seen[i].rssi,
+			    seen[i].name);
+		}
+	}
+}
+
+static void
+console_scan_thread(__unused void *arg, __unused wait_result_t w)
+{
+	bt_scan();
+	OSCompareAndSwap(1, 0, &busy);
+	thread_terminate(current_thread());
+}
+
+/* the USB console's "bt" (hakios.dwc3.c): the state, or "bt scan" */
+void
+hakios_bt_console(const char *arg)
+{
+	char a[20];
+	thread_t thread;
+
+	if (!resident) {
+		say("usb: bt: the chip is not up (bt=7 brings it up and keeps it; the log says how far it got)\n");
+		return;
+	}
+	if (arg == NULL || arg[0] == 0) {
+		addr_text(own_addr, a, sizeof(a));
+		say("usb: bt: up, patched, %u baud with RTS/CTS; LMP subversion %04x HCI revision %04x manufacturer %04x; "
+		    "address %s; %u receive errors\n", link_baud, running.lmp_subver, running.hci_rev, running.manufacturer, a,
+		    rx_errors);
+		return;
+	}
+	if (strcmp(arg, "scan") != 0) {
+		say("usb: bt %s: bt, or bt scan\n", arg);
+		return;
+	}
+	if (!OSCompareAndSwap(0, 1, &busy)) {
+		say("usb: bt scan: one is under way\n");
+		return;
+	}
+	if (kernel_thread_start(console_scan_thread, NULL, &thread) != KERN_SUCCESS) {
+		OSCompareAndSwap(1, 0, &busy);
+		say("usb: bt scan: no thread for it\n");
+		return;
+	}
+	thread_deallocate(thread);
+}
+
+/* ---- bt=7: /dev/cu.bluetooth, the chip's HCI for user space ------------------------------------------------------ */
+
+/*
+ * What iOS's bluetoothd opens on an iPhone whose controller is on a UART (its strings: "/dev/cu.bluetooth",
+ * "/dev/uart.bluetooth", "No valid serial port found (tried cu.bluetooth and uart.bluetooth)"): a serial port, H4 on it.
+ * Here a tty of XNU's own (tty.c's line discipline, so termios, select and the rest are the kernel's), whose output goes
+ * to UART_BT and whose input is what the chip sends, moved by one thread that polls (1 ms when idle). The chip is up and
+ * patched before anyone opens it (bt=7); a speed set with tcsetattr() is set on the UART too, so that a host that sends
+ * the chip Broadcom's 0xFC18 itself can follow it. While it is open the console's "bt scan" is refused.
+ */
+static struct tty *bt_tty;
+static volatile bool pump_running;
+
+static void
+bt_tty_start(__unused struct tty *tp)
+{
+	/* the pump takes t_outq within a millisecond */
+}
+
+static int
+bt_tty_param(struct tty *tp, struct termios *t)
+{
+	if (t->c_ospeed != 0 && t->c_ospeed != (speed_t)link_baud && t->c_ospeed >= 9600 && t->c_ospeed <= 4000000) {
+		if (uart_set_baud((uint32_t)t->c_ospeed)) {
+			link_baud = (uint32_t)t->c_ospeed;
+		}
+	}
+	tp->t_ispeed = tp->t_ospeed = (speed_t)link_baud;
+	tp->t_cflag = t->c_cflag;
+	return 0;
+}
+
+static void
+bt_tty_pump(__unused void *arg, __unused wait_result_t w)
+{
+	static uint8_t buf[256];
+
+	for (;;) {
+		struct tty *tp = bt_tty;
+		int out = 0, in = 0, c;
+
+		tty_lock(tp);
+		if (ISSET(tp->t_state, TS_ISOPEN)) {
+			out = q_to_b(&tp->t_outq, buf, sizeof(buf));
+		}
+		tty_unlock(tp);
+		if (out > 0 && !bt_write(buf, (size_t)out, 2000)) {
+			say("bt: tty: %d bytes not sent\n", out);
+		}
+		tty_lock(tp);
+		if (out > 0) {
+			ttwwakeup(tp);
+		}
+		/* while the reader keeps up: else the bytes wait in the FIFO and RTS holds the chip */
+		while (ISSET(tp->t_state, TS_ISOPEN) && tp->t_rawq.c_cc < TTYHOG / 2 && in < 1024 && (c = bt_getc()) >= 0) {
+			(*linesw[tp->t_line].l_rint)(c, tp);
+			in++;
+		}
+		tty_unlock(tp);
+		if (out == 0 && in == 0) {
+			sleep_ms(1);
+		}
+	}
+}
+
+static int
+bt_cu_open(dev_t dev, int flag, __unused int devtype, __unused proc_t p)
+{
+	struct tty *tp = bt_tty;
+	int error;
+
+	if (!resident) {
+		return ENXIO;
+	}
+	tty_lock(tp);
+	if (!ISSET(tp->t_state, TS_ISOPEN)) {
+		if (!OSCompareAndSwap(0, 1, &busy)) {
+			tty_unlock(tp);
+			return EBUSY;
+		}
+		termioschars(&tp->t_termios);
+		tp->t_iflag = 0;
+		tp->t_oflag = 0;
+		tp->t_lflag = 0;
+		tp->t_cflag = CS8 | CREAD | CLOCAL | CRTSCTS;
+		tp->t_ispeed = tp->t_ospeed = (speed_t)link_baud;
+		ttsetwater(tp);
+		tp->t_dev = dev;
+		tp->t_oproc = bt_tty_start;
+		tp->t_param = bt_tty_param;
+		fifo_reset();
+	}
+	SET(tp->t_state, TS_CARR_ON | TS_CONNECTED);
+	error = (*linesw[tp->t_line].l_open)(dev, tp);
+	if (error == 0) {
+		say("bt: tty: opened (flags %x) by pid %d\n", flag, proc_pid(current_proc()));
+	}
+	tty_unlock(tp);
+	return error;
+}
+
+static int
+bt_cu_close(__unused dev_t dev, int flag, __unused int mode, __unused proc_t p)
+{
+	struct tty *tp = bt_tty;
+
+	tty_lock(tp);
+	(*linesw[tp->t_line].l_close)(tp, flag);
+	(void)ttyclose(tp);
+	tty_unlock(tp);
+	OSCompareAndSwap(1, 0, &busy);
+	say("bt: tty: closed\n");
+	return 0;
+}
+
+static int
+bt_cu_read(__unused dev_t dev, struct uio *uio, int flag)
+{
+	struct tty *tp = bt_tty;
+	int error;
+
+	tty_lock(tp);
+	error = (*linesw[tp->t_line].l_read)(tp, uio, flag);
+	tty_unlock(tp);
+	return error;
+}
+
+static int
+bt_cu_write(__unused dev_t dev, struct uio *uio, int flag)
+{
+	struct tty *tp = bt_tty;
+	int error;
+
+	tty_lock(tp);
+	error = (*linesw[tp->t_line].l_write)(tp, uio, flag);
+	tty_unlock(tp);
+	return error;
+}
+
+static int
+bt_cu_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, int flag, proc_t p)
+{
+	struct tty *tp = bt_tty;
+	int error;
+
+	tty_lock(tp);
+	error = (*linesw[tp->t_line].l_ioctl)(tp, cmd, data, flag, p);
+	if (error == ENOTTY) {
+		error = ttioctl_locked(tp, cmd, data, flag, p);
+	}
+	if (error == ENOTTY && (cmd == TIOCMSET || cmd == TIOCMBIS || cmd == TIOCMBIC || cmd == TIOCSBRK || cmd == TIOCCBRK)) {
+		error = 0;      /* the modem lines are the UART's own (RTS/CTS by hardware) */
+	}
+	if (error == ENOTTY && cmd == TIOCMGET) {
+		*(int *)data = TIOCM_LE | TIOCM_DTR | TIOCM_RTS | TIOCM_CAR | TIOCM_DSR |
+		    ((rd(uart, UMSTAT) & UMSTAT_CTS) ? TIOCM_CTS : 0);
+		error = 0;
+	}
+	tty_unlock(tp);
+	return error;
+}
+
+static int
+bt_cu_select(__unused dev_t dev, int rw, void *wql, proc_t p)
+{
+	return ttyselect(bt_tty, rw, wql, p);
+}
+
+static int
+bt_cu_stop(__unused struct tty *tp, __unused int rw)
+{
+	return 0;
+}
+
+static const struct cdevsw bt_cdevsw = {
+	.d_open = bt_cu_open, .d_close = bt_cu_close, .d_read = bt_cu_read, .d_write = bt_cu_write,
+	.d_ioctl = bt_cu_ioctl, .d_stop = bt_cu_stop, .d_reset = eno_reset, .d_ttys = NULL, .d_select = bt_cu_select,
+	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = D_TTY
+};
+
+/* the nodes, once: cu.bluetooth, uart.bluetooth and tty.bluetooth, one tty */
+static void
+bt_tty_publish(void)
+{
+	static const char *const names[] = { "cu.bluetooth", "uart.bluetooth", "tty.bluetooth" };
+	thread_t thread;
+	int major;
+
+	if (bt_tty != NULL) {
+		return;
+	}
+	bt_tty = ttymalloc();
+	major = cdevsw_add(-1, &bt_cdevsw);
+	if (bt_tty == NULL || major < 0) {
+		say("bt: tty: no tty or no device number: no /dev/cu.bluetooth\n");
+		return;
+	}
+	for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+		if (devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "%s", names[i]) == NULL) {
+			say("bt: tty: /dev/%s not made\n", names[i]);
+		}
+	}
+	if (kernel_thread_start(bt_tty_pump, NULL, &thread) == KERN_SUCCESS) {
+		thread_set_thread_name(thread, "bt-tty");
+		thread_deallocate(thread);
+		pump_running = true;
+	}
+	say("bt: tty: /dev/cu.bluetooth, /dev/uart.bluetooth and /dev/tty.bluetooth: the chip's H4 at %u baud, for user space\n",
+	    link_baud);
+}
+
+/* bt=7, after the patch: the rate raised, the address read, the chip kept for the console */
+static bool
+stage7(void)
+{
+	uint32_t baud = 4000000;
+	uint8_t ret[255], rl = 0;
+	char a[20];
+
+	PE_parse_boot_argn("bt_baud", &baud, sizeof(baud));
+	if (baud != BAUD && !raise_baud(baud)) {
+		struct hci_local_version v;
+
+		/* the chip may be at the new rate and we not: start it again, patch it again, and stay at 115200 */
+		say("bt: 7: %u baud did not work: the chip off and on again, patched again, kept at %u\n", baud, BAUD);
+		power_off("the rate did not take");
+		sleep_ms(200);
+		(void)uart_set_baud(BAUD);
+		link_baud = BAUD;
+		fifo_reset();
+		if (!power_on() || !identify("7", &v) || !patch() || !identify("7", &running)) {
+			return false;
+		}
+	}
+	if (hci(HCI_READ_BD_ADDR, NULL, 0, ret, &rl, CMD_TIMEOUT_MS, false) && rl >= 6) {
+		memcpy(own_addr, ret, 6);
+	}
+	addr_text(own_addr, a, sizeof(a));
+	say("bt: 7: the chip's address %s; kept powered for the USB console (\"bt\", \"bt scan\")\n", a);
+	if (PE_parse_boot_argn("bt_scan", &baud, sizeof(baud)) && baud != 0 && OSCompareAndSwap(0, 1, &busy)) {
+		bt_scan();
+		OSCompareAndSwap(1, 0, &busy);
+	}
+	resident = true;
+	if (!PE_parse_boot_argn("bt_tty", &baud, sizeof(baud)) || baud != 0) {
+		bt_tty_publish();
+		HakiosBTNodeStart(own_addr, link_baud);   /* hakios.bt_node.cpp: the "bluetooth" service bluetoothd looks for */
+	}
+	return true;
+}
+
 /* ---- the steps ----------------------------------------------------------------------------------------------- */
 
 static void
@@ -868,6 +1487,10 @@ bt_thread(void *arg, wait_result_t wr_unused)
 	    rom.lmp_subver & 0xff, rom.hci_rev & 0xfff, patched.lmp_subver >> 13, (patched.lmp_subver >> 8) & 0x1f,
 	    patched.lmp_subver & 0xff, patched.hci_rev & 0xfff, rom.hci_rev == patched.hci_rev && rom.lmp_subver ==
 	    patched.lmp_subver ? ": nothing changed, so the patch may not have taken" : "");
+	running = patched;
+	if (steps >= 7 && stage7()) {
+		goto out;
+	}
 done:
 	if (keep == 1 && powered) {
 		say("bt: bt_keep=1: the chip left powered\n");
@@ -891,8 +1514,8 @@ hakios_bcm4361_bt_init(void)
 	if (pe_arm_get_soc_base_phys() != 0x10000000) {
 		return;                 /* not the Exynos 9810's (the POCO's bt=N is hakios.bt.c's) */
 	}
-	if (steps > 6) {
-		steps = 6;
+	if (steps > 7) {
+		steps = 7;
 	}
 	if (kernel_thread_start(bt_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);

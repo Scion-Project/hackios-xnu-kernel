@@ -8,8 +8,11 @@ driver BT
 
 driver BCM4361_BT
 	file    bsd/dev/hakios.bcm4361_bt.c
+	file    iokit/Kernel/hakios.bt_node.cpp iokitcpp
 	requires EXYNOS_HSI2C
-	help    the Galaxy S9's Bluetooth, stage 1: the BCM4361's Bluetooth half on UART_BT, powered by BT_EN on the
-	help    PCAL6524 expander, HCI over H4, and Broadcom's patch from the phone (bt=N there, 6 steps: 1 a look, 2 the
-	help    expander, 3 the UART in loopback, 4 the chip powered, 5 HCI_Reset and its version, 6 the patch and the
-	help    version again). No host stack. Needs the phone's bcm4361B2 .hcd in fw-bt/ for step 6 (BLUETOOTH.md of starlte)
+	help    the Galaxy S9's Bluetooth: the BCM4361's Bluetooth half on UART_BT (out of its USI reset), powered by BT_EN on
+	help    the PCAL6524 expander, HCI over H4, Broadcom's patch from the phone, then 4 Mbaud with RTS/CTS (bt=N there, 7
+	help    steps: 1 a look, 2 the expander, 3 the UART in loopback, 4 the chip powered, 5 HCI_Reset and its version, 6 the
+	help    patch and the version again, 7 the rate raised and the chip kept: the USB console's "bt" and "bt scan", and
+	help    /dev/cu.bluetooth with a "bluetooth" registry entry for iOS's bluetoothd). No host stack in the kernel. Needs
+	help    the phone's bcm4361B2 .hcd (its VENDOR, with ufs=2, or fw-bt/; BLUETOOTH.md of starlte)

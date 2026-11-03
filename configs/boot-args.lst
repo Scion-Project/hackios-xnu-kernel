@@ -83,10 +83,13 @@ brcmfmac_tcm_idx	k
 brightness_bridge	u
 bt	k
 bt_again	k
+bt_baud	k
 bt_expander_reset	k
 bt_hcd	k
 bt_keep	k
 bt_module	k
+bt_scan	k
+bt_tty	k
 bt_uart_mhz	k
 bt_vendor	k
 bt_vendor_part	k
