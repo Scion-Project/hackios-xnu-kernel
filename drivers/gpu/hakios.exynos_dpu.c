@@ -287,10 +287,11 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 	say("exynos_dpu: probe: as expected (window %u on %s reading the boot framebuffer, command mode, running; the "
 	    "boot channel's IDMA enable reads %x, not checked): flips and the scaler may be asked for\n", win,
 	    type_name[boot_type], rd(idma(boot_type), IDMA_ENABLE));
-	/* (sys/hakios.exynos9810_mem.h; SCAN_SLOTS below is the same count) */
-	say("exynos_dpu: memory: scan-out buffers %#llx-%#llx, fb_zc's pool %#llx-%#llx (%llu slots of 12 MB)\n",
-	    EXYNOS9810_MEM_DPU_SCAN_PA, EXYNOS9810_MEM_DPU_SCAN_END - 1, EXYNOS9810_MEM_DPU_POOL_PA,
-	    EXYNOS9810_MEM_DPU_POOL_END - 1, EXYNOS9810_MEM_SIZE(DPU_POOL) / (12ULL << 20));
+	/* (sys/hakios.exynos9810_mem.h; scan_slots[] below, in the same order) */
+	say("exynos_dpu: memory: scan-out buffers %#llx-%#llx, fb_zc's pool four slots of 12 MB at %#llx %#llx %#llx %#llx "
+	    "(all below %#llx)\n", EXYNOS9810_MEM_DPU_SCAN_PA, EXYNOS9810_MEM_DPU_SCAN_END - 1, EXYNOS9810_MEM_DPU_POOL2_PA,
+	    EXYNOS9810_MEM_DPU_POOL0_PA, EXYNOS9810_MEM_DPU_POOL1_PA, EXYNOS9810_MEM_DPU_POOL1_PA + (12ULL << 20),
+	    EXYNOS9810_MEM_DISPLAY_LIMIT);
 	return 0;
 }
 
@@ -306,18 +307,41 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 #define SCAN_MEMORY_PA          EXYNOS9810_MEM_DPU_SCAN_PA      /* 0xD4000000 (sys/hakios.exynos9810_mem.h) */
 #define SCAN_MEMORY_END         EXYNOS9810_MEM_DPU_SCAN_END     /* 0xD7000000 */
 /*
- * The buffers above take 34 MB at most (fb_flip's of the panel's size) of their 48 MB. fb_zc has a pool of its own, the
- * top of the gap above the camera's, UFS's and Wi-Fi's memory (sys/hakios.exynos9810_mem.h): the window server's own
- * display surfaces are made of it (MiniIOSurface.cpp), so that VGF0 scans out the very surface CoreAnimation's frame was
- * drawn into, and nothing is copied (MiniIOMobileFramebuffer.cpp). Slots of 12 MB, one surface each: the iPhone's
- * 1125 x 2436 at 4544 or 4608 bytes a row is 11 MB. Three slots; CoreAnimation keeps two display surfaces.
+ * The buffers above take 34 MB at most (fb_flip's of the panel's size) of their 48 MB. fb_zc has a pool of its own: the
+ * window server's own display surfaces are made of it (MiniIOSurface.cpp), so that VGF0 scans out the very surface
+ * CoreAnimation's frame was drawn into, and nothing is copied (MiniIOMobileFramebuffer.cpp). Slots of 12 MB, one surface
+ * each: the iPhone's 1125 x 2436 at 4544 or 4608 bytes a row is 11 MB. Four slots, in the three free pieces of the gap
+ * below 0xE0000000 (sys/hakios.exynos9810_mem.h): what is drawn from there up does not reach the panel, and a slot that
+ * ran over it (0xDF800000, PR 165's second) showed the bottom quarter of every other frame black. CoreAnimation keeps
+ * two display surfaces: they take the first two, 0xDEC00000 and 0xD7000000, pieces the display has scanned out of before.
  */
-#define SCAN_POOL_PA            EXYNOS9810_MEM_DPU_POOL_PA      /* 0xDEC00000, above the camera's, UFS's and Wi-Fi's */
-#define SCAN_POOL_END           EXYNOS9810_MEM_DPU_POOL_END     /* 0xE1900000, secure_camera */
 #define SCAN_SLOT               (12ULL << 20)
-#define SCAN_SLOTS              ((unsigned)((SCAN_POOL_END - SCAN_POOL_PA) / SCAN_SLOT))
+static const uint64_t scan_slots[] = {
+	EXYNOS9810_MEM_DPU_POOL2_PA,                    /* 0xDEC00000, the one slot below 0xE0000000 there */
+	EXYNOS9810_MEM_DPU_POOL0_PA,                    /* 0xD7000000, between the scan-out buffers and the camera's */
+	EXYNOS9810_MEM_DPU_POOL1_PA,                    /* 0xDA400000 and 0xDB000000, between UFS's and Wi-Fi's */
+	EXYNOS9810_MEM_DPU_POOL1_PA + SCAN_SLOT,
+};
+#define SCAN_SLOTS              ((unsigned)(sizeof(scan_slots) / sizeof(scan_slots[0])))
+_Static_assert(EXYNOS9810_MEM_DPU_POOL2_PA + SCAN_SLOT <= EXYNOS9810_MEM_DPU_POOL2_END &&
+    EXYNOS9810_MEM_DPU_POOL0_PA + SCAN_SLOT <= EXYNOS9810_MEM_DPU_POOL0_END &&
+    EXYNOS9810_MEM_DPU_POOL1_PA + 2 * SCAN_SLOT <= EXYNOS9810_MEM_DPU_POOL1_END,
+    "exynos_dpu: every slot inside its piece of the pool (and so below 0xE0000000)");
+_Static_assert(SCAN_SLOTS == 4, "exynos_dpu: the probe's line names four slots");
 _Static_assert(SCAN_SLOTS >= 2 && SCAN_SLOTS <= 32, "exynos_dpu: the pool holds CoreAnimation's two surfaces, and pool_used's bits");
 static uint32_t pool_used;              /* a bit for every slot given out (SCAN_SLOTS <= 32) */
+
+/* the slot `phys` is in, or SCAN_SLOTS */
+static unsigned
+scan_slot_of(uint64_t phys)
+{
+	for (unsigned k = 0; k < SCAN_SLOTS; k++) {
+		if (phys >= scan_slots[k] && phys < scan_slots[k] + SCAN_SLOT) {
+			return k;
+		}
+	}
+	return SCAN_SLOTS;
+}
 static uint32_t scan_rowbytes;          /* the buffers' row length as attached: a flip back to them restores it */
 static uint32_t shown_rowbytes;         /* what the IDMA reads now */
 
@@ -360,7 +384,7 @@ hakios_scanout_carve(uint64_t bytes, uint64_t *phys)
 		while ((used & (1u << k)) == 0) {
 			if (__atomic_compare_exchange_n(&pool_used, &used, used | (1u << k), 0, __ATOMIC_SEQ_CST,
 			    __ATOMIC_SEQ_CST)) {
-				*phys = SCAN_POOL_PA + SCAN_SLOT * k;
+				*phys = scan_slots[k];
 				return 0;
 			}
 		}
@@ -372,7 +396,7 @@ void
 hakios_scanout_uncarve(uint64_t phys)
 {
 	if (hakios_scanout_carved(phys)) {
-		unsigned k = (unsigned)((phys - SCAN_POOL_PA) / SCAN_SLOT);
+		unsigned k = scan_slot_of(phys);
 
 		__atomic_fetch_and(&pool_used, ~(1u << k), __ATOMIC_SEQ_CST);
 	}
@@ -382,7 +406,7 @@ hakios_scanout_uncarve(uint64_t phys)
 int
 hakios_scanout_carved(uint64_t phys)
 {
-	return probed > 0 && phys >= SCAN_POOL_PA && phys < SCAN_POOL_PA + SCAN_SLOT * SCAN_SLOTS;
+	return probed > 0 && scan_slot_of(phys) < SCAN_SLOTS;
 }
 
 /*
