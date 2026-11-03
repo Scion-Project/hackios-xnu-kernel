@@ -63,6 +63,10 @@
  *                     hands it here; it goes out framed as a shot's does, after the camera's log lines. "tp": CSIS1's
  *                     test pattern instead of the sensor. A capture that fails says "usb: camshot failed: ..." with
  *                     the link's and the WDMA's status registers instead. tools/usb-shot.py --cam
+ *   irshot [N]        a picture from the Galaxy S9's iris camera (hakios.exynos_iris.c, boot-arg iris_s9=5): its
+ *                     thread powers the S5K5F1 up, streams it (its IR LED pulsing with each frame) for one frame at the
+ *                     most iris_s9_ms long, powers it down, and hands every Nth pixel (N of 2-8, 2 when not given:
+ *                     1200 x 1200) here as grey RGB; it goes out as a camshot's does. tools/usb-shot.py --iris
  *   ufs               what the storage's ufs=3 did (hakios_ufs_summary in hakios.ufs.c): the step reached, the
  *                     self-test's and the fence test's results, the mode (native, or fallen back to ufs=2 and why),
  *                     reads, writes and refusals with the first three refusals' reasons. Said by itself too when
@@ -894,6 +898,36 @@ hakios_usb_picture(uintptr_t rgb, uint32_t width, uint32_t height, const char *w
 }
 
 const char *hakios_exynos_camera_shot(uint32_t n, int pattern);         /* hakios.exynos_camera.c (or the stub) */
+const char *hakios_exynos_iris_shot(uint32_t n);                         /* hakios.exynos_iris.c (or the stub) */
+
+/* the console's "irshot [N]": asked of the iris camera's thread, which sends the picture when it has one */
+static void
+irshot_begin(const char *arg)
+{
+	uint32_t n = 0;
+	const char *no;
+
+	for (; *arg >= '0' && *arg <= '9' && n < 1000; arg++) {
+		n = n * 10 + (uint32_t)(*arg - '0');
+	}
+	if (n == 0) {
+		n = 2;
+	}
+	if (n < 2 || n > 8 || *arg != 0) {
+		con("usb: irshot failed: irshot [N]: N from 2 to 8 (2: 1200 x 1200)\n");
+		return;
+	}
+	if (os_atomic_load(&shot.phase, acquire) != SHOT_OFF) {
+		con("usb: irshot failed: a picture is on its way already\n");
+		return;
+	}
+	no = hakios_exynos_iris_shot(n);
+	if (no != NULL) {
+		con("usb: irshot failed: %s\n", no);
+		return;
+	}
+	con("usb: irshot: asked of the iris camera (N = %u); its log, then the picture\n", n);
+}
 
 /* the console's "camshot [N] [tp]": asked of the camera's thread, which sends the picture when it has one */
 static void
@@ -1312,6 +1346,7 @@ console(char *line)
 		con("usb: help, stat, uptime, sysctl NAME, sysctl NAME=N, bl (the panel's brightness), bl N (set it, 0-255), "
 		    "log (the kernel's log again from its start), shot [N] (the panel's picture, binary: tools/usb-shot.py), "
 		    "camshot [N] [tp] (the S9's front camera, cam_s9=6: tools/usb-shot.py --cam), "
+		    "irshot [N] (the S9's iris camera, iris_s9=5: tools/usb-shot.py --iris), "
 		    "ufs (the storage's ufs=3 summary), "
 		    "abox [tone [S] | rec [S] | r BLOCK OFF [N] | w BLOCK OFF VALUE | set NAME VALUE] (the S9's speaker path, abox=N; "
 		    "rec: S seconds of the codec's microphone, sent as a camshot's bytes), "
@@ -1375,6 +1410,8 @@ console(char *line)
 		shot_begin(arg);
 	} else if (strcmp(line, "camshot") == 0) {
 		camshot_begin(arg);
+	} else if (strcmp(line, "irshot") == 0) {
+		irshot_begin(arg);
 	} else if (strcmp(line, "abox") == 0) {
 		hakios_abox_console(arg);
 	} else if (strcmp(line, "codec") == 0) {

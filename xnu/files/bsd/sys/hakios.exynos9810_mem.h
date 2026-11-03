@@ -13,7 +13,8 @@
  *   0xD0000000 - 0xD3FFFFFF   the loader's moved payload and the panic log (xnuloader/loader.c, payload_home)
  *   0xD4000000 - 0xD6FFFFFF   the DECON's scan-out buffers: fb_flip's two, fb_dpp's three (hakios.exynos_dpu.c)
  *   0xD7000000 - 0xD7FFFFFF   the display's pool for fb_zc's surfaces, its first part: one slot of 12 MB
- *   0xD8000000 - 0xD9FFFFFF   the front camera's ring, still and picture (hakios.exynos_camera.c)
+ *   0xD8000000 - 0xD9FFFFFF   the front camera's ring, still and picture (hakios.exynos_camera.c); its first 16 MB also
+ *                             the iris camera's raw frame and picture (hakios.exynos_iris.c: the two never run together)
  *   0xDA000000 - 0xDA3FFFFF   UFS's own-mode list, descriptors and buffers (hakios.ufshc.c, ufs=3)
  *   0xDA400000 - 0xDBFFFFFF   the display's pool, its second part: two slots
  *   0xDC000000 - 0xDEBFFFFF   Wi-Fi's DMA pool when wifi_dma_at=0xDC000000 is given (hakios.lx.c: 44 MB; off by default)
@@ -30,7 +31,8 @@
  * (11.07 MB), the last 24% of the rows. On the panel that part was black on every other frame, the right picture on
  * the others (morning-1103: "the bottom quarter of the screen keeps flashing"), with no error bit in VGF0's IDMA or
  * DPP; with fb_zc=0 (frames copied into the buffers at 0xD4000000) it did not. So every range the display scans out
- * ends at 0xE0000000 at the latest, checked below.
+ * ends at 0xE0000000 at the latest, checked below. The CPU does not get that memory either: on 3 November the iris
+ * camera's buffer at 0xE0000000, written with 0xA5 through hakios_physmap_wc(), read back 0.
  *
  * Each driver takes its range from here (the display, the camera, UFS) and the checks at the end hold the table together
  * at build time. Until 3 November the display's pool ran from 0xD7000000 to secure_camera (14 slots), across the
@@ -59,6 +61,8 @@
 #define EXYNOS9810_MEM_DPU_POOL2_PA     0xDEC00000ULL   /* fb_zc's surfaces: one slot */
 #define EXYNOS9810_MEM_DPU_POOL2_END    0xE0000000ULL
 #define EXYNOS9810_MEM_DISPLAY_LIMIT    0xE0000000ULL   /* nothing the display scans out from here up */
+#define EXYNOS9810_MEM_IRIS_PA          EXYNOS9810_MEM_CAMERA_PA   /* the iris camera's frame: never with the front camera */
+#define EXYNOS9810_MEM_IRIS_END         (EXYNOS9810_MEM_CAMERA_PA + 0x1000000ULL)
 #define EXYNOS9810_MEM_GAP_END          0xE1900000ULL   /* secure_camera */
 #define EXYNOS9810_MEM_MODEM_PA         0xF0000000ULL   /* modem_if, cp_ram_logging: keep out */
 #define EXYNOS9810_MEM_MODEM_END        0xFB200000ULL
@@ -80,11 +84,13 @@ _Static_assert(EXYNOS9810_MEM_BEFORE(WIFI_DMA, DPU_POOL2), "exynos9810 memory: W
 _Static_assert(EXYNOS9810_MEM_DPU_SCAN_END <= EXYNOS9810_MEM_DISPLAY_LIMIT &&
     EXYNOS9810_MEM_DPU_POOL0_END <= EXYNOS9810_MEM_DISPLAY_LIMIT && EXYNOS9810_MEM_DPU_POOL1_END <= EXYNOS9810_MEM_DISPLAY_LIMIT &&
     EXYNOS9810_MEM_DPU_POOL2_END <= EXYNOS9810_MEM_DISPLAY_LIMIT, "exynos9810 memory: the display scans out from 0xE0000000 up");
+_Static_assert(EXYNOS9810_MEM_IRIS_END <= EXYNOS9810_MEM_CAMERA_END, "exynos9810 memory: the iris camera's is more than the front camera's");
 _Static_assert(EXYNOS9810_MEM_DISPLAY_LIMIT <= EXYNOS9810_MEM_GAP_END, "exynos9810 memory: the display's limit is past secure_camera");
 _Static_assert(EXYNOS9810_MEM_GAP_END <= EXYNOS9810_MEM_MODEM_PA, "exynos9810 memory: the gap runs into the modem's");
 _Static_assert(EXYNOS9810_MEM_BEFORE(MODEM, ABOX), "exynos9810 memory: the modem's runs into ABOX's");
 _Static_assert(EXYNOS9810_MEM_ABOX_END <= 0x100000000ULL, "exynos9810 memory: above 4 GB");
 _Static_assert(EXYNOS9810_MEM_SIZE(CAMERA) == (32ULL << 20) && EXYNOS9810_MEM_SIZE(UFS) == (4ULL << 20) &&
+    EXYNOS9810_MEM_SIZE(IRIS) == (16ULL << 20) &&
     EXYNOS9810_MEM_SIZE(WIFI_DMA) >= (44ULL << 20), "exynos9810 memory: the sizes are what their drivers lay out");
 
 #endif /* _SYS_HAKIOS_EXYNOS9810_MEM_H_ */

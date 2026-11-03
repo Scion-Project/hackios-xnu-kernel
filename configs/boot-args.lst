@@ -181,6 +181,7 @@ fbheight	k
 fbscale	k
 fbtrace	k
 fbwidth	k
+fp_s9	k
 fps_log	k
 gamut	l
 gl	u
@@ -246,6 +247,12 @@ haptic_effect	k
 hv_wdt_pet	k
 immediate_NMI	k
 ioaes	k
+iris_s9	k
+iris_s9_exp	k
+iris_s9_gain	k
+iris_s9_ispdiv	k
+iris_s9_ms	k
+iris_s9_smc	k
 isa_floor	k
 ksample	k
 ksample_us	k

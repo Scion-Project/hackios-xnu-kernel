@@ -54,6 +54,8 @@ void hakios_ssp_init(void);            /* boot-arg shub=N on the Galaxy S9: its 
 void hakios_s2mpb02_torch_quiesce(void); /* loader_return(): the S9's flashlight off, if it is lit */
 void hakios_exynos_camera_init(void);   /* boot-arg cam_s9=N on the Galaxy S9: its front camera, stage 1 */
 void hakios_exynos_camera_quiesce(void); /* loader_return(): the S9's front camera powered down, if it was powered */
+void hakios_exynos_iris_init(void);     /* boot-arg iris_s9=N on the Galaxy S9: its iris camera (S5K5F1) and IR LED */
+void hakios_exynos_iris_quiesce(void);  /* loader_return(): the S9's iris camera powered down, if it was powered */
 void hakios_exynos_pcie_quiesce(void); /* loader_return(): the S9's Wi-Fi chip in reset and unpowered, if it was powered */
 int hakios_panel_brightness(int level);        /* 0-255; 0 where a panel driver is built in, started and took it */
 void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage, read only, through the loader (ufs_shared_pa=) */

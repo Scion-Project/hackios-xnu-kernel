@@ -29,5 +29,15 @@ driver EXYNOS_CAMERA
 	help    run, /dev/hakios-camera for user space; devices/starlte/CAMERA.md has the plan). Its memory is 32 MB of
 	help    physical memory at 0xD8000000, below 4 GB and outside XNU's RAM, mapped through IOKit
 
+driver EXYNOS_IRIS
+	file    bsd/dev/hakios.exynos_iris.c
+	requires EXYNOS_HSI2C EXYNOS_ACPM
+	default n
+	help    the Galaxy S9's iris camera (iris_s9=N): the S5K5F1 infrared sensor on CSIS3, its supplies (the S2MPS18's
+	help    LDO39-41 through ACPM), its reset, iris_en and MCLK2; the IR LED's registers on the S2MPB02 set to the
+	help    kernel's own values only; one 2400 x 2400 RAW8 frame into memory, bounded in time (1 a look, 2 the ID, 3 the
+	help    LED's registers, 4 a frame, 5 that and then the USB console's irshot). Not with cam_s9= or torch= in the
+	help    same run. devices/starlte/CAMERA.md, "The iris camera"
+
 standard bsd/dev/hakios.sccam_torch.c
 	help    the phone's flashlight under AVF, through the Scion app's camera block (patch 1402)

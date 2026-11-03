@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 595 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 603 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (52)
+# Drivers built in (53)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -66,6 +66,9 @@ CONFIG_HAKIOS_S2MPB02_TORCH=y
 
 # the Galaxy S9's front camera, stages 1 to 3 (cam_s9=N): the S5K3H1's supplies on the S2MPB02, its reset and MCLK, ... [hakios.exynos_camera.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 # CONFIG_HAKIOS_EXYNOS_CAMERA is not set
+
+# the Galaxy S9's iris camera (iris_s9=N): the S5K5F1 infrared sensor on CSIS3, its supplies (the S2MPS18's LDO39-41 ... [hakios.exynos_iris.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C, CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_EXYNOS_IRIS is not set
 
 # the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps ... [hakios.socinfo.c]
 CONFIG_HAKIOS_SOCINFO=y
@@ -1531,7 +1534,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (87)
+# User space (94)
 #
 
 # read by inject_sb.c (user space)
@@ -1636,6 +1639,9 @@ CONFIG_MODEM_AGAIN=y
 # read by 1507-esslog-exynos-snapshot.patch, 1509-m3-diag-and-pan-off.patch (kernel)
 # CONFIG_ESSLOG is not set
 
+# the rear fingerprint sensor's SPI1, whose it is (1 read; 2 also one write each, read back, put back)
+# CONFIG_FP_S9 is not set
+
 # not even with a GPU; gl=1: also without one, by Mesa's software driver (slow; for working on eagl.c in QEMU)
 # CONFIG_GL is not set
 
@@ -1683,6 +1689,24 @@ CONFIG_MODEM_AGAIN=y
 
 # no IOAESAccelerator at all, as the kernel was before this driver
 # CONFIG_IOAES is not set
+
+# read by hakios.exynos_iris.c (kernel)
+# CONFIG_IRIS_S9 is not set
+
+# the exposure in lines of 6.56 us (default the table's 0x0339, 825; at most 5075)
+# CONFIG_IRIS_S9_EXP is not set
+
+# the analog gain, 0x20 being 1x (default 0x20, at most 0x200)
+# CONFIG_IRIS_S9_GAIN is not set
+
+# read by hakios.exynos_iris.c (kernel)
+# CONFIG_IRIS_S9_ISPDIV is not set
+
+# how long a capture may stream at most (default 600, 100 to 2000)
+# CONFIG_IRIS_S9_MS is not set
+
+# the secure monitor's camera calls around the run (0 none; 1 PREPARE; 2 also ISPPRE; 3 SYSREG_PROT)
+# CONFIG_IRIS_S9_SMC is not set
 
 # read by 1510-isa-floor.patch (kernel)
 # CONFIG_ISA_FLOOR is not set

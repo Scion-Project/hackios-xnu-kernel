@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A picture of the phone's screen, or of its front camera, over the USB console (drivers/core/hakios.dwc3.c, usb_gadget=5).
 
-usage: tools/usb-shot.py [-p PORT] [-n N] [-o FILE.png] [--log FILE] [--timeout S] [--raw FILE] [--cam [--tp]]
+usage: tools/usb-shot.py [-p PORT] [-n N] [-o FILE.png] [--log FILE] [--timeout S] [--raw FILE] [--cam [--tp] | --iris]
 
 Sends "shot N" to the kernel's line console and reads the answer from the same serial port: the log up to the
 command, then a framed picture,
@@ -22,6 +22,8 @@ and writes it as a PNG (zlib only, no PIL). N (1-16, default 4) keeps every Nth 
                the whole 1632x1224 at N=1 (the default with --cam, 6 MB), every Nth pixel for N > 1. A grey-world
                balance, a saturation, no colour matrix of the module's, the picture as the sensor sees it
                (mirrored). The camera's log lines come first and are printed here
+  --iris       the Galaxy S9's iris camera ("irshot N": boot-arg iris_s9=5, hakios.exynos_iris.c): one infrared
+               frame, every Nth pixel (N 2-8, default 2: 1200x1200), grey, its IR LED pulsing while it is taken
   --tp         with --cam: CSIS1's test pattern instead of the sensor (the DMA and the debayer without the sensor)
   --repeat S   ask again S seconds after each picture, into the same -o file, until ^C: with --cam, a slow preview
                (each camshot powers the camera up and down again; an image viewer that reloads the file shows it)
@@ -126,7 +128,7 @@ def one(port, args, word, out, log):
             if b"usb: " + word + b" failed" in text:
                 print(text.decode("ascii", "replace"), file=sys.stderr)
                 return 1
-            if b"usb: " + word in text or b"usb> " + word in text or (args.cam and (b"exynos_camera:" in text or b"exynos-camera:" in text)):
+            if b"usb: " + word in text or b"usb> " + word in text or ((args.cam and (b"exynos_camera:" in text or b"exynos-camera:" in text)) or (args.iris and b"exynos_iris:" in text)):
                 print(text.decode("ascii", "replace"), file=sys.stderr)
         if header is None and not port.fill(deadline):
             print("usb-shot: no SHOT header in %.0f s (is another program reading %s?)" % (args.timeout, path),
@@ -179,23 +181,28 @@ def main():
     ap.add_argument("--raw")
     ap.add_argument("--timeout", type=float)
     ap.add_argument("--cam", action="store_true", help="the S9's front camera (camshot), not the screen")
+    ap.add_argument("--iris", action="store_true", help="the S9's iris camera (irshot), not the screen")
     ap.add_argument("--tp", action="store_true", help="with --cam: CSIS1's test pattern instead of the sensor")
     ap.add_argument("--repeat", type=float, metavar="S", help="ask again every S seconds, into the same file, until ^C")
     args = ap.parse_args()
     if args.tp and not args.cam:
         ap.error("--tp goes with --cam")
+    if args.iris and args.cam:
+        ap.error("--iris or --cam, not both")
     if args.n is None:
-        args.n = 1 if args.cam else 4
+        args.n = 1 if args.cam else (2 if args.iris else 4)
     if args.timeout is None:
-        args.timeout = 40.0 if args.cam else 20.0
-    word = b"camshot" if args.cam else b"shot"
+        args.timeout = 40.0 if args.cam or args.iris else 20.0
+    word = b"camshot" if args.cam else (b"irshot" if args.iris else b"shot")
+    if args.iris and not 2 <= args.n <= 8:
+        ap.error("with --iris, N is from 2 to 8")
     if not 1 <= args.n <= 16:
         ap.error("N is from 1 to 16")
     path = args.port or find_port()
     if path is None:
         print("usb-shot: no /dev/cu.usbmodem* or /dev/ttyACM*: is the phone up with usb_gadget=5?", file=sys.stderr)
         return 2
-    out = args.out or time.strftime(("cam-" if args.cam else "shot-") + "%Y%m%d-%H%M%S.png")
+    out = args.out or time.strftime(("cam-" if args.cam else ("iris-" if args.iris else "shot-")) + "%Y%m%d-%H%M%S.png")
     log = open(args.log, "ab") if args.log else None
     port = Port(path)
     count = 0
