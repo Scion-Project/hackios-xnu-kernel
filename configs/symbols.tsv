@@ -206,6 +206,7 @@ HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c
 IMMEDIATE_NMI	arg	immediate_NMI	User space	k	1509-m3-diag-and-pan-off.patch	
 IOAES	arg	ioaes	User space	k	MiniIOAESAccelerator.cpp	no IOAESAccelerator at all, as the kernel was before this driver
 ISA_FLOOR	arg	isa_floor	User space	k	1510-isa-floor.patch	
+LOADER_PLATFORM	arg	loader_platform	Loader	l	loader.c	
 M3_DIAG	arg	m3_diag	User space	k	1509-m3-diag-and-pan-off.patch	
 M3_FLUSH	arg	m3_flush	User space	k	1509-m3-diag-and-pan-off.patch	
 M3_IDS	arg	m3_ids	User space	k	1509-m3-diag-and-pan-off.patch	

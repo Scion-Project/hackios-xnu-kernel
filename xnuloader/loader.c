@@ -729,6 +729,7 @@ struct platform {
 	uint64_t payload_home;           /* not 0: the payload is moved here (or a 64 MiB step above) from PAYLOAD_BASE at the start */
 	struct { uint64_t base, size; const char *what; } keep_out[2];  /* RAM neither UEFI nor XNU may have: reserved at the start */
 	const char *data_part;           /* a port with no darwin: the one partition, by name, ufs_write=1 may write (block_is_data_part) */
+	const struct platform *sibling_of; /* not NULL: told apart from this one only by loader_platform= (platform_sibling) */
 };
 
 static const struct platform platform_qemu_virt = {
@@ -840,6 +841,46 @@ static const struct platform platform_starlte = {
 	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
 };
 
+/*
+ * The Galaxy S9+ (SM-G965F, star2lte) and the Galaxy Note9 (SM-N960F, crownlte): the S9's SoC, board and memory map. Every
+ * address above is the same in their device trees (Samsung's BSP, exynos9810-star2lte_eur_open_26.dts and
+ * exynos9810-crownlte_eur_open_26.dts: the GIC, the timer, the PMU, both cluster watchdogs, reserved-memory's modem_if,
+ * cp_ram_logging, abox_rmem, exynos_ss and log_pstore, secure_camera), and the panel is 1440 x 2960 on all three, its buffer
+ * at 0xCC000000 (the S9+'s seen there by the WoA port for it, ntdevlabs/exynos9810-woa; the Note9's not seen by anyone).
+ * Their RAM (6 GB; the Note9 6 or 8 GB) is UEFI's to report: Silicium's RamManagerLib reads its size from what S-Boot
+ * left at NS_IRAM + 0x848, and the kernel's window is the largest free block, at most MAX_MEM_SIZE. So only the name
+ * differs, and with it what the drivers that look at /arm-io's device_type do (the MAX77705's battery). The framebuffer
+ * cannot tell them from the S9: the device's own image says which it is (loader_platform=, devices/<name>/mkimage.sh),
+ * and without that they run as the S9. Written, not seen: nobody has run this on an S9+ or a Note9.
+ */
+static const struct platform platform_star2lte = {
+	.name = "star2lte", .io_base = 0x10000000, .io_size = 0x10000000,
+	.gic_dist = 0x10101000, .gic_cpu = 0x10102000, .uart = 0,
+	.cores = 8, .core_mpidr = (const uint32_t[]){ 0x000, 0x001, 0x002, 0x003, 0x100, 0x101, 0x102, 0x103 },
+	.small_cores = 0x0f, .timer_hz = 26000000, .fb_base = 0xCC000000,
+	.ram_log = 0xFED14000, .ram_log_size = 0x4000, .ram_dump = 0xFED10000, .ram_dump_size = 0x4000,
+	.log_other_cpu = 1, .recovery_pmu = 0x14060000, .pmu_swreset = 0x400, .data_part = "USERDATA",
+	.exynos_wdt = 0x10060000, .exynos_wdt_other = 0x10050000, .exynos_wdt_pmu_bit = 23,
+	.parked_cores = 0x2, .affinity_unreliable = 1,
+	.payload_home = 0xD0000000,
+	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
+	.sibling_of = &platform_starlte,
+};
+
+static const struct platform platform_crownlte = {
+	.name = "crownlte", .io_base = 0x10000000, .io_size = 0x10000000,
+	.gic_dist = 0x10101000, .gic_cpu = 0x10102000, .uart = 0,
+	.cores = 8, .core_mpidr = (const uint32_t[]){ 0x000, 0x001, 0x002, 0x003, 0x100, 0x101, 0x102, 0x103 },
+	.small_cores = 0x0f, .timer_hz = 26000000, .fb_base = 0xCC000000,
+	.ram_log = 0xFED14000, .ram_log_size = 0x4000, .ram_dump = 0xFED10000, .ram_dump_size = 0x4000,
+	.log_other_cpu = 1, .recovery_pmu = 0x14060000, .pmu_swreset = 0x400, .data_part = "USERDATA",
+	.exynos_wdt = 0x10060000, .exynos_wdt_other = 0x10050000, .exynos_wdt_pmu_bit = 23,
+	.parked_cores = 0x2, .affinity_unreliable = 1,
+	.payload_home = 0xD0000000,
+	.keep_out = { { 0xF0000000, 0x0B200000, "CP: modem_if, cp_ram_logging" }, { 0xFB200000, 0x02800000, "ABOX: abox_rmem" } },
+	.sibling_of = &platform_starlte,
+};
+
 static const struct platform platform_frankel = {
 	/*
 	 * Google Pixel 10 (frankel), Tensor G5 ("laguna", lga), bare metal. There is no UEFI for this phone: Google's boot
@@ -904,6 +945,12 @@ static const struct platform *const platforms[] = {
 	&platform_qemu_lga,
 };
 
+/* ... and those the framebuffer does not tell apart from one of these, named on the payload's command line instead */
+static const struct platform *const sibling_platforms[] = {
+	&platform_star2lte,
+	&platform_crownlte,
+};
+
 /* Core N's MPIDR (its affinity fields), and the number of the core with that MPIDR (-1: none of the platform's) */
 static uint64_t
 core_mpidr(const struct platform *plat, int core)
@@ -920,6 +967,37 @@ core_number(const struct platform *plat, uint64_t mpidr)
 		}
 	}
 	return -1;
+}
+
+static int starts_with(const char *s, const char *prefix);
+
+/*
+ * loader_platform=NAME on the payload's command line: the platform of that name in place of `plat`, if it is one of
+ * plat's siblings (sibling_platforms: the same SoC, board and memory map, only the name differs), else `plat` as it was.
+ * Without the argument nothing changes.
+ */
+static const struct platform *
+platform_sibling(const struct platform *plat, const char *cmdline)
+{
+	for (const char *c = cmdline; c != NULL && *c; c++) {
+		if ((c != cmdline && c[-1] != ' ') || !starts_with(c, "loader_platform=")) {
+			continue;
+		}
+		const char *want = c + 16;
+		for (unsigned i = 0; i < sizeof(sibling_platforms) / sizeof(sibling_platforms[0]); i++) {
+			const char *n = sibling_platforms[i]->name;
+			unsigned k = 0;
+
+			while (n[k] != 0 && want[k] == n[k]) {
+				k++;
+			}
+			if (n[k] == 0 && (want[k] == 0 || want[k] == ' ') && sibling_platforms[i]->sibling_of == plat) {
+				return sibling_platforms[i];
+			}
+		}
+		return plat;
+	}
+	return plat;
 }
 
 /* QEMU virt started with gic-version=2 (qemu/run.sh, QEMU_GIC=2): its GICv2's two frames */
@@ -5721,6 +5799,12 @@ efi_main(efi_handle image, efi_system_table *st)
 	wdt_arm();
 
 	int have_payload = parse_payload(&pi, 0);
+	if (have_payload && platform_sibling(PLAT, pi.cmdline) != PLAT) {
+		/* the S9+ or the Note9 (loader_platform=): the S9's description in all but the name, so nothing above changes */
+		print("platform %s (loader_platform=), the description of %s with its own name\n",
+		    platform_sibling(PLAT, pi.cmdline)->name, PLAT->name);
+		PLAT = platform_sibling(PLAT, pi.cmdline);
+	}
 	exynos_wdt_start(have_payload ? pi.cmdline : "");   /* the Galaxy S9's hardware watchdog, and INFORM3 */
 	/*
 	 * The Galaxy S9: the payload out of the CP's region, which is then kept from UEFI and XNU. Here, under the watchdog
