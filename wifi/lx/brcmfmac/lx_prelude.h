@@ -78,6 +78,20 @@ bool	 lx_netif_carrier_ok(struct net_device *ndev);
 #define unregister_netdev(ndev)					lx_unregister_netdev(ndev)
 #define cfg80211_unregister_netdevice(ndev)			lx_unregister_netdev(ndev)
 #define netif_rx(skb)						lx_netif_rx(skb)
+
+/*
+ * The network device's address: LinuxKPI's eth_hw_addr_set() is a TODO that does nothing, so dev_addr stayed zero, and
+ * the handshake's own address with it (lx_cfg.c gives lx_wpa.c ndev->dev_addr): the access point's check of message 2's
+ * MIC failed, and it sent message 1 again until it gave up (wifi-d3, reason 15). And the station's address, the frames'
+ * source.
+ */
+static inline void
+lx_eth_hw_addr_set(struct net_device *ndev, const u8 *addr)
+{
+	memcpy(ndev->dev_addr, addr, ETH_ALEN);
+}
+#undef eth_hw_addr_set
+#define eth_hw_addr_set(ndev, addr)				lx_eth_hw_addr_set(ndev, addr)
 #define eth_type_trans(skb, ndev)				lx_eth_type_trans(skb, ndev)
 #define netif_carrier_on(ndev)					lx_netif_carrier(ndev, true)
 #define netif_carrier_off(ndev)					lx_netif_carrier(ndev, false)

@@ -1,0 +1,74 @@
+What brcmfmac's transmit asks of a buffer (HakiOS): only that it has room for the driver's header, not that it is
+not a clone, which LinuxKPI cannot tell (lx-tx.patch). And the data path's first steps said: the flow rings asked
+for and made, the first frames posted and the firmware's status for each.
+--- a/brcmfmac/core.c
++++ b/brcmfmac/core.c
+@@ -328,8 +328,13 @@
+ 		goto done;
+ 	}
+ 
+-	/* Make sure there's enough writeable headroom */
+-	if (skb_headroom(skb) < drvr->hdrlen || skb_header_cloned(skb)) {
++	/*
++	 * Make sure there's enough writeable headroom. (HakiOS) LinuxKPI's skb_header_cloned() is a TODO that says
++	 * true of every buffer, and its pskb_expand_head() always fails, so every frame sent was dropped here ("failed
++	 * to expand headroom"; the four-way handshake's message 2 among them). Nothing here clones a buffer, and the
++	 * frames given to the driver (lx_cfg.c's frame_send()) leave room for its header: only too little room counts.
++	 */
++	if (skb_headroom(skb) < drvr->hdrlen) {
+ 		head_delta = max_t(int, drvr->hdrlen - skb_headroom(skb), 0);
+ 
+ 		brcmf_dbg(INFO, "%s: %s headroom\n", brcmf_ifname(ifp),
+--- a/brcmfmac/msgbuf.c
++++ b/brcmfmac/msgbuf.c
+@@ -299,6 +299,9 @@
+ #define LX_MSGBUF_SAY	12
+ #define LX_MSGBUF_SAY_SHORT	160	/* (then a line each, without the bytes) */
+ static u32 lx_msgbuf_ctl_said, lx_msgbuf_ioctl_said, lx_msgbuf_events_said;
++/* (HakiOS, lx-tx.patch) the data path's first steps said: flow rings asked for and made, frames posted, their status */
++#define LX_MSGBUF_TX_SAY	24
++static u32 lx_msgbuf_flow_said, lx_msgbuf_post_said, lx_msgbuf_status_said;
+ 
+ static void lx_msgbuf_hex(const char *what, const void *data, u32 len)
+ {
+@@ -701,6 +704,10 @@
+ 		  flowid, work->da, create->tid, work->ifidx);
+ 
+ 	err = brcmf_commonring_write_complete(commonring);
++	if (lx_msgbuf_flow_said++ < LX_MSGBUF_TX_SAY)
++		pr_err("lx: msgbuf: flow ring %u asked for (tid %u, interface %u, %u x %u bytes at %#llx): %d\n", flowid,
++		       create->tid, work->ifidx, BRCMF_H2D_TXFLOWRING_MAX_ITEM, BRCMF_H2D_TXFLOWRING_ITEMSIZE,
++		       (unsigned long long)address, err);
+ 	brcmf_commonring_unlock(commonring);
+ 	if (err) {
+ 		bphy_err(drvr, "Failed to write commonring\n");
+@@ -822,6 +829,10 @@
+ 		tx_msghdr->metadata_buf_addr.high_addr = 0;
+ 		tx_msghdr->metadata_buf_addr.low_addr = 0;
+ 		atomic_inc(&commonring->outstanding_tx);
++		if (lx_msgbuf_post_said++ < LX_MSGBUF_TX_SAY)
++			pr_err("lx: msgbuf: frame posted on flow ring %u: id %u, type %#06x, %u bytes at %#llx, priority %u\n",
++			       flowid, pktid + 1, be16_to_cpu(((struct ethhdr *)skb->data)->h_proto), skb->len,
++			       (unsigned long long)address, skb->priority);
+ 		if (count >= BRCMF_MSGBUF_TX_FLUSH_CNT2) {
+ 			brcmf_commonring_write_complete(commonring);
+ 			count = 0;
+@@ -952,6 +963,9 @@
+ 	flowid -= BRCMF_H2D_MSGRING_FLOWRING_IDSTART;
+ 	skb = brcmf_msgbuf_get_pktid(msgbuf->drvr->bus_if->dev,
+ 				     msgbuf->tx_pktids, idx);
++	if (lx_msgbuf_status_said++ < LX_MSGBUF_TX_SAY)
++		pr_err("lx: msgbuf: frame %u on flow ring %u: status %u%s\n", idx + 1, flowid,
++		       le16_to_cpu(tx_status->compl_hdr.status), skb ? "" : " (NO SUCH FRAME)");
+ 	if (!skb)
+ 		return;
+ 
+@@ -1315,6 +1329,8 @@
+ 	flowid = le16_to_cpu(flowring_create_resp->compl_hdr.flow_ring_id);
+ 	flowid -= BRCMF_H2D_MSGRING_FLOWRING_IDSTART;
+ 	status =  le16_to_cpu(flowring_create_resp->compl_hdr.status);
++	if (lx_msgbuf_flow_said++ < LX_MSGBUF_TX_SAY)
++		pr_err("lx: msgbuf: flow ring %u made: status %u\n", flowid, status);
+ 
+ 	if (status) {
+ 		bphy_err(drvr, "Flowring creation failed, code %d\n", status);
