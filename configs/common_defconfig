@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 538 symbols in 19 groups; 51 are set, 42 of them drivers built in.
+# 541 symbols in 19 groups; 51 are set, 42 of them drivers built in.
 #
 
 #
@@ -1212,7 +1212,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_SOC_SMEM is not set
 
 #
-# Cameras (20)
+# Cameras (23)
 #
 
 # the cameras (5 is what the README uses) [needs fw-camera/ from the phone]
@@ -1245,6 +1245,9 @@ CONFIG_MODEM_AGAIN=y
 # the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1
 # CONFIG_CAM_S9 is not set
 
+# the sensor's 7-bit I2C address, if not 0x35 (the device tree's) and not found by the scan
+# CONFIG_CAM_S9_ADDR is not set
+
 # camshot's Bayer order: 0 RGGB, 1 GRBG (the default, the sensor's), 2 GBRG, 3 BGGR
 # CONFIG_CAM_S9_BAYER is not set
 
@@ -1258,7 +1261,13 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_CAM_S9_IPCLK is not set
 
 # read by hakios.exynos_camera.c (kernel)
+# CONFIG_CAM_S9_MMU_PROBE is not set
+
+# read by hakios.exynos_camera.c (kernel)
 # CONFIG_CAM_S9_PACK12 is not set
+
+# the risky reads too, for the log: CMU_ISPPRE's whole Q-channel sweep with each DBG_NFO (+0x4000)
+# CONFIG_CAM_S9_PROBE is not set
 
 # camshot's bytes a line of the frame (default: 2040, MIPI's, or 2048 if the WDMA wrote more)
 # CONFIG_CAM_S9_STRIDE is not set
