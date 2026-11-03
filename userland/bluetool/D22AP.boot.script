@@ -1,0 +1,7 @@
+# BlueTool's "boot" for the Galaxy S9 (build.sh BT=1; BlueTool reads it as /etc/bluetool/D22AP.boot.script, D22AP
+# being the HW model MobileGestalt gives, through src/inject_bluetool.c). Apple's own boot loads Apple's firmware into
+# Apple's modules; the S9's BCM4361 has been powered, patched and raised to 4 Mbaud by the kernel already (bt=7). So:
+# open it through the kernel's com.apple.uart.bluetooth at the rate the "bluetooth" registry entry gives, and ask its
+# version, which says on the console that the chip answers.
+device -D -S
+hci info

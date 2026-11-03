@@ -5,9 +5,13 @@
  * bluetoothd 16.5 (iPhone X build) looks for a service named "bluetooth" (the device tree's node on an iPhone) and
  * takes the controller's address from its property local-mac-address; with none, or all zeros, it says "Not a valid
  * MAC address (all 00s)" and "No bluetooth on this device." and exits (seen on the phone, 3 November). Its transport
- * it takes from BT_HCI_TRANSPORT (H4 here, set by the job) and its serial port is /dev/cu.bluetooth, which the C driver
- * makes. So: the node's own service if the device tree has one, else ours, named "bluetooth", under the platform, with
- * the chip's address (in the order it is written, not HCI's) and transport-speed, the UART's rate.
+ * it takes from BT_HCI_TRANSPORT (H4:POSIX:com.apple.uart.bluetooth,4000000, set by the job: userland's BT=1), which
+ * opens the C driver's kernel control. BlueTool, through which bluetoothd runs its boot and init scripts first, looks
+ * the same service up: "device -D -S" opens the control at transport-speed (when the variable BT_BAUDRATE does not say
+ * otherwise), and transport-encoding, absent here, would make it AppleBT (6) or PCIe (7) instead of a UART (any other
+ * value, 8 when there is none). So: the node's own service if the device tree has one, else ours, named "bluetooth",
+ * under the platform, with the chip's address (in the order it is written, not HCI's) and transport-speed, the UART's
+ * rate.
  */
 
 #include <IOKit/IOLib.h>

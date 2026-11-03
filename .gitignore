@@ -64,6 +64,7 @@ __pycache__/
 !/userland/src/
 !/userland/libmini/
 !/userland/var/
+!/userland/bluetool/
 
 /sysimage/*
 !/sysimage/unpack.sh

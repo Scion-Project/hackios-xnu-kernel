@@ -14,5 +14,6 @@ driver BCM4361_BT
 	help    the PCAL6524 expander, HCI over H4, Broadcom's patch from the phone, then 4 Mbaud with RTS/CTS (bt=N there, 7
 	help    steps: 1 a look, 2 the expander, 3 the UART in loopback, 4 the chip powered, 5 HCI_Reset and its version, 6 the
 	help    patch and the version again, 7 the rate raised and the chip kept: the USB console's "bt" and "bt scan", and
-	help    /dev/cu.bluetooth with a "bluetooth" registry entry for iOS's bluetoothd). No host stack in the kernel. Needs
+	help    /dev/cu.bluetooth, the kernel control com.apple.uart.bluetooth that iOS's BlueTool and bluetoothd open, and a
+	help    "bluetooth" registry entry for bluetoothd; userland's BT=1 has iOS use it). No host stack in the kernel. Needs
 	help    the phone's bcm4361B2 .hcd (its VENDOR, with ufs=2, or fw-bt/; BLUETOOTH.md of starlte)
