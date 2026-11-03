@@ -221,6 +221,8 @@ HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c
 IMMEDIATE_NMI	arg	immediate_NMI	User space	k	1509-m3-diag-and-pan-off.patch	
 IOAES	arg	ioaes	User space	k	MiniIOAESAccelerator.cpp	no IOAESAccelerator at all, as the kernel was before this driver
 ISA_FLOOR	arg	isa_floor	User space	k	1510-isa-floor.patch	
+KSAMPLE	arg	ksample	Debugging	k	user_exception_trace.c	
+KSAMPLE_US	arg	ksample_us	Debugging	k	user_exception_trace.c	
 LOADER_PLATFORM	arg	loader_platform	Loader	l	loader.c	
 M3_DIAG	arg	m3_diag	User space	k	1509-m3-diag-and-pan-off.patch	
 M3_FLUSH	arg	m3_flush	User space	k	1509-m3-diag-and-pan-off.patch	
@@ -324,6 +326,7 @@ S6SY761_LDO	arg	s6sy761_ldo	Touch and buttons	k	hakios.s6sy761.c
 S6SY761_PRI	arg	s6sy761_pri	Touch and buttons	k	hakios.s6sy761.c	the polling thread's priority. Default 92 (BASEPRI_PREEMPT, as the display's presenter, fb_pri)
 S6SY761_STEPS	arg	s6sy761_steps	Touch and buttons	k	hakios.s6sy761.c	
 S6SY761_TRACE	arg	s6sy761_trace	Touch and buttons	k	hakios.s6sy761.c	the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate
+SB_FPS	arg	sb_fps	User space	u	inject_sb.c	
 SCCAM_ADDR	arg	sccam.addr	User space	k	1400-avf-scion-camera.patch,hakios.sccam_torch.c	
 SCCAM_H	arg	sccam.h	User space	k	1400-avf-scion-camera.patch	
 SCCAM_SIZE	arg	sccam.size	User space	k	1400-avf-scion-camera.patch	

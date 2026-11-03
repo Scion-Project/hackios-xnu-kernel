@@ -146,6 +146,78 @@ watch_main_loop(void)
 
 /* ---- methods of SpringBoard's classes, replaced --------------------------------------------------- */
 
+/*
+ * SpringBoard's own frame rate caps (boot-arg sb_fps=0 leaves them as Apple set them). Some of SpringBoard's animations
+ * ask CoreAnimation for fewer frames than the panel has, through their settings' frame rate range: the crossfade of the
+ * home screen's page dots and the search pill below the icons that follows every page's slide is
+ * CAFrameRateRangeMake(20, 30, 0) (-[SBFolderScrollAccessoryView _setUpAnimation], both pageControlFadeInSettings and
+ * auxiliaryViewFadeInSettings, Darwin userland 16.5, 20F66). CoreAnimation then gives SpringBoard's display link 30
+ * a second for as long as that animation runs: 400 to 700 ms after the finger lifts and again from 800 ms, half of
+ * all the refreshes missed in the USB console's swipe test (3 November: SpringBoard's commits 33.3 ms apart there,
+ * the swaps' own timestamps 33.3 ms apart, nothing late). On an iPhone the same 30 a second is a power saving. Here
+ * the ranges are raised, as they are set, so that they reach at least the panel's rate: a range whose most is under
+ * SB_FPS_FLOOR gets that as its most and as its preferred rate; one that already allows it is left alone.
+ */
+#define SB_FPS_FLOOR    60.0f
+typedef struct {
+	float minimum, maximum, preferred;
+} sb_frame_rate_range;
+static unsigned sb_fps_raised;
+
+static sb_frame_rate_range
+sb_fps_raise(sb_frame_rate_range range)
+{
+	if (range.maximum > 0.0f && range.maximum < SB_FPS_FLOOR) {
+		range.maximum = SB_FPS_FLOOR;
+		range.preferred = SB_FPS_FLOOR;
+		__atomic_fetch_add(&sb_fps_raised, 1, __ATOMIC_RELAXED);
+	}
+	return range;
+}
+
+/*
+ * -[SBFFluidBehaviorSettings setFrameRateRange:highFrameRateReason:] and -[SBFAnimationSettings ...]: the same, both
+ * "v32@0:8{CAFrameRateRange=fff}16I28". (Not their setPreferredFrameRateRange:, which takes the settings object that
+ * holds the range, "v24@0:8@16", set through key-value coding from -initWithDefaultValues.)
+ */
+static void (*original_fluid_set_range)(id self, SEL selector, sb_frame_rate_range range, unsigned reason);
+static void (*original_animation_set_range)(id self, SEL selector, sb_frame_rate_range range, unsigned reason);
+
+static void
+fluid_set_range(id self, SEL selector, sb_frame_rate_range range, unsigned reason)
+{
+	original_fluid_set_range(self, selector, sb_fps_raise(range), reason);
+}
+
+static void
+animation_set_range(id self, SEL selector, sb_frame_rate_range range, unsigned reason)
+{
+	original_animation_set_range(self, selector, sb_fps_raise(range), reason);
+}
+
+static IMP replace_method(const char *class_name, const char *selector, uintptr_t expected, IMP replacement);
+
+static void
+sb_fps_hooks(void)
+{
+	char args[1024] = "";
+	size_t size = sizeof(args) - 1;
+	const char *arg;
+
+	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && (arg = strstr(args, "sb_fps=0")) != NULL &&
+	    (arg == args || arg[-1] == ' ')) {
+		say("hakios: SpringBoard's own frame rate caps left as they are (sb_fps=0)\n");
+		return;
+	}
+	original_fluid_set_range = (void (*)(id, SEL, sb_frame_rate_range, unsigned))replace_method("SBFFluidBehaviorSettings",
+	    "setFrameRateRange:highFrameRateReason:", 0x18e62906cUL, (IMP)fluid_set_range);
+	original_animation_set_range = (void (*)(id, SEL, sb_frame_rate_range, unsigned))replace_method("SBFAnimationSettings",
+	    "setFrameRateRange:highFrameRateReason:", 0x18e5f6de8UL, (IMP)animation_set_range);
+	say("hakios: SpringBoard's frame rate caps raised to %.0f a second: fluid settings %s, animation settings %s "
+	    "(sb_fps=0: as Apple set them)\n", SB_FPS_FLOOR,
+	    original_fluid_set_range ? "yes" : "NO", original_animation_set_range ? "yes" : "NO");
+}
+
 extern const void *_dyld_get_shared_cache_range(size_t *length);
 
 #define CACHE_BASE 0x180000000UL                /* where the cache was built to be, before the slide */
@@ -2587,6 +2659,7 @@ hakios_springboard_init(void)
 		    sysctl_int("kern.hakios.cellular_dbm"), sysctl_int("kern.hakios.cellular_radio"));
 	}
 	cellular_hook();
+	sb_fps_hooks();
 	say("hakios: battery UI: shows%% %s, set-shows%% %s, bolt %s, chargePercent %s, setChargePercent %s, lockscreen ring %s\n",
 	    original_battery_view_shows_percentage ? "ok" : "NO",
 	    original_battery_view_set_shows_percentage ? "ok" : "NO",

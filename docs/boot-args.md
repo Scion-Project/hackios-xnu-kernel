@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **515 arguments**: 450 read by the kernel, 17 by the loader, 59 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **518 arguments**: 452 read by the kernel, 17 by the loader, 60 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -500,10 +500,12 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `systrace_name` | K | `(patch)` | `CONFIG_SYSTRACE_NAME` |  |
 | `xpcproxy_idversion` | K | `(patch)` | `CONFIG_XPCPROXY_IDVERSION` |  |
 
-## Debugging (6)
+## Debugging (8)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
+| `ksample` | K | `user_exception_trace.c` | `CONFIG_KSAMPLE` |  |
+| `ksample_us` | K | `user_exception_trace.c` | `CONFIG_KSAMPLE_US` |  |
 | `ustacks` | K | `user_exception_trace.c` | `CONFIG_USTACKS` |  |
 | `ustacks_at` | K | `user_exception_trace.c` | `CONFIG_USTACKS_AT` |  |
 | `ustacks_count` | K | `user_exception_trace.c` | `CONFIG_USTACKS_COUNT` |  |
@@ -524,7 +526,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (79)
+## User space (80)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -585,6 +587,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `root_apfs` | U | `init.c` | `CONFIG_ROOT_APFS` |  |
 | `rtc_pmic` | K | `hakios.s2mps18_rtc.c` | `CONFIG_RTC_PMIC` |  |
 | `sb_delay` | U | `inject_sb.c` |  | xl (XL_SB_DELAY) |
+| `sb_fps` | U | `inject_sb.c` | `CONFIG_SB_FPS` |  |
 | `sccam.addr` | K | `1400-avf-scion-camera.patch`, `hakios.sccam_torch.c` | `CONFIG_SCCAM_ADDR` |  |
 | `sccam.h` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_H` |  |
 | `sccam.size` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_SIZE` |  |
