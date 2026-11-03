@@ -136,6 +136,7 @@ extern void hakios_net_console_ip(void);            /* hakios.net.c */
 extern void hakios_net_console_ping(const char *arg);
 extern void hakios_abox_console(const char *arg);  /* sys/hakios.exynos_abox.h */
 extern void hakios_cs47l93_console(const char *arg);       /* sys/hakios.cs47l93.h */
+extern void hakios_ssp_console(const char *arg);    /* sys/hakios.sensors.h: the S9's sensor hub (shub=N) */
 extern void hakios_adsp_stop(void);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern int hakios_panel_brightness(int level);  /* hakios.backlight.cpp (always built): ENODEV with no panel driver */
@@ -1304,6 +1305,7 @@ console(char *line)
 		    "codec [power | r REG [N] | w REG VALUE] (the S9's audio codec, cs47l93=N), "
 		    "swipe [l|r|u|d|lr|ud] [N] [MS] [GAP] (a finger drawn across the screen N times, MS each, GAP apart; default "
 		    "lr 6 250 1000), "
+		    "sensors [on N | off N | fake X Y Z S | pins | retry ...] (the S9's sensor hub and its sensors' last samples, shub=N), "
 		    "wifi (the radio's log kept, and its driver's state now), wifi scan (a scan of every channel by the station, and "
 		    "the access points heard), wifi ip (en0's address and gateway), wifi ping [A.B.C.D] (four echo requests; the gateway "
 		    "by default), return (end the run)\n");
@@ -1347,6 +1349,8 @@ console(char *line)
 		hakios_abox_console(arg);
 	} else if (strcmp(line, "codec") == 0) {
 		hakios_cs47l93_console(arg);
+	} else if (strcmp(line, "sensors") == 0) {
+		hakios_ssp_console(arg);
 	} else if (strcmp(line, "ufs") == 0) {
 		hakios_ufs_summary("asked on the USB console", 1);
 	} else if (strcmp(line, "return") == 0) {

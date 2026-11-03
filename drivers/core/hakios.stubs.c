@@ -27,6 +27,7 @@
 #include <sys/hakios.input.h>
 #include <sys/hakios.max98512.h>
 #include <sys/hakios.net.h>
+#include <sys/hakios.sensors.h>
 #include <sys/hakios.sta.h>
 #include <sys/hakios.virtio_blk.h>
 
@@ -121,6 +122,10 @@ void hakios_s2mpb02_torch_quiesce(void) {}
 #endif
 #ifndef HAKIOS_BCM4361_BT
 void hakios_bcm4361_bt_init(void) {}
+#endif
+#ifndef HAKIOS_SSP
+void hakios_ssp_init(void) {}
+void hakios_ssp_console(__unused const char *arg) {}  /* the USB console's "sensors": no hub driver */
 #endif
 #ifndef HAKIOS_EXYNOS_PCIE
 void hakios_exynos_pcie_init(void) {}

@@ -66,6 +66,7 @@ GROUPS = [
     ("Cellular", r"hakios\.(mpss|ipa|cell|nas|qmi)\."),
     ("Audio and battery", r"hakios\.(adsp|audio|sound|speaker|mic|virtio_sound|battery|battguard|max77705|exynos_abox|max98512|cs47l93|guard)\."),
     ("Cameras", r"hakios\.(camera|exynos_camera)\."),
+    ("Sensors", r"hakios\.ssp\."),
     ("Touch and buttons", r"hakios\.(goodix|input|buttons|exynos_keys|s6sy761|exynos_hsi2c|virtio_input)\."),
     ("Storage and APFS", r"hakios\.(ufs|ufshc|virtio_blk|sparse|apfs_check)\.|apfs_vfsops\."),
     ("Network", r"hakios\.(net|virtio_net)\."),
