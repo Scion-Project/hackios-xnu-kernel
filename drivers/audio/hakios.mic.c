@@ -1445,94 +1445,12 @@ dsp_off(void)
 /* ---- mic=4: the microphone for Darwin ------------------------------------------------------------------- */
 
 /*
- * What the microphone hears goes into a ring, and /dev/hakios-mic gives it to Darwin's audio server
- * (HakiosAudio.driver's device "Codec", userland/src/audio_plugin.c): 16-bit samples, one channel,
- * 48 kHz. The path is up only while the device is open (the audio server opens it when its input
- * starts and closes it when it stops), and a read never waits: it gives what has come, keeping the
- * reader about 40 ms behind the DSP (it comes in 20 ms periods), and nothing until that much is
- * there; the audio server makes up the rest with silence.
+ * What the microphone hears goes to /dev/hakios-mic, which gives it to Darwin's audio server (HakiosAudio.driver's
+ * device "Codec", userland/src/audio_plugin.c): 16-bit samples, one channel, 48 kHz. The device, its ring and its
+ * reader's pace are hakios.audio.c's (hakios_audio_input_*()), shared with the Galaxy S9's microphone; the path here is
+ * up only while the device is open (the audio server opens it when its input starts and closes it when it stops).
  */
-#define RING_FRAMES             16384           /* 341 ms; a power of two */
-#define RING_KEEP               1920            /* 40 ms: how far behind the DSP a reader is kept */
-#define RING_MOST               4800            /* 100 ms: more than this waiting, and the oldest is skipped */
-
-static int16_t *ring;
-static volatile uint64_t ring_written;          /* frames put into the ring since the device was made */
-static uint64_t ring_read;                      /* frames taken from it (one reader: the audio server) */
-static bool ring_primed;                        /* the reader is RING_KEEP behind; false after it ran dry */
-static uint64_t ring_skipped, ring_dry;         /* frames skipped, reads that found too little: said when Darwin stops */
-static volatile uint32_t darwin_wants;             /* the device is open */
 static volatile bool stopping;                  /* the run ends (hakios_mic_dsp_down()) */
-
-static void
-ring_put(const int16_t *samples, uint32_t count)
-{
-	uint64_t at = ring_written;
-
-	for (uint32_t i = 0; i < count; i++) {
-		ring[(at + i) % RING_FRAMES] = samples[i];
-	}
-	__atomic_store_n(&ring_written, at + count, __ATOMIC_RELEASE);
-}
-
-static int
-mic_dev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
-{
-	uint64_t written = __atomic_load_n(&ring_written, __ATOMIC_ACQUIRE), avail, want;
-	int error = 0;
-
-	if (ring == NULL || uio_resid(uio) < 2) {
-		return 0;
-	}
-	want = (uint64_t)uio_resid(uio) / 2;
-	avail = written - ring_read;
-	if (avail > RING_MOST) {
-		ring_skipped += avail - RING_KEEP;
-		ring_read = written - RING_KEEP;
-		avail = RING_KEEP;
-	}
-	if (!ring_primed) {
-		if (avail < RING_KEEP) {
-			return 0;
-		}
-		ring_primed = true;
-	}
-	if (avail < want) {
-		ring_dry++;
-		ring_primed = false;
-	}
-	while (want > 0 && avail > 0 && error == 0) {
-		uint64_t at = ring_read % RING_FRAMES, n = want < avail ? want : avail;
-
-		n = n < RING_FRAMES - at ? n : RING_FRAMES - at;
-		error = uiomove((caddr_t)&ring[at], (int)(n * 2), uio);
-		ring_read += n;
-		want -= n;
-		avail -= n;
-	}
-	return error;
-}
-
-static int
-mic_dev_open(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
-{
-	darwin_wants = 1;
-	return 0;
-}
-
-/* (on the last close) */
-static int
-mic_dev_close(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
-{
-	darwin_wants = 0;
-	return 0;
-}
-
-static const struct cdevsw mic_cdevsw = {
-	.d_open = mic_dev_open, .d_close = mic_dev_close, .d_read = mic_dev_read, .d_write = eno_rdwrt,
-	.d_ioctl = eno_ioctl, .d_stop = eno_stop, .d_reset = eno_reset, .d_select = eno_select,
-	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = 0
-};
 
 /* ---- listening ---------------------------------------------------------------------------------------------- */
 
@@ -1591,7 +1509,7 @@ listen(bool for_darwin)
 			tap = 2;
 		}
 		/* (`stopping' ends every kind of run: hakios_mic_dsp_down() waits for mic_lock, which is held until this returns) */
-		if ((for_darwin ? !darwin_wants : elapsed_ms >= mic_secs * 1000ull) || stopping || broken) {
+		if ((for_darwin ? !hakios_audio_input_wanted() : elapsed_ms >= mic_secs * 1000ull) || stopping || broken) {
 			break;
 		}
 		if (!(read_ready & (1u << next))) {
@@ -1624,7 +1542,7 @@ listen(bool for_darwin)
 			}
 			frames += got;
 			if (for_darwin) {
-				ring_put(samples, got);
+				hakios_audio_input_put(samples, got);
 			}
 			if (hakios_audio_recording_mic()) {
 				for (uint32_t i = 0; i < got; i += 240) {
@@ -1722,12 +1640,10 @@ path_up(void)
 static void
 for_darwin(void)
 {
-	int major = cdevsw_add(-1, &mic_cdevsw);
 	unsigned recordings = 0, failures = 0;
+	uint64_t ring_skipped, ring_dry;
 
-	ring = kalloc_data(RING_FRAMES * sizeof(int16_t), Z_WAITOK | Z_ZERO);
-	if (ring == NULL || major < 0 ||
-	    devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "hakios-mic") == NULL) {
+	if (!hakios_audio_input_create("the POCO's main microphone through the audio DSP (mic=4)")) {
 		say("mic: /dev/hakios-mic cannot be made\n");
 		return;
 	}
@@ -1736,7 +1652,7 @@ for_darwin(void)
 		uint64_t began, ns;
 		bool failed, up;
 
-		if (!darwin_wants) {
+		if (!hakios_audio_input_wanted()) {
 			sleep_ms(20);
 			continue;
 		}
@@ -1747,9 +1663,7 @@ for_darwin(void)
 		}
 		recordings++;
 		quiet = recordings > 1;
-		ring_primed = false;
-		ring_skipped = ring_dry = 0;
-		ring_read = __atomic_load_n(&ring_written, __ATOMIC_ACQUIRE);
+		hakios_audio_input_begin();
 		began = mach_absolute_time();
 		say("mic: Darwin records (%u): the path up%s\n", recordings, quiet ? " (the lines that say all went well are not said again)" :
 		    "");
@@ -1760,6 +1674,7 @@ for_darwin(void)
 		up = path_up() && listen(true);
 		failed = broken || !up;
 		absolutetime_to_nanoseconds(mach_absolute_time() - began, &ns);
+		hakios_audio_input_counts(&ring_skipped, &ring_dry);
 		say("mic: Darwin's recording %u %s after %llu.%llu s; last: %s; %llu frames skipped as too late, %llu reads found too little\n",
 		    recordings, failed ? "BROKE OFF" : "ended", ns / NSEC_PER_SEC, ns % NSEC_PER_SEC / (NSEC_PER_SEC / 10), last_write,
 		    ring_skipped, ring_dry);
@@ -1772,7 +1687,7 @@ for_darwin(void)
 				break;
 			}
 			/* (not again until Darwin has closed the device and opened it again) */
-			while (darwin_wants && !stopping) {
+			while (hakios_audio_input_wanted() && !stopping) {
 				sleep_ms(20);
 			}
 		}

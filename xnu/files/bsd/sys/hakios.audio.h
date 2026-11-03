@@ -37,6 +37,28 @@ struct hakios_audio_volume {
 };
 #define HAKIOS_AUDIO_SET_VOLUME _IOW('r', 1, struct hakios_audio_volume)
 
+/*
+ * /dev/hakios-mic: what the phone's main microphone hears, for the audio server (the plug-in's device "Codec"): 16-bit
+ * signed samples, ONE channel, HAKIOS_AUDIO_RATE. The kernel listens only while the device is open. read() never
+ * waits: it gives what has come, keeping the reader about 40 ms behind the microphone, and nothing until that much is
+ * there (the plug-in makes up the rest with silence). Made by whichever driver has a microphone (boot-arg mic=4 on the
+ * POCO X5 Pro, hakios.mic.c; abox_mic=1 with abox=8 on the Galaxy S9, hakios.exynos_abox.c).
+ */
+#define HAKIOS_MIC_DEVICE      "/dev/hakios-mic"
+#define HAKIOS_MIC_CHANNELS    1
+
+/*
+ * ioctl(HAKIOS_AUDIO_GET_ROUTE) on /dev/hakios-audio: where what is written goes now. `jack': something is plugged into
+ * the headphone jack; `headphones': the sound goes to it, not to the speakers (on the Galaxy S9 only with boot-arg
+ * cs47l93_hp=1). `generation' counts the changes, so a reader that polls sees one it would otherwise miss.
+ */
+struct hakios_audio_route {
+	uint32_t jack;
+	uint32_t headphones;
+	uint32_t generation;
+};
+#define HAKIOS_AUDIO_GET_ROUTE _IOR('r', 2, struct hakios_audio_route)
+
 #ifdef KERNEL
 #include <stdbool.h>
 
@@ -52,6 +74,15 @@ bool hakios_audio_volume(uint32_t *below, bool *muted, uint32_t *generation);
 /* ... for a sink, which is called with the device's lock held (hakios_audio_volume takes it) */
 bool hakios_audio_volume_held(uint32_t *below, bool *muted, uint32_t *generation);
 void hakios_audio_init(void);
+
+/* ---- /dev/hakios-mic (above): the input's side of this file, for the driver that listens ---- */
+bool hakios_audio_input_create(const char *source);           /* the device made (once), fed by `source' */
+bool hakios_audio_input_wanted(void);                          /* it is open: listen */
+void hakios_audio_input_begin(void);                           /* a recording starts: the reader starts afresh */
+void hakios_audio_input_put(const int16_t *samples, uint32_t count);  /* mono samples heard, as they come */
+void hakios_audio_input_counts(uint64_t *skipped, uint64_t *dry);     /* since begin: frames skipped as late, reads short */
+/* HAKIOS_AUDIO_GET_ROUTE's answer, from the driver that knows the jack (hakios.cs47l93.c) */
+void hakios_audio_set_route(bool jack, bool headphones);
 void hakios_virtio_sound_init(void);   /* boot-arg virtio_sound=1: QEMU's virtio sound device */
 void hakios_speaker_init(void);        /* boot-arg speaker_probe=N: a look at the phone's speaker amplifiers */
 void hakios_haptic_init(void);         /* boot-arg haptic=N: the phone's vibration motor (drivers/haptic/hakios.haptic.c) */

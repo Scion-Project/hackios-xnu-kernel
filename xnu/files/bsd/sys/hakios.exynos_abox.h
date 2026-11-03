@@ -50,6 +50,13 @@ void hakios_abox_set_amp(const struct hakios_abox_amp *amp);              /* NUL
 void hakios_exynos_abox_init(void);    /* boot-arg abox=N on the Galaxy S9: the first N steps of ABOX's speaker path */
 void hakios_exynos_abox_quiesce(void); /* loader_return(): RDMA0 and UAIF1 stopped, if they run */
 void hakios_abox_console(const char *arg);      /* the USB console's "abox" (hakios.dwc3.c): status, tone, r, w, set */
+/*
+ * The headphones (hakios.cs47l93.c, cs47l93_hp=1): true asks for iOS's sound on UAIF0 (the codec's AIF1) instead of the
+ * amplifiers, false gives it back. Waits (200 ms at most) for step 8's loop to have done it; false if it has not (no
+ * stream for iOS: abox=8 not running).
+ */
+#include <stdbool.h>
+bool hakios_abox_headphones(bool on);
 #endif
 
 /*

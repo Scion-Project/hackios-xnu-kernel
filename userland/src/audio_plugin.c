@@ -31,6 +31,13 @@
  *               port; its samples come from the kernel, /dev/hakios-mic (the phone's main
  *               microphone, boot-arg mic=4), which listens only while this input runs (see codec_read())
  *
+ * The headphone jack (only where the kernel says where the sound goes: ioctl HAKIOS_AUDIO_GET_ROUTE, the
+ * Galaxy S9 with boot-arg cs47l93_hp=1): the kernel itself sends what is written to the headphones while
+ * they are plugged in, and the speaker device says so to the HAL the way a Mac's built-in output does,
+ * with kAudioDevicePropertyJackIsConnected, and its change (PropertiesChanged) when it changes; see
+ * route_watch(). Whether the virtual audio device then shows Darwin a headphones route of its own is
+ * the test in hakios-starlte's AUDIO.md, "The headphones" (not seen yet).
+ *
  * CoreAudio's own null device ("Null_Device", described in the framework's Info.plist, playing
  * into nowhere) stays as it is: it is the only device the virtual audio device takes while it
  * starts, and ours are taken a moment later, when it says it allows all devices.
@@ -155,6 +162,7 @@ enum {
 	kAudioPlugInPropertyDeviceList = 'dev#', kAudioPlugInPropertyTranslateUIDToDevice = 'uidd',
 	kAudioPlugInPropertyResourceBundle = 'rsrc',
 
+	kAudioDevicePropertyJackIsConnected = 'jack',
 	kAudioDevicePropertyDeviceUID = 'uid ', kAudioDevicePropertyModelUID = 'muid', kAudioDevicePropertyTransportType = 'tran',
 	kAudioDevicePropertyRelatedDevices = 'akin', kAudioDevicePropertyClockDomain = 'clkd',
 	kAudioDevicePropertyDeviceIsAlive = 'livn', kAudioDevicePropertyDeviceIsRunning = 'goin',
@@ -242,6 +250,8 @@ static Float64 ticks_per_frame;
 static UInt64 written, refused;         /* frames since the speaker's I/O started */
 static Boolean inactive[OBJECT_LAST + 1];       /* streams the HAL has switched off */
 static Float32 volume = 1.0f;           /* the speaker's volume control, 0 to 1 (Darwin sets it once it routes there) */
+static Boolean route_known;             /* the kernel answers HAKIOS_AUDIO_GET_ROUTE: the speaker has a jack */
+static struct hakios_audio_route route; /* what it answered last */
 
 static void
 say(const char *format, ...)
@@ -342,16 +352,60 @@ release(__unused void *driver)
 	return 1;
 }
 
+/*
+ * The jack, watched: the kernel asked twice a second where the sound goes (HAKIOS_AUDIO_GET_ROUTE); on a change the HAL
+ * is told that the speaker's kAudioDevicePropertyJackIsConnected has changed, in both its scopes.
+ */
+static void *
+route_watch(__unused void *unused)
+{
+	for (;;) {
+		struct hakios_audio_route now;
+		Boolean changed;
+
+		usleep(500000);
+		if (ioctl(sink, HAKIOS_AUDIO_GET_ROUTE, &now) < 0) {
+			continue;
+		}
+		pthread_mutex_lock(&lock);
+		changed = now.generation != route.generation;
+		route = now;
+		pthread_mutex_unlock(&lock);
+		if (changed) {
+			const AudioObjectPropertyAddress jack[2] = {
+				{ kAudioDevicePropertyJackIsConnected, kAudioObjectPropertyScopeGlobal, 0 },
+				{ kAudioDevicePropertyJackIsConnected, kAudioObjectPropertyScopeOutput, 0 },
+			};
+
+			say("hakios: audio: the jack: %s; the kernel sends the sound to the %s\n", now.jack ? "plugged in" : "empty",
+			    now.headphones ? "headphones" : "speakers");
+			if (host != NULL) {
+				host->PropertiesChanged(host, OBJECT_SPEAKER, 2, jack);
+			}
+		}
+	}
+	return NULL;
+}
+
 static OSStatus
 initialize(__unused AudioServerPlugInDriverRef driver, AudioServerPlugInHostRef the_host)
 {
 	mach_timebase_info_data_t timebase;
+	pthread_t watcher;
 
 	host = the_host;
 	mach_timebase_info(&timebase);
 	ticks_per_frame = 1e9 * timebase.denom / timebase.numer / HAKIOS_AUDIO_RATE;
 	sink = open(HAKIOS_AUDIO_DEVICE, O_WRONLY);
 	say("hakios: audio: the speaker is with the HAL (%s: %s)\n", HAKIOS_AUDIO_DEVICE, sink < 0 ? strerror(errno) : "open");
+	/* the jack: only where the kernel knows one, and says where the sound goes */
+	if (sink >= 0 && ioctl(sink, HAKIOS_AUDIO_GET_ROUTE, &route) == 0) {
+		route_known = true;
+		say("hakios: audio: the speaker has a jack (%s)\n", route.jack ? "plugged in" : "empty");
+		if (pthread_create(&watcher, NULL, route_watch, NULL) == 0) {
+			pthread_detach(watcher);
+		}
+	}
 	return 0;
 }
 
@@ -550,6 +604,11 @@ property(AudioObjectID object, const AudioObjectPropertyAddress *address, UInt32
 			break;
 		case kAudioDevicePropertyDeviceIsAlive:
 			WORD(1);
+			break;
+		case kAudioDevicePropertyJackIsConnected:
+			if (d->object == OBJECT_SPEAKER && route_known && scope != kAudioObjectPropertyScopeInput) {
+				WORD(route.jack != 0);
+			}
 			break;
 		case kAudioDevicePropertyDeviceCanBeDefaultDevice:
 		case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice:
