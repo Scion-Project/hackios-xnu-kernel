@@ -13,8 +13,8 @@
  * data in the inode (inline_data) when the whole file or directory fits there (60 bytes).
  *
  * Nothing is written, nothing is trusted: every number read is checked against the file system's size before it is used,
- * and a feature it does not know how to read (meta_bg, encryption, compression, a journal device) is refused, not
- * guessed at. Checksums are not checked (metadata_csum is read as if absent): this is a reader of a partition Android
+ * and a feature it does not know how to read (meta_bg, compression, a journal device; an encrypted file) is refused,
+ * not guessed at. Checksums are not checked (metadata_csum is read as if absent): this is a reader of a partition Android
  * itself mounts read only.
  *
  * Nothing but C here, so that tools/ext4-test.py compiles it on the machine the kernel is built on and reads file
@@ -38,11 +38,17 @@
 #endif
 
 #define HAKIOS_EXT4_MAGIC               0xEF53
-/* incompat features read (FILETYPE, RECOVER, EXTENTS, 64BIT, MMP, FLEX_BG, CSUM_SEED, LARGEDIR, INLINE_DATA) */
-#define HAKIOS_EXT4_INCOMPAT_READ       (0x0002u | 0x0004u | 0x0040u | 0x0080u | 0x0100u | 0x0200u | 0x2000u | 0x4000u | 0x8000u)
+/*
+ * incompat features read (FILETYPE, RECOVER, EXTENTS, 64BIT, MMP, FLEX_BG, CSUM_SEED, LARGEDIR, INLINE_DATA, ENCRYPT).
+ * ENCRYPT only says that some files and directories may be encrypted (Samsung sets it on the S9's EFS); those, the
+ * ones whose inode has EXT4_ENCRYPT_FL, are refused, and the rest read as ever.
+ */
+#define HAKIOS_EXT4_INCOMPAT_READ       (0x0002u | 0x0004u | 0x0040u | 0x0080u | 0x0100u | 0x0200u | 0x2000u | 0x4000u | \
+	                                 0x8000u | 0x10000u)
 #define HAKIOS_EXT4_INCOMPAT_FILETYPE   0x0002u
 #define HAKIOS_EXT4_INCOMPAT_RECOVER    0x0004u
 #define HAKIOS_EXT4_INCOMPAT_64BIT      0x0080u
+#define HAKIOS_EXT4_ENCRYPT_FL          0x00000800u
 #define HAKIOS_EXT4_EXTENTS_FL          0x00080000u
 #define HAKIOS_EXT4_INLINE_DATA_FL      0x10000000u
 #define HAKIOS_EXT4_EXTENT_MAGIC        0xF30A
@@ -210,6 +216,9 @@ hakios_ext4_inode(struct hakios_ext4 *fs, uint32_t number, struct hakios_ext4_in
 	inode->number = number;
 	inode->mode = hakios_ext4_le16(raw + 0);
 	inode->flags = hakios_ext4_le32(raw + 32);
+	if (inode->flags & HAKIOS_EXT4_ENCRYPT_FL) {
+		return 45;      /* ENOTSUP: an encrypted file or directory (INCOMPAT_ENCRYPT) */
+	}
 	inode->size = hakios_ext4_le32(raw + 4) | ((uint64_t)hakios_ext4_le32(raw + 108) << 32);
 	memcpy(inode->i_block, raw + 40, 60);
 	return 0;
