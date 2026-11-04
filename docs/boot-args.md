@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **561 arguments**: 493 read by the kernel, 21 by the loader, 62 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **562 arguments**: 494 read by the kernel, 21 by the loader, 62 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -553,7 +553,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (101)
+## User space (102)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -624,6 +624,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `metal_profile` | U | `hakiosmetal_air.m` | `CONFIG_METAL_PROFILE` |  |
 | `mfc_fw_part` | K | `hakios.exynos_mfc.c` | `CONFIG_MFC_FW_PART` |  |
 | `mfc_int_khz` | K | `hakios.exynos_mfc.c` | `CONFIG_MFC_INT_KHZ` |  |
+| `mfc_irq` | K | `hakios.exynos_mfc.c` | `CONFIG_MFC_IRQ` |  |
 | `mfc_mif_khz` | K | `hakios.exynos_mfc.c` | `CONFIG_MFC_MIF_KHZ` |  |
 | `pan` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_PAN` |  |
 | `passcode_debug` | U | `passcoded.m` | `CONFIG_PASSCODE_DEBUG` |  |
