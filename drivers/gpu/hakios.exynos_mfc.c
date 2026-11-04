@@ -12,6 +12,8 @@
  * mfc_zc=1 (with 5): frames are decoded straight into IOSurfaces of the block's memory, as fb_zc's are of the display's (MiniIOSurface.cpp: the surface
  * property HakiosMFCFrame, from mediaserverd). Nothing is copied. Surfaces are carved from the top of the 128 MB, the instance's own from the bottom.
  *
+ * mfc_irq=1: the block's interrupt instead of polling. mfc_idle=SECONDS: powered off that long after its last client.
+ *
  * Any step that fails leaves the block alone from then on: /dev/hakios-mfc is not made or answers EIO, and VideoToolbox keeps
  * its software decoder. Nothing else depends on this driver.
  *
@@ -67,6 +69,7 @@
 #include <kern/locks.h>
 #include <kern/thread.h>
 #include <kern/sched_prim.h>
+#include <kern/thread_call.h>
 #include <machine/machine_routines.h>
 #include <pexpert/pexpert.h>
 #include <IOKit/IOLib.h>
@@ -797,7 +800,9 @@ block_on(void)
 		say("exynos_mfc: 2: the domain was on already\n");
 	}
 	wr(cmu_top, TOP_GATE, rd(cmu_top, TOP_GATE) | GATE_MANUAL | GATE_ON);
-	cmu_mfc = (volatile uint8_t *)ml_io_map(CMU_MFC_PA, CMU_SIZE);
+	if (cmu_mfc == NULL) {
+		cmu_mfc = (volatile uint8_t *)ml_io_map(CMU_MFC_PA, CMU_SIZE);
+	}
 	wr(cmu_mfc, MFC_BUS_USER, rd(cmu_mfc, MFC_BUS_USER) | (1u << 4));
 	if (!wait_bits(cmu_mfc, MFC_BUS_USER, 1u << 7, 0, 1000)) {
 		say("exynos_mfc: 2: the bus's mux stays busy (%#x)\n", rd(cmu_mfc, MFC_BUS_USER));
@@ -1010,16 +1015,83 @@ self_test(void)
 
 static int mfc_opens;
 
+/*
+ * mfc_idle=SECONDS: that long after the last client has gone, the firmware is stopped and the domain powered off; the next client brings them back (a few
+ * tens of milliseconds: the firmware is read again from the phone, the RISC started). 0 or no mfc_idle: the block stays up from boot.
+ */
+static uint32_t idle_seconds;
+static bool powered_off;
+static thread_call_t idle_call;
+extern void gic_v3_spi_mask(uint32_t intid);
+extern void gic_v3_spi_unmask(uint32_t intid);
+
+static void
+block_down(void)
+{
+	W(MFC_OFF, 1);
+	IOSleep(1);
+	W(RISC_ON, 0);
+	if (irq_on) {
+		gic_v3_spi_mask(MFC_INTID);
+	}
+	fw_up = 0;
+	powered_off = true;
+	wr(pmu, PMU_CONFIG, rd(pmu, PMU_CONFIG) & ~PD_ON);
+	bool off = wait_bits(pmu, PMU_STATUS, PD_ON, 0, 20000);
+
+	wr(cmu_top, TOP_GATE, (rd(cmu_top, TOP_GATE) | GATE_MANUAL) & ~GATE_ON);
+	say("exynos_mfc: idle: the firmware stopped, the domain %s (status %#x)\n", off ? "off" : "NOT off", rd(pmu, PMU_STATUS));
+}
+
+static bool
+block_back(void)
+{
+	mem_used = 0;
+	if (!block_on() || !firmware_start()) {
+		say("exynos_mfc: the block did not come back: video stays in software\n");
+		dead = 1;
+		return false;
+	}
+	powered_off = false;
+	if (irq_on) {
+		gic_v3_spi_unmask(MFC_INTID);
+	}
+	return true;
+}
+
+static void
+idle_fired(thread_call_param_t a __unused, thread_call_param_t b __unused)
+{
+	lck_mtx_lock(mfc_lock);
+	if (mfc_opens == 0 && !dead && fw_up && !powered_off) {
+		block_down();
+	}
+	lck_mtx_unlock(mfc_lock);
+}
+
+static void
+idle_arm(void)
+{
+	if (idle_seconds != 0 && idle_call != NULL) {
+		uint64_t deadline;
+
+		clock_interval_to_deadline(idle_seconds, NSEC_PER_SEC, &deadline);
+		thread_call_enter_delayed(idle_call, deadline);
+	}
+}
+
 static int
 mfc_open(dev_t dev __unused, int flags __unused, int type __unused, proc_t p __unused)
 {
 	int error = 0;
 
 	lck_mtx_lock(mfc_lock);
-	if (dead || !fw_up) {
+	if (dead || (!fw_up && !powered_off)) {
 		error = EIO;
 	} else if (mfc_opens != 0) {
 		error = EBUSY;                  /* one client: VideoToolbox's next session stays in software */
+	} else if (powered_off && !block_back()) {
+		error = EIO;
 	} else {
 		mfc_opens = 1;
 	}
@@ -1035,6 +1107,7 @@ mfc_close(dev_t dev __unused, int flags __unused, int type __unused, proc_t p __
 		inst_close();
 	}
 	mfc_opens = 0;
+	idle_arm();
 	if (irq_on) {
 		say("exynos_mfc: interrupts so far: %llu, answers they missed %llu\n", irq_count, irq_missed);
 	}
@@ -1219,6 +1292,12 @@ mfc_thread(void *arg __unused, wait_result_t w __unused)
 		} else {
 			say("exynos_mfc: 5: /dev/hakios-mfc\n");
 		}
+	}
+	(void)PE_parse_boot_argn("mfc_idle", &idle_seconds, sizeof(idle_seconds));
+	if (idle_seconds != 0 && !dead && steps >= 5) {
+		idle_call = thread_call_allocate(idle_fired, NULL);
+		say("exynos_mfc: the block goes off %u s after its last client\n", idle_seconds);
+		idle_arm();
 	}
 out:
 	say("exynos_mfc: mfc=%u done%s\n", steps, dead ? ": THE BLOCK IS LEFT ALONE, video stays in software" : "");
