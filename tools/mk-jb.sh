@@ -11,11 +11,18 @@
 # What is left behind in jb/:
 #   root/var/jb/...      the bootstrap with Sileo unpacked into it, as the phone will have it
 #   debs/                the packages it was made of, for a look
-# userland/build.sh puts root/var/jb into the system image (as /jb, read only) and init copies it
-# to /private/var/jb at every boot.
+# userland/build.sh puts root/var/jb into the system image (as /jb, read only); on a kept /private/var a job
+# copies it to /private/var/jb once (userland/src/jb_seed.c), on a memory filesystem init grafts it there at every boot.
+#
+# PREINSTALL= ELLEKIT= tools/mk-jb.sh is the installer's (scion-packaging, build-installer.sh): the bootstrap and Sileo
+# alone, both pinned below, with no tweak injection and no OpenSSH. Without them: ElleKit and PREINSTALL's list as well,
+# whatever the repository has as newest.
 set -e
 SUITE=1800                                              # the rootless distribution of Procursus
 SILEO=org.coolstar.sileo_2.5.1_iphoneos-arm64.deb
+# What the two are, as published: a change upstream stops the build here rather than reach a phone unnoticed.
+BOOTSTRAP_SHA256=a99b39bb0344ee3b42bb961325038dceae7daaec500976f3b822cf36cccf020a
+SILEO_SHA256=8e3c90e5a7d32f4ca207a0ac30d3cfa8a13dca86a2b4e11cb3f9e5c68d7bc97a
 MIRROR=https://apt.procurs.us
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 OUT=$ROOT/jb
@@ -24,8 +31,19 @@ mkdir -p "$OUT/debs"
 get() {                                                 # fetch into jb/, once
 	[ -s "$OUT/debs/$2" ] || curl -sL --fail -o "$OUT/debs/$2" "$1"
 }
+sum() { python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"; }
+pinned() {                                              # the file in debs/, or stop
+	[ "$(sum "$OUT/debs/$1")" = "$2" ] && return
+	echo "mk-jb.sh: $1 is not what this script is pinned to ($2): remove it to fetch it again; if upstream has changed it, look at it and change the pin" >&2
+	exit 1
+}
 get "$MIRROR/bootstraps/$SUITE/bootstrap-iphoneos-arm64.tar.zst" bootstrap.tar.zst
 get "$MIRROR/pool/main/iphoneos-arm64-rootless/$SUITE/sileo/$SILEO" sileo.deb
+pinned bootstrap.tar.zst "$BOOTSTRAP_SHA256"
+pinned sileo.deb "$SILEO_SHA256"
+# made already, from this script with these settings: left as it is, so that the system image is not made again for it
+STAMP=$(sum "$0")-${PREINSTALL-default}-${ELLEKIT-default}
+[ "$(cat "$OUT/.stamp" 2>/dev/null)" = "$STAMP" ] && [ -d "$OUT/root/var/jb" ] && { echo "mk-jb.sh: $OUT/root/var/jb is up to date"; exit 0; }
 
 rm -rf "$OUT/root"
 mkdir -p "$OUT/root"
@@ -77,6 +95,8 @@ mkdir -p "$TMP/control" && tar -C "$TMP/control" -xf "$TMP"/control.tar.* 2>/dev
 # and dlopens the tweak; src/init.c (etc/inject.conf) inserts it into SpringBoard, Preferences and the
 # apps. Tweaks link /var/jb/usr/lib/lib{substrate,hooker}.dylib and CydiaSubstrate.framework, all
 # ElleKit.
+# (ELLEKIT= : none, and nothing of what follows but the directory.)
+if [ -n "${ELLEKIT-0.4.5}" ]; then
 EK=ellekit_${ELLEKIT:-0.4.5}_iphoneos-arm64.deb
 get "https://ellekit.space/pool/$EK" "$EK"
 EKTMP=$(mktemp -d); trap 'rm -rf "$TMP" "$EKTMP"' EXIT
@@ -97,6 +117,7 @@ ln -s /var/jb/usr/lib/TweakInject "$OUT/root/var/jb/Library/MobileSubstrate/Dyna
 	echo "Status: install ok installed"
 	echo
 } >> "$OUT/root/var/jb/Library/dpkg/status"
+fi
 
 # Newer versions of what the bootstrap carries, and anything else worth having before the first boot:
 # the bootstrap is a snapshot, and some of it is older than the repository (debianutils, launchctl).
@@ -114,7 +135,8 @@ if [ -n "$PREINSTALL" ]; then
 	MIRROR="$MIRROR" python3 "$ROOT/tools/jb-preinstall.py" "$OUT/root" "$OUT/debs/Packages" "$OUT/debs" $PREINSTALL
 fi
 
-# the repositories Sileo starts with: Procursus itself, where everything here came from
+# the repositories Sileo starts with: Procursus itself, where everything here came from, and the two
+# best-known others of the rootless world (flat repositories: no suite but ./)
 mkdir -p "$OUT/root/var/jb/etc/apt/sources.list.d"
 cat > "$OUT/root/var/jb/etc/apt/sources.list.d/procursus.sources" <<EOF
 Types: deb
@@ -122,6 +144,9 @@ URIs: $MIRROR
 Suites: iphoneos-arm64-rootless/$SUITE
 Components: main
 EOF
+for repo in havoc:https://havoc.app/ chariz:https://repo.chariz.com/; do
+	printf 'Types: deb\nURIs: %s\nSuites: ./\nComponents:\n' "${repo#*:}" > "$OUT/root/var/jb/etc/apt/sources.list.d/${repo%%:*}.sources"
+done
 
 # The certificates for apt. gnutls here is built to trust /var/jb/etc/ssl/certs/cacert.pem, which the
 # package ca-certificates of the bootstrap brings along, and yet apt says "No system certificates
@@ -195,8 +220,9 @@ EOF
 # (Sileo: "firmware (>= 11.0)"), and the few postinst scripts settle the shells and apt's own state.
 cat > "$OUT/root/var/jb/prep.sh" <<'PREP'
 #!/var/jb/bin/sh
-# Run once per boot, after the prefix has been grafted onto /var/jb (rc.jobs.sileo does it).
-/var/jb/usr/libexec/firmware
+# Run once per boot, after the prefix is at /var/jb (com.hakios.jbseed does it; rc.jobs.sileo too). What is
+# done once for a prefix is done once for one that stays, on a kept /private/var: the mark says so.
+[ -e /var/jb/.prepared ] || /var/jb/usr/libexec/firmware
 # The prefix's applications: in the system image they are in /Applications already (userland/build.sh),
 # where LaunchServices finds them by itself; with the Darwin volume on the flash as the root they are not,
 # and are registered from the prefix as a rootless jailbreak does it (uikittools' uicache) -- by where the
@@ -225,15 +251,18 @@ for app in /var/jb/Applications/*.app; do
 		echo "prep.sh: ${app##*/} could not be registered"
 	) &
 done
+[ ! -e /var/jb/.prepared ] || exit 0
 /var/jb/usr/sbin/pwd_mkdb -p /var/jb/etc/master.passwd 2>/dev/null
 for package in debianutils apt dash bash zsh vi; do
 	[ -x "/var/jb/Library/dpkg/info/$package.postinst" ] &&
 		"/var/jb/Library/dpkg/info/$package.postinst" configure 99999 >/dev/null 2>&1
 done
+: > /var/jb/.prepared
 exit 0
 PREP
 chmod 755 "$OUT/root/var/jb/prep.sh"
 rm -f "$OUT/root/var/jb/prep_bootstrap.sh"
 
+echo "$STAMP" > "$OUT/.stamp"
 echo "mk-jb.sh: $OUT/root/var/jb ($(du -sh "$OUT/root/var/jb" | cut -f1), $(find "$OUT/root/var/jb" | wc -l) entries)"
 echo "          Sileo $(grep -m1 '^Version:' "$TMP/control/control" | cut -d' ' -f2), $(grep -c '^Package:' "$OUT/root/var/jb/Library/dpkg/status") packages in dpkg's database"

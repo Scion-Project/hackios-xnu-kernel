@@ -1071,7 +1071,13 @@ mount_writable(void)
 	 */
 	jb = stat("/jb", &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR ? "/jb" :
 	    stat("/private/preboot/jb", &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR ? "/private/preboot/jb" : NULL;
-	if (ok && jb != NULL) {
+	if (ok && jb != NULL && var_kept) {
+		/* What is installed in it is to last: a real copy, once, by a job after the boot (src/jb_seed.c) */
+		printf("  /var/jb: on the kept volume, copied once from %s by com.hakios.jbseed\n", jb);
+	} else if (ok && jb != NULL && stat(in_image("/etc/jb.kept-only"), &st) == 0) {
+		/* the installer's small root: the shared system image carries a prefix, and this boot has nowhere to keep it */
+		printf("  /var/jb: /private/var is in memory: no package manager this boot (src/jb_seed.c)\n");
+	} else if (ok && jb != NULL) {
 		const char *to = "/private/var/jb";
 		int dirs = 0, entries = 0, grafted, users = 0;
 
@@ -1082,15 +1088,6 @@ mount_writable(void)
 		 * application from there, and from /private/var not at all -- everything a package put in
 		 * /var/jb/Applications was "Unable to register", with nothing on the files even looked at.
 		 */
-		/* the prefix is grafted anew at every boot: on the kept volume, last boot's goes first */
-		if (var_kept && lstat(to, &st) == 0) {
-			if ((st.st_mode & S_IFMT) == S_IFDIR) {
-				empty_tree(to, 0);
-				rmdir(to);
-			} else {
-				unlink(to);
-			}
-		}
 		if (strcmp(jb, "/private/preboot/jb") == 0 && stat("/private/preboot/jb-rw", &st) == 0) {
 			if (mount("ramfs", "/private/preboot/jb-rw", 0, NULL) == 0 &&
 			    symlink("/private/preboot/jb-rw/procursus", "/private/var/jb") == 0) {
