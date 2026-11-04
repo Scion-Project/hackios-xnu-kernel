@@ -2691,8 +2691,15 @@ status_bar_provider(void)
  * centred time was not taken: _UIStatusBarVisualProvider_LegacyPhone is a 20-point bar, so its ends
  * sit further into the corners than these, under a safe area that still says 44 (not tried on a phone).
  *
- * Every step checks what it is about to change and otherwise says so and leaves it to Apple. None of
- * this has run on a phone yet: the numbers are from the 20F66 tables and two screenshots.
+ * The passcode keypad. +[SBFLockScreenMetrics pinNumberPadBaseOffsetFromTopOfScreen:] gives the top of the first row from the
+ * top of the screen, and everything of the keypad hangs from it: the entry dots and the title above, the rows, and Emergency
+ * and Cancel below (centred 464.8 under the number pad's top; pinNumberPadAncillaryButtonOffset, -[SBUIPasscodeLockNumberPad
+ * initWithDefaultSizeAndLightStyle:]). The table answers by height classes, and 771 is in the X's: 293.667, so that row is
+ * centred at 750.5, 61.5 above the bottom on the X and 20.5 here, in the home indicator's line, which ran into "Emergency"
+ * (seen, 4 November). Moved up by the 41 points the X has more of, for that one number: the row keeps the X's distance from the
+ * bottom (centred at 709.5, seen) and the dots and title follow. Portrait only.
+ *
+ * Every step checks what it is about to change and otherwise says so and leaves it to Apple.
  */
 #define SCREEN_TYPE_FUNCTION    0x1c44ec4a8UL   /* SBHScreenTypeForCurrentDevice */
 #define SCREEN_TYPE_ONCE        0x1e2549eb8UL   /* its dispatch_once token, __DATA_DIRTY */
@@ -2703,6 +2710,8 @@ status_bar_provider(void)
 #define BAR_TIME_IN             7.0
 #define BAR_BATTERY_IN          5.0
 #define BAR_DOWN                4.0
+#define KEYPAD_UP               41.0
+#define KEYPAD_OFFSET_X         293.667         /* the table's answer for the X's height class */
 
 typedef struct {
 	double top, leading, bottom, trailing;
@@ -2780,6 +2789,112 @@ bar_trailing(id self, SEL selector)
 	return insets;
 }
 
+static double (*original_keypad_offset)(id self, SEL selector, bool portrait);
+
+static double
+keypad_offset(id self, SEL selector, bool portrait)
+{
+	double offset = original_keypad_offset(self, selector, portrait);
+
+	/* another answer than the X's portrait one is not what the 41 points were worked out for */
+	if (!portrait || offset < KEYPAD_OFFSET_X - 1 || offset > KEYPAD_OFFSET_X + 1) {
+		return offset;
+	}
+	return offset - KEYPAD_UP;
+}
+
+/*
+ * The Phone app's keypad and the emergency dialer. MobilePhone and InCallService each have their own
+ * +[PHUIConfiguration screenSize], a table of native heights behind a dispatch_once: 2313 is not in it, so the answer stays 0,
+ * which is also the 4-inch iPhone's, and the keypad sits at the top of the screen (seen, both programs, 4 November). TelephonyUI's
+ * -[UIScreen screenSizeCategory] has the same hole, and with it the keys have no padding, their circles touching. The X's
+ * height answers 4 in both; that one number is given here, only when the screen is 1125 x 2313 and the table found nothing.
+ * PHUIConfiguration's address is the program's own (20F66), so its slide is the program's too.
+ */
+#define PHONE_SCREEN_SIZE_X     4UL
+
+typedef struct {
+	double x, y, width, height;
+} screen_rect;
+
+static unsigned long (*original_phone_screen_size)(id self, SEL selector);
+static unsigned long (*original_screen_size_category)(id self, SEL selector);
+
+static bool
+screen_is_771_points(void)
+{
+	Class screen_class = objc_getClass("UIScreen");
+	id screen;
+	screen_rect bounds;
+
+	if (screen_class == NULL) {
+		return false;
+	}
+	screen = ((id (*)(id, SEL))objc_msgSend)((id)screen_class, sel_registerName("mainScreen"));
+	if (screen == NULL) {
+		return false;
+	}
+	bounds = ((screen_rect (*)(id, SEL))objc_msgSend)(screen, sel_registerName("nativeBounds"));
+	return bounds.width == 1125 && bounds.height == 2313;
+}
+
+static unsigned long
+phone_screen_size(id self, SEL selector)
+{
+	unsigned long size = original_phone_screen_size(self, selector);
+
+	return size == 0 && screen_is_771_points() ? PHONE_SCREEN_SIZE_X : size;
+}
+
+/* -[UIScreen screenSizeCategory] (TelephonyUI): the same table again, and what the keys' padding goes by */
+static unsigned long
+screen_size_category(id self, SEL selector)
+{
+	unsigned long size = original_screen_size_category(self, selector);
+
+	return size == 0 && screen_is_771_points() ? PHONE_SCREEN_SIZE_X : size;
+}
+
+static void
+phone_layout(const char *name)
+{
+	uintptr_t expected = strcmp(name, "MobilePhone") == 0 ? 0x100034ac0UL : strcmp(name, "InCallService") == 0 ? 0x100038940UL : 0;
+	uintptr_t program_slide = 0;
+	Method method;
+	IMP found;
+
+	if (expected == 0) {
+		return;
+	}
+	/* the program is not image 0 here: the inserted library and the shared cache's may come first */
+	for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+		const struct mach_header *header = _dyld_get_image_header(i);
+
+		if (header != NULL && header->filetype == MH_EXECUTE) {
+			program_slide = (uintptr_t)_dyld_get_image_vmaddr_slide(i);
+			break;
+		}
+	}
+	method = class_getClassMethod(objc_getClass("PHUIConfiguration"), sel_registerName("screenSize"));
+	found = method != NULL ? method_getImplementation(method) : NULL;
+	if (found == NULL || (uintptr_t)found - program_slide != expected) {
+		say("hakios: %s: +[PHUIConfiguration screenSize] at %#lx, expected %#lx; left alone\n", name,
+		    found != NULL ? (uintptr_t)found - program_slide : 0, expected);
+		return;
+	}
+	original_phone_screen_size = (unsigned long (*)(id, SEL))found;
+	method_setImplementation(method, (IMP)phone_screen_size);
+	{
+		size_t length = 0;
+
+		slide = (uintptr_t)_dyld_get_shared_cache_range(&length) - CACHE_BASE;
+		original_screen_size_category = (unsigned long (*)(id, SEL))replace_method("UIScreen", "screenSizeCategory",
+		    0x1b5e59d9cUL, (IMP)screen_size_category);
+	}
+	say("hakios: %s: the keypad's screen size: the iPhone X's on 1125 x 2313; its spacing %s\n", name,
+	    original_screen_size_category != NULL ? "too" : "NOT");
+}
+
 /* After `slide`, and after status_bar_provider(), which measures the framebuffer. */
 static void
 home_screen_layout(void)
@@ -2822,6 +2937,9 @@ home_screen_layout(void)
 		}
 	}
 	say("hakios: SpringBoard: status bar insets %s\n", original_bar_trailing != NULL ? "moved in" : "left alone");
+	original_keypad_offset = (double (*)(id, SEL, bool))replace_method_of_kind('+', "SBFLockScreenMetrics",
+	    "pinNumberPadBaseOffsetFromTopOfScreen:", 0x18e64f118UL, (IMP)keypad_offset);
+	say("hakios: SpringBoard: passcode keypad %s\n", original_keypad_offset != NULL ? "moved up 41 points" : "left alone");
 }
 
 __attribute__((constructor))
@@ -2848,6 +2966,7 @@ hakios_springboard_init(void)
 		notify_register_dispatch("com.hakios.layers", &token, dispatch_get_main_queue(), ^(__unused int t) {
 			layers();
 		});
+		phone_layout(name);
 		return;
 	}
 	caenv();
