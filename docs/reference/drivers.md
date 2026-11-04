@@ -14,6 +14,7 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | `hakios.sccam_torch.c` | the phone's flashlight under AVF, through the Scion app's camera block (patch 1402) |
 | `hakios.version.c` | kern.hakios.version, and the version in the boot log |
 | `hakios.platform.c` | what the drivers share (the locks of the PMIC arbiter, the always-on processor, RPMh and the SMMU), and kern.hakios.drivers, the list of the drivers built in |
+| `hakios.cryptobench.c` | kern.hakios.crypto_bench: the kernel's SHA and AES with the ARMv8 instructions and in C, measured when read |
 | `hakios.stubs.c` | what the rest of the kernel calls in a driver that is left out: nothing, and "not there" |
 | `hakios.stubs.cpp` | the same, for the calls that are C++ (the display asking whether the GPU is done with a surface) (with XNU's `iokitcpp`) |
 | `hakios.physmap.cpp` | physical memory XNU does not manage, mapped write-combined through IOKit (sys/hakios.physmap.h): the S9's DMA buffers below 4 GB (the camera's, UFS's own mode; sys/hakios.exynos9810_mem.h has where each is) (with XNU's `iokitcpp`) |

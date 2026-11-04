@@ -5,8 +5,9 @@
  *
  * Written from the public algorithm specifications (RFC 1321, FIPS 180-4).
  * The constant tables were generated from their mathematical definitions.
- * Plain portable C, no assembly; correctness is checked at boot against
- * reference vectors (see mc_digest_selftest).
+ * Plain portable C, no assembly (SHA-1 and SHA-256 take the ARMv8 instructions where
+ * there are any: mc_ce.c); correctness is checked at boot against reference vectors
+ * (see mc_digest_selftest).
  */
 #include <corecrypto/ccdigest.h>
 #include <corecrypto/ccdigest_priv.h>
@@ -152,6 +153,10 @@ sha1_compress(ccdigest_state_t state, size_t nblocks, const void *in)
 	uint32_t *s = ccdigest_u32(state);
 	const uint8_t *buf = in;
 
+	if (mc_ce_on) {
+		mc_ce_sha1_compress(s, nblocks, in);
+		return;
+	}
 	for (; nblocks > 0; nblocks--, buf += CCSHA1_BLOCK_SIZE) {
 		uint32_t w[80], a = s[0], b = s[1], c = s[2], d = s[3], e = s[4];
 

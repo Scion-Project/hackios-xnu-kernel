@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 608 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 609 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -1546,7 +1546,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (95)
+# User space (96)
 #
 
 # read by inject_sb.c (user space)
@@ -1734,6 +1734,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by 1510-isa-floor.patch, 1511-m3-user-cache-pou.patch, hakios.exynos_m3.c (kernel)
 # CONFIG_M3_PREP is not set
+
+# read by mc_ce.c (kernel)
+# CONFIG_MC_CE is not set
 
 # read by 1101-virtio-disk-as-md0.patch (kernel)
 # CONFIG_MD0 is not set
