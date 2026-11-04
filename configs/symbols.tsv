@@ -404,6 +404,7 @@ SYSSLEEP	arg	syssleep	CPU, memory and boot	k	(patch)
 SYSTEM_APFS	arg	system_apfs	User space	u	init.c	the root is to be the big system image (userland/system.apfs, a RAM boot's md0) on /dev/DEV, read
 SYSTRACE	arg	systrace	CPU, memory and boot	k	(patch),user_exception_trace.c	
 SYSTRACE_NAME	arg	systrace_name	CPU, memory and boot	k	(patch)	
+TEE_PROBE	arg	tee_probe	User space	k	hakios.exynos_tee.c	
 THERMAL_LOG	arg	thermal_log	Chip, thermal and PMIC	k	hakios.thermal.c	a summary line this often (0: only on a rise; 60)
 THERMAL_TM0	arg	thermal_tm0	Chip, thermal and PMIC	k	hakios.thermal.c	
 THERMAL_TM1	arg	thermal_tm1	Chip, thermal and PMIC	k	hakios.thermal.c	

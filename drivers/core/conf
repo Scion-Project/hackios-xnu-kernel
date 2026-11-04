@@ -48,6 +48,12 @@ driver EXYNOS_ACPM
 	help    the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the
 	help    clocks' DVFS rates (sys/hakios.exynos_acpm.h), for the Galaxy S9's GPU; nothing of its own on the command line
 
+driver EXYNOS_TEE
+	file    bsd/dev/hakios.exynos_tee.c
+	default n
+	help    the Galaxy S9's secure OS asked one read-only question (tee_probe=1): the info fastcall on core 0, its four
+	help    registers logged; no other call, nothing started, no storage. Off unless asked, in nobody's default line
+
 driver EXYNOS_M3
 	file    bsd/dev/hakios.exynos_m3.c
 	requires EXYNOS_ACPM

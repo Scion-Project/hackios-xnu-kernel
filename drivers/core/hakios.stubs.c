@@ -116,6 +116,9 @@ void hakios_exynos_camera_quiesce(void) {}
 const char *hakios_exynos_camera_shot(uint32_t n, int pattern);
 const char *hakios_exynos_camera_shot(__unused uint32_t n, __unused int pattern) { return "this kernel has no Galaxy S9 camera driver (CONFIG_HAKIOS_EXYNOS_CAMERA)"; }
 #endif
+#ifndef HAKIOS_EXYNOS_TEE
+void hakios_exynos_tee_init(void) {}
+#endif
 #ifndef HAKIOS_EXYNOS_IRIS
 void hakios_exynos_iris_init(void) {}
 void hakios_exynos_iris_quiesce(void) {}
