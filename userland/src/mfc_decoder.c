@@ -24,6 +24,7 @@
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -50,6 +51,7 @@ static const CFStringRef *kVTVideoDecoderList_DecoderID_, *kVTVideoDecoderList_D
 #define ERR_BAD_DATA            (-12909)        /* kVTVideoDecoderBadDataErr */
 #define ERR_MALFUNCTION         (-12911)        /* kVTVideoDecoderMalfunctionErr */
 #define PENDING_MAX             64
+#define RECENT_FRAMES           4
 
 struct mfc_decoder {
 	int fd;
@@ -59,7 +61,11 @@ struct mfc_decoder {
 	uint8_t *header;
 	size_t header_bytes;
 	bool opened;
+	bool drained;                   /* the block has finished this instance: the next key frame opens it again */
 	uint32_t width, height;
+	CFTypeRef matrix, primaries, transfer;
+	CVPixelBufferRef recent[RECENT_FRAMES]; /* the last frames emitted, kept a little (see emit) */
+	unsigned recent_at;
 	CVPixelBufferRef spare;
 	uint32_t next_tag;
 	void *pending[PENDING_MAX];     /* frameRefCons not yet shown, by tag % PENDING_MAX */
@@ -107,6 +113,54 @@ append(uint8_t **to, size_t *at, size_t *room, const uint8_t *from, size_t bytes
 	*at += bytes + 4;
 }
 
+/*
+ * What the block's NV12 buffers cannot hold: more than 8 bits, or other than 4:2:0. HEVC says so in its hvcC (ISO 14496-15: byte 16 the chroma
+ * format, 17 and 18 the depths less 8); H.264 by the profile in its first SPS (High and below are 8-bit 4:2:0).
+ */
+static bool
+is_8bit_420(struct mfc_decoder *d, CMVideoFormatDescriptionRef format)
+{
+	if (d->codec == HAKIOS_MFC_H264) {
+		const uint8_t *sps = NULL;
+		size_t bytes = 0;
+
+		if (CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, 0, &sps, &bytes, NULL, NULL) != noErr || bytes < 2) {
+			return false;
+		}
+		return sps[1] == 66 || sps[1] == 77 || sps[1] == 88 || sps[1] == 100;
+	}
+	CFDictionaryRef atoms = CMFormatDescriptionGetExtension(format, kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms);
+	CFDataRef hvcc = atoms != NULL && CFGetTypeID(atoms) == CFDictionaryGetTypeID() ? CFDictionaryGetValue(atoms, CFSTR("hvcC")) : NULL;
+
+	if (hvcc == NULL || CFGetTypeID(hvcc) != CFDataGetTypeID() || CFDataGetLength(hvcc) < 19) {
+		return false;   /* (not seen: nobody says what it is, so software) */
+	}
+	const uint8_t *c = CFDataGetBytePtr(hvcc);
+
+	return (c[16] & 3) == 1 && (c[17] & 7) == 0 && (c[18] & 7) == 0;
+}
+
+static bool
+open_block(struct mfc_decoder *d)
+{
+	struct hakios_mfc_open request;
+
+	memset(&request, 0, sizeof(request));
+	request.codec = d->codec;
+	request.header = (uint64_t)(uintptr_t)d->header;
+	request.header_bytes = (uint32_t)d->header_bytes;
+	if (ioctl(d->fd, HAKIOS_MFC_OPEN, &request) != 0) {
+		return false;
+	}
+	if (request.width > d->width || request.height > d->height) {
+		say("hakios: mfc: the stream is %ux%u, its format says %ux%u: software\n", request.width, request.height, d->width, d->height);
+		return false;
+	}
+	d->opened = true;
+	d->drained = false;
+	return true;
+}
+
 static OSStatus
 start_session(void *decoder, void *session, CMVideoFormatDescriptionRef format)
 {
@@ -122,13 +176,33 @@ start_session(void *decoder, void *session, CMVideoFormatDescriptionRef format)
 		say("hakios: mfc: no parameter sets in the format: not for the hardware\n");
 		return ERR_COULD_NOT_FIND;
 	}
+	if (!is_8bit_420(d, format)) {
+		say("hakios: mfc: more than 8 bits, or not 4:2:0: software\n");
+		return ERR_COULD_NOT_FIND;
+	}
 	for (size_t i = 0; i < count; i++) {
 		if (get(format, i, &set, &bytes, NULL, NULL) == noErr) {
 			append(&d->header, &d->header_bytes, &room, set, bytes);
 		}
 	}
 	CMVideoDimensions size = CMVideoFormatDescriptionGetDimensions(format);
-	int32_t pixel = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, width = size.width, height = size.height;
+
+	d->width = size.width;
+	d->height = size.height;
+	/* the block is asked now, not at the first frame: a session refused here goes on to the software decoder (too large a stream: no memory) */
+	if (!open_block(d)) {
+		say("hakios: mfc: the block refuses a %dx%d stream: software\n", size.width, size.height);
+		return ERR_COULD_NOT_FIND;
+	}
+	CFBooleanRef full = CMFormatDescriptionGetExtension(format, kCMFormatDescriptionExtension_FullRangeVideo);
+	int32_t pixel = (full != NULL && CFBooleanGetValue(full)) ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+	int32_t width = size.width, height = size.height;
+
+#define KEEP(to, key) do { CFTypeRef v = CMFormatDescriptionGetExtension(format, key); d->to = v != NULL ? CFRetain(v) : NULL; } while (0)
+	KEEP(matrix, kCMFormatDescriptionExtension_YCbCrMatrix);
+	KEEP(primaries, kCMFormatDescriptionExtension_ColorPrimaries);
+	KEEP(transfer, kCMFormatDescriptionExtension_TransferFunction);
+#undef KEEP
 	CFNumberRef pixel_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &pixel), width_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &width),
 	    height_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &height);
 	CFDictionaryRef surface = CFDictionaryCreate(NULL, NULL, NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
@@ -142,8 +216,6 @@ start_session(void *decoder, void *session, CMVideoFormatDescriptionRef format)
 	CFRelease(pixel_n);
 	CFRelease(width_n);
 	CFRelease(height_n);
-	d->width = size.width;
-	d->height = size.height;
 	say("hakios: mfc: a %s session of %dx%d, %zu parameter sets (%d)\n", d->codec == HAKIOS_MFC_H264 ? "H.264" : "HEVC", width, height, count, (int)status);
 	return status;
 }
@@ -156,7 +228,30 @@ emit(struct mfc_decoder *d, uint32_t tag, CVPixelBufferRef image)
 
 	if (d->pending_set[i]) {
 		d->pending_set[i] = false;
-		VTDecoderSessionEmitDecodedFrame_(d->session, d->pending[i], noErr, 0, image);
+		if (image != NULL) {
+			if (d->matrix != NULL) {
+				CVBufferSetAttachment(image, kCVImageBufferYCbCrMatrixKey, d->matrix, kCVAttachmentMode_ShouldPropagate);
+			}
+			if (d->primaries != NULL) {
+				CVBufferSetAttachment(image, kCVImageBufferColorPrimariesKey, d->primaries, kCVAttachmentMode_ShouldPropagate);
+			}
+			if (d->transfer != NULL) {
+				CVBufferSetAttachment(image, kCVImageBufferTransferFunctionKey, d->transfer, kCVAttachmentMode_ShouldPropagate);
+			}
+		}
+		VTDecoderSessionEmitDecodedFrame_(d->session, d->pending[i], noErr, image != NULL ? 0 : 2 /* kVTDecodeInfo_FrameDropped */, image);
+		/*
+		 * The frame crosses to the client's process after this returns, and until the client has it nothing says it is in use: released now, the pool gives it out again and the
+		 * next frame overwrites it. (Seen on the phone, mfc_vt at full speed: frame 0 with frame 1's picture, and one frame of the burst at a drain.) So the last few stay held.
+		 */
+		if (image != NULL) {
+			CVPixelBufferRetain(image);
+			if (d->recent[d->recent_at] != NULL) {
+				CVPixelBufferRelease(d->recent[d->recent_at]);
+			}
+			d->recent[d->recent_at] = image;
+			d->recent_at = (d->recent_at + 1) % RECENT_FRAMES;
+		}
 	}
 }
 
@@ -184,8 +279,14 @@ decode_unit(struct mfc_decoder *d, const uint8_t *stream, size_t bytes, uint32_t
 	request.uv = (uint64_t)(uintptr_t)CVPixelBufferGetBaseAddressOfPlane(image, 1);
 	request.y_stride = (uint32_t)CVPixelBufferGetBytesPerRowOfPlane(image, 0);
 	request.uv_stride = (uint32_t)CVPixelBufferGetBytesPerRowOfPlane(image, 1);
+	request.room_width = (uint32_t)CVPixelBufferGetWidth(image);
+	request.room_height = (uint32_t)CVPixelBufferGetHeight(image);
 	if (ioctl(d->fd, HAKIOS_MFC_DECODE, &request) != 0) {
-		status = ERR_BAD_DATA;
+		/* EBADMSG: this frame's data; the rest (the block has died, the stream outgrew its buffers): the session cannot go on, and VideoToolbox's client makes a new one, in software if need be */
+		status = errno == EBADMSG ? ERR_BAD_DATA : ERR_MALFUNCTION;
+		if (status == ERR_MALFUNCTION) {
+			say("hakios: mfc: a decode fails: %d\n", errno);
+		}
 	}
 	CVPixelBufferUnlockBaseAddress(image, 0);
 	if (finished != NULL) {
@@ -237,20 +338,24 @@ decode_frame(void *decoder, void *frame, CMSampleBufferRef sample, uint32_t flag
 		VTDecoderSessionEmitDecodedFrame_(d->session, frame, ERR_MALFUNCTION, 0, NULL);
 		return noErr;
 	}
-	if (!d->opened) {
-		struct hakios_mfc_open request;
+	if (d->drained) {
+		/*
+		 * After FinishDelayedFrames (a seek, the end of a loop) the firmware's instance has finished: a new one starts at a key frame. What comes before
+		 * that one has lost its references, and is dropped.
+		 */
+		CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, false);
+		CFDictionaryRef first = attachments != NULL && CFArrayGetCount(attachments) > 0 ? CFArrayGetValueAtIndex(attachments, 0) : NULL;
+		CFBooleanRef not_sync = first != NULL ? CFDictionaryGetValue(first, kCMSampleAttachmentKey_NotSync) : NULL;
 
-		memset(&request, 0, sizeof(request));
-		request.codec = d->codec;
-		request.header = (uint64_t)(uintptr_t)d->header;
-		request.header_bytes = (uint32_t)d->header_bytes;
-		if (ioctl(d->fd, HAKIOS_MFC_OPEN, &request) != 0) {
-			say("hakios: mfc: the block refused the stream's parameter sets\n");
+		if (not_sync != NULL && CFBooleanGetValue(not_sync)) {
+			VTDecoderSessionEmitDecodedFrame_(d->session, frame, noErr, 2 /* kVTDecodeInfo_FrameDropped */, NULL);
+			return noErr;
+		}
+		if (!open_block(d)) {
+			say("hakios: mfc: the block would not open again after a drain\n");
 			VTDecoderSessionEmitDecodedFrame_(d->session, frame, ERR_MALFUNCTION, 0, NULL);
 			return noErr;
 		}
-		d->opened = true;
-		say("hakios: mfc: the block decodes %ux%u\n", request.width, request.height);
 	}
 	uint32_t tag = d->next_tag++ & 0x7FFFFFFF;
 
@@ -261,8 +366,13 @@ decode_frame(void *decoder, void *frame, CMSampleBufferRef sample, uint32_t flag
 	d->pending[tag % PENDING_MAX] = frame;
 	d->pending_set[tag % PENDING_MAX] = true;
 	status = decode_unit(d, d->stream, out, tag, NULL);
-	if (status != noErr) {
-		emit(d, tag, NULL);     /* (emits with no image: VideoToolbox treats it as a dropped frame) */
+	if (status == ERR_MALFUNCTION) {
+		uint32_t i = tag % PENDING_MAX;
+
+		d->pending_set[i] = false;
+		VTDecoderSessionEmitDecodedFrame_(d->session, frame, ERR_MALFUNCTION, 0, NULL);
+	} else if (status != noErr) {
+		emit(d, tag, NULL);     /* (emits with no image and the dropped flag) */
 	}
 	return noErr;
 }
@@ -278,6 +388,7 @@ finish_delayed(void *decoder)
 			break;
 		}
 	}
+	d->drained = d->opened;
 	/* what the block never showed comes back as dropped */
 	for (int i = 0; i < PENDING_MAX; i++) {
 		if (d->pending_set[i]) {
@@ -311,8 +422,22 @@ finalize(void *object)
 	if (d->fd >= 0) {
 		close(d->fd);   /* the kernel closes the instance */
 	}
+	for (unsigned i = 0; i < RECENT_FRAMES; i++) {
+		if (d->recent[i] != NULL) {
+			CVPixelBufferRelease(d->recent[i]);
+		}
+	}
 	free(d->header);
 	free(d->stream);
+	if (d->matrix != NULL) {
+		CFRelease(d->matrix);
+	}
+	if (d->primaries != NULL) {
+		CFRelease(d->primaries);
+	}
+	if (d->transfer != NULL) {
+		CFRelease(d->transfer);
+	}
 	if (d->spare != NULL) {
 		CVPixelBufferRelease(d->spare);
 	}

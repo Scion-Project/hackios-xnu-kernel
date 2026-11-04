@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;background:#000;color:#fff;font:14px sans-serif}video{width:100%;display:block}</style></head>
+<body><video id=v muted autoplay playsinline loop></video><div id=t></div>
+<script>
+// player.html?list=name:seconds[:seek],...  : each clip in turn; once a second what the video element sees goes to the console; "seek" jumps around
+const q=new URLSearchParams(location.search), list=(q.get('list')||'').split(',').map(x=>x.split(':'));
+const v=document.getElementById('v'), t=document.getElementById('t');
+const say=m=>{fetch('/log?'+encodeURIComponent(m)).catch(()=>{})};
+let i=0, ends=0, seeks=0;
+v.onerror=()=>say('page: ERROR '+list[i][0]+' code '+(v.error&&v.error.code)+' '+(v.error&&v.error.message));
+v.onended=()=>{ends++};
+v.onseeked=()=>{seeks++};
+function start(){
+  if(i>=list.length){say('page: ALL DONE');return}
+  const [name,secs,mode]=list[i]; ends=0;seeks=0;
+  v.src='/'+name; v.load(); v.play().catch(e=>say('page: play() '+e));
+  t.textContent=name; say('page: START '+name);
+  let n=0;
+  const tick=setInterval(()=>{
+    n++;
+    if(mode=='seek'&&n%4==0&&v.duration>0){v.currentTime=Math.random()*v.duration;}
+    const q=v.getVideoPlaybackQuality?v.getVideoPlaybackQuality():{};
+    if(n%2==0)say(`page: ${name} t=${v.currentTime.toFixed(2)} ${v.videoWidth}x${v.videoHeight} ready=${v.readyState} paused=${v.paused} frames=${q.totalVideoFrames} dropped=${q.droppedVideoFrames} seeks=${seeks} err=${v.error?v.error.code:0}`);
+    if(n==Math.floor(secs/2))say('MFCSHOT '+name.replace(/[^a-z0-9]/gi,'_'));
+    if(mode=='shots'&&n%2==1)say('MFCSHOT '+name.replace(/[^a-z0-9]/gi,'_')+'_'+n);
+    if(n>=+secs){clearInterval(tick);i++;start()}
+  },1000);
+}
+say('page: loaded '+navigator.userAgent); start();
+</script></body></html>

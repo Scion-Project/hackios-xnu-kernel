@@ -187,6 +187,8 @@ say(const char *format, ...)
 #define D_DISPLAY_SECOND        0xF610
 #define D_DISPLAY_CROP1         0xF61C
 #define D_DISPLAY_CROP2         0xF620
+#define D_DECODED_STATUS        0xF644
+#define D_DECODED_FIRST         0xF648
 #define D_DECODED_NAL_SIZE      0xF664
 #define D_RET_TAG_TOP           0xF674
 #define D_USED_LOWER            0xF724
@@ -334,6 +336,7 @@ static struct {
 	uint32_t codec, inst, width, height, crop_x, crop_y, crop_w, crop_h, stride, plane0, plane1, slots, mv_count, mv_size, scratch;
 	uint8_t *cpb, *slot[MAX_SLOTS];
 	uint32_t used;                  /* the slots the firmware still references */
+	uint32_t pending;               /* the slots of frames decoded and not yet shown: D_USED says nothing of those */
 	bool buffers;
 	uint32_t pending_offset;
 	uint32_t mem_mark;
@@ -376,6 +379,7 @@ inst_open(uint32_t codec)
 	I.open = 1;
 	I.buffers = false;
 	I.used = 0;
+	I.pending = 0;
 	return 0;
 }
 
@@ -488,6 +492,7 @@ inst_buffers(void)
 	}
 	I.buffers = true;
 	I.used = 0;
+	I.pending = 0;
 	return 0;
 }
 
@@ -507,11 +512,17 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, struct mfc_
 	uint32_t slot, answer;
 
 	bzero(r, sizeof(*r));
-	for (slot = 0; slot < I.slots && (I.used & (1u << slot)); slot++) {
+	for (slot = 0; slot < I.slots && ((I.used | I.pending) & (1u << slot)); slot++) {
 	}
 	if (slot == I.slots) {
-		say("exynos_mfc: every frame buffer is still referenced (%#x)\n", I.used);
-		return ENOSPC;
+		/* (frames the firmware will never show, after an error: given up, or the stream stops here for good) */
+		say("exynos_mfc: every frame buffer is in use (referenced %#x, to be shown %#x): those to be shown are given up\n", I.used, I.pending);
+		I.pending = 0;
+		for (slot = 0; slot < I.slots && (I.used & (1u << slot)); slot++) {
+		}
+		if (slot == I.slots) {
+			return ENOSPC;
+		}
 	}
 	W(D_FIRST_SIZE, I.plane0);
 	W(D_SECOND_SIZE, I.plane1);
@@ -544,6 +555,27 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, struct mfc_
 	}
 	I.used = R(D_USED_LOWER);
 	r->status = R(D_DISPLAY_STATUS);
+	/*
+	 * A frame the firmware has decoded and not shown yet may no longer be referenced. The BSP never gives such a buffer back before it is shown, so neither does this
+	 * (not seen to matter: no test has caught it without this).
+	 */
+	{
+		uint32_t decoded = R(D_DECODED_STATUS) & 7, at = R(D_DECODED_FIRST);
+
+		if (decoded == 0 || decoded == 1) {
+			for (uint32_t i = 0; i < I.slots; i++) {
+				if (PA(I.slot[i]) == at) {
+					I.pending |= 1u << i;
+					break;
+				}
+			}
+		}
+	}
+	if ((r->status >> 4) & 3) {
+		/* the stream changed size in-band: its buffers are the old size's; this instance can go no further */
+		say("exynos_mfc: the stream changes size in-band (status %#x): for the client to open again\n", r->status);
+		return ESTALE;
+	}
 	r->consumed = R(D_DECODED_NAL_SIZE);
 	r->tag = R(D_RET_TAG_TOP);
 	if ((r->status & 7) == 1 || (r->status & 7) == 2) {
@@ -556,6 +588,12 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, struct mfc_
 		r->y = mem + (y - EXYNOS9810_MEM_MFC_PA);
 		r->uv = mem + (uv - EXYNOS9810_MEM_MFC_PA);
 		r->shown = true;
+		for (uint32_t i = 0; i < I.slots; i++) {
+			if (PA(I.slot[i]) == y) {
+				I.pending &= ~(1u << i);
+				break;
+			}
+		}
 	}
 	return 0;
 }
@@ -844,6 +882,9 @@ frame_out(const struct mfc_result *r, struct hakios_mfc_decode *d)
 	if (d->y == 0 || d->uv == 0 || d->y_stride < w || d->uv_stride < w) {
 		return EINVAL;
 	}
+	if (w > d->room_width || h > d->room_height) {
+		return ERANGE;          /* the client's planes are for a smaller picture */
+	}
 	for (uint32_t i = 0; i < h && error == 0; i++) {
 		error = copyout(r->y + (i + I.crop_y) * I.stride + I.crop_x, (user_addr_t)d->y + i * d->y_stride, w);
 	}
@@ -868,8 +909,9 @@ mfc_ioctl(dev_t dev __unused, u_long cmd, caddr_t data, int flag __unused, proc_
 		struct hakios_mfc_open *o = (struct hakios_mfc_open *)(void *)data;
 		uint32_t consumed = 0;
 
-		if (I.open) {
-			error = EALREADY;
+		inst_close();           /* (a client's second open: after a drain, the firmware's instance has finished) */
+		if (dead) {
+			error = EIO;
 			break;
 		}
 		if (o->codec != HAKIOS_MFC_H264 && o->codec != HAKIOS_MFC_HEVC) {

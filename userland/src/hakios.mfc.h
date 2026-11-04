@@ -2,7 +2,8 @@
  * /dev/hakios-mfc: the Exynos 9810's hardware video decoder for user space (bsd/dev/hakios.exynos_mfc.c, boot-arg mfc=5). One client
  * at a time: open(), HAKIOS_MFC_OPEN with the stream's parameter sets and first frame, then HAKIOS_MFC_DECODE with one access
  * unit at a time (Annex B: start codes, parameter sets in-band) and the client's NV12 planes for whatever frame is to be
- * shown; bytes = 0 drains. EBUSY, EIO: use software.
+ * shown; bytes = 0 drains. HAKIOS_MFC_OPEN again starts over (after a drain, the firmware's instance has finished; a stream
+ * goes on from a key frame). EBUSY, EIO: use software. ESTALE from a decode: the stream changed size in-band, open again.
  */
 #ifndef _SYS_HAKIOS_MFC_H_
 #define _SYS_HAKIOS_MFC_H_
@@ -30,6 +31,8 @@ struct hakios_mfc_decode {
 	uint32_t shown_tag;             /* out */
 	uint32_t width, height;         /* out */
 	uint32_t finished;              /* out: drained */
+	uint32_t room_width;            /* in: the most the planes above can hold; ERANGE if the picture is larger */
+	uint32_t room_height;           /* in */
 	uint32_t reserved;
 };
 
