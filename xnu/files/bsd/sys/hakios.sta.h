@@ -60,6 +60,12 @@ struct hakios_sta_state {
 	int last_error;                         /* why the last join failed or the network was lost (an errno); 0: it was not */
 };
 
+/* How the network joined is being heard now, as the radio's firmware measures it. */
+struct hakios_sta_quality {
+	int16_t rssi;                           /* dBm */
+	uint16_t tx_rate, rx_rate;              /* Mbit/s of the last frames each way; 0: none lately */
+};
+
 #define HAKIOS_STA_CHANNEL_PASSIVE     1u      /* the radio may only listen there */
 #define HAKIOS_STA_CHANNEL_RADAR       2u      /* ... and has to look out for radar */
 
@@ -82,6 +88,7 @@ struct hakios_sta_ops {
 	void (*state)(struct hakios_sta_state *state);         /* on any thread; does not sleep */
 	unsigned (*channels)(struct hakios_sta_channel *channels, unsigned most);      /* what the radio may tune to */
 	uint8_t address[6];
+	int (*link_quality)(struct hakios_sta_quality *quality);       /* measured now, the network joined (NULL: it cannot say) */
 };
 
 /* What happens, said to whoever listens (the Apple80211 side). */
@@ -118,6 +125,7 @@ void     hakios_sta_console_scan(void);
 
 /* ---- the listener: drivers/wifi/hakios.apple80211.c ---- */
 void     hakios_apple80211_event(enum hakios_sta_event event, int status);
+void     hakios_apple80211_quality(const struct hakios_sta_quality *quality);
 void     hakios_apple80211_summary(void);                              /* what was asked in this run, to the log */
 #endif
 

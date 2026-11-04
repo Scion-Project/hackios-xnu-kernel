@@ -26,6 +26,9 @@
  * interrupt's thread calls netif_rx(), which only copies: a handshake's message is answered, and keys are given, on a
  * work queue of ours, since add_key() waits for the firmware's answer, which comes on the interrupt's thread.
  *
+ * The link's quality: hakios.sta.c asks every few seconds while a network is joined (boundary_link_quality()), which
+ * is what the status bar's Wi-Fi bars come from.
+ *
  * What is not done: more than one network, roaming (brcmfmac's roamoff is set: the firmware does not move to another
  * access point by itself), WPA3 and enterprise networks, protected management frames, power saving.
  *
@@ -810,6 +813,40 @@ boundary_state(struct hakios_sta_state *state)
 	lx_os_unlock();
 }
 
+/*
+ * How the access point is heard now: brcmfmac's get_station(), as "iw station dump" asks (the firmware's sta_info, or
+ * GET_RSSI when that has no RSSI). Without this the network's RSSI stays what the last scan before joining heard.
+ */
+static int
+boundary_link_quality(struct hakios_sta_quality *quality)
+{
+	static struct station_info station;	/* (one thread calls this) */
+	static unsigned said;
+	int error;
+
+	if (!c.joined || c.ndev == NULL || c.ops->get_station == NULL) {
+		return (ENOTCONN);
+	}
+	bzero(&station, sizeof(station));
+	error = c.ops->get_station(c.wiphy, c.ndev, c.target.bssid, &station);
+	if (error != 0 || !(station.filled & BIT_ULL(NL80211_STA_INFO_SIGNAL)) || station.signal >= 0) {
+		if (said++ < 8) {
+			lx_tell("lx: the firmware does not say how the network is heard: %d, signal %d, filled %#llx\n", error,
+			    station.signal, (unsigned long long)station.filled);
+		}
+		return (error < 0 ? -error : error != 0 ? error : EIO);
+	}
+	lx_os_lock();
+	if (c.joined) {
+		c.target.rssi = station.signal;
+	}
+	lx_os_unlock();
+	quality->rssi = station.signal;
+	quality->tx_rate = station.filled & BIT_ULL(NL80211_STA_INFO_TX_BITRATE) ? (uint16_t)(station.txrate.legacy / 10) : 0;
+	quality->rx_rate = station.filled & BIT_ULL(NL80211_STA_INFO_RX_BITRATE) ? (uint16_t)(station.rxrate.legacy / 10) : 0;
+	return (0);
+}
+
 static unsigned
 boundary_channels(struct hakios_sta_channel *channels, unsigned most)
 {
@@ -838,6 +875,7 @@ static struct hakios_sta_ops boundary = {
 	.leave = boundary_leave,
 	.state = boundary_state,
 	.channels = boundary_channels,
+	.link_quality = boundary_link_quality,
 };
 
 /* ---- from brcmfmac's start to the kernel's station ------------------------------------------------------------ */
