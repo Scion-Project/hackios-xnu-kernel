@@ -639,6 +639,15 @@ firmware_start(void)
 		say("exynos_mfc: 3: mfc's memory does not read back\n");
 		return false;
 	}
+	/* the storage may not be up yet, and hakios_partition_file keeps a failure for the rest of the run: first the partition answers */
+	static uint8_t probe[4096];
+	uint64_t got = 0;
+	int waited;
+
+	for (waited = 0; waited < 120 && hakios_ufs_read_partition(partition, 0, probe, sizeof(probe), &got) != 0; waited++) {
+		IOSleep(500);
+	}
+	say("exynos_mfc: 3: the %s partition answers after %d ms more (%llu bytes)\n", partition, waited * 500, got);
 	if (hakios_partition_file(partition, "/vendor", "/vendor/firmware/mfc_fw.bin", FW_CODE, &data, &size) != 0 || data == NULL) {
 		say("exynos_mfc: 3: mfc_fw.bin is not on the phone's %s partition (needs ufs=2): no hardware video\n", partition);
 		return false;
