@@ -1,6 +1,7 @@
 /*
  * mfc_vt: VideoToolbox's decoder directly, every frame's CRC against the list ffmpeg's frames made (FILE.crc): what the block decodes, frame by frame.
- *   mfc_vt plain FILE            all frames
+ *   mfc_vt plain FILE            all frames, as fast as they go
+ *   mfc_vt paced FILE            all frames, at the clip's own rate
  *   mfc_vt two FILE FILE2        two sessions at once, turn about: the second goes to software (mediaserverd's log says which)
  *   mfc_vt seek FILE             60 frames, FinishDelayedFrames, then on from a later key frame
  *   mfc_vt cont FILE             60 frames, FinishDelayedFrames, then on from the very next frame, a key frame or not
@@ -10,6 +11,7 @@
 #import <VideoToolbox/VideoToolbox.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <zlib.h>
 
 struct run {
@@ -163,9 +165,14 @@ main(int argc, char **argv)
 		load(&a, argv[2]);
 		double t0 = CACurrentMediaTime();
 
-		if (strcmp(argv[1], "plain") == 0) {
+		if (strcmp(argv[1], "plain") == 0 || strcmp(argv[1], "paced") == 0) {
+			bool paced = argv[1][0] == 'p' && argv[1][1] == 'a';
+
 			for (NSUInteger i = 0; i < a.samples.count; i++) {
 				feed(&a, i);
+				if (paced) {
+					usleep((useconds_t)(1000000 / a.fps));
+				}
 			}
 		} else if (strcmp(argv[1], "two") == 0 && argc > 3) {
 			load(&b, argv[3]);
