@@ -52,6 +52,7 @@ void hakios_bt_console(const char *arg);  /* the USB console's "bt" and "bt scan
 void hakios_bcm4361_bt_init(void);     /* boot-arg bt=N on the Galaxy S9: the BCM4361's Bluetooth on UART_BT, stage 1 */
 void hakios_ssp_init(void);            /* boot-arg shub=N on the Galaxy S9: its sensor hub (sys/hakios.sensors.h) */
 void hakios_s2mpb02_torch_quiesce(void); /* loader_return(): the S9's flashlight off, if it is lit */
+void hakios_exynos_mfc_init(void);     /* boot-arg mfc=N on the Exynos 9810: its hardware video decoder (hakios.exynos_mfc.c) */
 void hakios_exynos_camera_init(void);   /* boot-arg cam_s9=N on the Galaxy S9: its front camera, stage 1 */
 void hakios_exynos_camera_quiesce(void); /* loader_return(): the S9's front camera powered down, if it was powered */
 void hakios_exynos_iris_init(void);     /* boot-arg iris_s9=N on the Galaxy S9: its iris camera (S5K5F1) and IR LED */

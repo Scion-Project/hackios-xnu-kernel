@@ -9,6 +9,8 @@
  * which neither payload layout uses (hakios-starlte's README, the memory table; starlte PR 27). Above 0xF0000000 is
  * the Shannon modem's (modem_if, cp_ram_logging) and ABOX's (abox_rmem): never given to anything but ABOX itself.
  *
+ *   0xC4000000 - 0xCBFFFFFF   the video decoder's (hakios.exynos_mfc.c), when mfc= is among the kernel's arguments; XNU's
+ *                             RAM otherwise (the loader's extra_ram_claim says the same numbers)
  *   0xCC000000 - 0xCD042FFF   the panel's framebuffer, UEFI's (1440 x 2960 x 4)
  *   0xD0000000 - 0xD3FFFFFF   the loader's moved payload and the panic log (xnuloader/loader.c, payload_home)
  *   0xD4000000 - 0xD6FFFFFF   the DECON's scan-out buffers: fb_flip's two, fb_dpp's three (hakios.exynos_dpu.c)
@@ -42,6 +44,8 @@
 #ifndef _SYS_HAKIOS_EXYNOS9810_MEM_H_
 #define _SYS_HAKIOS_EXYNOS9810_MEM_H_
 
+#define EXYNOS9810_MEM_MFC_PA           0xC4000000ULL   /* the video decoder's firmware, contexts, stream and frames */
+#define EXYNOS9810_MEM_MFC_END          0xCC000000ULL
 #define EXYNOS9810_MEM_FB_PA            0xCC000000ULL   /* UEFI's framebuffer */
 #define EXYNOS9810_MEM_FB_END           0xCD043000ULL
 #define EXYNOS9810_MEM_PAYLOAD_PA       0xD0000000ULL   /* the moved payload, the panic log */
@@ -73,6 +77,7 @@
 
 /* the table holds together: each range in order, none over the next, all of the gap's in the gap, all below 4 GB */
 #define EXYNOS9810_MEM_BEFORE(a, b)     (EXYNOS9810_MEM_##a##_END <= EXYNOS9810_MEM_##b##_PA)
+_Static_assert(EXYNOS9810_MEM_BEFORE(MFC, FB), "exynos9810 memory: the video decoder's runs into UEFI's framebuffer");
 _Static_assert(EXYNOS9810_MEM_BEFORE(FB, PAYLOAD), "exynos9810 memory: UEFI's framebuffer runs into the payload");
 _Static_assert(EXYNOS9810_MEM_BEFORE(PAYLOAD, DPU_SCAN), "exynos9810 memory: the payload runs into the display's buffers");
 _Static_assert(EXYNOS9810_MEM_BEFORE(DPU_SCAN, DPU_POOL0), "exynos9810 memory: the display's buffers run into its pool");

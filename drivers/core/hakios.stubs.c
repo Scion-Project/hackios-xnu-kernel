@@ -179,6 +179,9 @@ bool hakios_wifi_radio_address(__unused uint8_t *address) { return false; }
 bool hakios_wifi_network(__unused uint8_t *name, __unused unsigned *name_length, __unused uint8_t *passphrase,
     __unused unsigned *passphrase_length) { return false; }
 #endif
+#ifndef HAKIOS_EXYNOS_MFC
+void hakios_exynos_mfc_init(void) {}
+#endif
 #ifndef HAKIOS_EXYNOS_ABOX
 void hakios_exynos_abox_init(void) {}
 void hakios_exynos_abox_quiesce(void) {}
