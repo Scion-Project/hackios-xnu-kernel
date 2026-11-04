@@ -183,6 +183,9 @@ bool hakios_wifi_network(__unused uint8_t *name, __unused unsigned *name_length,
     __unused unsigned *passphrase_length) { return false; }
 #endif
 #ifndef HAKIOS_EXYNOS_MFC
+int hakios_mfc_carve(__unused uint64_t bytes, __unused uint64_t *phys) { return -1; }
+void hakios_mfc_uncarve(__unused uint64_t phys) {}
+int hakios_mfc_carved(__unused uint64_t phys) { return 0; }
 void hakios_exynos_mfc_init(void) {}
 #endif
 #ifndef HAKIOS_EXYNOS_ABOX

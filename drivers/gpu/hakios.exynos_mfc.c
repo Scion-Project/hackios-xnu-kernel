@@ -9,6 +9,9 @@
  *   4  a decode     the stream below, 6 frames of 176 x 144 H.264, decoded at boot; each frame's CRC against ffmpeg's
  *   5  the device   /dev/hakios-mfc for user space (sys/hakios.mfc.h), one client at a time
  *
+ * mfc_zc=1 (with 5): frames are decoded straight into IOSurfaces of the block's memory, as fb_zc's are of the display's (MiniIOSurface.cpp: the surface
+ * property HakiosMFCFrame, from mediaserverd). Nothing is copied. Surfaces are carved from the top of the 128 MB, the instance's own from the bottom.
+ *
  * Any step that fails leaves the block alone from then on: /dev/hakios-mfc is not made or answers EIO, and VideoToolbox keeps
  * its software decoder. Nothing else depends on this driver.
  *
@@ -265,12 +268,90 @@ wait_bits(volatile uint8_t *b, uint32_t off, uint32_t mask, uint32_t want, uint3
 
 static uint32_t mem_used, mem_base_used;
 
+/* frames for fb_zc-style surfaces: from the top down, sorted, highest first (an IOSurface's lifetime is its own: mediaserverd's pool's) */
+#define CARVE_MAX 64
+static struct { uint32_t at, bytes; } carved[CARVE_MAX];
+static uint32_t n_carved;
+static lck_mtx_t *carve_lock;
+static uint32_t zero_copy;
+
+static uint32_t
+carve_floor(void)
+{
+	return n_carved != 0 ? carved[n_carved - 1].at : (uint32_t)EXYNOS9810_MEM_SIZE(MFC);
+}
+
+int
+hakios_mfc_carve(uint64_t bytes, uint64_t *phys)
+{
+	uint32_t top = (uint32_t)EXYNOS9810_MEM_SIZE(MFC), need, i;
+
+	if (mem == NULL || carve_lock == NULL || !zero_copy || bytes == 0 || bytes > EXYNOS9810_MEM_SIZE(MFC)) {
+		return -1;
+	}
+	need = ROUND_UP((uint32_t)bytes, 4096);
+	lck_mtx_lock(carve_lock);
+	for (i = 0; i < n_carved; i++) {
+		if (top - (carved[i].at + carved[i].bytes) >= need) {
+			break;
+		}
+		top = carved[i].at;
+	}
+	if (n_carved == CARVE_MAX || top < need || (i == n_carved && top - need < ROUND_UP(mem_used, 4096))) {
+		lck_mtx_unlock(carve_lock);
+		return -1;
+	}
+	memmove(&carved[i + 1], &carved[i], (n_carved - i) * sizeof(carved[0]));
+	carved[i].at = top - need;
+	carved[i].bytes = need;
+	n_carved++;
+	*phys = EXYNOS9810_MEM_MFC_PA + carved[i].at;
+	lck_mtx_unlock(carve_lock);
+	return 0;
+}
+
+int
+hakios_mfc_carved(uint64_t phys)
+{
+	return zero_copy && phys >= EXYNOS9810_MEM_MFC_PA && phys < EXYNOS9810_MEM_MFC_END;
+}
+
+void
+hakios_mfc_uncarve(uint64_t phys)
+{
+	if (carve_lock == NULL) {
+		return;
+	}
+	lck_mtx_lock(carve_lock);
+	for (uint32_t i = 0; i < n_carved; i++) {
+		if (EXYNOS9810_MEM_MFC_PA + carved[i].at == phys) {
+			memmove(&carved[i], &carved[i + 1], (n_carved - i - 1) * sizeof(carved[0]));
+			n_carved--;
+			break;
+		}
+	}
+	lck_mtx_unlock(carve_lock);
+}
+
+extern int hakios_surface_mfc_frame(uint32_t sid, uint64_t *y, uint64_t *uv, uint32_t *y_stride, uint32_t *uv_stride, uint32_t *y_bytes, uint32_t *uv_bytes);
+
 static void *
 mfc_alloc(uint32_t bytes)
 {
 	uint32_t at = ROUND_UP(mem_used, 4096);
 
-	if (mem == NULL || (uint64_t)at + bytes > EXYNOS9810_MEM_SIZE(MFC)) {
+	if (mem == NULL) {
+		return NULL;
+	}
+	if (carve_lock != NULL) {
+		lck_mtx_lock(carve_lock);
+	}
+	bool room = (uint64_t)at + bytes <= carve_floor();
+
+	if (carve_lock != NULL) {
+		lck_mtx_unlock(carve_lock);
+	}
+	if (!room) {
 		return NULL;
 	}
 	mem_used = at + bytes;
@@ -335,6 +416,9 @@ static struct {
 	int open;
 	uint32_t codec, inst, width, height, crop_x, crop_y, crop_w, crop_h, stride, plane0, plane1, slots, mv_count, mv_size, scratch;
 	uint8_t *cpb, *slot[MAX_SLOTS];
+	bool zc;                        /* frames in the client's surfaces */
+	uint32_t rows;                  /* zero copy: what those must have */
+	uint32_t slot_y[MAX_SLOTS], slot_uv[MAX_SLOTS]; /* each slot's latest addresses */
 	uint32_t used;                  /* the slots the firmware still references */
 	uint32_t pending;               /* the slots of frames decoded and not yet shown: D_USED says nothing of those */
 	bool buffers;
@@ -443,6 +527,7 @@ inst_header(uint32_t bytes, uint32_t *consumed)
 		I.mv_size = ((I.width + 15) / 16) * ((((I.height + 15) / 16 + 1) / 2) * 2) * 64 + 1024;
 	}
 	I.mv_size = ROUND_UP(I.mv_size, 16);
+	I.rows = MAX(I.plane0 / I.stride + (I.plane0 % I.stride != 0), 2 * (I.plane1 / I.stride + (I.plane1 % I.stride != 0)));
 	say("exynos_mfc: the stream: %ux%u (crop %u,%u %ux%u), %u DPBs wanted (taking %u), %u MVs of %u, scratch %u, planes %u + %u, took %u of %u bytes, "
 	    "error %#x\n", I.width, I.height, I.crop_x, I.crop_y, I.crop_w, I.crop_h, R(D_MIN_NUM_DPB), I.slots, I.mv_count, I.mv_size, I.scratch,
 	    I.plane0, I.plane1, *consumed, bytes, last_error);
@@ -460,7 +545,20 @@ inst_buffers(void)
 	if (codec == NULL) {
 		return ENOMEM;
 	}
-	for (uint32_t i = 0; i < I.slots; i++) {
+	if (I.zc) {
+		/* the frames are the client's: only whether they will fit */
+		uint32_t frame = ROUND_UP(I.stride * I.rows + I.stride * (I.rows / 2), 4096);
+
+		lck_mtx_lock(carve_lock);
+		uint32_t room = carve_floor() - ROUND_UP(mem_used, 4096);
+		lck_mtx_unlock(carve_lock);
+		if (room / frame < I.slots + 2) {
+			/* (4K: the client's pool would want more of these than the 128 MB holds; the instance's own frames, fewer, do fit) */
+			say("exynos_mfc: no room for %u frames of %u bytes in %u: copies\n", I.slots + 2, frame, room);
+			I.zc = false;
+		}
+	}
+	for (uint32_t i = 0; !I.zc && i < I.slots; i++) {
 		I.slot[i] = mfc_alloc(I.plane0 + I.plane1);
 		if (I.slot[i] == NULL) {
 			if (i <= R(D_MIN_NUM_DPB)) {
@@ -502,16 +600,18 @@ inst_buffers(void)
  */
 struct mfc_result {
 	bool shown, finished;
+	int slot, shown_slot;
 	uint8_t *y, *uv;
 	uint32_t tag, consumed, status;
 };
 
 static int
-inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, struct mfc_result *r)
+inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, uint32_t y_pa, uint32_t uv_pa, struct mfc_result *r)
 {
 	uint32_t slot, answer;
 
 	bzero(r, sizeof(*r));
+	r->slot = r->shown_slot = -1;
 	for (slot = 0; slot < I.slots && ((I.used | I.pending) & (1u << slot)); slot++) {
 	}
 	if (slot == I.slots) {
@@ -526,8 +626,15 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, struct mfc_
 	}
 	W(D_FIRST_SIZE, I.plane0);
 	W(D_SECOND_SIZE, I.plane1);
-	W(D_FIRST_DPB0 + 4 * slot, PA(I.slot[slot]));
-	W(D_SECOND_DPB0 + 4 * slot, PA(I.slot[slot] + I.plane0));
+	if (!I.zc) {
+		y_pa = PA(I.slot[slot]);
+		uv_pa = PA(I.slot[slot] + I.plane0);
+	}
+	I.slot_y[slot] = y_pa;
+	I.slot_uv[slot] = uv_pa;
+	r->slot = (int)slot;
+	W(D_FIRST_DPB0 + 4 * slot, y_pa);
+	W(D_SECOND_DPB0 + 4 * slot, uv_pa);
 	W(D_DYNAMIC_LOWER, 1u << slot);
 	W(D_DYNAMIC_UPPER, 0);
 	W(D_AVAILABLE_LOWER, I.used | (1u << slot));
@@ -564,7 +671,7 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, struct mfc_
 
 		if (decoded == 0 || decoded == 1) {
 			for (uint32_t i = 0; i < I.slots; i++) {
-				if (PA(I.slot[i]) == at) {
+				if (I.slot_y[i] == at) {
 					I.pending |= 1u << i;
 					break;
 				}
@@ -589,8 +696,9 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, struct mfc_
 		r->uv = mem + (uv - EXYNOS9810_MEM_MFC_PA);
 		r->shown = true;
 		for (uint32_t i = 0; i < I.slots; i++) {
-			if (PA(I.slot[i]) == y) {
+			if (I.slot_y[i] == y) {
 				I.pending &= ~(1u << i);
+				r->shown_slot = (int)i;
 				break;
 			}
 		}
@@ -801,7 +909,7 @@ self_test(void)
 			offset += consumed;
 			bytes -= consumed;
 		}
-		error = inst_frame(bytes, offset, 100 + unit, false, &r);
+		error = inst_frame(bytes, offset, 100 + unit, false, 0, 0, &r);
 		if (error != 0) {
 			break;
 		}
@@ -817,7 +925,7 @@ self_test(void)
 		}
 	}
 	for (uint32_t drain = 0; error == 0 && drain < 8; drain++) {
-		error = inst_frame(0, 0, 0, true, &r);
+		error = inst_frame(0, 0, 0, true, 0, 0, &r);
 		if (error != 0 || r.finished) {
 			break;
 		}
@@ -909,6 +1017,7 @@ mfc_ioctl(dev_t dev __unused, u_long cmd, caddr_t data, int flag __unused, proc_
 		struct hakios_mfc_open *o = (struct hakios_mfc_open *)(void *)data;
 		uint32_t consumed = 0;
 
+		I.zc = false;
 		inst_close();           /* (a client's second open: after a drain, the firmware's instance has finished) */
 		if (dead) {
 			error = EIO;
@@ -927,12 +1036,21 @@ mfc_ioctl(dev_t dev __unused, u_long cmd, caddr_t data, int flag __unused, proc_
 			break;
 		}
 		__builtin_arm_dsb(15);
-		if ((error = inst_header(o->header_bytes, &consumed)) != 0 || (error = inst_buffers()) != 0) {
+		I.zc = zero_copy && (o->flags & HAKIOS_MFC_ZERO_COPY) != 0;
+		if ((error = inst_header(o->header_bytes, &consumed)) != 0) {
+			inst_close();
+			break;
+		}
+		I.zc = I.zc && I.crop_x == 0 && I.crop_y == 0;  /* (a surface's picture starts at its first byte) */
+		if ((error = inst_buffers()) != 0) {
 			inst_close();
 			break;
 		}
 		o->width = I.crop_w;
 		o->height = I.crop_h;
+		o->flags = I.zc ? HAKIOS_MFC_ZERO_COPY : 0;
+		o->stride = I.stride;
+		o->rows = I.rows;
 		break;
 	}
 	case HAKIOS_MFC_DECODE: {
@@ -952,17 +1070,43 @@ mfc_ioctl(dev_t dev __unused, u_long cmd, caddr_t data, int flag __unused, proc_
 			break;
 		}
 		__builtin_arm_dsb(15);
-		error = inst_frame(d->bytes, 0, d->tag, d->bytes == 0, &r);
+		uint64_t y = 0, uv = 0;
+
+		if (I.zc) {
+			uint32_t y_stride = 0, uv_stride = 0, y_bytes = 0, uv_bytes = 0;
+
+			/* ENXIO: not a surface of this memory, or not of the shape asked for; the client can open again, for copies */
+			if (hakios_surface_mfc_frame(d->surface, &y, &uv, &y_stride, &uv_stride, &y_bytes, &uv_bytes) != 0 || y_stride != I.stride ||
+			    uv_stride != I.stride || y_bytes < I.plane0 || uv_bytes < I.plane1 || (y & 0xFF) != 0 || (uv & 0xFF) != 0 ||
+			    y < EXYNOS9810_MEM_MFC_PA || uv + uv_bytes > EXYNOS9810_MEM_MFC_END) {
+				static int told;
+
+				if (told++ < 4) {
+					say("exynos_mfc: surface %u is not a frame of the block's memory of %u bytes a row, %u + %u bytes: at %#llx + %#llx, %u and %u a row, %u + %u bytes\n", d->surface,
+					    I.stride, I.plane0, I.plane1, y, uv, y_stride, uv_stride, y_bytes, uv_bytes);
+				}
+				error = ENXIO;
+				break;
+			}
+		}
+		error = inst_frame(d->bytes, 0, d->tag, d->bytes == 0, (uint32_t)y, (uint32_t)uv, &r);
 		if (error != 0) {
 			break;
 		}
 		d->finished = r.finished;
+		d->slot = r.slot;
+		d->shown_slot = r.shown_slot;
+		d->used = I.used | I.pending;
 		if (r.shown) {
 			d->shown = 1;
 			d->shown_tag = r.tag;
 			d->width = I.crop_w;
 			d->height = I.crop_h;
-			error = frame_out(&r, d);
+			if (!I.zc) {
+				error = frame_out(&r, d);
+			} else if (r.shown_slot < 0) {
+				error = EIO;
+			}
 		}
 		break;
 	}
@@ -1023,6 +1167,8 @@ hakios_exynos_mfc_init(void)
 	}
 	group = lck_grp_alloc_init("hakios_mfc", LCK_GRP_ATTR_NULL);
 	mfc_lock = lck_mtx_alloc_init(group, LCK_ATTR_NULL);
+	carve_lock = lck_mtx_alloc_init(group, LCK_ATTR_NULL);
+	(void)PE_parse_boot_argn("mfc_zc", &zero_copy, sizeof(zero_copy));
 	pmu = (volatile uint8_t *)ml_io_map(PMU_PA, PMU_SIZE);
 	cmu_top = (volatile uint8_t *)ml_io_map(CMU_TOP_PA, CMU_SIZE);
 	cmu_busc = (volatile uint8_t *)ml_io_map(CMU_BUSC_PA, CMU_SIZE);
