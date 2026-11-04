@@ -604,6 +604,26 @@ keep_metal_from_the_capture_stack(void)
 	    ask(array, sel_registerName("count")), create() != NULL ? "A DEVICE STILL" : "nil");
 }
 
+/*
+ * The hardware video decoder (mfc_decoder.c, only where the kernel has one: mfc=5). The kernel makes /dev/hakios-mfc when its firmware is up, which
+ * may be after this process starts; a thread waits a minute for it and goes.
+ */
+extern void hakios_mfc_decoder_register(void);
+
+static void *
+wait_for_mfc(void *unused)
+{
+	(void)unused;
+	for (int i = 0; i < 60; i++) {
+		if (access("/dev/hakios-mfc", F_OK) == 0) {
+			hakios_mfc_decoder_register();
+			break;
+		}
+		sleep(1);
+	}
+	return NULL;
+}
+
 static void
 image_added(__unused const struct mach_header *header, __unused intptr_t image_slide)
 {
@@ -665,6 +685,11 @@ hakios_media_init(void)
 	if (camera) {
 		say("hakios: mediaserverd: the kernel has a camera (/dev/hakios-camera)\n");
 		register_hevc_encoder();
+	}
+	if (boot_arg("mfc=")) {
+		pthread_t waiter;
+
+		pthread_create(&waiter, NULL, wait_for_mfc, NULL);
 	}
 	_dyld_register_func_for_add_image(image_added);         /* also called for every image already there */
 }
