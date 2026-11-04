@@ -161,6 +161,9 @@ static TUNABLE(uint32_t, gSurfaceClear, "surf_clear", 1);
 extern "C" {
 int hakios_scanout_carve(uint64_t bytes, uint64_t * phys);
 void hakios_scanout_uncarve(uint64_t phys);
+int hakios_mfc_carve(uint64_t bytes, uint64_t * phys);
+void hakios_mfc_uncarve(uint64_t phys);
+int hakios_surface_mfc_frame(uint32_t sid, uint64_t * y, uint64_t * uv, uint32_t * y_stride, uint32_t * uv_stride, uint32_t * y_bytes, uint32_t * uv_bytes);
 }
 static uint32_t gScanoutWidth, gScanoutHeight;
 static uint32_t gScanoutMade, gScanoutRefused;
@@ -184,6 +187,28 @@ scanoutWanted(uint32_t width, uint32_t height, uint32_t format, uint32_t bpe, ui
 	}
 	proc_selfname(name, sizeof(name));
 	return strcmp(name, "backboardd") == 0;
+}
+
+/* the video decoder's question: where a surface of its memory has its planes (hakios.exynos_mfc.c) */
+int
+hakios_surface_mfc_frame(uint32_t sid, uint64_t * y, uint64_t * uv, uint32_t * y_stride, uint32_t * uv_stride, uint32_t * y_bytes, uint32_t * uv_bytes)
+{
+	MiniIOSurface * s = MiniIOSurfaceCopy(sid);
+	int result = -1;
+
+	if (s != NULL && s->scanMFC && s->scanPhys != 0 && s->info.planeCount == 2) {
+		*y = s->scanPhys + s->planes[0].offset;
+		*uv = s->scanPhys + s->planes[1].offset;
+		*y_stride = s->planes[0].bytesPerRow;
+		*uv_stride = s->planes[1].bytesPerRow;
+		*y_bytes = s->planes[0].size;
+		*uv_bytes = s->planes[1].size;
+		result = 0;
+	}
+	if (s != NULL) {
+		MiniIOSurfaceDrop(s);
+	}
+	return result;
 }
 
 void
@@ -338,7 +363,11 @@ MiniIOSurface::free(void)
 		/* (the display holds a surface it shows: nobody scans this memory out any more) */
 		OSSafeReleaseNULL(scanMap);
 		OSSafeReleaseNULL(scan);
-		hakios_scanout_uncarve(scanPhys);
+		if (scanMFC) {
+			hakios_mfc_uncarve(scanPhys);
+		} else {
+			hakios_scanout_uncarve(scanPhys);
+		}
 		scanPhys = 0;
 	}
 	if (client != NULL) {
@@ -706,6 +735,25 @@ surfaceCreate(OSDictionary * props, IOReturn * error)
 			    width, height, bpr, s->scan == NULL ? "no slot free" : "not mapped");
 		}
 	}
+	if (wrapped == NULL && s->scanPhys == 0 && planeCount == 2 && dictNumber(props, "HakiosMFCFrame", 0) != 0) {
+		/* mfc_zc (hakios.exynos_mfc.c): a frame of video the block decodes into, as fb_zc's above; only mediaserverd's, where the decoder is */
+		char name[32] = "";
+		uint64_t phys = 0;
+
+		proc_selfname(name, sizeof(name));
+		if (strcmp(name, "mediaserverd") == 0 && hakios_mfc_carve(alloc, &phys) == 0) {
+			s->scan = IOMemoryDescriptor::withPhysicalAddress((IOPhysicalAddress) phys, alloc, kIODirectionInOut);
+			s->scanMap = s->scan != NULL ? s->scan->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapWriteCombineCache) : NULL;
+			if (s->scanMap == NULL) {
+				OSSafeReleaseNULL(s->scan);
+				hakios_mfc_uncarve(phys);
+			} else {
+				s->scanPhys = phys;
+				s->scanMFC = true;
+				bzero((void *) s->scanMap->getVirtualAddress(), alloc);
+			}
+		}
+	}
 	s->memory = surfaceMemory((vm_size_t) PAGE_SIZE + (wrapped || s->scanPhys ? 0 : alloc));
 	if (s->memory == NULL) {
 		IOLog("MiniIOSurface: no memory for %u bytes (%u surfaces, %llu MB in use)\n", alloc, gSurfaceCount,
@@ -717,7 +765,7 @@ surfaceCreate(OSDictionary * props, IOReturn * error)
 	s->kbase = (uint8_t *) s->memory->getBytesNoCopy();
 	s->values = OSDictionary::withCapacity(4);
 	s->kpixels = s->scanPhys != 0 ? (uint8_t *) s->scanMap->getVirtualAddress() : s->kbase + PAGE_SIZE;
-	if (s->scanPhys != 0 && gScanoutMade++ < 16) {
+	if (s->scanPhys != 0 && !s->scanMFC && gScanoutMade++ < 16) {
 		IOLog("MiniIOSurface: fb_zc: a display surface (%ux%u, %u bytes a row, %u bytes) made of the scan-out pool at "
 		    "%#llx\n", width, height, bpr, alloc, s->scanPhys);
 	}

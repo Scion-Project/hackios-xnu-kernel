@@ -1963,7 +1963,7 @@ IOMobileFramebuffer::zcShow(const uint8_t * swap, MiniIOSurface ** surfaces)
 	int32_t src[4], dst[4];
 	uint64_t began, waited;
 
-	if (!gZeroCopy || fScanMode != 2 || s == NULL || s->scanPhys == 0) {
+	if (!gZeroCopy || fScanMode != 2 || s == NULL || s->scanPhys == 0 || s->scanMFC) {
 		return false;
 	}
 	for (unsigned i = 0; i < 4; i++) {

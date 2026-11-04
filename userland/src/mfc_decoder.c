@@ -23,6 +23,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
+#include <IOSurface/IOSurfaceRef.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -51,7 +52,7 @@ static const CFStringRef *kVTVideoDecoderList_DecoderID_, *kVTVideoDecoderList_D
 #define ERR_BAD_DATA            (-12909)        /* kVTVideoDecoderBadDataErr */
 #define ERR_MALFUNCTION         (-12911)        /* kVTVideoDecoderMalfunctionErr */
 #define PENDING_MAX             64
-#define RECENT_FRAMES           4
+#define RECENT_FRAMES           6
 
 struct mfc_decoder {
 	int fd;
@@ -63,6 +64,10 @@ struct mfc_decoder {
 	bool opened;
 	bool drained;                   /* the block has finished this instance: the next key frame opens it again */
 	uint32_t width, height;
+	bool zc;                        /* frames decoded straight into the pool's surfaces (mfc_zc=1) */
+	uint32_t zc_stride, zc_rows;
+	CVPixelBufferRef slots[32];     /* zero copy: the frames the firmware keeps; each given back when it has let go */
+	bool first_done;                /* zero copy: a first frame has gone in: too late to go back to copies */
 	CFTypeRef matrix, primaries, transfer;
 	CVPixelBufferRef recent[RECENT_FRAMES]; /* the last frames emitted, kept a little (see emit) */
 	unsigned recent_at;
@@ -140,18 +145,35 @@ is_8bit_420(struct mfc_decoder *d, CMVideoFormatDescriptionRef format)
 	return (c[16] & 3) == 1 && (c[17] & 7) == 0 && (c[18] & 7) == 0;
 }
 
+static void
+slots_free(struct mfc_decoder *d, uint32_t keep_mask)
+{
+	for (unsigned i = 0; i < 32; i++) {
+		if (d->slots[i] != NULL && !(keep_mask & (1u << i))) {
+			CVPixelBufferRelease(d->slots[i]);
+			d->slots[i] = NULL;
+		}
+	}
+}
+
 static bool
 open_block(struct mfc_decoder *d)
 {
 	struct hakios_mfc_open request;
 
+	slots_free(d, 0);
+
 	memset(&request, 0, sizeof(request));
 	request.codec = d->codec;
 	request.header = (uint64_t)(uintptr_t)d->header;
 	request.header_bytes = (uint32_t)d->header_bytes;
+	request.flags = d->zc ? HAKIOS_MFC_ZERO_COPY : 0;
 	if (ioctl(d->fd, HAKIOS_MFC_OPEN, &request) != 0) {
 		return false;
 	}
+	d->zc = (request.flags & HAKIOS_MFC_ZERO_COPY) != 0;
+	d->zc_stride = request.stride;
+	d->zc_rows = request.rows;
 	if (request.width > d->width || request.height > d->height) {
 		say("hakios: mfc: the stream is %ux%u, its format says %ux%u: software\n", request.width, request.height, d->width, d->height);
 		return false;
@@ -189,6 +211,7 @@ start_session(void *decoder, void *session, CMVideoFormatDescriptionRef format)
 
 	d->width = size.width;
 	d->height = size.height;
+	d->zc = true;                   /* (if the kernel has mfc_zc=1; it says) */
 	/* the block is asked now, not at the first frame: a session refused here goes on to the software decoder (too large a stream: no memory) */
 	if (!open_block(d)) {
 		say("hakios: mfc: the block refuses a %dx%d stream: software\n", size.width, size.height);
@@ -205,14 +228,25 @@ start_session(void *decoder, void *session, CMVideoFormatDescriptionRef format)
 #undef KEEP
 	CFNumberRef pixel_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &pixel), width_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &width),
 	    height_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &height);
-	CFDictionaryRef surface = CFDictionaryCreate(NULL, NULL, NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-	const void *keys[] = { kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey, kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey };
-	const void *values[] = { pixel_n, width_n, height_n, surface };
-	CFDictionaryRef attributes = CFDictionaryCreate(NULL, keys, values, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	/* zero copy: the pool's surfaces are made of the block's memory (MiniIOSurface.cpp), in the shape its firmware wants */
+	int32_t one = 1, align_row = 16, align_plane = 256, extra = (int32_t)d->zc_rows - height;
+	CFNumberRef one_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &one), align_row_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &align_row),
+	    align_plane_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &align_plane), extra_n = CFNumberCreate(NULL, kCFNumberSInt32Type, &extra);
+	const void *surface_keys[] = { CFSTR("HakiosMFCFrame") };
+	const void *surface_values[] = { one_n };
+	CFDictionaryRef surface = CFDictionaryCreate(NULL, surface_keys, surface_values, d->zc ? 1 : 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	const void *keys[] = { kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey, kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey,
+	    kCVPixelBufferBytesPerRowAlignmentKey, kCVPixelBufferPlaneAlignmentKey, kCVPixelBufferExtendedPixelsBottomKey };
+	const void *values[] = { pixel_n, width_n, height_n, surface, align_row_n, align_plane_n, extra_n };
+	CFDictionaryRef attributes = CFDictionaryCreate(NULL, keys, values, d->zc && extra >= 0 ? 7 : 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
 	OSStatus status = VTDecoderSessionSetPixelBufferAttributes_(session, attributes);
 	CFRelease(attributes);
 	CFRelease(surface);
+	CFRelease(one_n);
+	CFRelease(align_row_n);
+	CFRelease(align_plane_n);
+	CFRelease(extra_n);
 	CFRelease(pixel_n);
 	CFRelease(width_n);
 	CFRelease(height_n);
@@ -270,11 +304,50 @@ decode_unit(struct mfc_decoder *d, const uint8_t *stream, size_t bytes, uint32_t
 			return ERR_MALFUNCTION;
 		}
 	}
-	CVPixelBufferLockBaseAddress(image, 0);
 	memset(&request, 0, sizeof(request));
 	request.stream = (uint64_t)(uintptr_t)stream;
 	request.bytes = (uint32_t)bytes;
 	request.tag = tag;
+	if (d->zc) {
+		IOSurfaceRef surface = CVPixelBufferGetIOSurface(image);
+
+		request.surface = surface != NULL ? IOSurfaceGetID(surface) : 0;
+		if (ioctl(d->fd, HAKIOS_MFC_DECODE, &request) != 0) {
+			int why = errno;
+
+			d->spare = image;
+			if (why == ENXIO && !d->first_done) {
+				/* the pool's surfaces are not what was asked for (VideoToolbox made them for its client, say): copies after all */
+				say("hakios: mfc: surfaces of the block's memory are not to be had: copying\n");
+				CVPixelBufferRelease(d->spare);
+				d->spare = NULL;
+				d->zc = false;
+				return open_block(d) ? decode_unit(d, stream, bytes, tag, finished) : ERR_MALFUNCTION;
+			}
+			if (why != EBADMSG) {
+				say("hakios: mfc: a decode fails: %d\n", why);
+			}
+			return why == EBADMSG ? ERR_BAD_DATA : ERR_MALFUNCTION;
+		}
+		d->first_done = true;
+		if (finished != NULL) {
+			*finished = request.finished != 0;
+		}
+		if (request.slot >= 0 && request.slot < 32) {
+			if (d->slots[request.slot] != NULL) {
+				CVPixelBufferRelease(d->slots[request.slot]);
+			}
+			d->slots[request.slot] = image;
+		} else {
+			d->spare = image;
+		}
+		if (request.shown && request.shown_slot >= 0 && request.shown_slot < 32 && d->slots[request.shown_slot] != NULL) {
+			emit(d, request.shown_tag, d->slots[request.shown_slot]);
+		}
+		slots_free(d, request.used);
+		return noErr;
+	}
+	CVPixelBufferLockBaseAddress(image, 0);
 	request.y = (uint64_t)(uintptr_t)CVPixelBufferGetBaseAddressOfPlane(image, 0);
 	request.uv = (uint64_t)(uintptr_t)CVPixelBufferGetBaseAddressOfPlane(image, 1);
 	request.y_stride = (uint32_t)CVPixelBufferGetBytesPerRowOfPlane(image, 0);
@@ -389,6 +462,7 @@ finish_delayed(void *decoder)
 		}
 	}
 	d->drained = d->opened;
+	slots_free(d, 0);
 	/* what the block never showed comes back as dropped */
 	for (int i = 0; i < PENDING_MAX; i++) {
 		if (d->pending_set[i]) {
@@ -427,6 +501,7 @@ finalize(void *object)
 			CVPixelBufferRelease(d->recent[i]);
 		}
 	}
+	slots_free(d, 0);
 	free(d->header);
 	free(d->stream);
 	if (d->matrix != NULL) {

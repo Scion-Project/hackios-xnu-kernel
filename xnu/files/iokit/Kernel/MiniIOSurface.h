@@ -125,6 +125,7 @@ public:
 	IOMemoryDescriptor *            scan;
 	IOMemoryMap *                   scanMap;
 	uint64_t                        scanPhys;
+	bool                            scanMFC;        /* (the same, of the video decoder's memory: mfc_zc; a frame of video, never the display's) */
 	uint32_t                        drawn;          /* the GPU's last submission that names the pixels (0: none; hakios.gpu.cpp) */
 	/*
 	 * ... and the Mali's (drivers/gpu/hakios.mali.cpp): the number of its last job that names the pixels (0: none), or
