@@ -294,6 +294,7 @@ metal_profile	u
 mfc	kl
 mfc_fw_part	k
 mfc_int_khz	k
+mfc_irq	k
 mfc_mif_khz	k
 mfc_zc	k
 mic	k
