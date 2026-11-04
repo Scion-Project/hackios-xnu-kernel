@@ -108,6 +108,8 @@ void hakios_s6sy761_init(void) {}
 #endif
 #ifndef HAKIOS_MAX77705
 void hakios_max77705_init(void) {}
+void hakios_max77705_usb_console(const char *arg);
+void hakios_max77705_usb_console(__unused const char *arg) {}
 #endif
 #ifndef HAKIOS_EXYNOS_CAMERA
 void hakios_exynos_camera_init(void) {}
@@ -234,6 +236,8 @@ int hakios_scanout_show(__unused uint64_t phys, __unused uint32_t rowbytes) { re
 
 #ifndef HAKIOS_USB_GADGET
 void hakios_usb_gadget_quiesce(void) {}
+void hakios_usb_gadget_vbus(bool present);
+void hakios_usb_gadget_vbus(__unused bool present) {}
 /* a picture for the USB console (hakios.exynos_camera.c's camshot): no USB link here */
 int hakios_usb_picture(uintptr_t rgb, uint32_t width, uint32_t height, const char *what);
 int hakios_usb_picture(__unused uintptr_t rgb, __unused uint32_t width, __unused uint32_t height, __unused const char *what) { return -1; }

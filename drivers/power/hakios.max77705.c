@@ -336,6 +336,187 @@ say_state(const char *when, const struct hakios_battery_state *b)
 	    b->full_uah / 1000, b->cycles);
 }
 
+/* ---- the USB-C port: the switch and VBUS (max77705_usbsw=1) -------------------------------------------------------- */
+
+/*
+ * The MUIC's firmware, at 0x25, takes opcodes: written to OPCODE_WRITE (0x21) with their data, ended by a write of
+ * OPCODE_WRITE_END (0x41); the answer waits at OPCODE_READ (0x51), the opcode first. CONTROL1 is the switch: 0x05 reads it,
+ * 0x06 writes it (COM_USB 0x09: D+/D- to the AP's USB; COM_OPEN 0). BC_STATUS (0x08, read as a plain register, which clears
+ * nothing) has VBUS in bit 7 and the charger type in bits 1:0 (0 none, 1 a USB host, 2 a dedicated charger, 3 special).
+ * Samsung's driver opens the switch on every detach and closes it on every attach once the charger type is known, from
+ * the chip's interrupts (drivers/muic/max77705-muic.c com_to_usb_ap, com_to_open, max77705_muic_handle_detach;
+ * include/linux/ccic/max77705.h:470-485, include/linux/muic/max77705-muic.h:216-223). This driver has no interrupt, so a
+ * thread reads VBUS four times a second: on a cable coming in it closes the switch, again as the detection may run on
+ * (the firmware may leave it open meanwhile), and tells the gadget driver about VBUS (hakios.dwc3.c, THE CABLE COMING AND
+ * GOING).
+ */
+#define MUIC                    0x25
+#define MUIC_BC_STATUS          0x08
+#define  BC_VBUS                (1u << 7)
+#define  BC_CHGTYP(v)           ((v) & 3u)
+#define OPCODE_WRITE            0x21
+#define OPCODE_WRITE_END        0x41
+#define OPCODE_READ             0x51
+#define OPCODE_CTRL1_R          0x05
+#define OPCODE_CTRL1_W          0x06
+#define COM_OPEN                0x00
+#define COM_USB                 0x09
+#define VBUS_POLL_MS            250
+#define VBUS_LOWS               2               /* readings in a row before VBUS counts as gone */
+
+extern void hakios_usb_gadget_vbus(bool present);
+static bool usbsw_running;
+static volatile uint32_t usbsw_test_ms;         /* the console's usb unplug/muic: how long */
+static volatile bool usbsw_test_tell;           /* usb unplug: VBUS taken as gone meanwhile */
+static volatile bool usbsw_want_say;            /* the console's usb */
+
+static uint32_t
+usbsw_write(uint8_t value)
+{
+	uint8_t w1[3] = { OPCODE_WRITE, OPCODE_CTRL1_W, value }, w2[2] = { OPCODE_WRITE_END, 0 };
+	uint32_t e;
+
+	lck_mtx_lock(bus_lock);
+	e = hakios_hsi2c_message(&bus, MUIC, false, w1, 3, true);
+	if (e == 0) {
+		e = hakios_hsi2c_message(&bus, MUIC, false, w2, 2, true);
+	}
+	lck_mtx_unlock(bus_lock);
+	return e;
+}
+
+/* CONTROL1 as the firmware says it, or -1 when no answer came in 100 ms */
+static int
+usbsw_read(void)
+{
+	uint8_t w1[2] = { OPCODE_WRITE, OPCODE_CTRL1_R }, w2[2] = { OPCODE_WRITE_END, 0 }, answer[2] = { 0, 0 };
+	uint32_t e;
+
+	lck_mtx_lock(bus_lock);
+	e = hakios_hsi2c_message(&bus, MUIC, false, w1, 2, true);
+	if (e == 0) {
+		e = hakios_hsi2c_message(&bus, MUIC, false, w2, 2, true);
+	}
+	lck_mtx_unlock(bus_lock);
+	for (int i = 0; e == 0 && i < 10; i++) {
+		delay_for_interval(10, NSEC_PER_MSEC);
+		if ((e = locked_read(MUIC, OPCODE_READ, answer, 2)) == 0 && answer[0] == OPCODE_CTRL1_R) {
+			return answer[1];
+		}
+	}
+	return -1;
+}
+
+static void
+usbsw_say(const char *when)
+{
+	uint8_t bc = 0;
+	uint32_t e = read8(MUIC, MUIC_BC_STATUS, &bc);
+	int ctrl1 = usbsw_read();
+
+	say("max77705: usb switch %s: CONTROL1 %#x, BC_STATUS %#x (VBUS %u, charger type %u)%s\n", when, ctrl1, bc, (bc & BC_VBUS) ? 1 : 0,
+	    BC_CHGTYP(bc), e ? " (not read)" : "");
+}
+
+static void
+usbsw_thread(__unused void *arg, __unused wait_result_t result)
+{
+	/* after a cable comes in: the switch said and closed at these readings (at 250 ms each: 0, 0.5, 1.5, 3, 6 s) */
+	static const uint32_t again[] = { 0, 2, 6, 12, 24 };
+	uint32_t lows = 0, since_in = 0xffffffffu;
+	bool vbus = false, known = false;
+
+	for (;;) {
+		uint8_t bc = 0;
+		uint32_t test = usbsw_test_ms;
+
+		if (usbsw_want_say) {
+			usbsw_want_say = false;
+			usbsw_say("now");
+		}
+		if (test != 0) {
+			bool tell = usbsw_test_tell;
+			uint32_t e;
+
+			usbsw_test_ms = 0;
+			usbsw_say("before the test");
+			e = usbsw_write(COM_OPEN);
+			say("max77705: usb switch open for %u ms (%x)%s\n", test, e, tell ? ", VBUS taken as gone" : "");
+			for (uint32_t t = 0; t < test; t += VBUS_POLL_MS) {
+				if (tell) {
+					hakios_usb_gadget_vbus(false);
+				}
+				delay_for_interval(VBUS_POLL_MS, NSEC_PER_MSEC);
+			}
+			e = usbsw_write(COM_USB);
+			say("max77705: usb switch closed again (%x)\n", e);
+			usbsw_say("after the test");
+		}
+		if (read8(MUIC, MUIC_BC_STATUS, &bc) == 0) {
+			bool now = (bc & BC_VBUS) != 0;
+
+			if (now) {
+				lows = 0;
+				if (known && !vbus) {
+					say("max77705: VBUS in: BC_STATUS %#x\n", bc);
+					since_in = 0;
+				}
+				vbus = true;
+			} else if (!known || ++lows >= VBUS_LOWS) {
+				if (known && vbus) {
+					usbsw_say("the cable out");
+				}
+				vbus = false;
+				since_in = 0xffffffffu;
+			}
+			known = true;
+			hakios_usb_gadget_vbus(vbus);
+		}
+		if (since_in != 0xffffffffu) {
+			for (unsigned i = 0; i < sizeof(again) / sizeof(again[0]); i++) {
+				if (since_in == again[i]) {
+					usbsw_say("the cable in");
+					(void)usbsw_write(COM_USB);
+				}
+			}
+			since_in = since_in > again[sizeof(again) / sizeof(again[0]) - 1] ? 0xffffffffu : since_in + 1;
+		}
+		delay_for_interval(VBUS_POLL_MS, NSEC_PER_MSEC);
+	}
+}
+
+/* the USB console's usb (the switch and VBUS said), usb unplug MS, usb muic MS: done on the thread above */
+void hakios_max77705_usb_console(const char *arg);
+
+void
+hakios_max77705_usb_console(const char *arg)
+{
+	const char *p = arg;
+	uint32_t ms = 0;
+
+	if (!usbsw_running) {
+		loader_log_line("usb: the USB-C switch is not watched (max77705_usbsw=1 not given)\n");
+		return;
+	}
+	if (*arg == 0) {
+		usbsw_want_say = true;
+		return;
+	}
+	while (*p != 0 && *p != ' ') {
+		p++;
+	}
+	while (*p == ' ') {
+		p++;
+	}
+	while (*p >= '0' && *p <= '9' && ms < 600000) {
+		ms = ms * 10 + (uint32_t)(*p++ - '0');
+	}
+	if (ms != 0) {
+		usbsw_test_tell = arg[0] == 'u';
+		usbsw_test_ms = ms;
+	}
+}
+
 /* ---- the motor: the MAX77705's haptic block, driven by a PWM of the SoC (max77705_haptic=1) ------------------------ */
 
 /*
@@ -597,6 +778,7 @@ battery_thread(void *arg, __unused wait_result_t result)
 {
 	uint32_t steps = (uint32_t)(uintptr_t)arg, step = 0, failed = 0;
 	struct hakios_battery_state b;
+	thread_t thread;
 	uint8_t rev;
 
 	say("max77705: step 1: map the HSI2C, the CMGP clocks and USI03's mode word\n");
@@ -656,6 +838,10 @@ battery_thread(void *arg, __unused wait_result_t result)
 			uint32_t e2 = e1 ? e1 : hakios_hsi2c_message(&bus, 0x25, false, w2, 2, true);
 
 			say("max77705: usb switch: CONTROL1 = 0x09 (D+/D- to the AP's USB): %s (%x)\n", e2 ? "FAILED" : "written", e2);
+			if (kernel_thread_start(usbsw_thread, NULL, &thread) == KERN_SUCCESS) {
+				thread_deallocate(thread);
+				usbsw_running = true;
+			}
 		}
 	}
 	if (++step >= steps) {

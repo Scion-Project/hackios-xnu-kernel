@@ -77,11 +77,32 @@
  *   touch X Y [X2 Y2 [MS]]  a tap, or a swipe over MS milliseconds, given to iOS as the panel's are (X and Y in
  *                     thousandths of the screen's width and height): the phone worked from here, "shot" to see it
  *   button NAME       a press of lock, home, up or down, as its driver would give it
+ *   usb               the link as it stands: the controller's registers, endpoint 0's state, the restarts, VBUS, the
+ *                     USB-C switch (hakios.max77705.c). usb restart: the link restarted, as after a replug. usb drop MS:
+ *                     the pull-up off for MS ms and on again, nothing else (the host sees an unplug). usb unplug MS: the
+ *                     switch open and VBUS taken as gone for MS ms (an unplug from this side, the port's). usb muic MS:
+ *                     the switch open for MS ms and nothing told to the link. usb watch off/on: the check for a link
+ *                     that gets bus resets and no SETUP (see THE CABLE COMING AND GOING)
  *   return            end the run: the data volume saved, the drivers given back, the loader restarts the phone (into
  *                     TWRP on the S9). Done on a thread call of its own; should that not have ended the run after
  *                     RETURN_FORCE_SECONDS (the save or a driver's stop waiting on something under load), the poll goes
  *                     back to the loader without them, as a panic does
  * Not a shell: user space is not reached from here.
+ *
+ * THE CABLE COMING AND GOING. Nothing in the controller says the cable went: the PHY's VBUS is forced valid (the VBUS
+ * pad is not wired to it, dt is_not_vbus_pad: hakios.exynos_usb.c step i), so there is no disconnect event, and on Android
+ * it is the MUIC's and the charger's interrupts that make dwc3/otg.c stop the controller and bring it up again from
+ * dwc3_core_init on every attach. Left alone, the link stayed "connected" with the old host's transfers on it; after a
+ * replug it took the host's resets and chirps but no SETUP ever reached the event buffer, so the host retried for ever
+ * while a restart of the phone was the only way out. So, as Android does it, from two sides:
+ *   - VBUS: hakios.max77705.c reads it (the MUIC's BC_STATUS) four times a second and tells this file
+ *     (hakios_usb_gadget_vbus). When it goes: every transfer ended, the pull-up off, the PHY down, the log kept in the
+ *     ring (1 MB). When it comes back: the PHY's sequence again, the core reset and set up, the pull-up on (link_restart),
+ *     and the log from where the host left it.
+ *   - the link's own state: a host's reset without a SETUP after it, four in a row (or twelve resets without a
+ *     configuration), means what a replug nobody saw would mean: the same restart, at most every 2 s, doubling to 30 s,
+ *     until the host configures it. A USB controller reset on the host's side comes in by this door or by a plain reset.
+ * The restart never waits on VBUS alone: a reading that stops coming puts a stopped link back up after 3 s.
  *
  * Boot-args:
  *   usb_gadget=<1-5>      the steps (0, or none: nothing)
@@ -166,6 +187,8 @@ extern struct vc_info vinfo;            /* the boot framebuffer: the panel's mem
 /* the presenter's buffer scanned out now (MiniIOMobileFramebuffer.cpp): 2 fb_dpp, 1 fb_flip, 0 the boot framebuffer */
 extern int hakios_fb_scanned(uintptr_t *base, uint32_t *width, uint32_t *height, uint32_t *rowbytes, unsigned *index);
 void hakios_usb_gadget_quiesce(void);
+void hakios_usb_gadget_vbus(bool present);
+extern void hakios_max77705_usb_console(const char *arg);       /* hakios.max77705.c (or the stub) */
 
 SYSCTL_DECL(_kern_hakios);
 
@@ -317,6 +340,25 @@ static thread_call_t return_call;       /* ... which end_the_run() does, on a th
 static uint64_t return_asked_at;        /* when it was started (mach_absolute_time), 0: not yet */
 #define RETURN_FORCE_SECONDS    15      /* then the poll returns to the loader itself, without the save and the stops */
 
+/* the cable (THE CABLE COMING AND GOING above) */
+#define VBUS_UNKNOWN            (-1)
+#define VBUS_SILENT_SECONDS     3       /* a stopped link goes back up when VBUS has not been heard of for this long */
+#define STORM_NO_SETUP          4       /* resets with no SETUP after them */
+#define STORM_NO_CONFIG         12      /* resets with no SET_CONFIGURATION after them */
+#define RESTART_WAIT_FIRST      2       /* seconds between restarts, doubling ... */
+#define RESTART_WAIT_MOST       30      /* ... up to this; back to the first once the host has configured the link */
+static int vbus_report = VBUS_UNKNOWN, vbus_seen = VBUS_UNKNOWN;
+static uint64_t vbus_heard_at;          /* mach_absolute_time of the last report */
+static bool link_stopped;               /* VBUS went: transfers ended, the pull-up off, the PHY down */
+static bool watch_storms = true;        /* the console's usb watch */
+static bool want_restart;               /* the console's usb restart */
+static uint32_t want_drop_ms;           /* the console's usb drop */
+static uint32_t resets_no_setup, resets_no_config;
+static uint32_t restart_wait = RESTART_WAIT_FIRST;
+static uint64_t restart_after;          /* mach_absolute_time before which no storm restarts the link */
+static uint64_t n_restarts;
+static uint32_t say_resets = 16, say_setups = 64;      /* log lines left; a restart gives some back */
+
 static struct usbacm acm;
 static struct usbacm_line cline;
 static int ep0_state;
@@ -349,6 +391,7 @@ SYSCTL_QUAD(_kern_hakios_usb, OID_AUTO, bytes_in, CTLFLAG_RD | CTLFLAG_LOCKED, &
 SYSCTL_QUAD(_kern_hakios_usb, OID_AUTO, bytes_out, CTLFLAG_RD | CTLFLAG_LOCKED, &n_out, "bytes the host has sent");
 SYSCTL_QUAD(_kern_hakios_usb, OID_AUTO, resets, CTLFLAG_RD | CTLFLAG_LOCKED, &n_resets, "bus resets");
 SYSCTL_UINT(_kern_hakios_usb, OID_AUTO, dropped, CTLFLAG_RD | CTLFLAG_LOCKED, &ring_dropped, 0, "log bytes dropped: the host did not read fast enough");
+SYSCTL_QUAD(_kern_hakios_usb, OID_AUTO, restarts, CTLFLAG_RD | CTLFLAG_LOCKED, &n_restarts, "the link restarted: a replug, or a host that got no answer");
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -568,6 +611,8 @@ apply(const struct usbacm_reply *r)
 		if (r->value) {
 			bulk_up();
 			set_state("configured");
+			resets_no_config = 0;
+			restart_wait = RESTART_WAIT_FIRST;
 			say("usb: configured (%s speed): /dev/ttyACM* on a Linux host, /dev/cu.usbmodem* on a Mac\n", high_speed ? "high" : "full");
 			hakios_ufs_summary("the USB console is up", 1 | 4);    /* ufs=3 only: what the storage did before the link */
 			if (!wifi_report_said) {
@@ -611,8 +656,10 @@ ep0_complete(int p)
 			pkt[i] = dma[EP0_OFF + (uint32_t)i];
 		}
 		n_setups++;
+		resets_no_setup = 0;
 		usbacm_setup(&acm, pkt, &r);
-		if (n_setups <= 64 || n_setups % 100 == 0) {
+		if (say_setups > 0 || n_setups % 100 == 0) {
+			say_setups -= say_setups > 0 ? 1 : 0;
 			static const char *const what[] = { "stall", "status", "in", "out" };
 			say("usb: setup %llu: %02x %02x %02x%02x %02x%02x %02x%02x -> %s %u\n", n_setups, pkt[0], pkt[1], pkt[3], pkt[2],
 			    pkt[5], pkt[4], pkt[7], pkt[6], what[r.action & 3], r.len);
@@ -1037,7 +1084,10 @@ static void
 on_reset(void)
 {
 	n_resets++;
-	if (n_resets <= 16) {
+	resets_no_setup++;
+	resets_no_config++;
+	if (say_resets > 0) {
+		say_resets--;
 		say("usb: bus reset %llu\n", n_resets);
 	}
 	bulk_down();
@@ -1067,7 +1117,9 @@ on_connect_done(void)
 	usb_speed_v = (int)speed;
 	(void)ep_config(0, 0, USBACM_EP0_MPS, DEPCFG_ACTION_MODIFY, 0);
 	(void)ep_config(1, 0, USBACM_EP0_MPS, DEPCFG_ACTION_MODIFY, 0);
-	say("usb: connected at %s speed (DSTS %08x)\n", speed == 0 ? "high" : speed == 4 ? "super (unexpected)" : "full", rd(DSTS));
+	if (say_resets > 0 || n_resets % 100 == 0) {
+		say("usb: connected at %s speed (DSTS %08x)\n", speed == 0 ? "high" : speed == 4 ? "super (unexpected)" : "full", rd(DSTS));
+	}
 }
 
 static void
@@ -1327,6 +1379,60 @@ console_bl(const char *arg)
 	    "every packet" : errno_name(error), error, t1 / NSEC_PER_USEC, error == ENODEV ? " (panel=1 not given?)" : "");
 }
 
+/* what the link is doing, for the log; said before a restart too, so that a bad one leaves a trace */
+static void
+say_link(int (*out)(const char *, ...), const char *when)
+{
+	char st[120] = "";
+
+	if (glue->phy_state != NULL) {
+		glue->phy_state(st, sizeof(st));
+	}
+	out("usb: link %s: %s (%s); DCTL %08x DCFG %08x DSTS %08x DALEPENA %08x events %08x; ep0 state %d, OUT active %d (TRB %08x %08x), "
+	    "IN active %d (TRB %08x %08x); bulk IN active %d OUT active %d, config %u; %llu resets, %llu requests, %u/%u resets since a "
+	    "SETUP/a configuration; VBUS %d, stopped %d, %llu restarts\n", when, usb_state, st, rd(DCTL), rd(DCFG), rd(DSTS), rd(DALEPENA),
+	    rd(GEVNTCOUNT), ep0_state, pep[0].active, trb_of(0)->size, trb_of(0)->ctrl, pep[1].active, trb_of(1)->size, trb_of(1)->ctrl,
+	    pep[PEP_IN].active, pep[PEP_OUT].active, acm.config, n_resets, n_setups, resets_no_setup, resets_no_config, vbus_seen,
+	    link_stopped, n_restarts);
+}
+
+/* the console's say: (con() has no return value; say_link wants the printf shape) */
+static int
+con_say(const char *format, ...)
+{
+	char line[600];
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(line, sizeof(line), format, list);
+	va_end(list);
+	loader_log_line(line);
+	return 0;
+}
+
+/* usb, usb restart, usb drop MS, usb unplug MS, usb muic MS, usb watch on|off */
+static void
+console_usb(const char *arg)
+{
+	if (*arg == 0) {
+		say_link(con_say, "now");
+		hakios_max77705_usb_console("");
+	} else if (strcmp(arg, "restart") == 0) {
+		want_restart = true;            /* tick() does it, after this event */
+	} else if (strncmp(arg, "drop ", 5) == 0) {
+		const char *p = arg + 5;
+
+		want_drop_ms = console_number(&p, 3000, 1, 60000);
+	} else if (strcmp(arg, "watch off") == 0 || strcmp(arg, "watch on") == 0) {
+		watch_storms = arg[7] == 'n';
+		con("usb: the check for resets with no SETUP: %s\n", watch_storms ? "on" : "off");
+	} else if (strncmp(arg, "unplug ", 7) == 0 || strncmp(arg, "muic ", 5) == 0) {
+		hakios_max77705_usb_console(arg);
+	} else {
+		con("usb: usb [restart | drop MS | unplug MS | muic MS | watch on|off]\n");
+	}
+}
+
 static void
 console(char *line)
 {
@@ -1360,12 +1466,14 @@ console(char *line)
 		    "gateway by default, 64 bytes), wifi dns NAME [A.B.C.D] (a DNS question; DHCP's server by default), wifi tcp HOST "
 		    "[PORT [PATH]] (a TCP connection and an HTTP GET, the bytes back), wifi stat (en0's frames by size and kind, IP, UDP "
 		    "and TCP counts), wifi names [off] (DNS questions and answers, TCP connections, as they come), touch X Y "
-		    "[X2 Y2 [MS]] (a tap or a swipe, in thousandths of the screen), button lock|home|up|down (a press), return (end "
-		    "the run)\n");
+		    "[X2 Y2 [MS]] (a tap or a swipe, in thousandths of the screen), button lock|home|up|down (a press), usb [restart | "
+		    "drop MS | unplug MS | muic MS | watch on|off] (the link and the cable), return (end the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
 		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
-		    "%llu shots\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out, ring_dropped,
-		    n_events, n_shots);
+		    "%llu shots, %llu restarts\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out,
+		    ring_dropped, n_events, n_shots, n_restarts);
+	} else if (strcmp(line, "usb") == 0) {
+		console_usb(arg);
 	} else if (strcmp(line, "uptime") == 0) {
 		uint64_t ns;
 
@@ -1485,8 +1593,14 @@ stop_controller(void)
 {
 	wr(DCTL, rd(DCTL) & ~DCTL_RUN_STOP);
 	for (int i = 0; i < 100; i++) {
+		uint32_t pending = rd(GEVNTCOUNT) & GEVNTCOUNT_MASK;
+
 		if (rd(DSTS) & DSTS_DEVCTRLHLT) {
 			break;
+		}
+		if (pending != 0) {
+			wr(GEVNTCOUNT, pending);        /* the controller does not halt with events waiting to be taken */
+			ev_pos = (ev_pos + pending) % EVT_SIZE;
 		}
 		delay(1000);
 	}
@@ -1681,6 +1795,145 @@ bring_up(void)
 	return true;
 }
 
+static int
+say_nothing(__unused const char *format, ...)
+{
+	return 0;
+}
+
+/* whatever was going on, over: the controller stopped, nothing left of the transfers, a picture on its way dropped */
+static void
+link_down(void)
+{
+	int phase = os_atomic_load(&shot.phase, acquire);
+
+	for (int p = 0; p < NPEPS; p++) {
+		if (p != 4) {
+			end_xfer(p);
+		}
+	}
+	(void)stop_controller();
+	if (phase != SHOT_OFF && phase != SHOT_PREP) {
+		os_atomic_store(&shot.phase, SHOT_OFF, release);
+	}
+	connected = false;
+	usbacm_reset(&acm);
+	memset(&cline, 0, sizeof(cline));
+}
+
+/*
+ * The link up again as from the start of the run (the steps' 2, 3 and 4), in the memory it already has: what Android does
+ * on every attach (dwc3/otg.c dwc3_otg_start_gadget: dwc3_phy_setup, dwc3_core_init, the pull-up). false: it stays down, for
+ * the next try.
+ */
+static bool
+link_restart(const char *why)
+{
+	uint64_t ns;
+	bool ok = false;
+	int e;
+
+	n_restarts++;
+	say_link(say, why);
+	say("usb: restarting the link (%llu; %s)\n", n_restarts, why);
+	link_down();
+	if ((e = glue->phy_on(say_nothing, glue_flags)) != 0) {
+		say("usb: the PHY did not come back (%d)\n", e);
+		goto out;
+	}
+	for (uint32_t i = 0; i < EVT_SIZE + 0x1000u; i += 4) {
+		*(volatile uint32_t *)(dma + i) = 0;    /* the event buffer and the TRBs */
+	}
+	memset(pep, 0, sizeof(pep));
+	if ((e = core_init()) != 0) {
+		say("usb: the core did not come back (%d)\n", e);
+		goto out;
+	}
+	if (run() != 0) {
+		goto out;
+	}
+	ok = true;
+out:
+	link_stopped = false;
+	resets_no_setup = ok ? 0 : STORM_NO_SETUP;      /* a failed one is tried again by the check for storms */
+	resets_no_config = 0;
+	say_resets = 16;
+	say_setups = 16;
+	last_phy_say = 0;
+	set_state(ok ? "waiting" : "stuck");
+	nanoseconds_to_absolutetime((uint64_t)restart_wait * NSEC_PER_SEC, &ns);
+	restart_after = mach_absolute_time() + ns;
+	restart_wait = restart_wait * 2 > RESTART_WAIT_MOST ? RESTART_WAIT_MOST : restart_wait * 2;
+	return ok;
+}
+
+/* from hakios.max77705.c, every read of VBUS (a low only when it has stayed low): the poll does what follows from it */
+void
+hakios_usb_gadget_vbus(bool present)
+{
+	os_atomic_store(&vbus_heard_at, mach_absolute_time(), relaxed);
+	os_atomic_store(&vbus_report, present ? 1 : 0, release);
+}
+
+/* what the cable and the link say should happen now; in the poll, the controller ours */
+static void
+link_watch(void)
+{
+	int vbus = os_atomic_load(&vbus_report, acquire);
+	uint64_t now = mach_absolute_time(), ns;
+
+	if (vbus != VBUS_UNKNOWN && vbus != vbus_seen) {
+		int was = vbus_seen;
+
+		vbus_seen = vbus;
+		if (vbus == 0 && was == 1) {
+			say("usb: VBUS gone: the cable is out; the link down until it is back, the log kept\n");
+			say_link(say, "at the unplug");
+			link_down();
+			if (glue->phy_off != NULL) {
+				glue->phy_off();
+			}
+			link_stopped = true;
+			set_state("unplugged");
+			return;
+		}
+		if (vbus == 1 && was == 0) {
+			say("usb: VBUS back: a cable in\n");
+			if (link_stopped || acm.config == 0) {
+				restart_wait = RESTART_WAIT_FIRST;
+				(void)link_restart("VBUS back");
+				return;
+			}
+		}
+	}
+	if (want_restart) {
+		want_restart = false;
+		(void)link_restart("asked on the console");
+		return;
+	}
+	if (want_drop_ms != 0) {
+		uint32_t ms = want_drop_ms;
+
+		want_drop_ms = 0;
+		say("usb: the pull-up off for %u ms\n", ms);
+		wr(DCTL, rd(DCTL) & ~DCTL_RUN_STOP);
+		IOSleep(ms);
+		wr(DCTL, rd(DCTL) | DCTL_RUN_STOP);
+		say("usb: the pull-up on again\n");
+		return;
+	}
+	if (link_stopped) {
+		absolutetime_to_nanoseconds(now - os_atomic_load(&vbus_heard_at, relaxed), &ns);
+		if (ns > (uint64_t)VBUS_SILENT_SECONDS * NSEC_PER_SEC) {
+			(void)link_restart("nothing heard of VBUS");
+		}
+		return;
+	}
+	if (watch_storms && (resets_no_setup >= STORM_NO_SETUP || resets_no_config >= STORM_NO_CONFIG) && now >= restart_after) {
+		(void)link_restart(resets_no_setup >= STORM_NO_SETUP ? "bus resets, no SETUP" : "bus resets, no configuration");
+	}
+}
+
 static void
 tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 {
@@ -1696,9 +1949,14 @@ tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 			return;
 		}
 	}
-	events();
-	pump_in();
-	if (!connected && glue->phy_state != NULL) {
+	if (stage >= 4) {
+		link_watch();
+	}
+	if (!link_stopped) {
+		events();
+		pump_in();
+	}
+	if (!connected && !link_stopped && glue->phy_state != NULL) {
 		uint64_t now = mach_absolute_time(), ns;
 
 		absolutetime_to_nanoseconds(now - last_phy_say, &ns);
