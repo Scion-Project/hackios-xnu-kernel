@@ -18,6 +18,7 @@ changes to it; the scripts named fetch the release and put the changes on.
 
 ## 2026-11-04
 
+- Galaxy S9, with `mfc=5` (still off by default): a video the block can't take (10-bit, or no room) goes to software; a seek works; every test frame now matches ffmpeg, after a fix for frames overwritten before the client had them. Safari, HLS and Photos tested. HEIC doesn't use the block.
 - Kernel: AES, SHA-1 and SHA-256 by the ARMv8 crypto instructions, where the processor has them (`mc_ce=0`: the C), checked by the same known answers first. Galaxy S9: SHA-256 944 MB/s (C 130), SHA-1 944 (C 127), AES-128-CBC 311 (C 62); `sysctl kern.hakios.crypto_bench` measures both
 - Galaxy S9: hardware H.264 and HEVC decoding on the Exynos MFC, off by default (`mfc=5`). 1080p30 through AVPlayer: `mediaserverd` 17% of a core, 63% in software. Firmware from the phone's own VENDOR partition; with `mfc=`, 128 MB of the low bank stay out of XNU's RAM; not yet seen in Safari or Photos
 - Galaxy S9, S9+, Note9: at 1125 x 2313 the passcode keypad sits 41 points higher, so Emergency and Cancel are clear of the home indicator, and the Phone app's keypad and the emergency dialer have the iPhone X's layout (they were jammed together; `libhakios.sb.dylib`, now also in MobilePhone and InCallService). Seen on an S9.
