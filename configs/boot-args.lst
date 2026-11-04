@@ -257,6 +257,8 @@ iris_s9_ispdiv	k
 iris_s9_ms	k
 iris_s9_smc	k
 isa_floor	k
+keystore_kdf_kib	k
+keystore_real	k
 ksample	k
 ksample_us	k
 loader_platform	l

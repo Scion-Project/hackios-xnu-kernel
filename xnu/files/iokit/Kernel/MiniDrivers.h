@@ -5,7 +5,7 @@
  *
  *   MiniIOSurface.cpp              IOSurface: pixel buffers shared between processes
  *   MiniIOMobileFramebuffer.cpp    IOMobileFramebuffer: the display (the boot framebuffer)
- *   MiniAppleKeyStore.cpp          AppleKeyStore: the keybag, with a passcode that gates the screen and encrypts nothing
+ *   MiniAppleKeyStore.cpp          AppleKeyStore: the keybag, with a passcode that gates the screen and encrypts nothing (keystore_real=1: a real key bag)
  *   MiniIONetworkStack.cpp         IONetworkStack: what configd's interface namer waits for
  *   MiniIOAESAccelerator.cpp       IOAESAccelerator: AES-CBC in software, keys of the caller's only (UniXNU's SoftwareAES)
  */

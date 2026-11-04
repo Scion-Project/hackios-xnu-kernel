@@ -13,6 +13,8 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 | XNU modifications | `xnu/hakios.patch`, `xnu/files/`, `drivers/` | derivative of Apple XNU | APSL 2.0 (`LICENSE.APSL`) | base tag `xnu-8796.121.2`, fetched by `xnu/apply.sh` |
 | libdeflate | `xnu/files/bsd/miscfs/apfs/libdeflate/` | Eric Biggers | MIT | see its `COPYING` |
 | libzbitmap | `xnu/files/bsd/miscfs/apfs/libzbitmap/`, `xnu-deps/build/lzbitmap/` | Corellium LLC (port of eafer/libzbitmap) | GPL-2.0+ OR MIT | used under MIT |
+| Monocypher 4.0.2 | `xnu/files/osfmk/minicrypto/third_party/monocypher.{c,h}` | Loup Vaillant and others, [monocypher.org](https://monocypher.org) (unchanged) | CC0-1.0 or BSD-2-Clause | Argon2id for the key store; see `third_party/README.md` |
+| BearSSL `aes_ct64` | `xnu/files/osfmk/minicrypto/third_party/bearssl_*` | Thomas Pornin, [bearssl.org](https://bearssl.org), commit 7bea48e5e850 (only the include line changed; `bearssl_inner.h` is cut down from its `inner.h`) | MIT | constant-time AES for the key store |
 | SoftwareAES (UniXNU) | `xnu/files/iokit/Kernel/MiniIOAESAccelerator.cpp` | ArmVirtPlatform contributors, github.com/UniXNU/SoftwareAES at `4a45326da5c2` | BSD-2-Clause-Patent | the whole file is under it; its notice is in the file's head |
 | LinuxKPI / Linux headers | `wifi/lx/include/linux/`, `wifi/lx/include/net/` | Linux / FreeBSD LinuxKPI | GPL-2.0 (Linux) / BSD-2-Clause (FreeBSD) | small compatibility headers; see each file's notice |
 | brcmfmac patch | `wifi/lx/brcmfmac/patches/` | changes to Linux's brcmfmac (Broadcom) | ISC | the BCM4361's IDs, RAM base and firmware names, and two lines where the kernel's `brcmfmac=N` stops; its context lines are brcmfmac's |

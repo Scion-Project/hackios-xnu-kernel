@@ -50,6 +50,10 @@
  * a restart does not clear them (a delay read back after a restart is cut to its length, if the clock
  * says more is left).
  *
+ * keystore_real=1 (off by default until it has been proven on a phone): the real key bag below, under "the key bag". Class keys
+ * are random, wrapped with AES-256 key wrap under Argon2id of the passcode, and dropped from memory as iOS's classes say; wrap
+ * and unwrap are real, a wrong passcode yields no key, damage fails closed. Without it everything here is as described above.
+ *
  * The protocol was worked out from the user-space side of Darwin userland 16.5 (MobileKeyBag.framework,
  * SpringBoardFoundation, ManagedConfiguration): selectors, the DER-encoded answers ("SET of SEQUENCE {
  * UTF8String key, INTEGER value }"), and how arguments are passed. The passcode is changed through
@@ -82,6 +86,8 @@
 extern "C" {
 extern vfs_context_t vfs_context_kernel(void);
 }
+
+#include "../../osfmk/minicrypto/mc_keywrap.h"
 
 enum {
 	kAKSOpenCheck           = 0x00,
@@ -131,6 +137,12 @@ enum {
 #define kAKSWrongPasscode       kIOReturnNotReadable
 #define kAKSBlocked             kIOReturnNotPermitted
 
+/* the real key bag's answers to wrap and unwrap: what securityd's ks_crypt turns into errSecInteractionNotAllowed ("locked"),
+ * errSecNotAvailable ("no key for this class") and errSecDecode ("can't be decrypted on this device, ever, so drop the item") */
+#define kAKSNoPermission        kIOReturnNotPermitted
+#define kAKSNoClassKey          kIOReturnNotFound
+#define kAKSDecodeError         ((IOReturn) 0xe007c008)
+
 #define kHKMaxSecret            256
 #define kHKMaxBlob              2048
 #define kHKIterations           100000
@@ -151,6 +163,29 @@ struct HKChangeSecret {
 #define kHKSlotSize             4096
 #define kHKRecordMagic          0x4850434b      /* 'HPCK' */
 #define kHKRecordVersion        1
+#define kHKBagPath              "/private/var/hakios-keybag"
+#define kHKBagVersion           2
+
+/* The key bag's secrets: a root key for each group of classes. D's is not protected by anything: there is no hardware key. */
+enum { kTierA, kTierB, kTierC, kTierP, kHKTiers };
+#define kHKRootSize             32
+#define kHKWrappedRootSize      (kHKRootSize + MC_KW_OVERHEAD)
+/* Argon2id's cost, kept in the bag. Measured on the phone: see docs/passcode.md. */
+#define kHKKdfMemKiB            65536
+#define kHKKdfPasses            3
+#define kHKKdfMaxMemKiB         (512 * 1024)
+#define kHKKdfMaxPasses         64
+
+struct HKBag {
+	uint32_t kdfMemKiB;
+	uint32_t kdfPasses;
+	uint8_t  kdfSalt[32];
+	uint32_t wrappedTiers;                  /* a bit for each tier that has a wrapped root below */
+	uint32_t migrating;                     /* the verifier above is the old file's: the next right passcode makes the bag */
+	uint8_t  wrapped[kHKTiers][kHKWrappedRootSize];
+	uint8_t  deviceRoot[kHKRootSize];       /* class D, in the clear: see the head of "the key bag" */
+	uint8_t  seed[32];                      /* stirred into the kernel's generator at the next boot, then replaced */
+};
 
 struct HKRecord {
 	uint32_t magic;
@@ -167,7 +202,10 @@ struct HKRecord {
 	uint32_t blobLength;
 	uint32_t reserved;
 	uint8_t  blob[kHKMaxBlob];
+	HKBag    bag;                           /* the key bag's file only (the old file's records end at blob) */
 };
+
+#define kHKV1Size               __builtin_offsetof(HKRecord, bag)
 
 static_assert(sizeof(HKRecord) <= kHKSlotSize, "a record fits in a slot");
 
@@ -187,7 +225,20 @@ static struct {
 	bool     locked;
 	bool     unlockedOnce;                  /* since boot */
 	uint64_t blockedUntilUptime;            /* uptime, ns; 0: no delay */
+	bool     real;                          /* keystore_real=1: the key bag */
+	bool     damaged;                       /* a key bag that cannot be read: nothing opens, nothing is overwritten */
+	bool     persisted;                     /* the bag in memory is on disk (no class key is handed out before it is) */
+	bool     kdfBusy;                       /* a key derivation is running, without the lock */
+	uint32_t kdfMilliseconds;               /* the last one, for tuning */
+	bool     have[kHKTiers];
+	uint8_t  roots[kHKTiers][kHKRootSize];
 } gKS;
+
+static void realLoad(void);
+static IOReturn tryPasscodeReal(const uint8_t * passcode, size_t length, bool unlock, bool * changed, bool * first, uint8_t (*keep)[kHKRootSize]);
+static IOReturn changeSecretReal(const uint8_t * oldSecret, size_t oldLength, const uint8_t * newSecret, size_t newLength,
+    const uint8_t * blob, size_t blobLength, bool * changed, bool * first);
+static void dropLockedRoots(void);
 
 static uint64_t
 uptimeNanoseconds(void)
@@ -339,40 +390,43 @@ recordDigest(const HKRecord * r, uint8_t out[32])
 
 	SHA256_Init(&c);
 	SHA256_Update(&c, from, length);
+	if (r->version == kHKBagVersion) {
+		SHA256_Update(&c, &r->bag, sizeof(r->bag));
+	}
 	SHA256_Final(out, &c);
 }
 
 static bool
-recordValid(const HKRecord * r)
+recordValid(const HKRecord * r, uint32_t version)
 {
 	uint8_t digest[32];
 
-	if (r->magic != kHKRecordMagic || r->version != kHKRecordVersion || r->blobLength > kHKMaxBlob) {
+	if (r->magic != kHKRecordMagic || r->version != version || r->blobLength > kHKMaxBlob) {
 		return false;
 	}
 	recordDigest(r, digest);
 	if (!sameBytes(digest, r->digest, sizeof(digest))) {
 		return false;
 	}
-	if (r->hasPasscode && (r->iterations == 0 || r->iterations > 10000000)) {
+	if (version == kHKRecordVersion && r->hasPasscode && (r->iterations == 0 || r->iterations > 10000000)) {
 		return false;
 	}
 	return true;
 }
 
 static int
-fileIO(enum uio_rw rw, int slot, HKRecord * r)
+fileIOAt(const char * path, size_t size, enum uio_rw rw, int slot, HKRecord * r)
 {
 	vfs_context_t ctx = vfs_context_kernel();
 	vnode_t vp = NULLVP;
 	int resid = 0, error;
 	int fmode = rw == UIO_READ ? FREAD : (FREAD | FWRITE | O_CREAT);
 
-	error = vnode_open(kHKPath, fmode, 0600, VNODE_LOOKUP_NOFOLLOW, &vp, ctx);
+	error = vnode_open(path, fmode, 0600, VNODE_LOOKUP_NOFOLLOW, &vp, ctx);
 	if (error) {
 		return error;
 	}
-	error = vn_rdwr(rw, vp, (caddr_t) r, (int) sizeof(*r), (off_t) slot * kHKSlotSize, UIO_SYSSPACE,
+	error = vn_rdwr(rw, vp, (caddr_t) r, (int) size, (off_t) slot * kHKSlotSize, UIO_SYSSPACE,
 	    rw == UIO_WRITE ? IO_SYNC | IO_NOAUTH : IO_NOAUTH, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
 	if (error == 0 && resid != 0) {
 		error = rw == UIO_READ ? ENOENT : EIO;      /* a short slot: never written */
@@ -384,6 +438,12 @@ fileIO(enum uio_rw rw, int slot, HKRecord * r)
 	return error;
 }
 
+static int
+fileIO(enum uio_rw rw, int slot, HKRecord * r)
+{
+	return gKS.real ? fileIOAt(kHKBagPath, sizeof(*r), rw, slot, r) : fileIOAt(kHKPath, kHKV1Size, rw, slot, r);
+}
+
 /* Write r as the next generation into the slot that does not hold the newest one. */
 static int
 persist(HKRecord * r)
@@ -391,13 +451,16 @@ persist(HKRecord * r)
 	int slot = gKS.newestSlot == 0 ? 1 : 0;
 	int error;
 
+	if (gKS.damaged) {
+		return EROFS;                           /* whatever is left of it stays for someone to look at */
+	}
 	r->magic = kHKRecordMagic;
-	r->version = kHKRecordVersion;
+	r->version = gKS.real ? kHKBagVersion : kHKRecordVersion;
 	r->generation = gKS.generation + 1;
 	recordDigest(r, r->digest);
 	error = fileIO(UIO_WRITE, slot, r);
 	if (error) {
-		printf("MiniAppleKeyStore: cannot write %s slot %d (error %d)\n", kHKPath, slot, error);
+		printf("MiniAppleKeyStore: cannot write %s slot %d (error %d)\n", gKS.real ? kHKBagPath : kHKPath, slot, error);
 		return error;
 	}
 	gKS.generation = r->generation;
@@ -448,6 +511,10 @@ load(void)
 	gKS.loaded = true;
 	gKS.newestSlot = -1;
 	gKS.unlockedOnce = true;
+	if (gKS.real) {
+		realLoad();
+		return;
+	}
 	gKS.kdfGood = pbkdf2SelfTest();
 	if (!gKS.kdfGood) {
 		printf("MiniAppleKeyStore: PBKDF2-HMAC-SHA256 fails its test vector: no passcode can be set or used\n");
@@ -460,7 +527,7 @@ load(void)
 		}
 		memset(slots[i], 0, sizeof(HKRecord));
 		error[i] = fileIO(UIO_READ, i, slots[i]);
-		if (error[i] == 0 && !recordValid(slots[i])) {
+		if (error[i] == 0 && !recordValid(slots[i], kHKRecordVersion)) {
 			error[i] = EINVAL;
 		}
 		if (error[i] == 0 && slots[i]->generation >= gKS.generation) {
@@ -558,6 +625,9 @@ tryPasscode(const uint8_t * passcode, size_t length, bool unlock, bool * changed
 	uint8_t derived[32];
 	bool good;
 
+	if (gKS.real) {
+		return tryPasscodeReal(passcode, length, unlock, changed, first, NULL);
+	}
 	if (!gKS.record.hasPasscode) {
 		return kIOReturnSuccess;
 	}
@@ -612,6 +682,9 @@ changeSecret(const uint8_t * oldSecret, size_t oldLength, const uint8_t * newSec
 	IOReturn ret;
 	int error;
 
+	if (gKS.real) {
+		return changeSecretReal(oldSecret, oldLength, newSecret, newLength, blob, blobLength, changed, first);
+	}
 	if (newLength > 0 && !gKS.kdfGood) {
 		return kIOReturnUnsupported;
 	}
@@ -660,6 +733,722 @@ changeSecret(const uint8_t * oldSecret, size_t oldLength, const uint8_t * newSec
 	*changed = true;
 	printf("MiniAppleKeyStore: passcode %s (generation %llu)\n", newLength ? "set" : "removed", gKS.generation);
 	return kIOReturnSuccess;
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * the key bag (keystore_real=1) */
+
+/*
+ * What this protects, and from whom, is in docs/keystore.md; read that before believing anything below. In short: there is no
+ * Secure Enclave and (so far) no hardware key, so the only secret is the passcode, and a passcode's strength is all there is.
+ *
+ *   tier   classes (AppleKeyStore's numbers)                  root available
+ *   A      1 file A; 6 ak, 9 aku (keychain "when unlocked")   while unlocked; wiped from memory at each lock
+ *   B      2 file B                                           as A for now (the asymmetric part goes with file protection)
+ *   C      3 file C; 7 ck, 10 cku ("after first unlock")      from the first unlock until the restart
+ *   P      12 akpu ("when passcode set")                      as A, and only while there is a passcode; destroyed when it is removed
+ *   D      4 file D; 8 dk, 11 dku ("always")                  always. In the clear in the file: it can only ever be thrown away.
+ *
+ * Each root is random; A, B, C and P are kept wrapped (AES-256 key wrap) under a key made from the passcode:
+ *     Argon2id(passcode, a random salt) -> hwTangle() -> HMAC-SHA-256 -> KEK
+ * RFC 3394's integrity check is the verifier: there is nothing else to compare with, so a wrong passcode is known only by the
+ * keys not coming out. With no passcode the KEK comes from the device root instead, which is to say the file holds the keys in
+ * all but name, as iOS's would with no passcode if it had no hardware key. A class's key is HMAC-SHA-256 of its tier's root
+ * and its number.
+ *
+ * Fail closed. A file that does not exist is a new bag with new keys (what was wrapped before stays unreadable: deleting the
+ * file gets no one anything). A file that exists and cannot be read, or that no key comes out of, is damage: the device is
+ * locked, no passcode opens it, nothing is overwritten, and only passcode_reset=1 gets out, by destroying the keys.
+ */
+
+static const uint8_t kKEKLabel[] = "HakiOS key bag KEK 2";
+static const uint8_t kNoPasscodeLabel[] = "HakiOS key bag no passcode 2";
+static const uint8_t kClassLabel[] = "HakiOS key bag class 2";
+
+static int
+classTier(uint32_t keyclass)
+{
+	switch (keyclass & 0x1f) {
+	case 1: case 6: case 9:                 return kTierA;
+	case 2:                                 return kTierB;
+	case 3: case 7: case 10:                return kTierC;
+	case 12:                                return kTierP;
+	case 4: case 8: case 11:                return kHKTiers;    /* D */
+	default:                                return -1;
+	}
+}
+
+/*
+ * Where a key from outside the kernel would go in. Today: nothing is mixed in, so the result depends on the passcode and the salt
+ * alone (see docs/keystore.md on the TEE route). Changing what this does makes every existing bag unreadable.
+ */
+static bool
+hwTangle(const uint8_t in[32], uint8_t out[32])
+{
+	memcpy(out, in, 32);
+	return true;
+}
+
+static void
+hmacOne(const uint8_t * key, size_t keyLength, const uint8_t * data, size_t dataLength, const uint8_t * data2, size_t data2Length, uint8_t out[32])
+{
+	HMACKey k;
+
+	hmacKey(&k, key, keyLength);
+	hmac(&k, data, dataLength, data2, data2Length, out);
+	mc_wipe(&k, sizeof(k));
+}
+
+/* The passcode's KEK, from Argon2id. Long: the caller has let go of the lock. */
+static IOReturn
+kekFromPasscode(const uint8_t * passcode, size_t length, uint32_t memKiB, uint32_t passes, const uint8_t * salt, size_t saltLength, uint8_t kek[32])
+{
+	size_t size = (size_t) memKiB * MC_ARGON2_BLOCK;
+	void * work = IOMallocAligned(size, PAGE_SIZE);
+	uint8_t derived[32], tangled[32];
+	uint64_t started;
+	bool good;
+
+	if (work == NULL) {
+		printf("MiniAppleKeyStore: no %u KiB for the key derivation\n", memKiB);
+		return kIOReturnNoMemory;
+	}
+	started = uptimeNanoseconds();
+	mc_argon2id(derived, work, memKiB, passes, passcode, length, salt, saltLength);
+	gKS.kdfMilliseconds = (uint32_t) ((uptimeNanoseconds() - started) / NSEC_PER_MSEC);
+	IOFreeAligned(work, size);
+	printf("MiniAppleKeyStore: Argon2id %u KiB x %u: %u ms\n", memKiB, passes, gKS.kdfMilliseconds);
+	good = hwTangle(derived, tangled);
+	if (good) {
+		hmacOne(tangled, sizeof(tangled), kKEKLabel, sizeof(kKEKLabel) - 1, NULL, 0, kek);
+	}
+	mc_wipe(derived, sizeof(derived));
+	mc_wipe(tangled, sizeof(tangled));
+	return good ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
+static void
+kekWithoutPasscode(const HKRecord * r, uint8_t kek[32])
+{
+	hmacOne(r->bag.deviceRoot, sizeof(r->bag.deviceRoot), kNoPasscodeLabel, sizeof(kNoPasscodeLabel) - 1, NULL, 0, kek);
+}
+
+/* The roots out of a bag: every root it says it holds, or none. */
+static bool
+unwrapRoots(const HKRecord * r, const uint8_t kek[32], uint8_t (*roots)[kHKRootSize], bool * have)
+{
+	for (int t = 0; t < kHKTiers; t++) {
+		have[t] = false;
+		if (!(r->bag.wrappedTiers & (1u << t))) {
+			continue;
+		}
+		if (mc_aes256_kw_unwrap(kek, r->bag.wrapped[t], kHKWrappedRootSize, roots[t]) != 0) {
+			mc_wipe(roots, kHKTiers * kHKRootSize);
+			for (int u = 0; u < kHKTiers; u++) {
+				have[u] = false;
+			}
+			return false;
+		}
+		have[t] = true;
+	}
+	return r->bag.wrappedTiers != 0;
+}
+
+static void
+wrapRoots(HKRecord * r, const uint8_t kek[32], const uint8_t (*roots)[kHKRootSize], const bool * have)
+{
+	r->bag.wrappedTiers = 0;
+	memset(r->bag.wrapped, 0, sizeof(r->bag.wrapped));
+	for (int t = 0; t < kHKTiers; t++) {
+		if (have[t] && mc_aes256_kw_wrap(kek, roots[t], kHKRootSize, r->bag.wrapped[t]) == 0) {
+			r->bag.wrappedTiers |= 1u << t;
+		}
+	}
+}
+
+/* What the machine has to offer beyond the generator's state: the old seed, and how late a few delays run. See docs/keystore.md. */
+static void
+stirEntropy(const uint8_t * seed, size_t seedLength)
+{
+	uint64_t samples[64];
+
+	if (seed != NULL) {
+		write_random((void *) seed, (u_int) seedLength);
+	}
+	for (size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+		IODelay(20 + (i & 7));
+		samples[i] = mach_absolute_time();
+	}
+	write_random(samples, sizeof(samples));
+	mc_wipe(samples, sizeof(samples));
+}
+
+static void
+kdfCost(uint32_t * memKiB, uint32_t * passes)
+{
+	uint32_t phase = 0, kib = 0;
+
+	*memKiB = kHKKdfMemKiB;
+	*passes = kHKKdfPasses;
+	/* the test's shortcut, QEMU being slow: never without the test's own boot-argument */
+	if (PE_parse_boot_argn("passcode_selftest", &phase, sizeof(phase)) && phase != 0 &&
+	    PE_parse_boot_argn("keystore_kdf_kib", &kib, sizeof(kib)) && kib >= 8 && kib <= kHKKdfMaxMemKiB) {
+		*memKiB = kib;
+		*passes = 1;
+	}
+}
+
+static bool
+bagCostValid(const HKRecord * r)
+{
+	return r->bag.kdfMemKiB >= 8 && r->bag.kdfMemKiB <= kHKKdfMaxMemKiB && r->bag.kdfPasses >= 1 && r->bag.kdfPasses <= kHKKdfMaxPasses;
+}
+
+static void
+wipeRoots(void)
+{
+	mc_wipe(gKS.roots, sizeof(gKS.roots));
+	for (int t = 0; t < kHKTiers; t++) {
+		gKS.have[t] = false;
+	}
+}
+
+/* At a lock: what iOS's classes A and B and "when passcode set" give up. C stays until the restart. */
+static void
+dropLockedRoots(void)
+{
+	static const int tiers[] = { kTierA, kTierB, kTierP };
+
+	if (!gKS.real) {
+		return;
+	}
+	for (size_t i = 0; i < sizeof(tiers) / sizeof(tiers[0]); i++) {
+		mc_wipe(gKS.roots[tiers[i]], kHKRootSize);
+		gKS.have[tiers[i]] = false;
+	}
+}
+
+/* Overwrite the old file's passcode verifier: left there, it is a far cheaper way to test guesses than the bag. */
+static void
+wipeOldFile(void)
+{
+	HKRecord * r = IONew(HKRecord, 1);
+
+	if (r == NULL) {
+		return;
+	}
+	memset(r, 0, sizeof(*r));
+	r->magic = kHKRecordMagic;
+	r->version = kHKRecordVersion;
+	r->generation = 1;
+	recordDigest(r, r->digest);
+	for (int i = 0; i < 2; i++) {
+		int error = fileIOAt(kHKPath, kHKV1Size, UIO_WRITE, i, r);
+
+		if (error != 0 && error != ENOENT) {
+			printf("MiniAppleKeyStore: cannot overwrite %s slot %d (error %d)\n", kHKPath, i, error);
+		}
+	}
+	mc_wipe(r, sizeof(*r));
+	IODelete(r, HKRecord, 1);
+}
+
+/* New keys for everything, no passcode: whatever was wrapped before is gone. In memory; the caller keeps the record. */
+static void
+newBag(HKRecord * r)
+{
+	uint32_t grace = r->gracePeriod;
+	uint8_t kek[32];
+	bool have[kHKTiers] = {};
+
+	stirEntropy(NULL, 0);
+	memset(r, 0, sizeof(*r));
+	r->gracePeriod = grace;
+	wipeRoots();
+	read_random(r->bag.deviceRoot, sizeof(r->bag.deviceRoot));
+	read_random(r->bag.seed, sizeof(r->bag.seed));
+	for (int t = 0; t < kHKTiers; t++) {
+		if (t != kTierP) {
+			read_random(gKS.roots[t], kHKRootSize);
+			gKS.have[t] = have[t] = true;
+		}
+	}
+	kekWithoutPasscode(r, kek);
+	wrapRoots(r, kek, gKS.roots, have);
+	mc_wipe(kek, sizeof(kek));
+}
+
+static void
+damagedBag(const char * why)
+{
+	printf("MiniAppleKeyStore: %s: %s; locked, and no passcode opens it. Only passcode_reset=1 gets out, and it destroys the keys.\n", kHKBagPath, why);
+	wipeRoots();
+	memset(&gKS.record, 0, sizeof(gKS.record));
+	gKS.record.hasPasscode = 1;
+	gKS.damaged = true;
+	gKS.locked = true;
+	gKS.unlockedOnce = false;
+}
+
+/* The first call of the boot, with keystore_real=1. */
+static void
+realLoad(void)
+{
+	HKRecord * slots[2] = { NULL, NULL };
+	uint32_t reset = 0;
+	int error[2] = { 0, 0 };
+
+	gKS.damaged = false;
+	gKS.persisted = false;
+	gKS.generation = 0;
+	wipeRoots();
+	gKS.kdfGood = pbkdf2SelfTest() && mc_keywrap_selftest();
+	for (int i = 0; i < 2; i++) {
+		slots[i] = IONew(HKRecord, 1);
+		if (slots[i] == NULL) {
+			error[i] = ENOMEM;
+			continue;
+		}
+		memset(slots[i], 0, sizeof(HKRecord));
+		error[i] = fileIOAt(kHKBagPath, sizeof(HKRecord), UIO_READ, i, slots[i]);
+		if (error[i] == 0 && !recordValid(slots[i], kHKBagVersion)) {
+			error[i] = EINVAL;
+		}
+		if (error[i] == 0 && slots[i]->generation >= gKS.generation) {
+			gKS.generation = slots[i]->generation;
+			gKS.newestSlot = i;
+		}
+	}
+	if (gKS.newestSlot >= 0) {
+		gKS.record = *slots[gKS.newestSlot];
+	}
+	for (int i = 0; i < 2; i++) {
+		if (slots[i] != NULL) {
+			mc_wipe(slots[i], sizeof(HKRecord));
+			IODelete(slots[i], HKRecord, 1);
+		}
+	}
+
+	if (PE_parse_boot_argn("passcode_reset", &reset, sizeof(reset)) && reset != 0) {
+		/* both slots, so that no older record with the old keys is left to come back */
+		newBag(&gKS.record);
+		for (int i = 0; i < 2; i++) {
+			if (persist(&gKS.record) != 0) {
+				break;
+			}
+		}
+		gKS.persisted = gKS.newestSlot >= 0;
+		wipeOldFile();
+		printf("MiniAppleKeyStore: passcode_reset=%u: the key bag's keys are destroyed, and what they protected with them; %s now holds new keys and no passcode\n",
+		    reset, kHKBagPath);
+		return;
+	}
+	if (!gKS.kdfGood) {
+		damagedBag("the key derivation or key wrap fails its known answers");
+		return;
+	}
+	if (gKS.newestSlot < 0) {
+		if ((error[0] != ENOENT && error[0] != 0) || (error[1] != ENOENT && error[1] != 0)) {
+			printf("MiniAppleKeyStore: slot errors %d, %d\n", error[0], error[1]);
+			damagedBag("no valid record");
+			return;
+		}
+		/* No bag. The old file's passcode, if there is one, stays in force until the first unlock makes the bag from it. */
+		HKRecord * old = IONew(HKRecord, 1), * other = IONew(HKRecord, 1);
+		bool migrate = false;
+
+		if (old != NULL && other != NULL) {
+			bool oldGood, otherGood;
+
+			memset(old, 0, sizeof(*old));
+			memset(other, 0, sizeof(*other));
+			oldGood = fileIOAt(kHKPath, kHKV1Size, UIO_READ, 0, old) == 0 && recordValid(old, kHKRecordVersion);
+			otherGood = fileIOAt(kHKPath, kHKV1Size, UIO_READ, 1, other) == 0 && recordValid(other, kHKRecordVersion);
+			if (otherGood && (!oldGood || other->generation > old->generation)) {
+				memcpy(old, other, sizeof(*old));
+				oldGood = true;
+			}
+			migrate = oldGood && old->hasPasscode;
+		}
+		if (other != NULL) {
+			mc_wipe(other, sizeof(*other));
+			IODelete(other, HKRecord, 1);
+		}
+		newBag(&gKS.record);
+		if (migrate) {
+			wipeRoots();
+			gKS.record.bag.wrappedTiers = 0;
+			memset(gKS.record.bag.wrapped, 0, sizeof(gKS.record.bag.wrapped));
+			gKS.record.bag.migrating = 1;
+			gKS.record.hasPasscode = 1;
+			gKS.record.iterations = old->iterations;
+			memcpy(gKS.record.salt, old->salt, sizeof(gKS.record.salt));
+			memcpy(gKS.record.verifier, old->verifier, sizeof(gKS.record.verifier));
+			gKS.record.failedAttempts = old->failedAttempts;
+			gKS.record.gracePeriod = old->gracePeriod;
+			gKS.record.blobLength = old->blobLength;
+			memcpy(gKS.record.blob, old->blob, sizeof(gKS.record.blob));
+			gKS.locked = true;
+			gKS.unlockedOnce = false;
+		}
+		if (old != NULL) {
+			mc_wipe(old, sizeof(*old));
+			IODelete(old, HKRecord, 1);
+		}
+		gKS.persisted = persist(&gKS.record) == 0;
+		printf("MiniAppleKeyStore: %s: new key bag (%s)%s\n", kHKBagPath, migrate ? "the old passcode stays until the first unlock" : "no passcode",
+		    gKS.persisted ? "" : ", not written yet");
+		return;
+	}
+	gKS.persisted = true;
+	stirEntropy(gKS.record.bag.seed, sizeof(gKS.record.bag.seed));
+	read_random(gKS.record.bag.seed, sizeof(gKS.record.bag.seed));
+	if (gKS.record.hasPasscode) {
+		if (!bagCostValid(&gKS.record) && !gKS.record.bag.migrating) {
+			damagedBag("an impossible key derivation cost");
+			return;
+		}
+		uint64_t now = calendarSeconds();
+		uint32_t delay = 0;
+
+		gKS.locked = true;
+		gKS.unlockedOnce = false;
+		if (gKS.record.blockedUntil > now) {
+			uint64_t left = gKS.record.blockedUntil - now;
+			uint32_t most = delayAfter(gKS.record.failedAttempts);
+
+			delay = left > most ? most : (uint32_t) left;
+			gKS.blockedUntilUptime = uptimeNanoseconds() + (uint64_t) delay * NSEC_PER_SEC;
+		}
+		printf("MiniAppleKeyStore: key bag generation %llu, slot %d: passcode set, locked; %u failed attempts, %u s of delay left\n",
+		    gKS.generation, gKS.newestSlot, gKS.record.failedAttempts, delay);
+	} else {
+		uint8_t kek[32];
+
+		kekWithoutPasscode(&gKS.record, kek);
+		if (!unwrapRoots(&gKS.record, kek, gKS.roots, gKS.have)) {
+			mc_wipe(kek, sizeof(kek));
+			damagedBag("no passcode, and the keys do not come out");
+			return;
+		}
+		mc_wipe(kek, sizeof(kek));
+		printf("MiniAppleKeyStore: key bag generation %llu, slot %d: no passcode\n", gKS.generation, gKS.newestSlot);
+	}
+	persist(&gKS.record);                           /* the new seed */
+}
+
+/* The KDF on what a record says, without the lock. kdfBusy keeps the other tries and changes out meanwhile. */
+static IOReturn
+kdfUnlocked(const uint8_t * passcode, size_t length, uint32_t memKiB, uint32_t passes, const uint8_t * salt, size_t saltLength, uint8_t kek[32])
+{
+	IOReturn ret;
+
+	gKS.kdfBusy = true;
+	IOLockUnlock(gAKSLock);
+	ret = kekFromPasscode(passcode, length, memKiB, passes, salt, saltLength, kek);
+	IOLockLock(gAKSLock);
+	gKS.kdfBusy = false;
+	return ret;
+}
+
+/* The first right passcode after keystore_real=1 meets the old file: the bag's keys, wrapped from now on. Nothing wrapped before this has any secrecy to keep. */
+static IOReturn
+migrateBag(const uint8_t * passcode, size_t length)
+{
+	uint8_t kek[32];
+	bool have[kHKTiers] = {};
+	uint32_t memKiB, passes;
+	IOReturn ret;
+
+	kdfCost(&memKiB, &passes);
+	read_random(gKS.record.bag.kdfSalt, sizeof(gKS.record.bag.kdfSalt));
+	ret = kdfUnlocked(passcode, length, memKiB, passes, gKS.record.bag.kdfSalt, sizeof(gKS.record.bag.kdfSalt), kek);
+	if (ret != kIOReturnSuccess) {
+		return ret;
+	}
+	stirEntropy(NULL, 0);
+	for (int t = 0; t < kHKTiers; t++) {
+		read_random(gKS.roots[t], kHKRootSize);
+		gKS.have[t] = have[t] = true;
+	}
+	gKS.record.bag.kdfMemKiB = memKiB;
+	gKS.record.bag.kdfPasses = passes;
+	gKS.record.bag.migrating = 0;
+	gKS.record.iterations = 0;
+	mc_wipe(gKS.record.salt, sizeof(gKS.record.salt));
+	mc_wipe(gKS.record.verifier, sizeof(gKS.record.verifier));
+	wrapRoots(&gKS.record, kek, gKS.roots, have);
+	mc_wipe(kek, sizeof(kek));
+	if (persist(&gKS.record) != 0) {
+		return kIOReturnIOError;
+	}
+	wipeOldFile();
+	printf("MiniAppleKeyStore: the key bag has its keys, wrapped under the passcode; the old file's verifier is gone\n");
+	return kIOReturnSuccess;
+}
+
+/*
+ * A passcode try. keep, if given, receives the roots (and the caller wipes them); otherwise an unlock installs them and a verify
+ * forgets them. The attempt is counted and written before the key derivation runs, so that cutting the power during it does not
+ * make it free; the right passcode then clears the count.
+ */
+static IOReturn
+tryPasscodeReal(const uint8_t * passcode, size_t length, bool unlock, bool * changed, bool * first, uint8_t (*keep)[kHKRootSize])
+{
+	uint8_t kek[32], roots[kHKTiers][kHKRootSize];
+	bool have[kHKTiers] = {};
+	bool good;
+	IOReturn ret;
+
+	if (gKS.damaged) {
+		printf("MiniAppleKeyStore: the key bag is damaged: no passcode opens it (passcode_reset=1 destroys the keys)\n");
+		return kAKSWrongPasscode;
+	}
+	if (!gKS.record.hasPasscode) {
+		return kIOReturnSuccess;
+	}
+	if (gKS.kdfBusy) {
+		return kIOReturnBusy;
+	}
+	if (secondsBlocked() > 0) {
+		return kAKSBlocked;
+	}
+	if (length == 0) {
+		return kAKSWrongPasscode;                       /* not counted: nothing was tried */
+	}
+	if (gKS.record.failedAttempts < 1000) {
+		gKS.record.failedAttempts++;
+	}
+	persist(&gKS.record);                                   /* if it cannot be written, memory still counts it */
+
+	if (gKS.record.bag.migrating) {
+		uint8_t derived[32];
+
+		pbkdf2(passcode, length, gKS.record.salt, sizeof(gKS.record.salt), gKS.record.iterations, derived, sizeof(derived));
+		good = sameBytes(derived, gKS.record.verifier, sizeof(derived));
+		mc_wipe(derived, sizeof(derived));
+		ret = good ? migrateBag(passcode, length) : kIOReturnSuccess;
+		if (ret != kIOReturnSuccess) {
+			return ret;
+		}
+		if (good) {
+			memcpy(roots, gKS.roots, sizeof(roots));
+			memcpy(have, gKS.have, sizeof(have));
+		}
+	} else {
+		ret = kdfUnlocked(passcode, length, gKS.record.bag.kdfMemKiB, gKS.record.bag.kdfPasses, gKS.record.bag.kdfSalt,
+		    sizeof(gKS.record.bag.kdfSalt), kek);
+		if (ret != kIOReturnSuccess) {
+			gKS.record.failedAttempts--;            /* nothing was tried: no memory for it */
+			persist(&gKS.record);
+			return ret;
+		}
+		good = unwrapRoots(&gKS.record, kek, roots, have);
+		mc_wipe(kek, sizeof(kek));
+	}
+
+	if (!good) {
+		uint32_t delay = delayAfter(gKS.record.failedAttempts);
+
+		setBlockedUntil(&gKS.record, delay);
+		persist(&gKS.record);
+		printf("MiniAppleKeyStore: wrong passcode, no keys (%u failed attempts; %u s before the next)\n", gKS.record.failedAttempts, delay);
+		*changed = true;
+		return kAKSWrongPasscode;
+	}
+	gKS.record.failedAttempts = 0;
+	setBlockedUntil(&gKS.record, 0);
+	persist(&gKS.record);
+	*changed = true;
+	if (keep != NULL) {
+		memcpy(keep, roots, sizeof(roots));
+	}
+	if (unlock) {
+		memcpy(gKS.roots, roots, sizeof(roots));
+		memcpy(gKS.have, have, sizeof(have));
+		if (gKS.locked) {
+			gKS.locked = false;
+			printf("MiniAppleKeyStore: unlocked with the passcode; the class keys are in memory\n");
+		}
+		if (!gKS.unlockedOnce) {
+			gKS.unlockedOnce = true;
+			*first = true;
+		}
+	} else if (gKS.locked && !gKS.unlockedOnce) {
+		wipeRoots();                                    /* a verify before the first unlock installs nothing (a migration had filled them) */
+	}
+	mc_wipe(roots, sizeof(roots));
+	return kIOReturnSuccess;
+}
+
+static IOReturn
+changeSecretReal(const uint8_t * oldSecret, size_t oldLength, const uint8_t * newSecret, size_t newLength,
+    const uint8_t * blob, size_t blobLength, bool * changed, bool * first)
+{
+	uint8_t roots[kHKTiers][kHKRootSize], kek[32], salt[sizeof(gKS.record.bag.kdfSalt)];
+	bool have[kHKTiers] = {};
+	HKRecord * next;
+	uint32_t memKiB, passes;
+	IOReturn ret;
+	int error;
+
+	if (gKS.damaged || !gKS.kdfGood) {
+		return kAKSNoPermission;
+	}
+	if (gKS.kdfBusy) {
+		return kIOReturnBusy;
+	}
+	if (gKS.record.hasPasscode) {
+		ret = tryPasscodeReal(oldSecret, oldLength, false, changed, first, roots);
+		if (ret != kIOReturnSuccess) {
+			mc_wipe(roots, sizeof(roots));
+			return ret;
+		}
+		for (int t = 0; t < kHKTiers; t++) {
+			have[t] = (gKS.record.bag.wrappedTiers & (1u << t)) != 0;
+		}
+	} else {
+		memcpy(roots, gKS.roots, sizeof(roots));
+		memcpy(have, gKS.have, sizeof(have));
+		if (!have[kTierA] || !have[kTierC]) {
+			mc_wipe(roots, sizeof(roots));
+			return kAKSNoPermission;
+		}
+	}
+	if (newLength == 0) {
+		/* "when passcode set" items are to die with the passcode */
+		mc_wipe(roots[kTierP], kHKRootSize);
+		have[kTierP] = false;
+		kekWithoutPasscode(&gKS.record, kek);
+	} else {
+		if (!have[kTierP]) {
+			stirEntropy(NULL, 0);
+			read_random(roots[kTierP], kHKRootSize);
+			have[kTierP] = true;
+		}
+		kdfCost(&memKiB, &passes);
+		read_random(salt, sizeof(salt));
+		ret = kdfUnlocked(newSecret, newLength, memKiB, passes, salt, sizeof(salt), kek);
+		if (ret != kIOReturnSuccess) {
+			mc_wipe(roots, sizeof(roots));
+			return ret;
+		}
+	}
+	next = IONew(HKRecord, 1);
+	if (next == NULL) {
+		mc_wipe(roots, sizeof(roots));
+		mc_wipe(kek, sizeof(kek));
+		return kIOReturnNoMemory;
+	}
+	*next = gKS.record;
+	wrapRoots(next, kek, roots, have);
+	mc_wipe(kek, sizeof(kek));
+	next->failedAttempts = 0;
+	next->blockedUntil = 0;
+	if (newLength == 0) {
+		next->hasPasscode = 0;
+		next->bag.kdfMemKiB = next->bag.kdfPasses = 0;
+		memset(next->bag.kdfSalt, 0, sizeof(next->bag.kdfSalt));
+	} else {
+		next->hasPasscode = 1;
+		next->bag.kdfMemKiB = memKiB;
+		next->bag.kdfPasses = passes;
+		memcpy(next->bag.kdfSalt, salt, sizeof(salt));
+	}
+	next->blobLength = (uint32_t) blobLength;
+	memset(next->blob, 0, sizeof(next->blob));
+	if (blobLength) {
+		memcpy(next->blob, blob, blobLength);
+	}
+	error = persist(next);
+	if (error) {
+		mc_wipe(next, sizeof(*next));
+		IODelete(next, HKRecord, 1);
+		mc_wipe(roots, sizeof(roots));
+		return kIOReturnIOError;
+	}
+	gKS.persisted = true;
+	gKS.record = *next;
+	mc_wipe(next, sizeof(*next));
+	IODelete(next, HKRecord, 1);
+	/*
+	 * The previous slot holds the keys under the old passcode (or under none at all) until it is written over: write the
+	 * same record again, over it. It is what can be done from here; the flash's own remapping is another matter (docs/keystore.md).
+	 */
+	persist(&gKS.record);
+	memcpy(gKS.roots, roots, sizeof(roots));
+	memcpy(gKS.have, have, sizeof(have));
+	mc_wipe(roots, sizeof(roots));
+	gKS.blockedUntilUptime = 0;
+	gKS.locked = false;
+	if (!gKS.unlockedOnce) {
+		gKS.unlockedOnce = true;
+		*first = true;
+	}
+	*changed = true;
+	printf("MiniAppleKeyStore: passcode %s; the class keys wrapped again (generation %llu)\n", newLength ? "set" : "removed", gKS.generation);
+	return kIOReturnSuccess;
+}
+
+/* The key of a class, or why not: what securityd reads as "locked" or "no such key". */
+static IOReturn
+classKey(uint32_t keyclass, uint8_t key[32])
+{
+	int tier = classTier(keyclass);
+	uint8_t number = (uint8_t) (keyclass & 0x1f);
+	const uint8_t * root;
+
+	if (gKS.damaged) {
+		return kAKSNoPermission;
+	}
+	if (tier < 0) {
+		return kAKSNoClassKey;
+	}
+	if (!gKS.persisted) {
+		/* a key that would not be there after a restart protects nothing and loses what it wraps */
+		if (persist(&gKS.record) != 0) {
+			return kAKSNoPermission;
+		}
+		gKS.persisted = true;
+	}
+	if (tier == kHKTiers) {
+		root = gKS.record.bag.deviceRoot;
+	} else if (gKS.have[tier]) {
+		root = gKS.roots[tier];
+	} else if (tier == kTierP && !gKS.record.hasPasscode) {
+		return kAKSNoClassKey;
+	} else {
+		return kAKSNoPermission;
+	}
+	hmacOne(root, kHKRootSize, kClassLabel, sizeof(kClassLabel) - 1, &number, 1, key);
+	return kIOReturnSuccess;
+}
+
+static IOReturn
+bagWrap(uint32_t keyclass, const uint8_t * in, size_t length, uint8_t * out)
+{
+	uint8_t key[32];
+	IOReturn ret = classKey(keyclass, key);
+
+	if (ret != kIOReturnSuccess) {
+		return ret;
+	}
+	ret = mc_aes256_kw_wrap(key, in, length, out) == 0 ? kIOReturnSuccess : kIOReturnBadArgument;
+	mc_wipe(key, sizeof(key));
+	return ret;
+}
+
+static IOReturn
+bagUnwrap(uint32_t keyclass, const uint8_t * in, size_t length, uint8_t * out)
+{
+	uint8_t key[32];
+	IOReturn ret = classKey(keyclass, key);
+
+	if (ret != kIOReturnSuccess) {
+		return ret;
+	}
+	ret = mc_aes256_kw_unwrap(key, in, length, out) == 0 ? kIOReturnSuccess : kAKSDecodeError;
+	mc_wipe(key, sizeof(key));
+	return ret;
 }
 
 static void
@@ -907,6 +1696,267 @@ selftest(uint32_t phase)
 	return !failed;
 }
 
+/*
+ * The key bag's self-test: keystore_real=1 passcode_selftest=N, N >= 10 (qemu/run-passcode-test.sh real, and migrate). Blobs wrapped in
+ * one boot are kept in /private/var/hakios-selftest for the next. kTestKey is the key they wrap, and the script looks for it on
+ * the volume afterwards: it must not be there.
+ *   10  a new bag: known answers; no passcode: wrap and unwrap work, no "when passcode set" key; a blob damaged, or of another class, or
+ *       the old reversible kind, is refused; passcode set; a lock wipes A's root: class A neither wraps nor unwraps, C and D still
+ *       do; a wrong passcode brings no key and counts; the right one brings A back and the same blob opens; delays; a change with
+ *       a wrong old passcode refused, then accepted, and the same blobs still open.
+ *   11  after a restart: locked and not unlocked since boot: A, C and P closed, D open; a wrong try counts; the right one is the first
+ *       unlock and every blob of the last boot opens to the same key; a lock leaves C open and shuts A; removal: P's blob can no longer
+ *       be used, A and C still open; a new passcode has a new P.
+ *   12  damage: both slots written with garbage, the bag read again: locked, no class opens (not even D, whose root was in it), the
+ *       right passcode gets nothing and is not counted, nothing can be set, and the garbage is still there.
+ *   13  with passcode_reset=1 too: out of the damage, with no passcode, and the old blobs answer "never" (the data is lost, which is the point).
+ *       Sets a passcode and wraps again, for 14.
+ *   14  with passcode_reset=1 again, an intact bag this time: the same.
+ *   15  (migrate) the old kind of file holds abcdef: locked; no key before the first unlock; D open; a wrong try counts; abcdef opens, and
+ *       the old file's verifier is gone.
+ *   16  (migrate) after a restart: the bag holds; abcdef opens; the blob of 15 opens.
+ */
+#define kSelftestPath   "/private/var/hakios-selftest"
+
+static const uint8_t kTestKey[32] = {
+	0x4b, 0x45, 0x59, 0x53, 0x54, 0x4f, 0x52, 0x45, 0x2d, 0x54, 0x45, 0x53, 0x54, 0x2d, 0x4b, 0x45,
+	0x59, 0x2d, 0x4d, 0x55, 0x53, 0x54, 0x2d, 0x4e, 0x4f, 0x54, 0x2d, 0x4c, 0x45, 0x41, 0x4b, 0x21,
+};
+enum { kBlobA, kBlobC, kBlobD, kBlobP, kTestBlobs };
+static const uint32_t kBlobClass[kTestBlobs] = { 6, 7, 8, 12 };
+
+struct SelftestBlobs {
+	uint8_t blob[kTestBlobs][32 + MC_KW_OVERHEAD];
+};
+
+static int
+selftestFile(enum uio_rw rw, SelftestBlobs * b)
+{
+	vfs_context_t ctx = vfs_context_kernel();
+	vnode_t vp = NULLVP;
+	int resid = 0, fmode = rw == UIO_READ ? FREAD : (FREAD | FWRITE | O_CREAT);
+	int error = vnode_open(kSelftestPath, fmode, 0600, VNODE_LOOKUP_NOFOLLOW, &vp, ctx);
+
+	if (error) {
+		return error;
+	}
+	error = vn_rdwr(rw, vp, (caddr_t) b, (int) sizeof(*b), 0, UIO_SYSSPACE, rw == UIO_WRITE ? IO_SYNC | IO_NOAUTH : IO_NOAUTH,
+	    vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
+	if (error == 0 && resid != 0) {
+		error = EIO;
+	}
+	vnode_close(vp, fmode, ctx);
+	return error;
+}
+
+static bool
+opens(uint32_t keyclass, const uint8_t * blob)
+{
+	uint8_t out[64];
+	bool good = bagUnwrap(keyclass, blob, 32 + MC_KW_OVERHEAD, out) == kIOReturnSuccess && sameBytes(out, kTestKey, 32);
+
+	mc_wipe(out, sizeof(out));
+	return good;
+}
+
+static bool
+rootIsWiped(int tier)
+{
+	uint8_t d = 0;
+
+	for (size_t i = 0; i < kHKRootSize; i++) {
+		d |= gKS.roots[tier][i];
+	}
+	return d == 0 && !gKS.have[tier];
+}
+
+/* What a lock request does. */
+static void
+selftestLock(void)
+{
+	gKS.locked = true;
+	dropLockedRoots();
+}
+
+static bool
+realSelftest(uint32_t phase)
+{
+	bool failed = false, changed = false, first = false;
+	const uint8_t * none = (const uint8_t *) "";
+	uint8_t out[32 + MC_KW_OVERHEAD];
+	SelftestBlobs * saved = IONew(SelftestBlobs, 1);
+	int error;
+
+	if (saved == NULL || !gKS.real) {
+		printf("MiniAppleKeyStore: selftest %u: needs keystore_real=1\n", phase);
+		return false;
+	}
+	memset(saved, 0, sizeof(*saved));
+	if (!gKS.loaded) {
+		load();
+	}
+	if (phase != 10 && phase != 15) {
+		error = selftestFile(UIO_READ, saved);
+		CHECK("the blobs of the last boot are there", error == 0);
+	}
+	switch (phase) {
+	case 10: {
+		uint8_t legacy[40] = { 'H', 'K', 'w', 'r', 7 };
+
+		CHECK("the known answers", gKS.kdfGood && mc_keywrap_selftest());
+		CHECK("a new bag, no passcode", !gKS.damaged && !gKS.record.hasPasscode && lockState() == kAKSLockDisabled);
+		CHECK("no key for \"when passcode set\" without a passcode", bagWrap(12, kTestKey, 32, out) == kAKSNoClassKey);
+		for (int i = 0; i < kBlobP; i++) {
+			CHECK("wrap", bagWrap(kBlobClass[i], kTestKey, 32, saved->blob[i]) == kIOReturnSuccess);
+			CHECK("the wrapped key is not the key", !sameBytes(saved->blob[i] + 8, kTestKey, 32) && !sameBytes(saved->blob[i], kTestKey, 32));
+			CHECK("unwrap", opens(kBlobClass[i], saved->blob[i]));
+		}
+		CHECK("two classes, two wrappings", !sameBytes(saved->blob[kBlobA], saved->blob[kBlobC], 40));
+		memcpy(out, saved->blob[kBlobA], sizeof(out));
+		out[13] ^= 0x40;
+		CHECK("a damaged blob is refused", bagUnwrap(6, out, sizeof(out), out) == kAKSDecodeError);
+		CHECK("another class's blob is refused", bagUnwrap(7, saved->blob[kBlobA], 40, out) == kAKSDecodeError);
+		CHECK("the old reversible kind is refused", bagUnwrap(7, legacy, sizeof(legacy), out) == kAKSDecodeError);
+		CHECK("a wrong length is refused", bagUnwrap(6, saved->blob[kBlobA], 39, out) == kAKSDecodeError);
+		CHECK("an unknown class has no key", bagWrap(29, kTestKey, 32, out) == kAKSNoClassKey);
+
+		CHECK("set 123456", changeSecret(none, 0, (const uint8_t *) "123456", 6, (const uint8_t *) "BLOB1", 5, &changed, &first) == kIOReturnSuccess);
+		CHECK("set and unlocked, the same keys", lockState() == kAKSLockUnlocked && opens(6, saved->blob[kBlobA]) && opens(7, saved->blob[kBlobC]));
+		CHECK("now \"when passcode set\" has a key", bagWrap(12, kTestKey, 32, saved->blob[kBlobP]) == kIOReturnSuccess && opens(12, saved->blob[kBlobP]));
+
+		selftestLock();
+		CHECK("locked", lockState() == kAKSLockLocked);
+		CHECK("the lock wiped A's and P's roots", rootIsWiped(kTierA) && rootIsWiped(kTierP) && rootIsWiped(kTierB));
+		CHECK("class A does not unwrap while locked", bagUnwrap(6, saved->blob[kBlobA], 40, out) == kAKSNoPermission);
+		CHECK("class A does not wrap while locked", bagWrap(6, kTestKey, 32, out) == kAKSNoPermission);
+		CHECK("class P does not unwrap while locked", bagUnwrap(12, saved->blob[kBlobP], 40, out) == kAKSNoPermission);
+		CHECK("class C still opens: unlocked once", opens(7, saved->blob[kBlobC]));
+		CHECK("class D still opens", opens(8, saved->blob[kBlobD]));
+
+		CHECK("a wrong passcode is refused", tryPasscode((const uint8_t *) "000000", 6, true, &changed, &first) == kAKSWrongPasscode);
+		CHECK("... it brought no key", rootIsWiped(kTierA) && bagUnwrap(6, saved->blob[kBlobA], 40, out) == kAKSNoPermission && lockState() == kAKSLockLocked);
+		CHECK("... and it counted", gKS.record.failedAttempts == 1);
+		CHECK("the right one unlocks", tryPasscode((const uint8_t *) "123456", 6, true, &changed, &first) == kIOReturnSuccess && lockState() == kAKSLockUnlocked);
+		CHECK("the same blob opens again", opens(6, saved->blob[kBlobA]) && opens(12, saved->blob[kBlobP]));
+		CHECK("no failed attempts", gKS.record.failedAttempts == 0);
+
+		selftestLock();
+		for (int i = 1; i <= 5; i++) {
+			CHECK("a wrong try", tryPasscode((const uint8_t *) "000000", 6, true, &changed, &first) == kAKSWrongPasscode);
+		}
+		CHECK("five: a minute's delay", gKS.record.failedAttempts == 5 && secondsBlocked() > 40 && secondsBlocked() <= 60);
+		CHECK("the right one is refused during it, not counted", tryPasscode((const uint8_t *) "123456", 6, true, &changed, &first) == kAKSBlocked && gKS.record.failedAttempts == 5);
+		gKS.blockedUntilUptime = 0;
+		CHECK("after it, the right one unlocks", tryPasscode((const uint8_t *) "123456", 6, true, &changed, &first) == kIOReturnSuccess);
+
+		CHECK("a change with a wrong old passcode is refused", changeSecret((const uint8_t *) "111111", 6, (const uint8_t *) "abcdef", 6,
+		    (const uint8_t *) "BLOB2", 5, &changed, &first) == kAKSWrongPasscode);
+		CHECK("changed to abcdef", changeSecret((const uint8_t *) "123456", 6, (const uint8_t *) "abcdef", 6,
+		    (const uint8_t *) "BLOB2", 5, &changed, &first) == kIOReturnSuccess);
+		CHECK("the same blobs open", opens(6, saved->blob[kBlobA]) && opens(7, saved->blob[kBlobC]) && opens(12, saved->blob[kBlobP]));
+		CHECK("the old one no longer opens anything", tryPasscode((const uint8_t *) "123456", 6, false, &changed, &first) == kAKSWrongPasscode);
+		CHECK("the new one does", tryPasscode((const uint8_t *) "abcdef", 6, false, &changed, &first) == kIOReturnSuccess);
+		CHECK("the blobs are kept for the restart", selftestFile(UIO_WRITE, saved) == 0);
+		break;
+	}
+	case 11:
+		CHECK("set after the restart", gKS.record.hasPasscode && !gKS.damaged);
+		CHECK("locked, not unlocked since boot", lockState() == kAKSLockLocked && !(stateFlags() & kAKSStateUnlockedOnce));
+		CHECK("nothing but D in memory", rootIsWiped(kTierA) && rootIsWiped(kTierB) && rootIsWiped(kTierC) && rootIsWiped(kTierP));
+		CHECK("class A is shut", bagUnwrap(6, saved->blob[kBlobA], 40, out) == kAKSNoPermission);
+		CHECK("class C is shut before the first unlock", bagUnwrap(7, saved->blob[kBlobC], 40, out) == kAKSNoPermission);
+		CHECK("class P is shut", bagUnwrap(12, saved->blob[kBlobP], 40, out) == kAKSNoPermission);
+		CHECK("class D opens", opens(8, saved->blob[kBlobD]));
+		CHECK("the metadata kept", gKS.record.blobLength == 5 && memcmp(gKS.record.blob, "BLOB2", 5) == 0);
+		CHECK("a wrong try is refused", tryPasscode((const uint8_t *) "123456", 6, true, &changed, &first) == kAKSWrongPasscode);
+		CHECK("... no key, one attempt", rootIsWiped(kTierC) && gKS.record.failedAttempts == 1);
+		CHECK("abcdef unlocks, the first unlock", tryPasscode((const uint8_t *) "abcdef", 6, true, &changed, &first) == kIOReturnSuccess && first);
+		for (int i = 0; i < kTestBlobs; i++) {
+			CHECK("last boot's blob opens to the same key", opens(kBlobClass[i], saved->blob[i]));
+		}
+		selftestLock();
+		CHECK("a lock: C stays, A goes", opens(7, saved->blob[kBlobC]) && bagUnwrap(6, saved->blob[kBlobA], 40, out) == kAKSNoPermission);
+		CHECK("unlock again", tryPasscode((const uint8_t *) "abcdef", 6, true, &changed, &first) == kIOReturnSuccess);
+		CHECK("removed", changeSecret((const uint8_t *) "abcdef", 6, none, 0, none, 0, &changed, &first) == kIOReturnSuccess);
+		CHECK("no passcode", lockState() == kAKSLockDisabled);
+		CHECK("A and C still open, no passcode now guards them", opens(6, saved->blob[kBlobA]) && opens(7, saved->blob[kBlobC]));
+		CHECK("P died with the passcode", bagUnwrap(12, saved->blob[kBlobP], 40, out) == kAKSNoClassKey);
+		CHECK("set 999999", changeSecret(none, 0, (const uint8_t *) "999999", 6, none, 0, &changed, &first) == kIOReturnSuccess);
+		CHECK("a new P: the old blob says never", bagUnwrap(12, saved->blob[kBlobP], 40, out) == kAKSDecodeError);
+		break;
+	case 12: {
+		HKRecord * garbage = IONew(HKRecord, 1);
+
+		if (garbage != NULL) {
+			memset(garbage, 0x5a, sizeof(*garbage));
+			CHECK("damage both slots", fileIOAt(kHKBagPath, sizeof(*garbage), UIO_WRITE, 0, garbage) == 0 && fileIOAt(kHKBagPath, sizeof(*garbage), UIO_WRITE, 1, garbage) == 0);
+			gKS.loaded = false;
+			load();
+			CHECK("damaged: locked", gKS.damaged && lockState() == kAKSLockLocked);
+			CHECK("no key in memory", rootIsWiped(kTierA) && rootIsWiped(kTierC));
+			CHECK("A is shut, and not called corrupt", bagUnwrap(6, saved->blob[kBlobA], 40, out) == kAKSNoPermission);
+			CHECK("C is shut", bagUnwrap(7, saved->blob[kBlobC], 40, out) == kAKSNoPermission);
+			CHECK("D is shut", bagUnwrap(8, saved->blob[kBlobD], 40, out) == kAKSNoPermission);
+			CHECK("the right passcode gets nothing", tryPasscode((const uint8_t *) "999999", 6, true, &changed, &first) == kAKSWrongPasscode && lockState() == kAKSLockLocked);
+			CHECK("nor is it counted", gKS.record.failedAttempts == 0);
+			CHECK("nothing can be set", changeSecret((const uint8_t *) "999999", 6, (const uint8_t *) "1", 1, none, 0, &changed, &first) == kAKSNoPermission);
+			memset(garbage, 0, sizeof(*garbage));
+			CHECK("the garbage is still there", fileIOAt(kHKBagPath, sizeof(*garbage), UIO_READ, 0, garbage) == 0 && garbage->magic == 0x5a5a5a5a);
+			IODelete(garbage, HKRecord, 1);
+		} else {
+			CHECK("memory", false);
+		}
+		break;
+	}
+	case 13:
+		CHECK("passcode_reset=1: out of the damage", !gKS.damaged && !gKS.record.hasPasscode && lockState() == kAKSLockDisabled);
+		CHECK("the old blobs say never: the data is gone", bagUnwrap(6, saved->blob[kBlobA], 40, out) == kAKSDecodeError && bagUnwrap(7, saved->blob[kBlobC], 40, out) == kAKSDecodeError);
+		CHECK("the old D blob too", bagUnwrap(8, saved->blob[kBlobD], 40, out) == kAKSDecodeError);
+		CHECK("new wraps work", bagWrap(6, kTestKey, 32, saved->blob[kBlobA]) == kIOReturnSuccess && opens(6, saved->blob[kBlobA]));
+		CHECK("set 222222", changeSecret(none, 0, (const uint8_t *) "222222", 6, none, 0, &changed, &first) == kIOReturnSuccess);
+		CHECK("kept for the next boot", selftestFile(UIO_WRITE, saved) == 0);
+		break;
+	case 14:
+		CHECK("passcode_reset=1 again: no passcode", !gKS.record.hasPasscode && !gKS.damaged);
+		CHECK("the keys are new: the blob says never", bagUnwrap(6, saved->blob[kBlobA], 40, out) == kAKSDecodeError);
+		break;
+	case 15:
+		CHECK("the old file's passcode is in force", gKS.record.hasPasscode && gKS.record.bag.migrating && lockState() == kAKSLockLocked);
+		CHECK("no key yet", rootIsWiped(kTierA) && rootIsWiped(kTierC));
+		CHECK("A is shut", bagWrap(6, kTestKey, 32, out) == kAKSNoPermission);
+		CHECK("D works from the start", bagWrap(8, kTestKey, 32, saved->blob[kBlobD]) == kIOReturnSuccess);
+		CHECK("a wrong try is refused and counts", tryPasscode((const uint8_t *) "000000", 6, true, &changed, &first) == kAKSWrongPasscode && gKS.record.failedAttempts >= 1);
+		CHECK("abcdef opens", tryPasscode((const uint8_t *) "abcdef", 6, true, &changed, &first) == kIOReturnSuccess && first && lockState() == kAKSLockUnlocked);
+		CHECK("the bag holds wrapped keys now", !gKS.record.bag.migrating && (gKS.record.bag.wrappedTiers & 0xf) == 0xf && gKS.record.iterations == 0);
+		CHECK("wrap", bagWrap(6, kTestKey, 32, saved->blob[kBlobA]) == kIOReturnSuccess && opens(6, saved->blob[kBlobA]));
+		{
+			HKRecord * old = IONew(HKRecord, 1);
+
+			if (old != NULL) {
+				memset(old, 0, sizeof(*old));
+				CHECK("the old file holds no verifier", fileIOAt(kHKPath, kHKV1Size, UIO_READ, 0, old) == 0 && !old->hasPasscode && old->iterations == 0 &&
+				    old->verifier[0] == 0 && old->verifier[31] == 0);
+				IODelete(old, HKRecord, 1);
+			}
+		}
+		CHECK("kept for the next boot", selftestFile(UIO_WRITE, saved) == 0);
+		break;
+	case 16:
+		CHECK("after the restart: the bag, locked", gKS.record.hasPasscode && !gKS.record.bag.migrating && lockState() == kAKSLockLocked);
+		CHECK("abcdef opens", tryPasscode((const uint8_t *) "abcdef", 6, true, &changed, &first) == kIOReturnSuccess);
+		CHECK("A's blob and D's open", opens(6, saved->blob[kBlobA]) && opens(8, saved->blob[kBlobD]));
+		break;
+	default:
+		CHECK("a known phase", false);
+		break;
+	}
+	mc_wipe(out, sizeof(out));
+	mc_wipe(saved, sizeof(*saved));
+	IODelete(saved, SelftestBlobs, 1);
+	printf("MiniAppleKeyStore: selftest %u: %s (generation %llu, kdf %u ms)\n", phase, failed ? "FAILED" : "ALL OK", gKS.generation, gKS.kdfMilliseconds);
+	return !failed;
+}
+
 static int
 selftestSysctl(__unused struct sysctl_oid * oidp, __unused void * arg1, __unused int arg2, struct sysctl_req * req)
 {
@@ -923,7 +1973,7 @@ selftestSysctl(__unused struct sysctl_oid * oidp, __unused void * arg1, __unused
 		return EPERM;
 	}
 	IOLockLock(gAKSLock);
-	gSelftestResult = selftest(phase) ? 1 : 2;
+	gSelftestResult = (phase >= 10 ? realSelftest(phase) : selftest(phase)) ? 1 : 2;
 	IOLockUnlock(gAKSLock);
 	return 0;
 }
@@ -931,7 +1981,7 @@ selftestSysctl(__unused struct sysctl_oid * oidp, __unused void * arg1, __unused
 static int
 stateSysctl(__unused struct sysctl_oid * oidp, __unused void * arg1, __unused int arg2, struct sysctl_req * req)
 {
-	char line[128];
+	char line[160];
 
 	if (gAKSLock == NULL) {
 		return ENOENT;
@@ -940,9 +1990,10 @@ stateSysctl(__unused struct sysctl_oid * oidp, __unused void * arg1, __unused in
 	if (!gKS.loaded) {
 		snprintf(line, sizeof(line), "not read yet (nothing has asked the key store)");
 	} else {
-		snprintf(line, sizeof(line), "passcode %s, lock state %u, %s, %u failed attempts, %u s of delay, grace %u s, generation %llu",
+		snprintf(line, sizeof(line), "%spasscode %s, lock state %u, %s, %u failed attempts, %u s of delay, grace %u s, generation %llu, kdf %u ms",
+		    !gKS.real ? "" : gKS.damaged ? "key bag DAMAGED, " : "key bag, ",
 		    gKS.record.hasPasscode ? "set" : "none", lockState(), gKS.unlockedOnce ? "unlocked since boot" : "not unlocked since boot",
-		    gKS.record.failedAttempts, secondsBlocked(), gKS.record.gracePeriod, gKS.generation);
+		    gKS.record.failedAttempts, secondsBlocked(), gKS.record.gracePeriod, gKS.generation, gKS.kdfMilliseconds);
 	}
 	IOLockUnlock(gAKSLock);
 	return SYSCTL_OUT(req, line, strlen(line) + 1);
@@ -1011,10 +2062,10 @@ AppleKeyStoreUserClient::registerNotificationPort(mach_port_t port, UInt32 type,
 }
 
 /*
- * kAKSWrapKey and kAKSUnwrapKey. A wrapped key is 8 bytes longer than the key, as with AES key
+ * kAKSWrapKey and kAKSUnwrapKey without keystore_real=1. A wrapped key is 8 bytes longer than the key, as with AES key
  * wrap (RFC 3394), which is what callers size their buffers for: a mark, the class, and the key
  * mixed with a fixed pattern. Not encryption: there is no secret here to encrypt with, and the
- * passcode is not one (see the head of this file).
+ * passcode is not one (see the head of this file). With keystore_real=1 this is not reached.
  */
 static const uint8_t kWrapMark[4] = { 'H', 'K', 'w', 'r' };
 
@@ -1128,6 +2179,7 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 			char procname[32] = "?";
 
 			gKS.locked = true;
+			dropLockedRoots();
 			changed = true;
 			proc_selfname(procname, sizeof(procname));
 			printf("MiniAppleKeyStore: locked (%s[%d], %s)\n", procname, proc_selfpid(), selector == kAKSLockDeviceNow ? "now" : "lock");
@@ -1249,6 +2301,18 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 			ret = kIOReturnBadArgument;
 			break;
 		}
+		if (gKS.real) {
+			ret = bagWrap((uint32_t) args->scalarInput[1], (const uint8_t *) args->structureInput, length, wrapped);
+			if (ret == kIOReturnSuccess) {
+				if (args->scalarOutputCount >= 1) {
+					out[0] = args->scalarInput[1];
+					args->scalarOutputCount = 1;
+				}
+				ret = answer(args, wrapped, length + MC_KW_OVERHEAD);
+			}
+			mc_wipe(wrapped, sizeof(wrapped));
+			break;
+		}
 		memcpy(wrapped, kWrapMark, sizeof(kWrapMark));
 		wrapped[4] = (uint8_t)args->scalarInput[1];
 		wrapped[5] = wrapped[6] = wrapped[7] = 0;
@@ -1267,6 +2331,18 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 		const uint8_t * wrapped = (const uint8_t *)args->structureInput;
 		size_t length = args->structureInputSize;
 
+		if (gKS.real) {
+			if (wrapped == NULL || args->scalarInputCount < 2 || length > sizeof(key) + MC_KW_OVERHEAD) {
+				ret = kIOReturnBadArgument;
+				break;
+			}
+			ret = bagUnwrap((uint32_t) args->scalarInput[1], wrapped, length, key);
+			if (ret == kIOReturnSuccess) {
+				ret = answer(args, key, length - MC_KW_OVERHEAD);
+			}
+			mc_wipe(key, sizeof(key));
+			break;
+		}
 		if (wrapped == NULL || length <= 8 || length > 8 + sizeof(key) || memcmp(wrapped, kWrapMark, sizeof(kWrapMark)) != 0) {
 			ret = kIOReturnBadArgument;
 			break;
@@ -1365,6 +2441,9 @@ MiniAppleKeyStoreStart(void)
 	IOService * resources = IOService::getResourceService();
 	AppleKeyStore * store = OSTypeAlloc(AppleKeyStore);
 
+	uint32_t real = 0;
+
+	gKS.real = PE_parse_boot_argn("keystore_real", &real, sizeof(real)) && real != 0;
 	gAKSLock = IOLockAlloc();
 	if (gAKSLock == NULL || resources == NULL || store == NULL || !store->init() || !store->attach(resources)) {
 		OSSafeReleaseNULL(store);

@@ -244,6 +244,8 @@ IRIS_S9_ISPDIV	arg	iris_s9_ispdiv	User space	k	hakios.exynos_iris.c
 IRIS_S9_MS	arg	iris_s9_ms	User space	k	hakios.exynos_iris.c	how long a capture may stream at most (default 600, 100 to 2000)
 IRIS_S9_SMC	arg	iris_s9_smc	User space	k	hakios.exynos_iris.c	the secure monitor's camera calls around the run (0 none; 1 PREPARE; 2 also ISPPRE; 3 SYSREG_PROT)
 ISA_FLOOR	arg	isa_floor	User space	k	1510-isa-floor.patch	
+KEYSTORE_KDF_KIB	arg	keystore_kdf_kib	User space	k	MiniAppleKeyStore.cpp	
+KEYSTORE_REAL	arg	keystore_real	User space	k	MiniAppleKeyStore.cpp	
 KSAMPLE	arg	ksample	Debugging	k	user_exception_trace.c	
 KSAMPLE_US	arg	ksample_us	Debugging	k	user_exception_trace.c	
 LOADER_PLATFORM	arg	loader_platform	Loader	l	loader.c	
