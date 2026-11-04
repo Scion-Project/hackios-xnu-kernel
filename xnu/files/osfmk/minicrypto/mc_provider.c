@@ -458,13 +458,14 @@ minicrypto_init(void)
 	if (failed != NULL) {
 		panic("minicrypto: %s self-test failed", failed);
 	}
+	mc_ce_start();         /* the instructions, where there are any and they pass the same tests */
 
-	mc_funcs.ccsha256_di = ccsha256_di();
+	mc_funcs.ccsha256_di = mc_ce_sha256_di(ccsha256_di());
 	if (register_crypto_functions(&mc_funcs) != 0) {
 		return; /* a real provider got there first */
 	}
 	/* The PRNG context is ours; the kernel only hands the pointer back to us. */
 	register_and_init_prng((struct cckprng_ctx *)(void *)&mc_prng, &mc_prng_funcs);
-	printf("minicrypto: registered (md5, sha1, sha2, hmac, aes-ecb/cbc/ctr, hmac-drbg prng); no xts/gcm, no RSA\n");
+	printf("minicrypto: registered (md5, sha1, sha2, hmac, aes-ecb/cbc/ctr, hmac-drbg prng); no xts/gcm, no RSA; the ARMv8 crypto instructions %s\n", mc_ce_on ? "in use" : "not in use");
 }
 STARTUP(EARLY_BOOT, STARTUP_RANK_FIRST, minicrypto_init);

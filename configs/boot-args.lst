@@ -283,6 +283,7 @@ max77705_steps	k
 max77705_usbsw	k
 max98512	k
 max98512_gain	k
+mc_ce	k
 md0	k
 membench	k
 metal	ku

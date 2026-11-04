@@ -6,7 +6,9 @@
  * S-boxes were generated from their definition. It is not constant-time and
  * not fast: it exists so that kernel code which merely needs a block cipher
  * at boot (the TCP stack keys an AES context during initialisation) works.
- * Checked at boot against FIPS-197 / OpenSSL vectors (mc_aes_selftest).
+ * Where the processor has the ARMv8 AES instructions the blocks go through them
+ * instead (mc_ce.c): constant-time, and tens of times faster.
+ * Checked at boot against FIPS-197 / OpenSSL vectors (mc_aes_selftest), both ways.
  *
  * Not implemented: XTS, GCM.
  */
@@ -58,6 +60,7 @@ static const uint8_t aes_inv_sbox[256] = {
 struct mc_aes_key {
 	uint32_t rounds;
 	uint8_t  rk[240];           /* (rounds + 1) round keys of 16 bytes */
+	uint8_t  drk[240];          /* the same for AESD: the equivalent inverse cipher's (mc_ce.c) */
 };
 
 static inline uint8_t
@@ -110,6 +113,9 @@ mc_aes_setkey(struct mc_aes_key *k, size_t key_len, const uint8_t *key)
 			k->rk[4 * i + j] = k->rk[4 * (i - nk) + j] ^ t[j];
 		}
 	}
+	if (mc_ce_have) {
+		mc_ce_aes_decrypt_schedule(k->drk, k->rk, k->rounds);
+	}
 	return 0;
 }
 
@@ -118,6 +124,10 @@ mc_aes_encrypt_block(const struct mc_aes_key *k, const uint8_t *in, uint8_t *out
 {
 	uint8_t s[16], t[16];
 
+	if (mc_ce_on) {
+		mc_ce_aes_encrypt(k->rk, k->rounds, in, out, 1);
+		return;
+	}
 	for (int i = 0; i < 16; i++) {
 		s[i] = in[i] ^ k->rk[i];
 	}
@@ -150,6 +160,10 @@ mc_aes_decrypt_block(const struct mc_aes_key *k, const uint8_t *in, uint8_t *out
 {
 	uint8_t s[16], t[16];
 
+	if (mc_ce_on) {
+		mc_ce_aes_decrypt(k->drk, k->rounds, in, out, 1);
+		return;
+	}
 	for (int i = 0; i < 16; i++) {
 		s[i] = in[i] ^ k->rk[16 * k->rounds + i];
 	}
@@ -191,6 +205,10 @@ mc_ecb_encrypt(const ccecb_ctx *ctx, size_t nblocks, const void *in, void *out)
 {
 	const uint8_t *i = in;
 	uint8_t *o = out;
+	if (mc_ce_on) {
+		mc_ce_aes_encrypt(((const struct mc_aes_key *)ctx)->rk, ((const struct mc_aes_key *)ctx)->rounds, i, o, nblocks);
+		return 0;
+	}
 	for (; nblocks > 0; nblocks--, i += 16, o += 16) {
 		mc_aes_encrypt_block((const struct mc_aes_key *)ctx, i, o);
 	}
@@ -202,6 +220,10 @@ mc_ecb_decrypt(const ccecb_ctx *ctx, size_t nblocks, const void *in, void *out)
 {
 	const uint8_t *i = in;
 	uint8_t *o = out;
+	if (mc_ce_on) {
+		mc_ce_aes_decrypt(((const struct mc_aes_key *)ctx)->drk, ((const struct mc_aes_key *)ctx)->rounds, i, o, nblocks);
+		return 0;
+	}
 	for (; nblocks > 0; nblocks--, i += 16, o += 16) {
 		mc_aes_decrypt_block((const struct mc_aes_key *)ctx, i, o);
 	}
