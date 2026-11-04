@@ -329,14 +329,18 @@ static uint32_t gZcHold = 3;
  */
 static uint32_t gRenderRT = 0, gRenderRTMicros = 8000;
 /*
- * Boot-arg fb_swapwait=1 (kern.hakios.fb_swapwait): SwapWait as the iPhone's driver answers it -- not at once, but once the
- * swap it names is on the panel (its flip taken at a refresh, or the frame drawn where the panel reads it), two refreshes
- * at most. backboardd asks it with the number of a swap it handed over: so it does not draw into the surface the panel
- * still reads. 0 by default: at once, as before. fps_log counts the calls either way ("swapwait: ...").
- * backboardd asks twice a swap, for the one it has just handed over and for the one before. Waited for (with fb_zc_hold 3,
- * the flips seen at the refresh), a third of the calls waited 5 to 6 ms, the render thread's frame went from 8.5 to
- * 14.9 ms, and CoreAnimation fell to half its rate more often: 35 refreshes missed in 367 frames of the swipe test
- * against 17 to 24 in 390 without it (3 November). So it is off; the surfaces' use counts say the same thing.
+ * Boot-arg fb_swapwait (kern.hakios.fb_swapwait; 1 when fb_zc scans out the window server's surfaces, 0 otherwise): SwapWait
+ * as the iPhone's driver answers it -- not at once, but once the swap it names is on the panel (its flip taken at a
+ * refresh, or the frame drawn where the panel reads it), two refreshes at most. backboardd asks it with the number of a
+ * swap it handed over, for the one just handed over and for the one before, and draws its next frame when answered, into
+ * the other of its two surfaces: the one the panel still shows until that swap's flip is taken. Answered at once
+ * (fb_swapwait=0), the GPU draws into a surface while the DECON sends it to the panel, a transfer of 9.6 ms of each 16.7 ms
+ * refresh: tearing. A build that sampled the surface on the panel saw it change before the next flip was even asked in
+ * 69 of 1683 frames, and between that flip being asked and taken in 438 more (a sparse sample, so at least that many;
+ * the S9, the USB console's "swipe", 4 November). With fb_swapwait=1, 0 and 4 of 1745, at no cost in pacing: refreshes
+ * missed in 11 s of swiping 27, 28 and 34, against 24, 73 and 84 answered at once. With fb_zc off nothing draws into what
+ * the DECON reads, and it is answered at once. Samsung's driver has the same rule: a window's release fence fires only
+ * once the frame after it has been taken (decon_update_regs(), dpu_9810), and the GPU does not draw into a buffer until then.
  */
 static uint32_t gSwapWait = 0;
 SYSCTL_DECL(_kern_hakios);
@@ -1781,15 +1785,16 @@ IOMobileFramebuffer::scanSetup(void)
 	    carve ? "the DPU driver's, below 4 GB" : "IOKit's");
 	(void) PE_parse_boot_argn("fb_zc_hold", &gZcHold, sizeof(gZcHold));
 	(void) PE_parse_boot_argn("fb_rt", &gRenderRT, sizeof(gRenderRT));
-	(void) PE_parse_boot_argn("fb_swapwait", &gSwapWait, sizeof(gSwapWait));
 	(void) PE_parse_boot_argn("fb_rt_us", &gRenderRTMicros, sizeof(gRenderRTMicros));
 	if (gZeroCopy && want == 2 && carve) {
+		gSwapWait = 1;                  /* (the GPU must not draw into the surface the DECON reads) */
 		MiniIOSurfaceScanout(fWidth, fHeight);
 		scanSay("MiniIOMobileFramebuffer: fb_zc: the window server's display surfaces (%ux%u 'BGRA') made of the scan-out "
 		    "pool from now on, and scanned out as they are\n", fWidth, fHeight);
 	} else if (gZeroCopy) {
 		scanSay("MiniIOMobileFramebuffer: fb_zc: needs fb_dpp=1 and the DPU driver's memory: frames are copied\n");
 	}
+	(void) PE_parse_boot_argn("fb_swapwait", &gSwapWait, sizeof(gSwapWait));
 }
 
 /*
