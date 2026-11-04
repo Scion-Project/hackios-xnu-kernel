@@ -22,7 +22,7 @@
  * mfc_test; through AVPlayer (userland/src/mfc_decoder.c) H.264 and HEVC at 1080p30, the first frame's CRC ffmpeg's, mediaserverd 17% of a core
  * against 63% in software.
  *
- *   registers     0x178D0000, 64 KB; SPI 356 (not used yet: the driver polls RISC2HOST_INT, a sleep of a millisecond at a time)
+ *   registers     0x178D0000, 64 KB; SPI 356 (mfc_irq=1; otherwise the driver polls RISC2HOST_INT, spinning 20 ms and then sleeping a millisecond at a time)
  *   the domain    pd-mfc: the PMU's MFC_CONFIGURATION 0x14064068 [3:0] = 0xF, MFC_STATUS 0x1406406C. need_smc 0x17810204: after
  *                 the power comes, SMC 0x82000410 (1, 0x17810204, 0), the DTZPC restore (as the G3D's, ISPPRE's and AUD's)
  *   its clocks    CMU_TOP 0x1A240000: CLKCMU_MFC_BUS's mux 0x109C [2:0], divider 0x1898 [3:0], gate 0x20A4 (bit 20 manual, 21 on);
@@ -63,6 +63,7 @@
 #include <kern/clock.h>
 #include <kern/locks.h>
 #include <kern/thread.h>
+#include <kern/sched_prim.h>
 #include <machine/machine_routines.h>
 #include <pexpert/pexpert.h>
 #include <IOKit/IOLib.h>
@@ -281,10 +282,68 @@ mfc_alloc(uint32_t bytes)
 
 static uint32_t last_error;
 
+/*
+ * mfc_irq=1: the block's interrupt instead of polling: its handler takes the answer and quiets the block, this waits on a wake-up. The register is still
+ * looked at every 10 ms of waiting, so an interrupt that does not come costs time and is counted, not a dead session.
+ */
+#define MFC_INTID       (356 + 32)      /* the device tree's SPI 356 */
+extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid), void *context);
+static uint32_t irq_wanted;
+static bool irq_on;
+static volatile uint32_t irq_answer, irq_error;
+static uint64_t irq_count, irq_missed;
+
+static void
+mfc_interrupt(void *context __unused, uint32_t intid __unused)
+{
+	if (R(RISC2HOST_INT) != 0) {
+		irq_error = R(ERROR_CODE);
+		irq_answer = R(RISC2HOST_CMD) & R2H_MASK;
+		W(RISC2HOST_CMD, 0);
+		W(RISC2HOST_INT, 0);
+		irq_count++;
+		thread_wakeup((event_t)&irq_answer);
+	}
+}
+
 /* what the RISC answers, or 0 after `ms` */
 static uint32_t
 wait_answer(uint32_t ms)
 {
+	if (irq_on) {
+		uint64_t deadline;
+
+		clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
+		for (;;) {
+			uint32_t answer;
+
+			assert_wait_timeout((event_t)&irq_answer, THREAD_UNINT, 10, NSEC_PER_MSEC);
+			if (irq_answer != 0) {
+				clear_wait(current_thread(), THREAD_AWAKENED);
+			} else {
+				thread_block(THREAD_CONTINUE_NULL);
+			}
+			if (irq_answer != 0) {
+				answer = irq_answer;
+				last_error = irq_error;
+				irq_answer = 0;
+				return answer;
+			}
+			if (R(RISC2HOST_INT) != 0) {
+				irq_missed++;
+				answer = R(RISC2HOST_CMD) & R2H_MASK;
+				last_error = R(ERROR_CODE);
+				W(RISC2HOST_CMD, 0);
+				W(RISC2HOST_INT, 0);
+				/* (the handler may have run between the look and these writes: an answer of its is the same answer) */
+				irq_answer = 0;
+				return answer;
+			}
+			if (mach_absolute_time() > deadline) {
+				return 0;
+			}
+		}
+	}
 	for (uint32_t i = 0; i < ms * 2; i++) {
 		if (R(RISC2HOST_INT) != 0) {
 			uint32_t answer = R(RISC2HOST_CMD) & R2H_MASK;
@@ -868,6 +927,9 @@ mfc_close(dev_t dev __unused, int flags __unused, int type __unused, proc_t p __
 		inst_close();
 	}
 	mfc_opens = 0;
+	if (irq_on) {
+		say("exynos_mfc: interrupts so far: %llu, answers they missed %llu\n", irq_count, irq_missed);
+	}
 	lck_mtx_unlock(mfc_lock);
 	return 0;
 }
@@ -997,6 +1059,13 @@ mfc_thread(void *arg __unused, wait_result_t w __unused)
 		lck_mtx_lock(mfc_lock);
 		self_test();
 		lck_mtx_unlock(mfc_lock);
+	}
+	(void)PE_parse_boot_argn("mfc_irq", &irq_wanted, sizeof(irq_wanted));
+	if (steps >= 4 && !dead && irq_wanted) {
+		kern_return_t attached = gic_v3_spi_attach(MFC_INTID, false, mfc_interrupt, NULL);
+
+		irq_on = attached == KERN_SUCCESS;
+		say("exynos_mfc: the interrupt, %u: %s (%d)\n", MFC_INTID, irq_on ? "attached" : "not attached", attached);
 	}
 	if (steps >= 5 && !dead) {
 		int major = cdevsw_add(-1, &mfc_cdevsw);
