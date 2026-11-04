@@ -1,0 +1,28 @@
+panfrost: pan_cast_and_pack(): the destination in parentheses
+
+The cast applied to the first term only of an expression given as dst. The one such
+call, pan_preload_emit_varying_buffer() on Bifrost:
+
+	pan_cast_and_pack(varying_buffer.cpu + pan_size(ATTRIBUTE_BUFFER), ATTRIBUTE_BUFFER, cfg)
+
+became (struct mali_attribute_buffer_packed *)cpu + 16, which is 0x100 bytes on and not
+16: it wrote its padding descriptor 0xe0 bytes past the end of a 32-byte allocation in the
+batch's descriptor pool, and left the padding it meant to write as whatever was there. So
+each framebuffer preload scribbled on the pool, and one that fell in the last bytes of a
+pool BO wrote into the next page: SIGSEGV or SIGBUS in the window server.
+
+--- a/src/panfrost/lib/genxml/pan_pack_helpers.h
++++ b/src/panfrost/lib/genxml/pan_pack_helpers.h
+@@ -98,10 +98,10 @@
+         }))
+ 
+ #define pan_cast_and_pack(dst, T, name)                                        \
+-   pan_pack((PREFIX2(T, PACKED_T) *)dst, T, name)
++   pan_pack((PREFIX2(T, PACKED_T) *)(dst), T, name)
+ 
+ #define pan_cast_and_pack_nodefaults(dst, T, name)                             \
+-   pan_pack_nodefaults((PREFIX2(T, PACKED_T) *)dst, T, name)
++   pan_pack_nodefaults((PREFIX2(T, PACKED_T) *)(dst), T, name)
+ 
+ #define pan_unpack(src, T, name)                                               \
+    UNUSED struct PREFIX1(T) name;                                              \

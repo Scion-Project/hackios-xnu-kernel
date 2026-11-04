@@ -16,6 +16,10 @@ changes to it; the scripts named fetch the release and put the changes on.
 - the build tools: Apple's [libdispatch](https://github.com/apple-oss-distributions/libdispatch), [libpthread](https://github.com/apple-oss-distributions/libpthread) and [AvailabilityVersions](https://github.com/apple-oss-distributions/AvailabilityVersions), [bootstrap_cmds](https://github.com/markmentovai/bootstrap_cmds), [unifdef](https://github.com/fanf2/unifdef), the [macOS 13.3 SDK](https://github.com/joseluisq/macosx-sdks) and the [iPhoneOS 16.5 SDK](https://github.com/theos/sdks) -- `xnu-deps/setup.sh`
 - not fetched by anything here: the Darwin 16.5 user space, which you lay out from your own IPSW (`sysimage/`), and the phone's own firmware, pulled from its Android (`fw-*`)
 
+## 2026-11-04
+
+- Galaxy S9, S9+, Note9: backboardd no longer dies now and then while the screen is being drawn, which restarted SpringBoard and every app with it (a bad write in Mesa's panfrost: each framebuffer preload wrote its padding descriptor 0x100 bytes on instead of 16, and crashed when that crossed the end of a descriptor pool: `tools/mesa/panfrost-cast-and-pack.patch`)
+
 ## 2026-11-03
 
 - Galaxy S9, S9+, Note9: at 1125 x 2313 the home screen uses the iPhone X's layout (it was falling to the X's Display Zoom one: smaller icons and widgets, the Search pill and dock close to the icons), with its rows fitted to 771 points, and the status bar's time and battery sit further from the panel's corners. `libhakios.sb.dylib`; not yet run on a phone.
