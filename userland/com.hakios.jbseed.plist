@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.hakios.jbseed</string>
+	<!-- the package manager's prefix on a kept /private/var: copied once from the system image, and
+	     prepared at each boot (src/jb_seed.c); without a prefix in the image it ends at once. Once a boot:
+	     no KeepAlive. prep.sh leaves its registrations of applications running aside. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/redwood/bin/jb_seed</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>AbandonProcessGroup</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/dev/console</string>
+	<key>StandardErrorPath</key>
+	<string>/dev/console</string>
+</dict>
+</plist>

@@ -36,6 +36,9 @@
 #                                   loading; bluetoothd started with lib/libhakios.bluetoothd.dylib
 #                                   (src/inject_bluetoothd.c: its iAP PTY non-blocking, so that an accessory offering
 #                                   iAP does not stop its stack). devices/starlte/BLUETOOTH.md, "iOS"
+#                      JB_KEPT_ONLY=1 a prefix in the system image (tools/mk-jb.sh) only for a kept /private/var: copied
+#                                   there once (src/jb_seed.c), with no icon and nothing in memory before that or
+#                                   without one. The installer's.
 #                      EXTRA="..."  more programs for /redwood/bin (files on this machine): one-off
 #                                   diagnostics, which a file given as RC_JOBS can then run
 #                      EXTRA_SHARE="..." directories on this machine to copy whole into /redwood/share,
@@ -274,6 +277,8 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		$DYN -o obj/rwtouch src/rwtouch.c
 		# the kernel's thermal pressure passed on to iOS (src/thermald.c)
 		$DYN -o obj/thermald src/thermald.c
+		# the package manager's prefix on a kept /private/var (src/jb_seed.c, com.hakios.jbseed.plist)
+		$DYN -o obj/jb_seed src/jb_seed.c
 		# the stand-in for keybagd's XPC service: setting, changing and removing a passcode reaches the
 		# kernel's key store through it (src/passcoded.m, com.hakios.passcoded.plist)
 		$DYN -fobjc-arc -framework Foundation -framework IOKit -o obj/passcoded src/passcoded.m
@@ -502,6 +507,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/mali_test ] && cp obj/mali_test root/bin/      # (likewise)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
+	[ -f obj/jb_seed ] && cp obj/jb_seed root/bin/
 	[ -f obj/passcoded ] && cp obj/passcoded root/bin/
 	[ -f obj/cputop ] && cp obj/cputop root/bin/
 	[ -f obj/poster_retry ] && cp obj/poster_retry root/bin/
@@ -693,6 +699,8 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
 	cp com.hakios.demo.plist com.hakios.wifi.plist com.hakios.thermald.plist com.hakios.passcoded.plist root/LaunchDaemons/
+	[ ! -f root/bin/jb_seed ] || cp com.hakios.jbseed.plist root/LaunchDaemons/
+	[ -z "$JB_KEPT_ONLY" ] || : > root/etc/jb.kept-only     # init: no graft on a memory filesystem (src/init.c)
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $DARWIN/rootfs.slt ] && VOLUME="--root-volume $DARWIN/rootfs.slt"
 	[ -n "$DARWIN_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $DARWIN/rootfs root/LaunchDaemons $DARWIN_JOBS
@@ -898,7 +906,7 @@ fi
 # --- the system image -----------------------------------------------------------------------------
 if [ -f $DARWIN/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	{ [ ! -f system.apfs ] || [ obj/stage0 -nt system.apfs ] || [ $DARWIN/system.manifest -nt system.apfs ] ||
-	  [ $DARWIN/cryptex -nt system.apfs ] || [ $DARWIN/cryptex-app -nt system.apfs ] || [ -n "$SYSTEM" ]; }; then
+	  [ $DARWIN/cryptex -nt system.apfs ] || [ $DARWIN/cryptex-app -nt system.apfs ] || [ ../jb/.stamp -nt system.apfs ] || [ -n "$SYSTEM" ]; }; then
 	# what sysimage/select-system.py has chosen since sysimage/rootfs was extracted is not in it, and would not be
 	# in the image either (so it was once with the audio plug-ins and the system's sounds: Darwin found no
 	# speaker and played nothing, though our device was there and the kernel's side worked)
@@ -955,16 +963,22 @@ if [ -f $DARWIN/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		cp ../fw-audio/aw882xx_acf.bin sysroot/fw/
 	fi
 	# the package manager's prefix, when tools/mk-jb.sh has fetched one: the Procursus bootstrap with
-	# Sileo in it, as /jb. It cannot live at /var/jb in the image -- /private/var is a memory
-	# filesystem made afresh at every boot -- so init copies it there (src/init.c, copy_tree).
+	# Sileo in it, as /jb. It cannot live at /var/jb in the image, whose /private/var is another
+	# filesystem: on a kept volume a job copies it there once (src/jb_seed.c), on a memory filesystem
+	# init grafts it there at every boot (src/init.c, graft_tree).
 	if [ -d ../jb/root/var/jb ]; then
 		rm -rf sysroot/jb
 		cp -a ../jb/root/var/jb sysroot/jb
 		# the applications of the prefix are system applications here: LaunchServices builds its
 		# database afresh at every boot by walking /Applications, which is how their icons appear
-		for app in sysroot/jb/Applications/*.app; do
-			[ -d "$app" ] && cp -a "$app" sysroot/Applications/
-		done
+		# (JB_KEPT_ONLY=1, the installer's: not those. The image is shared by phones that may have no kept
+		# /private/var, where a system application of the prefix would be an icon that opens nothing: the prefix
+		# is there only once src/jb_seed.c has copied it, and registers its applications itself, from there.)
+		if [ -z "$JB_KEPT_ONLY" ]; then
+			for app in sysroot/jb/Applications/*.app; do
+				[ -d "$app" ] && cp -a "$app" sysroot/Applications/
+			done
+		fi
 		# Sileo moves, copies and removes files as root with /bin/mv, /bin/cp, /bin/rm, /bin/mkdir and
 		# /bin/chmod -- where a jailbreak with a writable root keeps them -- and Darwin's /bin has df and ps
 		# alone: every one of those spawns failed with nothing said, and the package it had downloaded never
