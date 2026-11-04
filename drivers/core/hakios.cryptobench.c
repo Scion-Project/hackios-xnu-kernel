@@ -23,5 +23,5 @@ crypto_bench SYSCTL_HANDLER_ARGS
 	mc_ce_bench(text, sizeof(text));
 	return SYSCTL_OUT(req, text, strlen(text) + 1);
 }
-SYSCTL_PROC(_kern_hakios, OID_AUTO, crypto_bench, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, NULL, 0, crypto_bench, "A",
+SYSCTL_PROC(_kern_hakios, OID_AUTO, crypto_bench, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, NULL, 0, crypto_bench, "A",
     "the kernel's SHA and AES over a page, with the ARMv8 instructions and in C, MB/s (measured on reading)");

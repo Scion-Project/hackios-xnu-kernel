@@ -37,7 +37,7 @@
 #include "minicrypto.h"
 
 int mc_ce_on;   /* the instructions are in use */
-int mc_ce_have; /* they are here and right: keys get the decrypter's schedule */
+int mc_ce_have; /* they are here and right: keys for decrypting get AESD's schedule */
 
 #if defined(__arm64__)
 
@@ -69,6 +69,7 @@ mc_ce_sha256_di(const struct ccdigest_info *plain)
 	return &sha256_di;
 }
 
+/* decrypt_keys and keys do not overlap */
 void
 mc_ce_aes_decrypt_schedule(uint8_t *decrypt_keys, const uint8_t *keys, uint32_t rounds)
 {
@@ -120,8 +121,7 @@ mc_ce_start(void)
 
 /*
  * The answer of kern.hakios.crypto_bench (drivers/core/hakios.cryptobench.c). While the C is measured mc_ce_on is off for
- * everybody for a moment: harmless, both ways give the same answers, and a key made meanwhile still gets its decrypter's
- * schedule (mc_ce_have).
+ * everybody for a moment: harmless, both ways give the same answers, and what decrypts goes by its own key (mc_aes.c), not by this.
  */
 static uint32_t
 mb_per_s(uint32_t pages, uint64_t begun, mach_timebase_info_data_t base)
