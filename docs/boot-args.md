@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **557 arguments**: 489 read by the kernel, 20 by the loader, 62 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **561 arguments**: 493 read by the kernel, 21 by the loader, 62 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -536,7 +536,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ustacks_threads` | K | `user_exception_trace.c` | `CONFIG_USTACKS_THREADS` |  |
 | `ustacks_tname` | K | `user_exception_trace.c` | `CONFIG_USTACKS_TNAME` |  |
 
-## Loader (11)
+## Loader (12)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -547,12 +547,13 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `extra_ram` | KL | `1512-arm-extra-ram.patch`, `loader.c` | `CONFIG_EXTRA_RAM` |  |
 | `gamut` | L | `loader.c` | `CONFIG_GAMUT` |  |
 | `loader_platform` | L | `loader.c` | `CONFIG_LOADER_PLATFORM` |  |
+| `mfc` | KL | `hakios.exynos_mfc.c`, `loader.c` | `CONFIG_MFC` |  |
 | `recovery` | L | `loader.c` | `CONFIG_RECOVERY` |  |
 | `serial` | L | `loader.c` | `CONFIG_SERIAL` |  |
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 | `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (98)
+## User space (101)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -621,6 +622,9 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `mc_ce` | K | `mc_ce.c` | `CONFIG_MC_CE` |  |
 | `md0` | K | `1101-virtio-disk-as-md0.patch` | `CONFIG_MD0` |  |
 | `metal_profile` | U | `hakiosmetal_air.m` | `CONFIG_METAL_PROFILE` |  |
+| `mfc_fw_part` | K | `hakios.exynos_mfc.c` | `CONFIG_MFC_FW_PART` |  |
+| `mfc_int_khz` | K | `hakios.exynos_mfc.c` | `CONFIG_MFC_INT_KHZ` |  |
+| `mfc_mif_khz` | K | `hakios.exynos_mfc.c` | `CONFIG_MFC_MIF_KHZ` |  |
 | `pan` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_PAN` |  |
 | `passcode_debug` | U | `passcoded.m` | `CONFIG_PASSCODE_DEBUG` |  |
 | `passcode_reset` | K | `MiniAppleKeyStore.cpp` | `CONFIG_PASSCODE_RESET` |  |

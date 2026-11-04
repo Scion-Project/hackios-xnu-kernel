@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 609 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 614 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (54)
+# Drivers built in (55)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -99,6 +99,9 @@ CONFIG_HAKIOS_ADRENO=y
 
 # the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the IOKit ... [hakios.mali.c, hakios.mali.cpp; requires CONFIG_HAKIOS_EXYNOS_ACPM]
 CONFIG_HAKIOS_MALI=y
+
+# the Exynos 9810's hardware video decoder, MFC v10 (mfc=N: 1 a look, 2 the block, 3 the firmware from the phone's ... [hakios.exynos_mfc.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_EXYNOS_MFC is not set
 
 # the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's refresh, ... [hakios.exynos_dpu.c]
 CONFIG_HAKIOS_EXYNOS_DPU=y
@@ -1512,7 +1515,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_USTACKS_TNAME is not set
 
 #
-# Loader (10)
+# Loader (11)
 #
 
 # this core -- the one the loader stays on while the kernel runs on others (bootcpu=) -- given to the kernel
@@ -1533,6 +1536,9 @@ CONFIG_MODEM_AGAIN=y
 # read by loader.c (loader)
 # CONFIG_LOADER_PLATFORM is not set
 
+# s5p_mfc_regs_v10.h, s5p_mfc_cal.c, s5p_mfc_cmd.c, s5p_mfc_inst.c, s5p_mfc_reg.c, s5p_mfc_irq.c; ...
+# CONFIG_MFC is not set
+
 # read by loader.c (loader)
 # CONFIG_RECOVERY is not set
 
@@ -1546,7 +1552,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (96)
+# User space (99)
 #
 
 # read by inject_sb.c (user space)
@@ -1743,6 +1749,15 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakiosmetal_air.m (user space)
 # CONFIG_METAL_PROFILE is not set
+
+# read by hakios.exynos_mfc.c (kernel)
+# CONFIG_MFC_FW_PART is not set
+
+# read by hakios.exynos_mfc.c (kernel)
+# CONFIG_MFC_INT_KHZ is not set
+
+# read by hakios.exynos_mfc.c (kernel)
+# CONFIG_MFC_MIF_KHZ is not set
 
 # read by 1509-m3-diag-and-pan-off.patch (kernel)
 # CONFIG_PAN is not set

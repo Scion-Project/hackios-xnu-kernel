@@ -288,6 +288,10 @@ md0	k
 membench	k
 metal	ku
 metal_profile	u
+mfc	kl
+mfc_fw_part	k
+mfc_int_khz	k
+mfc_mif_khz	k
 mic	k
 mic_adc	k
 mic_input	k

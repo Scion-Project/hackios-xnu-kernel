@@ -4309,6 +4309,8 @@ print_memory_map(void)
 
 static int extra_ram_wanted(const char *cmdline);
 static void extra_ram_claim(void);
+static int extra_ram_keep_mfc;
+static int mfc_wanted(const char *cmdline);
 
 static int
 choose_window(const struct payload_info *pi)
@@ -4386,6 +4388,7 @@ choose_window(const struct payload_info *pi)
 	win_base = best_base;
 	win_size = best_size;
 	if (extra_ram_wanted(pi->cmdline)) {
+		extra_ram_keep_mfc = PLAT->extra_ram == exynos9810_extra_ram && mfc_wanted(pi->cmdline);
 		extra_ram_claim();
 	}
 	return 1;
@@ -4418,6 +4421,24 @@ extra_ram_wanted(const char *cmdline)
 	return want;
 }
 
+/*
+ * mfc= (not 0) among the kernel's arguments: the top of the 0xC0080000-0xCBFFFFFF piece stays out of XNU's RAM on the Exynos 9810, for the
+ * video decoder's 32-bit DMA (sys/hakios.exynos9810_mem.h: EXYNOS9810_MEM_MFC_PA, _END; hakios.exynos_mfc.c)
+ */
+#define EXYNOS9810_MFC_PA 0xC4000000ULL
+#define EXYNOS9810_MFC_END 0xCC000000ULL
+
+static int
+mfc_wanted(const char *cmdline)
+{
+	for (const char *c = cmdline; c != NULL && *c; c++) {
+		if ((c == cmdline || c[-1] == ' ') && starts_with(c, "mfc=") && c[4] != 0 && c[4] != ' ' && !(c[4] == '0' && (c[5] == 0 || c[5] == ' '))) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static void
 extra_ram_claim(void)
 {
@@ -4441,6 +4462,9 @@ extra_ram_claim(void)
 
 			lo = lo < PLAT->extra_ram[w][0] ? PLAT->extra_ram[w][0] : lo;
 			hi = hi > PLAT->extra_ram[w][1] ? PLAT->extra_ram[w][1] : hi;
+			if (extra_ram_keep_mfc && lo < EXYNOS9810_MFC_END && hi > EXYNOS9810_MFC_PA) {
+				hi = lo < EXYNOS9810_MFC_PA ? EXYNOS9810_MFC_PA : lo;
+			}
 			lo = (lo + PAGE_SIZE_MAX - 1) & ~(PAGE_SIZE_MAX - 1);
 			hi &= ~(PAGE_SIZE_MAX - 1);
 			if (hi > lo && hi - lo >= EXTRA_RAM_MIN && n < 64) {

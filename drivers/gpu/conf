@@ -30,6 +30,13 @@ standard iokit/Kernel/hakios.backlight.cpp iokitcpp
 	help    "brightness" reaches them; boot-arg backlight=1 publishes AppleARMBacklight and says what iOS sets on it,
 	help    backlight=2 also takes its brightness
 
+driver EXYNOS_MFC
+	file    bsd/dev/hakios.exynos_mfc.c
+	requires EXYNOS_ACPM
+	default n
+	help    the Exynos 9810's hardware video decoder, MFC v10 (mfc=N: 1 a look, 2 the block, 3 the firmware from the phone's
+	help    VENDOR partition, 4 a test stream decoded at boot and checked against ffmpeg's CRCs, 5 /dev/hakios-mfc). Off by default
+
 driver EXYNOS_DPU
 	file    bsd/dev/hakios.exynos_dpu.c
 	help    the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's

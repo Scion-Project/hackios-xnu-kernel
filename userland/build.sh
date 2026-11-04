@@ -281,6 +281,8 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		$DYN -framework CoreFoundation -lMobileGestalt -o obj/mg_test src/mg_test.c
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/torch_test src/torch_test.c
 		$DYN -O2 -o obj/camera_test src/camera_test.c src/camera_isp.c
+		$DYN -O2 -o obj/mfc_test src/mfc_test.c
+		$DYN -fobjc-arc -framework Foundation -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework QuartzCore -o obj/mfc_avtest src/mfc_avtest.m
 		$DYN -fobjc-arc -framework Foundation -framework AVFoundation -o obj/camera_avtest src/camera_avtest.m
 		# (the microphone as an application records: allowed to, by an entitlement, if ldid is there)
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/record_test src/record_test.c &&
@@ -396,7 +398,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 			-o obj/libhakios.bluetoothd.dylib src/inject_bluetoothd.c
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libhakios.media.dylib -framework CoreFoundation -framework CoreMedia \
 			-framework CoreVideo -framework IOSurface -lobjc \
-			-o obj/libhakios.media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c
+			-o obj/libhakios.media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c src/mfc_decoder.c
 		# the output device of the audio server: a plug-in for CoreAudio's HAL
 		$DYN -bundle -framework CoreFoundation -o obj/HakiosAudio src/audio_plugin.c
 		# the plug-in Metal loads when the kernel names it (boot-arg metal=1): a device, its buffers and the libraries it reads
@@ -517,6 +519,8 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/sound_test ] && cp obj/sound_test root/bin/
 	[ -f obj/torch_test ] && cp obj/torch_test root/bin/
 	[ -f obj/camera_test ] && cp obj/camera_test root/bin/
+	[ -f obj/mfc_test ] && cp obj/mfc_test root/bin/
+	[ -f obj/mfc_avtest ] && cp obj/mfc_avtest root/bin/
 	[ -f obj/camera_avtest ] && cp obj/camera_avtest root/bin/
 	[ -f obj/record_test ] && cp obj/record_test root/bin/
 	# The same binary as the application below, under /redwood/bin, for its --layer mode:
