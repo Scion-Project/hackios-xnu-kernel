@@ -278,6 +278,7 @@ MFC	arg	mfc	Loader	kl	hakios.exynos_mfc.c,loader.c	s5p_mfc_regs_v10.h, s5p_mfc_c
 MFC_FW_PART	arg	mfc_fw_part	User space	k	hakios.exynos_mfc.c	
 MFC_INT_KHZ	arg	mfc_int_khz	User space	k	hakios.exynos_mfc.c	
 MFC_MIF_KHZ	arg	mfc_mif_khz	User space	k	hakios.exynos_mfc.c	
+MFC_ZC	arg	mfc_zc	User space	k	hakios.exynos_mfc.c	
 MIC_ADC	arg	mic_adc	Audio and battery	k	hakios.mic.c	
 MIC_INPUT	arg	mic_input	Audio and battery	k	hakios.mic.c	
 MIC_MAIN	arg	mic_main	Audio and battery	k	hakios.mic.c	
