@@ -434,6 +434,94 @@ hakios_scanout_show(uint64_t phys, uint32_t rowbytes)
 	return 0;
 }
 
+/*
+ * TEST ONLY (boot-arg fb_dpu_diag=1, through fps_log): what the display path says of itself. Sticky error bits and the
+ * bus's clocks once a second; with `sample`, 40 ms of the DECON's and DSIM's status with times, to see a frame's transfer.
+ */
+#define DSIM_PA         0x16080000UL
+#define DSIM_INTSRC     0x50
+#define DSIM_INTMSK     0x54
+#define  DSIM_UNDER_RUN (1u << 19)
+#define  DSIM_FRAME_DONE (1u << 24)
+#define  DSIM_VT        (1u << 13)
+#define DECON_INT_EN    0x040
+#define DECON_INT_PEND  0x04C
+#define DECON_EXTRA_PEND 0x050
+#define  DECON_START_DONE ((1u << 12) | (1u << 13))
+#define GC_IDLE         (1u << 5)
+extern int hakios_acpm_dvfs_get(uint32_t index, uint32_t *khz);
+extern uint64_t mach_absolute_time(void);
+int hakios_scanout_idle(void);
+void hakios_scanout_diag(int sample);
+static vm_offset_t dsim_diag;
+static uint32_t under_runs;
+
+int
+hakios_scanout_idle(void)
+{
+	return probed > 0 && (rd(decon, GLOBAL_CONTROL) & GC_IDLE) != 0;
+}
+
+void
+hakios_scanout_diag(int sample)
+{
+	uint32_t src, pend, extra, i_irq, d_irq, mif = 0, in = 0, dsp = 0;
+
+	if (probed <= 0 || mode == 0) {
+		return;
+	}
+	if (dsim_diag == 0) {
+		dsim_diag = ml_io_map(DSIM_PA, 0x1000);
+	}
+	src = rd(dsim_diag, DSIM_INTSRC);
+	if (src & DSIM_UNDER_RUN) {
+		under_runs++;
+		wr(dsim_diag, DSIM_INTSRC, DSIM_UNDER_RUN);
+	}
+	pend = rd(decon, DECON_INT_PEND);
+	extra = rd(decon, DECON_EXTRA_PEND);
+	i_irq = rd(idma(channel_type), IDMA_IRQ);
+	d_irq = rd(dppc(channel_type), DPP_IRQ);
+	(void) hakios_acpm_dvfs_get(0, &mif);
+	(void) hakios_acpm_dvfs_get(1, &in);
+	(void) hakios_acpm_dvfs_get(8, &dsp);
+	say("dpu_diag: DSIM INTSRC %x mask %x, under-runs seen %u; DECON pending %x extra %x enable %x control %x trigger %x; "
+	    "IDMA irq %x cfg %x, DPP irq %x cfg %x; MIF %u INT %u DISP %u MHz\n", src, rd(dsim_diag, DSIM_INTMSK), under_runs,
+	    pend, extra, rd(decon, DECON_INT_EN), rd(decon, GLOBAL_CONTROL), rd(decon, TRIG_CONTROL), i_irq,
+	    rd(idma(channel_type), IDMA_CFG_ERR), d_irq, rd(dppc(channel_type), DPP_CFG_ERR), mif / 1000, in / 1000, dsp / 1000);
+	if (sample) {
+		enum { most = 28 };
+		uint64_t began = mach_absolute_time(), now;
+		uint32_t seen[most][4], last[4] = { ~0u, ~0u, ~0u, ~0u };
+		unsigned at[most], n = 0;
+
+		wr(decon, DECON_INT_PEND, DECON_START_DONE);
+		wr(dsim_diag, DSIM_INTSRC, DSIM_FRAME_DONE | DSIM_VT);
+		do {
+			uint32_t v[4] = { rd(decon, GLOBAL_CONTROL), rd(decon, DECON_INT_PEND) & DECON_START_DONE,
+				              rd(dsim_diag, DSIM_INTSRC) & (DSIM_FRAME_DONE | DSIM_VT), rd(decon, FRAME_COUNT) };
+			now = mach_absolute_time();
+			if (v[1]) {
+				wr(decon, DECON_INT_PEND, v[1]);
+			}
+			if (v[2]) {
+				wr(dsim_diag, DSIM_INTSRC, v[2]);
+			}
+			if (n < most && (v[0] != last[0] || v[1] != 0 || v[2] != 0 || v[3] != last[3])) {
+				at[n] = (unsigned) ((now - began) / 24);        /* (24 MHz) */
+				for (unsigned k = 0; k < 4; k++) {
+					seen[n][k] = last[k] = v[k];
+				}
+				n++;
+			}
+		} while (now - began < 24000 * 40);
+		for (unsigned k = 0; k < n; k++) {
+			say("dpu_diag: +%u us control %x decon-pend %x dsim %x frames %u\n", at[k], seen[k][0], seen[k][1], seen[k][2],
+			    seen[k][3]);
+		}
+	}
+}
+
 uint32_t
 hakios_scanout_refreshes(void)
 {

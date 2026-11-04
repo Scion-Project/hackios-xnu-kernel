@@ -339,6 +339,23 @@ static uint32_t gRenderRT = 0, gRenderRTMicros = 8000;
  * against 17 to 24 in 390 without it (3 November). So it is off; the surfaces' use counts say the same thing.
  */
 static uint32_t gSwapWait = 0;
+/* TEST ONLY: fb_dpu_diag=1, through fps_log */
+static TUNABLE(uint32_t, gDpuDiag, "fb_dpu_diag", 0);
+static uint32_t gDiagWaitLast, gDiagWaitPending, gDiagWaitBusy, gDiagWaitNotAsked, gDiagAsked, gDiagFrontBefore, gDiagFrontAfter;
+static uint32_t gDiagSum, gDiagSeconds;
+static uint32_t
+diagSum(MiniIOSurface * s)
+{
+	uint32_t sum = 0;
+
+	for (uint32_t y = 16; y < s->info.height; y += s->info.height / 96) {
+		const volatile uint32_t * row = (const volatile uint32_t *) (s->kpixels + s->info.offset + y * s->info.bytesPerRow);
+		for (uint32_t x = 8; x < s->info.width; x += s->info.width / 12) {
+			sum = (sum * 33) ^ row[x];
+		}
+	}
+	return sum;
+}
 SYSCTL_DECL(_kern_hakios);
 SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_zc_hold, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gZcHold, 0,
     "fb_zc: 1 surfaces in use from SwapEnd on, 2 let go at the refresh and not copied when drawn into again (3: both)");
@@ -379,6 +396,8 @@ int hakios_mali_second(uint64_t * busy_ns, uint32_t * jobs, uint64_t * queued_ns
 int hakios_scanout_latched(void);
 void hakios_scanout_detach(const char * why);
 uint32_t hakios_scanout_refreshes(void);
+int hakios_scanout_idle(void);
+void hakios_scanout_diag(int sample);
 void loader_log_line(const char * line);
 void flush_dcache64(addr64_t addr, unsigned count, int phys);
 vm_offset_t ml_vtophys(vm_offset_t vaddr);
@@ -1510,6 +1529,18 @@ IOMobileFramebuffer::swapWait(uint32_t id)
 
 	IOLockLock(fSwapLock);
 	fFpsWaits++;
+	if (gDpuDiag && gZeroCopy && id != 0 && id == fLastSwapID) {
+		gDiagWaitLast++;
+		if ((int32_t) (id - fShownID) > 0) {
+			gDiagWaitPending++;
+			if (id != fFlipID) {
+				gDiagWaitNotAsked++;
+			}
+			if (!hakios_scanout_idle()) {
+				gDiagWaitBusy++;
+			}
+		}
+	}
 	if (id != 0 && id == fLastSwapID) {
 		fFpsWaitLast++;
 	} else if (id != 0 && id + 1 == fLastSwapID) {
@@ -1517,7 +1548,25 @@ IOMobileFramebuffer::swapWait(uint32_t id)
 	} else {
 		fFpsWaitOther++;
 	}
-	if (gSwapWait && id != 0 && (int32_t) (id - fLastSwapID) <= 0) {
+	if (gSwapWait == 2 && gZeroCopy && id != 0 && (int32_t) (id - fLastSwapID) <= 0) {
+		/*
+		 * fb_swapwait=2: the surface swap `id` replaces is free as soon as the DECON will not read it again: the flip off it
+		 * asked for, and the frame the DECON was sending finished. The flip takes effect at the next TE, so nothing reads
+		 * that surface after this, and the render thread does not wait out the rest of the refresh.
+		 */
+		clock_interval_to_deadline(2 * 1000000 / refreshHz(), NSEC_PER_USEC, &deadline);
+		while ((int32_t) (id - fShownID) > 0 && !(id == fFlipID && hakios_scanout_idle())) {
+			uint64_t soon;
+
+			slept = true;
+			if (mach_absolute_time() >= deadline) {
+				fFpsWaitsTimedOut++;
+				break;
+			}
+			clock_interval_to_deadline(FLIP_POLL_US / 4, NSEC_PER_USEC, &soon);
+			(void) IOLockSleepDeadline(fSwapLock, &fShownID, soon, THREAD_UNINT);
+		}
+	} else if (gSwapWait && id != 0 && (int32_t) (id - fLastSwapID) <= 0) {
 		clock_interval_to_deadline(2 * 1000000 / refreshHz(), NSEC_PER_USEC, &deadline);
 		while ((int32_t) (id - fShownID) > 0) {
 			slept = true;
@@ -1904,6 +1953,12 @@ IOMobileFramebuffer::scanLatch(void)
 void
 IOMobileFramebuffer::scanTaken(void)
 {
+	if (gDpuDiag && fZcPending != NULL) {
+		if (fZcFront != NULL && gDiagSum != diagSum(fZcFront)) {
+			gDiagFrontAfter++;              /* written between the flip off it being asked and taken */
+		}
+		gDiagSum = diagSum(fZcPending);
+	}
 	zcLetGo(&fZcFront);
 	markShown(fFlipID);
 	if (fScanPending != NO_BUFFER) {
@@ -2011,6 +2066,12 @@ IOMobileFramebuffer::zcShow(const uint8_t * swap, MiniIOSurface ** surfaces)
 	began = mach_absolute_time();
 	if (!scanLatch()) {
 		return false;
+	}
+	if (gDpuDiag && fZcFront != NULL) {
+		gDiagAsked++;
+		if (gDiagSum != diagSum(fZcFront)) {
+			gDiagFrontBefore++;             /* written while it was the one on the panel, no flip off it asked for */
+		}
 	}
 	s = MiniIOSurfaceCopy(s->sid);          /* (held for as long as it is on the panel) */
 	if (s == NULL) {
@@ -2218,6 +2279,15 @@ IOMobileFramebuffer::fpsLine(void)
 		snprintf(line, sizeof(line), "fps: idle (%u refreshes in the last second; %s)\n", refreshed, mode);
 		loader_log_line(line);
 		IOLog("%s", line);
+	}
+	if (gDpuDiag) {
+		snprintf(line, sizeof(line), "dpu_diag: swapwait for the last swap %u: not yet on the panel %u (flip not yet asked %u, "
+		    "the DECON not idle %u); front surface checked %u, written before the next flip was asked %u, between asked and "
+		    "taken %u\n", gDiagWaitLast, gDiagWaitPending, gDiagWaitNotAsked, gDiagWaitBusy, gDiagAsked, gDiagFrontBefore,
+		    gDiagFrontAfter);
+		loader_log_line(line);
+		gDiagWaitLast = gDiagWaitPending = gDiagWaitNotAsked = gDiagWaitBusy = gDiagAsked = gDiagFrontBefore = gDiagFrontAfter = 0;
+		hakios_scanout_diag(gDiagSeconds++ % 20 == 5);
 	}
 	clock_interval_to_deadline(1, NSEC_PER_SEC, &deadline);
 	thread_call_enter_delayed(fFpsCall, deadline);
