@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 606 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 608 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (53)
+# Drivers built in (54)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -81,6 +81,9 @@ CONFIG_HAKIOS_EXYNOS_SPI=y
 
 # the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the clocks' DVFS ... [hakios.exynos_acpm.c]
 CONFIG_HAKIOS_EXYNOS_ACPM=y
+
+# the Galaxy S9's secure OS asked whether it is there (tee_probe=1: the info fastcall on core 0, read only) and ... [hakios.exynos_tee.c]
+# CONFIG_HAKIOS_EXYNOS_TEE is not set
 
 # the Galaxy S9's big cores (four Exynos M3s): the six CLUSTER1 fields of the PMU that Samsung's kernel writes before ... [hakios.exynos_m3.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
 # CONFIG_HAKIOS_EXYNOS_M3 is not set
@@ -1543,7 +1546,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (94)
+# User space (95)
 #
 
 # read by inject_sb.c (user space)
@@ -1800,6 +1803,9 @@ CONFIG_MODEM_AGAIN=y
 
 # the root is to be the big system image (userland/system.apfs, a RAM boot's md0) on /dev/DEV, read
 # CONFIG_SYSTEM_APFS is not set
+
+# one read-only question: the info fastcall, MC_FC_INFO (0xFF000002) with extended id 0 (MCI_VERSION)
+# CONFIG_TEE_PROBE is not set
 
 # the touch screen first made answers no "PrimaryUsagePage" (tests the remake)
 # CONFIG_TOUCH_FAULT is not set

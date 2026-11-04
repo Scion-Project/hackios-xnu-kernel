@@ -19,6 +19,7 @@ changes to it; the scripts named fetch the release and put the changes on.
 ## 2026-11-04
 
 - Galaxy S9, S9+, Note9: backboardd no longer dies now and then while the screen is being drawn, which restarted SpringBoard and every app with it (a bad write in Mesa's panfrost: each framebuffer preload wrote its padding descriptor 0x100 bytes on instead of 16, and crashed when that crossed the end of a descriptor pool: `tools/mesa/panfrost-cast-and-pack.patch`)
+- Galaxy S9: `tee_probe=N` (off unless asked, in no default line) asks the secure OS whether it is there (1: the info fastcall on core 0, read only) and starts it as far as its own state (2: the init call, the init values, an N-SIQ, the state polled, 30 s at most). On the phone it answers (MCI version 1.6) and reaches state 2, initialised, and stops there. No TA, daemon, storage, RPMB or EFS
 
 ## 2026-11-03
 

@@ -244,6 +244,7 @@ hakios_input_init(void)
 	hakios_max77705_init();
 	hakios_exynos_camera_init();
 	hakios_exynos_iris_init();
+	hakios_exynos_tee_init();
 	hakios_ufs_init();
 	hakios_net_init();
 	hakios_adreno_init();

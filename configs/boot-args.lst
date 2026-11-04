@@ -428,6 +428,7 @@ syssleep	k
 system_apfs	u
 systrace	k
 systrace_name	k
+tee_probe	k
 thermal	k
 thermal_log	k
 thermal_poll	k
