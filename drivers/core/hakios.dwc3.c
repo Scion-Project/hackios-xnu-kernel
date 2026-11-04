@@ -102,6 +102,9 @@
  *   - the link's own state: a host's reset without a SETUP after it, four in a row (or twelve resets without a
  *     configuration), means what a replug nobody saw would mean: the same restart, at most every 2 s, doubling to 30 s,
  *     until the host configures it. A USB controller reset on the host's side comes in by this door or by a plain reset.
+ *     VBUS there with no host saying anything for 5 s: the switch closed again and the restart, five times at most until
+ *     the next change, for a host that has stopped trying (macOS gives a port up after eight failures in some 10 s) and
+ *     only sees a new pull-up; a wall charger has VBUS too and never talks.
  * The restart never waits on VBUS alone: a reading that stops coming puts a stopped link back up after 3 s.
  *
  * Boot-args:
@@ -189,6 +192,7 @@ extern int hakios_fb_scanned(uintptr_t *base, uint32_t *width, uint32_t *height,
 void hakios_usb_gadget_quiesce(void);
 void hakios_usb_gadget_vbus(bool present);
 extern void hakios_max77705_usb_console(const char *arg);       /* hakios.max77705.c (or the stub) */
+extern void hakios_max77705_usb_close(void);                    /* ... the USB-C switch closed again, on its thread */
 
 SYSCTL_DECL(_kern_hakios);
 
@@ -347,13 +351,16 @@ static uint64_t return_asked_at;        /* when it was started (mach_absolute_ti
 #define STORM_NO_CONFIG         12      /* resets with no SET_CONFIGURATION after them */
 #define RESTART_WAIT_FIRST      2       /* seconds between restarts, doubling ... */
 #define RESTART_WAIT_MOST       30      /* ... up to this; back to the first once the host has configured the link */
+#define QUIET_SECONDS           5       /* VBUS there, not configured, not a word from a host for this long ... */
+#define QUIET_RESTARTS          5       /* ... restarts for that, then none until the next change (a wall charger never talks) */
 static int vbus_report = VBUS_UNKNOWN, vbus_seen = VBUS_UNKNOWN;
 static uint64_t vbus_heard_at;          /* mach_absolute_time of the last report */
 static bool link_stopped;               /* VBUS went: transfers ended, the pull-up off, the PHY down */
 static bool watch_storms = true;        /* the console's usb watch */
 static bool want_restart;               /* the console's usb restart */
 static uint32_t want_drop_ms;           /* the console's usb drop */
-static uint32_t resets_no_setup, resets_no_config;
+static uint32_t resets_no_setup, resets_no_config, quiet_restarts;
+static uint64_t last_heard;             /* mach_absolute_time of the host's last reset, or of the last restart */
 static uint32_t restart_wait = RESTART_WAIT_FIRST;
 static uint64_t restart_after;          /* mach_absolute_time before which no storm restarts the link */
 static uint64_t n_restarts;
@@ -612,6 +619,7 @@ apply(const struct usbacm_reply *r)
 			bulk_up();
 			set_state("configured");
 			resets_no_config = 0;
+			quiet_restarts = 0;
 			restart_wait = RESTART_WAIT_FIRST;
 			say("usb: configured (%s speed): /dev/ttyACM* on a Linux host, /dev/cu.usbmodem* on a Mac\n", high_speed ? "high" : "full");
 			hakios_ufs_summary("the USB console is up", 1 | 4);    /* ufs=3 only: what the storage did before the link */
@@ -1084,6 +1092,7 @@ static void
 on_reset(void)
 {
 	n_resets++;
+	last_heard = mach_absolute_time();
 	resets_no_setup++;
 	resets_no_config++;
 	if (say_resets > 0) {
@@ -1863,6 +1872,7 @@ out:
 	set_state(ok ? "waiting" : "stuck");
 	nanoseconds_to_absolutetime((uint64_t)restart_wait * NSEC_PER_SEC, &ns);
 	restart_after = mach_absolute_time() + ns;
+	last_heard = mach_absolute_time();
 	restart_wait = restart_wait * 2 > RESTART_WAIT_MOST ? RESTART_WAIT_MOST : restart_wait * 2;
 	return ok;
 }
@@ -1899,6 +1909,7 @@ link_watch(void)
 		}
 		if (vbus == 1 && was == 0) {
 			say("usb: VBUS back: a cable in\n");
+			quiet_restarts = 0;
 			if (link_stopped || acm.config == 0) {
 				restart_wait = RESTART_WAIT_FIRST;
 				(void)link_restart("VBUS back");
@@ -1931,6 +1942,18 @@ link_watch(void)
 	}
 	if (watch_storms && (resets_no_setup >= STORM_NO_SETUP || resets_no_config >= STORM_NO_CONFIG) && now >= restart_after) {
 		(void)link_restart(resets_no_setup >= STORM_NO_SETUP ? "bus resets, no SETUP" : "bus resets, no configuration");
+		return;
+	}
+	if (watch_storms && vbus_seen == 1 && acm.config == 0 && quiet_restarts < QUIET_RESTARTS && now >= restart_after) {
+		if (last_heard == 0) {
+			last_heard = now;
+		}
+		absolutetime_to_nanoseconds(now - last_heard, &ns);
+		if (ns > (uint64_t)QUIET_SECONDS * NSEC_PER_SEC) {
+			quiet_restarts++;
+			hakios_max77705_usb_close();
+			(void)link_restart("VBUS there, no host talking");
+		}
 	}
 }
 

@@ -110,6 +110,8 @@ void hakios_s6sy761_init(void) {}
 void hakios_max77705_init(void) {}
 void hakios_max77705_usb_console(const char *arg);
 void hakios_max77705_usb_console(__unused const char *arg) {}
+void hakios_max77705_usb_close(void);
+void hakios_max77705_usb_close(void) {}
 #endif
 #ifndef HAKIOS_EXYNOS_CAMERA
 void hakios_exynos_camera_init(void) {}

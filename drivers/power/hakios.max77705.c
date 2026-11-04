@@ -342,7 +342,7 @@ say_state(const char *when, const struct hakios_battery_state *b)
  * The MUIC's firmware, at 0x25, takes opcodes: written to OPCODE_WRITE (0x21) with their data, ended by a write of
  * OPCODE_WRITE_END (0x41); the answer waits at OPCODE_READ (0x51), the opcode first. CONTROL1 is the switch: 0x05 reads it,
  * 0x06 writes it (COM_USB 0x09: D+/D- to the AP's USB; COM_OPEN 0). BC_STATUS (0x08, read as a plain register, which clears
- * nothing) has VBUS in bit 7 and the charger type in bits 1:0 (0 none, 1 a USB host, 2 a dedicated charger, 3 special).
+ * nothing) has VBUS in bit 7 and the charger type in bits 1:0 (0 none, 1 a USB host, 2 a charging host, 3 a wall charger).
  * Samsung's driver opens the switch on every detach and closes it on every attach once the charger type is known, from
  * the chip's interrupts (drivers/muic/max77705-muic.c com_to_usb_ap, com_to_open, max77705_muic_handle_detach;
  * include/linux/ccic/max77705.h:470-485, include/linux/muic/max77705-muic.h:216-223). This driver has no interrupt, so a
@@ -369,6 +369,7 @@ static bool usbsw_running;
 static volatile uint32_t usbsw_test_ms;         /* the console's usb unplug/muic: how long */
 static volatile bool usbsw_test_tell;           /* usb unplug: VBUS taken as gone meanwhile */
 static volatile bool usbsw_want_say;            /* the console's usb */
+static volatile bool usbsw_want_close;          /* hakios_max77705_usb_close */
 
 static uint32_t
 usbsw_write(uint8_t value)
@@ -434,6 +435,11 @@ usbsw_thread(__unused void *arg, __unused wait_result_t result)
 			usbsw_want_say = false;
 			usbsw_say("now");
 		}
+		if (usbsw_want_close) {
+			usbsw_want_close = false;
+			usbsw_say("asked to close it");
+			(void)usbsw_write(COM_USB);
+		}
 		if (test != 0) {
 			bool tell = usbsw_test_tell;
 			uint32_t e;
@@ -483,6 +489,15 @@ usbsw_thread(__unused void *arg, __unused wait_result_t result)
 		}
 		delay_for_interval(VBUS_POLL_MS, NSEC_PER_MSEC);
 	}
+}
+
+/* the gadget driver has VBUS and no host: the switch closed again, as after a cable coming in; never waits */
+void hakios_max77705_usb_close(void);
+
+void
+hakios_max77705_usb_close(void)
+{
+	usbsw_want_close = true;
 }
 
 /* the USB console's usb (the switch and VBUS said), usb unplug MS, usb muic MS: done on the thread above */
