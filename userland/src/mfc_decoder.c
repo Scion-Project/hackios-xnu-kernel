@@ -51,6 +51,7 @@ static const CFStringRef *kVTVideoDecoderList_DecoderID_, *kVTVideoDecoderList_D
 #define ERR_BAD_DATA            (-12909)        /* kVTVideoDecoderBadDataErr */
 #define ERR_MALFUNCTION         (-12911)        /* kVTVideoDecoderMalfunctionErr */
 #define PENDING_MAX             64
+#define RECENT_FRAMES           4
 
 struct mfc_decoder {
 	int fd;
@@ -63,6 +64,8 @@ struct mfc_decoder {
 	bool drained;                   /* the block has finished this instance: the next key frame opens it again */
 	uint32_t width, height;
 	CFTypeRef matrix, primaries, transfer;
+	CVPixelBufferRef recent[RECENT_FRAMES]; /* the last frames emitted, kept a little (see emit) */
+	unsigned recent_at;
 	CVPixelBufferRef spare;
 	uint32_t next_tag;
 	void *pending[PENDING_MAX];     /* frameRefCons not yet shown, by tag % PENDING_MAX */
@@ -237,6 +240,18 @@ emit(struct mfc_decoder *d, uint32_t tag, CVPixelBufferRef image)
 			}
 		}
 		VTDecoderSessionEmitDecodedFrame_(d->session, d->pending[i], noErr, image != NULL ? 0 : 2 /* kVTDecodeInfo_FrameDropped */, image);
+		/*
+		 * The frame crosses to the client's process after this returns, and until the client has it nothing says it is in use: released now, the pool gives it out again and the
+		 * next frame overwrites it. (Seen on the phone, mfc_vt at full speed: frame 0 with frame 1's picture, and one frame of the burst at a drain.) So the last few stay held.
+		 */
+		if (image != NULL) {
+			CVPixelBufferRetain(image);
+			if (d->recent[d->recent_at] != NULL) {
+				CVPixelBufferRelease(d->recent[d->recent_at]);
+			}
+			d->recent[d->recent_at] = image;
+			d->recent_at = (d->recent_at + 1) % RECENT_FRAMES;
+		}
 	}
 }
 
@@ -406,6 +421,11 @@ finalize(void *object)
 
 	if (d->fd >= 0) {
 		close(d->fd);   /* the kernel closes the instance */
+	}
+	for (unsigned i = 0; i < RECENT_FRAMES; i++) {
+		if (d->recent[i] != NULL) {
+			CVPixelBufferRelease(d->recent[i]);
+		}
 	}
 	free(d->header);
 	free(d->stream);

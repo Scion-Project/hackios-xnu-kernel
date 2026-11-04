@@ -22,6 +22,7 @@ function start(){
     const q=v.getVideoPlaybackQuality?v.getVideoPlaybackQuality():{};
     if(n%2==0)say(`page: ${name} t=${v.currentTime.toFixed(2)} ${v.videoWidth}x${v.videoHeight} ready=${v.readyState} paused=${v.paused} frames=${q.totalVideoFrames} dropped=${q.droppedVideoFrames} seeks=${seeks} err=${v.error?v.error.code:0}`);
     if(n==Math.floor(secs/2))say('MFCSHOT '+name.replace(/[^a-z0-9]/gi,'_'));
+    if(mode=='shots'&&n%2==1)say('MFCSHOT '+name.replace(/[^a-z0-9]/gi,'_')+'_'+n);
     if(n>=+secs){clearInterval(tick);i++;start()}
   },1000);
 }
