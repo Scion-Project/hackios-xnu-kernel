@@ -7,10 +7,20 @@
  *                 MC_FC_INIT, the init values, one empty N-SIQ, then MC_FC_INFO and N_YIELD in turn until the state is
  *                 no longer 0, for at most TEE_POLL_S. Then nothing more
  *
+ *   tee_probe=3   that, and one round of the MCP protocol: ask its version, load the one harmless TA on the list below from
+ *                 the phone's own VENDOR partition, open a session, close it. Each return code logged. Then nothing more
+ *   tee_probe=4   that, and Samsung's keymaster TA (...3e) for one test: configure, generate an HMAC key (a blob the TA seals,
+ *                 kept in /private/var/hakios-tee-km-test.blob, or reuse the blob there), HMAC a fixed test value twice with it.
+ *                 Nothing else of that TA: no attestation, nothing of its key installers, nothing that reaches /efs or RPMB
+ *
+ * tee_probe=3 and 4 have not run on a phone: the code was written from the sources below, and built. The hard rules
+ * around them: no RPMB path, nothing written to EFS or any partition but the one test file on /private/var, no TA's
+ * attestation, nothing of keymaster's key installers. Without the boot argument none of it runs.
+ *
  * Every call's four returned registers are logged (after TEE_LOG_CALLS of them, only a call whose answer differs from
  * that call's last). What is NOT here, on purpose: MC_FC_MEM_TRACE (Android's driver makes it first, for its log; nothing
- * in its source makes the init call depend on it), MC_FC_SWAP_CPU, any MCP command, any session, TA or driver, the
- * daemon, the storage proxy, RPMB, EFS. The secure interrupt (SPI 233) is not taken: the state is polled.
+ * in its source makes the init call depend on it), MC_FC_SWAP_CPU, the Rich OS's daemon and anything it serves, the
+ * storage proxy, RPMB, EFS, any TA but the list's. The secure interrupt (SPI 233) is not taken: everything is polled.
  *
  * Android's driver asks MC_FC_INFO only after its init call, so what it does before is what tee_probe=1 was for: on
  * phone 2 on 4 November the answer was x0=0xff000002 x1=0 x2=0 x3=0x10006 after 28 us. tee_probe=2 then, on the same
@@ -43,14 +53,44 @@
  * x3 (the MCP buffer's offset << 16) | its length; back x1 the return code, x2 flags (bit 0 LPAE). The init values
  * follow it, as flags TIME | IWP, irq the S-SIQ's GIC number (SPI 233 + 32).
  *
+ * tee_probe=3, what the MCP round is (mci/mcimcp.h for the numbers, mcp.c, nq.c, scheduler.c and mmu.c for how):
+ *   a command   written over the init values, 144 bytes at most; then a notification (session 0, payload 0) in the queue to
+ *               the secure OS, an N-SIQ, and the secure OS is given time until a notification for session 0 comes back in
+ *               the other queue. The answer is in the same place: { command | 1 << 31, result, ... }
+ *   its time    while MCP's flags say "not idle": N_YIELD, and every fifth time an N-SIQ, as Android's scheduler. While
+ *               "idle": a sleep of 1 ms and an N-SIQ, because the interrupt that would say it wants time is not taken here
+ *   a buffer    one 4 KB page table of at most 256 64-bit entries (WSM_L2; the init call's x2 bit 0, LPAE, says 64-bit,
+ *               and the phone answered 1): 4 KB pages, normal cacheable inner-shareable, non-secure, execute-never,
+ *               read-only for the TA's own image. A table is enough for 1 MB; a larger TA is refused here
+ *   open        the TA's file in such a buffer, a TCI in another, the login word "GPA1" with an all-zero (public) identity
+ *   not done    any TA's command; MC_FC_SWAP_CPU; the secure OS's halted state is read and logged, never a panic of ours:
+ *               the driver simply stops, as a boot with no TEE would
+ * The list of what may be loaded is in this file, tee_allowed[]; it is checked against the file's own MCLF header too.
+ *
+ * tee_probe=4, what keymaster's client side is (facts from disassembling the phone's libkeymaster_helper_vendor.so, for
+ * interoperability on the owner's own phone; none of it copied):
+ *   the session  TA opened from its bytes; a 16-byte TCI, two 0x9008-byte buffers mapped into it (MCP's MAP); the TCI is
+ *                { in's secure address, out's secure address, 0, 0 }, u32s. A request: notify the session, wait for its notification
+ *   a buffer     { length, u64 } then DER. In: KM_INDATA, out: KM_OUTDATA
+ *   KM_INDATA    SEQUENCE { ver 2, km_ver 20, cmd, pid, [0] int0, [1] long0, [2] bin0, [3] bin1, [4] key, [8] SET OF param }, each [n]
+ *                EXPLICIT OPTIONAL; a param is SEQUENCE { tag, [0] i, [1] b }
+ *   KM_OUTDATA   SEQUENCE { ver, cmd, pid, err, [0] int0, [1] long0, [2] bin0, [3] bin1, [4] SET OF param, [5] log }
+ *   cmds         2 generate, 8 begin, 9 update, 10 finish, 15 configure. Tags and values as Android's keymaster
+ *   configure    takes the OS version and patch level. The real HAL also sends the file /vendor/tima_measurement_info,
+ *                on user builds only. The TA then goes on to an ICCC trustboot initialisation that writes a flag through
+ *                Iccc_phys_write; without the file it logs "Cannot get tima measurement file" and goes on (seen in the TA's
+ *                code, not on a phone). So it is not sent here
+ *
  * Sources for the facts (Samsung's kernel, Scion-Project/android_kernel_samsung_exynos9810 at e5906667068e, GPL, read
  * for these facts, not one line copied): drivers/gud/gud-exynos9810/MobiCoreDriver: mci/mcifc.h, mci/mcinq.h,
- * mci/mcimcp.h, mci/mcitime.h, mci/mciiwp.h (the numbers and the layout), fastcall.c (the registers; the worker on core
- * 0), nq.c (the block's order, the sequence, the poll), main.c (what comes first), platform.h (the core's MPIDR);
+ * mci/mcimcp.h, mci/mcitime.h, mci/mciiwp.h, mci/mcloadformat.h (the numbers and the layout), fastcall.c (the registers;
+ * the worker on core 0), nq.c (the block's order, the sequence, the poll), main.c (what comes first), platform.h (the
+ * core's MPIDR), mcp.c, scheduler.c, mmu.c (see above);
  * arch/arm64/boot/dts/exynos/exynos9810-starlte_eur_open_26.dts (the interrupt).
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
+#include <libkern/OSByteOrder.h>
 #include <libkern/libkern.h>
 #include <mach/mach_time.h>
 #include <mach/mach_types.h>
@@ -59,7 +99,9 @@
 #include <stdarg.h>
 #include <sys/hakios.input.h>
 #include <sys/param.h>
+#include <sys/fcntl.h>
 #include <sys/systm.h>
+#include <sys/vnode.h>
 
 extern void loader_log_line(const char *line);
 extern int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
@@ -69,6 +111,9 @@ extern void *cpu_to_processor(int cpu);
 extern void *thread_bind(void *processor);
 extern int thread_block(void *continuation);
 extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
+extern void *IOMallocAligned(size_t size, size_t alignment);
+extern void IOFreeAligned(void *address, size_t size);
+extern vfs_context_t vfs_context_kernel(void);
 
 #define MC_FC_INIT              0xFF000001ull
 #define MC_FC_INFO              0xFF000002ull
@@ -103,7 +148,77 @@ extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
 _Static_assert(MCI_SESSIONS == MCI_MCP + MCI_MCP_LEN && MCI_TIME == MCI_SESSIONS + MCI_SESSIONS_LEN &&
     MCI_TIME + MCI_TIME_LEN <= MCI_BYTES, "the MCI block's layout");
 
+/* MCP (tee_probe=3) */
+#define MCI_FLAGS_SCHEDULE      MCI_MCP                 /* MCP's flags: 0 idle, 1 not */
+#define MCI_MESSAGE             MCI_INIT_VALUES         /* a command and its answer, in place of the init values */
+#define MCI_MESSAGE_LEN         (MCI_MCP_LEN - 16)
+#define NQ_HEADER               12u                     /* { write count, read count, size } */
+#define NQ_ELEMENT              8u                      /* { session, payload } */
+#define SID_MCP                 0u
+#define MCP_RESPONSE            (1u << 31)
+#define MCP_OPEN_SESSION        1u
+#define MCP_CLOSE_SESSION       3u
+#define MCP_GET_VERSION         9u
+#define MCP_MAP                 4u
+#define WSM_L2                  2u
+#define GP_LOGIN_MAGIC          0x47504131u             /* "GPA1" */
+#define MCP_WAIT_S              30                      /* an answer not there after this: stop asking */
+#define SCHEDULE_NSIQ_EVERY     5                       /* N_YIELDs to one N-SIQ, as Android's */
+#define PTE_LEN                 4096u
+#define L2_ENTRIES              256u
+#define WSM_MAX                 (L2_ENTRIES * PTE_LEN)
+#define PTE_RW                  (((uint64_t)1 << 54) /* XN */ | (1u << 10) /* AF */ | (3u << 8) /* inner shareable */ | \
+	                        (1u << 6) /* any level */ | (1u << 5) /* NS */ | (1u << 3) | (1u << 2) /* cacheable */ | 3u /* page */)
+#define PTE_RO                  (PTE_RW | (1u << 7))
+#define MCLF_SERVICE_SYSTEM     3u
+/* The TAs this file may load: unmodified, from the phone's own firmware, nothing else. */
+static const struct {
+	const char *path;
+	uint8_t uuid[16];
+	uint32_t tci_length;
+	const char *what;
+} tee_allowed[] = {
+#define TA_BIO 0
+	{ "/app/mcRegistry/ffffffff000000000000000000000060.tlbin",
+	  { 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x60 }, PTE_LEN, "the bio submodule, opened and closed" },
+#define TA_KEYMASTER 1
+	{ "/app/mcRegistry/ffffffff00000000000000000000003e.tlbin",
+	  { 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x3e }, 16, "Samsung's keymaster" },
+};
+#define KM_BUFFER               0x9008u                 /* the helper's shared_mem_get_size */
+#define KM_DER_MAX              (KM_BUFFER - 8)
+#define KM_BLOB_MAX             4096u
+#define KM_TEST_BLOB            "/private/var/hakios-tee-km-test.blob"
+#define KM_CMD_GENERATE         2
+#define KM_CMD_BEGIN            8
+#define KM_CMD_UPDATE           9
+#define KM_CMD_FINISH           10
+#define KM_CMD_CONFIGURE        15
+#define TAG_PURPOSE             0x20000001u
+#define TAG_ALGORITHM           0x10000002u
+#define TAG_KEY_SIZE            0x30000003u
+#define TAG_DIGEST              0x20000005u
+#define TAG_MIN_MAC_LENGTH      0x30000008u
+#define TAG_NO_AUTH_REQUIRED    0x700001F7u
+#define TAG_CREATION_DATETIME   0x600002BDu
+#define TAG_OS_VERSION          0x300002C1u
+#define TAG_OS_PATCHLEVEL       0x300002C2u
+#define TAG_MAC_LENGTH          0x300003EBu
+#define KM_ALGORITHM_HMAC       128
+#define KM_DIGEST_SHA256        4
+#define KM_PURPOSE_SIGN         2
+/* The phone's firmware's values, G960FXXUHFVG4: Android 10, July 2022 (what the TA says of a mismatch is to be seen) */
+#define KM_OS_VERSION           100000
+#define KM_OS_PATCHLEVEL        202207
+
 static uint8_t mci[MCI_BYTES] __attribute__((aligned(16384)));
+static uint64_t table_data[PTE_LEN / sizeof(uint64_t)] __attribute__((aligned(4096)));
+static uint64_t table_tci[PTE_LEN / sizeof(uint64_t)] __attribute__((aligned(4096)));
+static uint64_t table_in[PTE_LEN / sizeof(uint64_t)] __attribute__((aligned(4096)));
+static uint64_t table_out[PTE_LEN / sizeof(uint64_t)] __attribute__((aligned(4096)));
+static uint8_t tci[PTE_LEN] __attribute__((aligned(4096)));
+static uint8_t km_in[KM_BUFFER] __attribute__((aligned(4096)));
+static uint8_t km_out[KM_BUFFER] __attribute__((aligned(4096)));
 
 static volatile uint32_t tee_finished;
 static volatile uint64_t call_began;            /* mach_absolute_time of the call under way, 0: none */
@@ -271,11 +386,12 @@ halted(void)
 }
 
 /* tee_probe=2: on core 0, the secure OS said state 0. The block, the init call, the init values, an N-SIQ, the poll. */
-static void
+static bool
 start(void)
 {
 	uint64_t base = kvtophys((vm_offset_t)mci), answer[4], last_info[4] = { 0 }, last_yield[4] = { 0 };
 	uint64_t deadline, span, yields = 0, looks = 0;
+	bool initialised = false;
 	clock_sec_t seconds;
 	clock_nsec_t nanos;
 
@@ -283,12 +399,12 @@ start(void)
 		if (kvtophys((vm_offset_t)mci + offset) != base + offset) {
 			say("tee_probe: the block is not contiguous at +%u (%#llx from %#llx): NO INIT\n", offset,
 			    kvtophys((vm_offset_t)mci + offset), base);
-			return;
+			return false;
 		}
 	}
 	if (base == 0 || (base & 0x3fff) != 0 || (base >> 48) != 0) {
 		say("tee_probe: the block at %#llx will not do: NO INIT\n", base);
-		return;
+		return false;
 	}
 	put32(8, MCI_QUEUE_ELEMENTS);
 	put32(MCI_QUEUE_RX + 8, MCI_QUEUE_ELEMENTS);
@@ -300,11 +416,11 @@ start(void)
 
 	if (!call("INIT", MC_FC_INIT, base & 0xffffffffull, ((base >> 32) << 16) | MCI_QUEUES_LEN,
 	    ((uint64_t)MCI_MCP << 16) | MCI_MCP_LEN, answer, NULL)) {
-		return;
+		return false;
 	}
 	if (answer[1] != 0) {
 		say("tee_probe: INIT returned code %#llx: stopping\n", answer[1]);
-		return;
+		return false;
 	}
 	put32(MCI_INIT_VALUES, IV_FLAG_TIME | IV_FLAG_IWP);
 	put32(MCI_INIT_VALUES + 4, SSIQ_GIC_NUMBER);
@@ -315,11 +431,11 @@ start(void)
 	__asm__ volatile ("dsb sy" ::: "memory");
 
 	if (!call("N_SIQ", MC_SMC_N_SIQ, 0, 0, 0, answer, NULL)) {
-		return;
+		return false;
 	}
 	if (answer[1] != 0) {
 		say("tee_probe: N_SIQ returned code %#llx: stopping\n", answer[1]);
-		return;
+		return false;
 	}
 
 	nanoseconds_to_absolutetime((uint64_t)TEE_POLL_S * NSEC_PER_SEC, &span);
@@ -328,7 +444,7 @@ start(void)
 		uint64_t state;
 
 		if (!call("INFO", MC_FC_INFO, EXT_MCI_VERSION, 0, 0, answer, last_info)) {
-			return;
+			return false;
 		}
 		looks++;
 		state = answer[2] & 0xffffffffull;
@@ -338,6 +454,7 @@ start(void)
 		}
 		if (state == STATE_INITIALIZED) {
 			say("tee_probe: state 2 (initialised) after %llu looks and %llu yields; MCI %#llx\n", looks, yields, answer[3]);
+			initialised = true;
 			break;
 		}
 		if (state != STATE_NOT_INITIALIZED) {
@@ -353,7 +470,7 @@ start(void)
 		}
 		for (int i = 0; i < TEE_YIELDS; i++) {
 			if (!call("N_YIELD", MC_SMC_N_YIELD, 0, 0, 0, answer, last_yield)) {
-				return;
+				return false;
 			}
 			yields++;
 			if (answer[1] != 0) {
@@ -370,6 +487,733 @@ out:
 	    get32(MCI_QUEUE_RX + 8), get32(MCI_MCP), get32(MCI_MCP + 4), (int)get32(MCI_MCP + 8), get32(MCI_MCP + 12),
 	    get32(MCI_INIT_VALUES), get32(MCI_INIT_VALUES + 4), get32(MCI_INIT_VALUES + 8), get32(MCI_INIT_VALUES + 12),
 	    get32(MCI_INIT_VALUES + 16), get32(MCI_INIT_VALUES + 20));
+	return initialised;
+}
+
+/* ---- tee_probe=3: one round of MCP ------------------------------------------------------------------------------ */
+
+static void
+time_now(void)
+{
+	clock_sec_t seconds;
+	clock_nsec_t nanos;
+	uint64_t ns;
+
+	clock_get_calendar_nanotime(&seconds, &nanos);
+	put64(MCI_TIME, (uint64_t)seconds);
+	put64(MCI_TIME + 8, (uint64_t)nanos);
+	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+	put64(MCI_TIME + 16, ns / NSEC_PER_SEC);
+	put64(MCI_TIME + 24, ns % NSEC_PER_SEC);
+}
+
+/* The secure OS gets time until a notification for `session` has come back: its payload in *payload. False: none came. */
+static bool
+wait_notification(uint32_t session, uint32_t *payload)
+{
+	static uint64_t last_yield[4], last_siq[4];
+	uint64_t answer[4], deadline, span;
+	uint32_t calls = 0;
+	int slice = SCHEDULE_NSIQ_EVERY;
+
+	nanoseconds_to_absolutetime((uint64_t)MCP_WAIT_S * NSEC_PER_SEC, &span);
+	deadline = mach_absolute_time() + span;
+	for (;;) {
+		bool idle, yield, got = false;
+
+		__asm__ volatile ("dsb sy" ::: "memory");
+		while (get32(MCI_QUEUE_RX) != get32(MCI_QUEUE_RX + 4)) {
+			uint32_t read = get32(MCI_QUEUE_RX + 4);
+			uint32_t at = MCI_QUEUE_RX + NQ_HEADER + (read % MCI_QUEUE_ELEMENTS) * NQ_ELEMENT;
+			uint32_t from = get32(at), value = get32(at + 4);
+
+			__asm__ volatile ("dmb sy" ::: "memory");
+			put32(MCI_QUEUE_RX + 4, read + 1);
+			__asm__ volatile ("dsb sy" ::: "memory");
+			say("tee_probe: notification from session %#x, payload %#x\n", from, value);
+			if (from == session && !got) {
+				*payload = value;
+				got = true;
+			}
+		}
+		if (got) {
+			return true;
+		}
+		if (mach_absolute_time() > deadline) {
+			say("tee_probe: no notification for session %#x after %d s, %u calls\n", session, MCP_WAIT_S, calls);
+			return false;
+		}
+		time_now();
+		idle = get32(MCI_FLAGS_SCHEDULE) == 0;
+		yield = !idle && slice-- > 0;
+		if (idle) {
+			IOSleep(1);
+		}
+		if (yield) {
+			if (!call("N_YIELD", MC_SMC_N_YIELD, 0, 0, 0, answer, last_yield)) {
+				return false;
+			}
+		} else {
+			slice = SCHEDULE_NSIQ_EVERY;
+			if (!call("N_SIQ", MC_SMC_N_SIQ, 0, 0, 0, answer, last_siq)) {
+				return false;
+			}
+		}
+		calls++;
+		if (answer[1] != 0) {
+			say("tee_probe: the secure OS's scheduling call returned code %#llx: stopping\n", answer[1]);
+			return false;
+		}
+	}
+}
+
+/* Queue a notification to the secure OS, as Android's: the element, a barrier, the counter. */
+static bool
+notify(uint32_t session, uint32_t payload)
+{
+	uint32_t write = get32(0);
+	uint32_t at = NQ_HEADER + (write % MCI_QUEUE_ELEMENTS) * NQ_ELEMENT;
+
+	if (write - get32(4) >= MCI_QUEUE_ELEMENTS) {
+		say("tee_probe: the queue to the secure OS is full\n");
+		return false;
+	}
+	put32(at, session);
+	put32(at + 4, payload);
+	__asm__ volatile ("dmb sy" ::: "memory");
+	put32(0, write + 1);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	return true;
+}
+
+/* A command is at MCI_MESSAGE. The answer's result in *result. False: nothing usable came back. */
+static bool
+mcp_command(const char *name, uint32_t id, uint32_t *result)
+{
+	uint64_t answer[4];
+	uint32_t payload = 0;
+
+	put32(MCI_MESSAGE, id);
+	if (!notify(SID_MCP, 0) || !call(name, MC_SMC_N_SIQ, 0, 0, 0, answer, NULL) || answer[1] != 0 ||
+	    !wait_notification(SID_MCP, &payload)) {
+		say("tee_probe: %s: no answer\n", name);
+		return false;
+	}
+	if (get32(MCI_MESSAGE) != (id | MCP_RESPONSE)) {
+		say("tee_probe: %s: the answer's id is %#x, not %#x\n", name, get32(MCI_MESSAGE), id | MCP_RESPONSE);
+		return false;
+	}
+	*result = get32(MCI_MESSAGE + 4);
+	say("tee_probe: %s: MCP result %u\n", name, *result);
+	return true;
+}
+
+static void
+message_clear(void)
+{
+	for (uint32_t i = 0; i < MCI_MESSAGE_LEN; i += 4) {
+		put32(MCI_MESSAGE + i, 0);
+	}
+}
+
+/* One table for a buffer in wired kernel memory; its physical address, 0 if it will not do. */
+static uint64_t
+wsm_table(uint64_t *table, const void *buffer, uint32_t length, uint64_t flags)
+{
+	vm_offset_t va = (vm_offset_t)buffer & ~(vm_offset_t)(PTE_LEN - 1);
+	uint32_t offset = (uint32_t)((vm_offset_t)buffer & (PTE_LEN - 1));
+	uint32_t pages = (offset + length + PTE_LEN - 1) / PTE_LEN;
+
+	if (length == 0 || pages > L2_ENTRIES) {
+		return 0;
+	}
+	bzero(table, PTE_LEN);
+	for (uint32_t i = 0; i < pages; i++) {
+		uint64_t pa = kvtophys(va + (vm_offset_t)i * PTE_LEN);
+
+		if (pa == 0 || (pa & (PTE_LEN - 1)) != 0) {
+			return 0;
+		}
+		table[i] = pa | flags;
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+	return kvtophys((vm_offset_t)table);
+}
+
+/* The file from the phone's own firmware, checked against the list; a wired copy in *copy, *length. */
+static bool
+ta_read(unsigned int which, uint8_t **copy, uint32_t *length)
+{
+	static uint8_t probe[4096];
+	const uint8_t *data = NULL;
+	uint64_t size = 0, got = 0;
+	int waited;
+
+	for (waited = 0; waited < 120 && hakios_ufs_read_partition("VENDOR", 0, probe, sizeof(probe), &got) != 0; waited++) {
+		IOSleep(500);
+	}
+	if (hakios_partition_file("VENDOR", "/vendor", tee_allowed[which].path, WSM_MAX, &data, &size) != 0 || data == NULL) {
+		say("tee_probe: %s is not on the phone's VENDOR partition (or is larger than %u): no load\n", tee_allowed[which].path, WSM_MAX);
+		return false;
+	}
+	/* an MCLF header: "MCLF", version, flags, memory type, service type, instances, uuid */
+	if (size < 0x28 + 16 || memcmp(data, "MCLF", 4) != 0 || memcmp(data + 0x18, tee_allowed[which].uuid, 16) != 0 ||
+	    *(const uint32_t *)(const void *)(data + 0x10) != MCLF_SERVICE_SYSTEM) {
+		say("tee_probe: %s: its header is not what the list says: no load\n", tee_allowed[which].path);
+		return false;
+	}
+	*copy = IOMallocAligned((size_t)size, PTE_LEN);
+	if (*copy == NULL) {
+		say("tee_probe: no memory for %llu bytes of TA\n", size);
+		return false;
+	}
+	memcpy(*copy, data, (size_t)size);
+	*length = (uint32_t)size;
+	return true;
+}
+
+/* Open a session to a TA of the list. *ta, *ta_length: its copy, for session_close. 0: no session. */
+static uint32_t
+session_open(unsigned int which, uint8_t **ta, uint32_t *ta_length)
+{
+	uint32_t result = 0, session;
+	uint64_t ta_table, tci_table;
+
+	if (!ta_read(which, ta, ta_length)) {
+		return 0;
+	}
+	ta_table = wsm_table(table_data, *ta, *ta_length, PTE_RO);
+	tci_table = wsm_table(table_tci, tci, tee_allowed[which].tci_length, PTE_RW);
+	if (ta_table == 0 || tci_table == 0) {
+		say("tee_probe: the buffers' tables will not do (%#llx, %#llx): no load\n", ta_table, tci_table);
+		IOFreeAligned(*ta, *ta_length);
+		return 0;
+	}
+	say("tee_probe: %s, %u bytes, version word %#x, %s\n", tee_allowed[which].path, *ta_length,
+	    *(const uint32_t *)(const void *)(*ta + 4), tee_allowed[which].what);
+	message_clear();
+	/* { id, uuid 4..19, -, tci's table 24, data's table 32, tci's offset 40, length 44, type 48, data's type 52, offset 56, length 60, login 64.., -  } */
+	for (uint32_t i = 0; i < 16; i += 4) {
+		put32(MCI_MESSAGE + 4 + i, *(const uint32_t *)(const void *)(*ta + 0x18 + i));
+	}
+	put64(MCI_MESSAGE + 24, tci_table);
+	put64(MCI_MESSAGE + 32, ta_table);
+	put32(MCI_MESSAGE + 44, tee_allowed[which].tci_length);
+	put32(MCI_MESSAGE + 48, WSM_L2);
+	put32(MCI_MESSAGE + 52, WSM_L2);
+	put32(MCI_MESSAGE + 60, *ta_length);
+	put32(MCI_MESSAGE + 64, GP_LOGIN_MAGIC);
+	if (!mcp_command("OPEN_SESSION", MCP_OPEN_SESSION, &result)) {
+		/* the secure OS may hold the buffers now: they are not freed; the run ends in a restart */
+		return 0;
+	}
+	session = get32(MCI_MESSAGE + 8);
+	say("tee_probe: OPEN_SESSION: result %u, session %#x\n", result, session);
+	if (result != 0 || session == 0) {
+		IOFreeAligned(*ta, *ta_length);
+		return 0;
+	}
+	return session;
+}
+
+static void
+session_close(uint32_t session, uint8_t *ta, uint32_t ta_length)
+{
+	uint32_t result = 0;
+
+	for (int tries = 0; tries < 10; tries++) {
+		message_clear();
+		put32(MCI_MESSAGE + 4, session);
+		if (!mcp_command("CLOSE_SESSION", MCP_CLOSE_SESSION, &result)) {
+			return;
+		}
+		if (result != 28) {     /* MC_MCP_RET_ERR_CLOSE_TASK_FAILED: try again */
+			break;
+		}
+		IOSleep(10);
+	}
+	say("tee_probe: CLOSE_SESSION: result %u\n", result);
+	if (result == 0) {
+		IOFreeAligned(ta, ta_length);
+	}
+}
+
+/* tee_probe=3, state 2 on core 0. The version, and a TA that is opened and closed. */
+static bool
+mcp_round(void)
+{
+	uint8_t *ta = NULL;
+	uint32_t ta_length = 0, result = 0, session, payload;
+	char product[65];
+
+	time_now();
+	message_clear();
+	if (!mcp_command("GET_VERSION", MCP_GET_VERSION, &result)) {
+		return false;
+	}
+	for (uint32_t i = 0; i < 64; i++) {
+		product[i] = (char)mci[MCI_MESSAGE + 8 + i];
+	}
+	product[64] = 0;
+	say("tee_probe: product \"%s\", MCI %#x\n", product, get32(MCI_MESSAGE + 8 + 64));
+	if (result != 0) {
+		return false;
+	}
+	session = session_open(TA_BIO, &ta, &ta_length);
+	if (session == 0) {
+		return false;
+	}
+	/* no command to it: time for it to start, and anything it says (a TA's exit comes as a payload) */
+	if (wait_notification(session, &payload)) {
+		say("tee_probe: the TA's session said %#x\n", payload);
+	}
+	session_close(session, ta, ta_length);
+	return true;
+}
+
+/* ---- tee_probe=4: keymaster, one test ---------------------------------------------------------------------------- */
+
+struct der {
+	uint8_t *p;
+	uint32_t n;
+	bool bad;
+};
+
+static void
+der_raw(struct der *d, const void *data, uint32_t length)
+{
+	if (d->bad || length > KM_DER_MAX - d->n) {
+		d->bad = true;
+		return;
+	}
+	memmove(d->p + d->n, data, length);
+	d->n += length;
+}
+
+/* What has been written since `start` becomes the contents of a `tag`. */
+static void
+der_wrap(struct der *d, uint32_t start, uint8_t tag)
+{
+	uint8_t header[5];
+	uint32_t length = d->n - start, h = 0;
+
+	if (d->bad) {
+		return;
+	}
+	header[h++] = tag;
+	if (length < 0x80) {
+		header[h++] = (uint8_t)length;
+	} else if (length < 0x100) {
+		header[h++] = 0x81;
+		header[h++] = (uint8_t)length;
+	} else {
+		header[h++] = 0x82;
+		header[h++] = (uint8_t)(length >> 8);
+		header[h++] = (uint8_t)length;
+	}
+	if (h > KM_DER_MAX - d->n) {
+		d->bad = true;
+		return;
+	}
+	memmove(d->p + start + h, d->p + start, length);
+	memcpy(d->p + start, header, h);
+	d->n += h;
+}
+
+static void
+der_integer(struct der *d, uint64_t value)
+{
+	uint8_t bytes[9];
+	int first = 0;
+
+	bytes[0] = 0;
+	for (int i = 0; i < 8; i++) {
+		bytes[8 - i] = (uint8_t)(value >> (8 * i));
+	}
+	while (first < 8 && bytes[first] == 0 && (bytes[first + 1] & 0x80) == 0) {
+		first++;
+	}
+	uint32_t start = d->n;
+	der_raw(d, bytes + first, (uint32_t)(9 - first));
+	der_wrap(d, start, 0x02);
+}
+
+static void
+der_explicit_integer(struct der *d, uint8_t number, uint64_t value)
+{
+	uint32_t start = d->n;
+
+	der_integer(d, value);
+	der_wrap(d, start, 0xA0 | number);
+}
+
+static void
+der_explicit_octets(struct der *d, uint8_t number, const uint8_t *data, uint32_t length)
+{
+	uint32_t start = d->n, inner;
+
+	inner = d->n;
+	der_raw(d, data, length);
+	der_wrap(d, inner, 0x04);
+	der_wrap(d, start, 0xA0 | number);
+}
+
+static void
+der_param(struct der *d, uint32_t tag, uint64_t value)
+{
+	uint32_t start = d->n;
+
+	der_integer(d, tag);
+	der_explicit_integer(d, 0, value);
+	der_wrap(d, start, 0x30);
+}
+
+/* A TLV at *at of limit: its tag, contents and length; *at past it. */
+static bool
+der_next(const uint8_t *base, uint32_t limit, uint32_t *at, uint8_t *tag, uint32_t *contents, uint32_t *length)
+{
+	uint32_t i = *at, l;
+
+	if (i + 2 > limit) {
+		return false;
+	}
+	*tag = base[i++];
+	l = base[i++];
+	if (l & 0x80) {
+		uint32_t count = l & 0x7f;
+
+		if (count == 0 || count > 3 || i + count > limit) {
+			return false;
+		}
+		l = 0;
+		while (count-- > 0) {
+			l = (l << 8) | base[i++];
+		}
+	}
+	if (l > limit - i) {
+		return false;
+	}
+	*contents = i;
+	*length = l;
+	*at = i + l;
+	return true;
+}
+
+static int64_t
+der_read_integer(const uint8_t *base, uint32_t contents, uint32_t length)
+{
+	uint64_t v = (length > 0 && (base[contents] & 0x80)) ? ~0ull : 0;
+
+	for (uint32_t i = 0; i < length && i < 9; i++) {
+		v = (v << 8) | base[contents + i];
+	}
+	return (int64_t)v;
+}
+
+struct km_answer {
+	int64_t err;
+	bool has_long0;
+	uint64_t long0;
+	const uint8_t *bin0;
+	uint32_t bin0_length;
+	const uint8_t *bin1;
+	uint32_t bin1_length;
+};
+
+/* The first of [n]'s EXPLICIT contents; a TA's log lines ([5]) go to our log, ICCC's are what is looked for. */
+static bool
+km_parse(uint32_t length, struct km_answer *a)
+{
+	const uint8_t *base = km_out + 8;
+	uint32_t at = 0, seq, seq_length, end, i = 0;
+	uint8_t tag;
+
+	bzero(a, sizeof(*a));
+	a->err = -1000;
+	if (!der_next(base, length, &at, &tag, &seq, &seq_length) || tag != 0x30) {
+		say("tee_probe: keymaster: the answer is not a SEQUENCE\n");
+		return false;
+	}
+	at = seq;
+	end = seq + seq_length;
+	while (at < end) {
+		uint32_t c, l, inner, c2, l2;
+		uint8_t t2;
+
+		if (!der_next(base, end, &at, &tag, &c, &l)) {
+			say("tee_probe: keymaster: the answer stops at %u of %u\n", at, end);
+			return false;
+		}
+		if (tag == 0x02) {
+			if (i == 3) {
+				a->err = der_read_integer(base, c, l);
+			}
+			i++;
+			continue;
+		}
+		if (tag == 0x85 || tag == 0xA5) {
+			/* the log: octet strings */
+			inner = c;
+			while (inner < c + l && der_next(base, c + l, &inner, &t2, &c2, &l2)) {
+				if (t2 == 0x04) {
+					say("tee_probe: keymaster's log: %.*s\n", (int)MIN(l2, 200u), (const char *)base + c2);
+				}
+			}
+			continue;
+		}
+		inner = c;
+		if (!der_next(base, c + l, &inner, &t2, &c2, &l2)) {
+			continue;
+		}
+		if (tag == 0xA1 && t2 == 0x02) {
+			a->has_long0 = true;
+			a->long0 = (uint64_t)der_read_integer(base, c2, l2);
+		} else if (tag == 0xA2 && t2 == 0x04) {
+			a->bin0 = base + c2;
+			a->bin0_length = l2;
+		} else if (tag == 0xA3 && t2 == 0x04) {
+			a->bin1 = base + c2;
+			a->bin1_length = l2;
+		}
+	}
+	return true;
+}
+
+/* One request: the DER is in km_in + 8, its length d->n. False: no answer at all. a->err: the TA's answer. */
+static bool
+km_call(uint32_t session, const char *name, const struct der *d, struct km_answer *a)
+{
+	uint64_t answer[4], out_length;
+	uint32_t payload = 0;
+
+	if (d->bad) {
+		say("tee_probe: keymaster %s: the request does not fit\n", name);
+		return false;
+	}
+	*(volatile uint64_t *)(void *)km_in = d->n;
+	*(volatile uint64_t *)(void *)km_out = 0;
+	time_now();
+	__asm__ volatile ("dsb sy" ::: "memory");
+	if (!notify(session, 0) || !call(name, MC_SMC_N_SIQ, 0, 0, 0, answer, NULL) || answer[1] != 0 ||
+	    !wait_notification(session, &payload)) {
+		say("tee_probe: keymaster %s: no answer\n", name);
+		return false;
+	}
+	if (payload != 0) {
+		say("tee_probe: keymaster %s: the TA has exited, code %#x\n", name, payload);
+		return false;
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+	out_length = *(volatile uint64_t *)(void *)km_out;
+	if (out_length == 0 || out_length > KM_DER_MAX) {
+		say("tee_probe: keymaster %s: the answer's length is %llu\n", name, out_length);
+		return false;
+	}
+	if (!km_parse((uint32_t)out_length, a)) {
+		return false;
+	}
+	say("tee_probe: keymaster %s: err %lld, %llu bytes back; long0 %s, bin0 %u bytes, bin1 %u bytes\n", name, a->err, out_length,
+	    a->has_long0 ? "yes" : "no", a->bin0_length, a->bin1_length);
+	return true;
+}
+
+static uint32_t
+km_request(struct der *d, uint32_t cmd)
+{
+	d->p = km_in + 8;
+	d->n = 0;
+	d->bad = false;
+	der_integer(d, 2);
+	der_integer(d, 20);
+	der_integer(d, cmd);
+	der_integer(d, 1);
+	return 0;
+}
+
+static void
+km_finish_request(struct der *d, uint32_t start)
+{
+	der_wrap(d, start, 0x30);
+}
+
+static bool
+km_map(uint32_t session, uint8_t *buffer, uint64_t *table, uint32_t *secure)
+{
+	uint32_t result = 0;
+	uint64_t pa = wsm_table(table, buffer, KM_BUFFER, PTE_RW);
+
+	if (pa == 0) {
+		say("tee_probe: keymaster's buffer's table will not do\n");
+		return false;
+	}
+	message_clear();
+	/* { id, session 4, type 8, offset 12, table 16, length 24 } */
+	put32(MCI_MESSAGE + 4, session);
+	put32(MCI_MESSAGE + 8, WSM_L2);
+	put64(MCI_MESSAGE + 16, pa);
+	put32(MCI_MESSAGE + 24, KM_BUFFER);
+	if (!mcp_command("MAP", MCP_MAP, &result) || result != 0) {
+		return false;
+	}
+	*secure = get32(MCI_MESSAGE + 8);
+	say("tee_probe: keymaster's buffer mapped at secure %#x\n", *secure);
+	return true;
+}
+
+static int
+km_blob_file(const char *path, enum uio_rw rw, uint8_t *blob, uint32_t *length)
+{
+	vfs_context_t ctx = vfs_context_kernel();
+	vnode_t vp = NULLVP;
+	int fmode = rw == UIO_READ ? FREAD : (FREAD | FWRITE | O_CREAT | O_TRUNC);
+	int resid = 0, error;
+
+	error = vnode_open(path, fmode, 0600, VNODE_LOOKUP_NOFOLLOW, &vp, ctx);
+	if (error != 0) {
+		return error;
+	}
+	error = vn_rdwr(rw, vp, (caddr_t)blob, (int)(rw == UIO_READ ? KM_BLOB_MAX : *length), 0, UIO_SYSSPACE,
+	    rw == UIO_WRITE ? IO_SYNC : 0, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
+	if (rw == UIO_READ && error == 0) {
+		*length = KM_BLOB_MAX - (uint32_t)resid;
+	}
+	(void)vnode_close(vp, fmode, ctx);
+	return error;
+}
+
+/* One HMAC of the fixed test value under the blob; the 32 bytes logged. */
+static bool
+km_hmac(uint32_t session, const uint8_t *blob, uint32_t blob_length, uint8_t mac[32])
+{
+	static const uint8_t test_value[32] = "HakiOS TEE keymaster test value";
+	struct der d;
+	struct km_answer a;
+	uint32_t start, mark, inner;
+	uint64_t handle;
+
+	start = km_request(&d, KM_CMD_BEGIN);
+	der_explicit_integer(&d, 0, KM_PURPOSE_SIGN);
+	der_explicit_octets(&d, 4, blob, blob_length);
+	mark = d.n;
+	inner = d.n;
+	der_param(&d, TAG_DIGEST, KM_DIGEST_SHA256);
+	der_param(&d, TAG_MAC_LENGTH, 256);
+	der_wrap(&d, inner, 0x31);
+	der_wrap(&d, mark, 0xA8);
+	km_finish_request(&d, start);
+	if (!km_call(session, "begin", &d, &a) || a.err != 0 || !a.has_long0) {
+		return false;
+	}
+	handle = a.long0;
+
+	start = km_request(&d, KM_CMD_UPDATE);
+	der_explicit_integer(&d, 1, handle);
+	der_explicit_octets(&d, 2, test_value, sizeof(test_value));
+	km_finish_request(&d, start);
+	if (!km_call(session, "update", &d, &a) || a.err != 0) {
+		return false;
+	}
+
+	start = km_request(&d, KM_CMD_FINISH);
+	der_explicit_integer(&d, 1, handle);
+	km_finish_request(&d, start);
+	if (!km_call(session, "finish", &d, &a) || a.err != 0) {
+		return false;
+	}
+	if (a.bin0_length == 32) {
+		memcpy(mac, a.bin0, 32);
+	} else if (a.bin1_length == 32) {
+		memcpy(mac, a.bin1, 32);
+	} else {
+		say("tee_probe: keymaster's finish: no 32 bytes back\n");
+		return false;
+	}
+	return true;
+}
+
+/* tee_probe=4, state 2 on core 0. */
+static void
+keymaster_test(void)
+{
+	static uint8_t blob[KM_BLOB_MAX];
+	struct der d;
+	struct km_answer a;
+	uint8_t *ta = NULL;
+	uint32_t ta_length = 0, session, in_secure = 0, out_secure = 0, start, mark, inner, blob_length = 0;
+	uint8_t first[32], second[32];
+	int error;
+
+	session = session_open(TA_KEYMASTER, &ta, &ta_length);
+	if (session == 0) {
+		return;
+	}
+	if (!km_map(session, km_in, table_in, &in_secure) || !km_map(session, km_out, table_out, &out_secure)) {
+		goto close;
+	}
+	bzero(tci, 16);
+	((volatile uint32_t *)(void *)tci)[0] = in_secure;
+	((volatile uint32_t *)(void *)tci)[1] = out_secure;
+
+	start = km_request(&d, KM_CMD_CONFIGURE);
+	mark = d.n;
+	inner = d.n;
+	der_param(&d, TAG_OS_VERSION, KM_OS_VERSION);
+	der_param(&d, TAG_OS_PATCHLEVEL, KM_OS_PATCHLEVEL);
+	der_wrap(&d, inner, 0x31);
+	der_wrap(&d, mark, 0xA8);
+	km_finish_request(&d, start);
+	if (!km_call(session, "configure", &d, &a)) {
+		goto close;
+	}
+
+	error = km_blob_file(KM_TEST_BLOB, UIO_READ, blob, &blob_length);
+	if (error == 0 && blob_length != 0) {
+		say("tee_probe: keymaster: reusing %s, %u bytes, from an earlier boot\n", KM_TEST_BLOB, blob_length);
+	} else {
+		clock_sec_t seconds;
+		clock_nsec_t nanos;
+
+		say("tee_probe: keymaster: no blob on /private/var (%d): generating one\n", error);
+		clock_get_calendar_nanotime(&seconds, &nanos);
+		start = km_request(&d, KM_CMD_GENERATE);
+		mark = d.n;
+		inner = d.n;
+		der_param(&d, TAG_ALGORITHM, KM_ALGORITHM_HMAC);
+		der_param(&d, TAG_KEY_SIZE, 256);
+		der_param(&d, TAG_PURPOSE, KM_PURPOSE_SIGN);
+		der_param(&d, TAG_DIGEST, KM_DIGEST_SHA256);
+		der_param(&d, TAG_MIN_MAC_LENGTH, 256);
+		der_param(&d, TAG_NO_AUTH_REQUIRED, 1);
+		der_param(&d, TAG_CREATION_DATETIME, (uint64_t)seconds * 1000);
+		der_wrap(&d, inner, 0x31);
+		der_wrap(&d, mark, 0xA8);
+		km_finish_request(&d, start);
+		if (!km_call(session, "generate", &d, &a) || a.err != 0) {
+			goto close;
+		}
+		{
+			const uint8_t *out = a.bin1_length != 0 ? a.bin1 : a.bin0;
+			uint32_t out_length = a.bin1_length != 0 ? a.bin1_length : a.bin0_length;
+
+			if (out == NULL || out_length == 0 || out_length > KM_BLOB_MAX) {
+				say("tee_probe: keymaster's generate: no blob back (%u bytes)\n", out_length);
+				goto close;
+			}
+			memcpy(blob, out, out_length);
+			blob_length = out_length;
+		}
+		error = km_blob_file(KM_TEST_BLOB, UIO_WRITE, blob, &blob_length);
+		say("tee_probe: keymaster: a blob of %u bytes, written to %s: %d\n", blob_length, KM_TEST_BLOB, error);
+	}
+	if (!km_hmac(session, blob, blob_length, first) || !km_hmac(session, blob, blob_length, second)) {
+		goto close;
+	}
+	say("tee_probe: keymaster's HMAC of the test value: %016llx%016llx%016llx%016llx (again: %s)\n",
+	    OSSwapBigToHostInt64(*(uint64_t *)(void *)first), OSSwapBigToHostInt64(*(uint64_t *)(void *)(first + 8)),
+	    OSSwapBigToHostInt64(*(uint64_t *)(void *)(first + 16)), OSSwapBigToHostInt64(*(uint64_t *)(void *)(first + 24)),
+	    memcmp(first, second, 32) == 0 ? "the same" : "DIFFERENT");
+close:
+	session_close(session, ta, ta_length);
 }
 
 static void
@@ -396,9 +1240,11 @@ tee_thread(void *arg, __unused wait_result_t wr)
 	thread_deallocate(thread);
 	say("tee_probe: core 0 is the kernel's cpu %d; a call is watched from cpu %d, for %d s\n", core0, other, TEE_HANG_S);
 	bind_to(core0);
-	if (call("INFO", MC_FC_INFO, EXT_MCI_VERSION, 0, 0, answer, NULL) && on == 2) {
+	if (call("INFO", MC_FC_INFO, EXT_MCI_VERSION, 0, 0, answer, NULL) && on >= 2) {
 		if (answer[1] == 0 && (answer[2] & 0xffffffffull) == STATE_NOT_INITIALIZED) {
-			start();
+			if (start() && on >= 3 && mcp_round() && on == 4) {
+				keymaster_test();
+			}
 		} else {
 			say("tee_probe: code %#llx, state %#llx, not (0, 0): NO INIT\n", answer[1], answer[2]);
 		}
@@ -415,10 +1261,10 @@ hakios_exynos_tee_init(void)
 	uint32_t on = 0;
 	thread_t thread;
 
-	if (!PE_parse_boot_argn("tee_probe", &on, sizeof(on)) || (on != 1 && on != 2)) {
+	if (!PE_parse_boot_argn("tee_probe", &on, sizeof(on)) || (on < 1 || on > 4)) {
 		return;
 	}
-	say("tee_probe=%u: %s, once core 0 is the kernel's\n", on, on == 1 ? "one read-only MC_FC_INFO" : "MC_FC_INFO, then the start");
+	say("tee_probe=%u: %s, once core 0 is the kernel's\n", on, on == 1 ? "one read-only MC_FC_INFO" : on == 2 ? "MC_FC_INFO, then the start" : on == 3 ? "the start, then one MCP round" : "the start, one MCP round, keymaster's test");
 	if (kernel_thread_start(tee_thread, (void *)(uintptr_t)on, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	} else {

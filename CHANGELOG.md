@@ -18,6 +18,7 @@ changes to it; the scripts named fetch the release and put the changes on.
 
 ## 2026-11-04
 
+- Galaxy S9, with `tee_probe=3` or `4` (off by default, not yet run on a phone): Kinibi asked over MCP, a harmless TA opened and closed, then Samsung's keymaster TA for one test, an HMAC key's blob in `/private/var`. The key store does not use it yet.
 - Galaxy S9, with `mfc=5` (still off by default): a video the block can't take (10-bit, or no room) goes to software; a seek works; every test frame now matches ffmpeg, after a fix for frames overwritten before the client had them. Safari, HLS and Photos tested. HEIC doesn't use the block.
 - Key store: `keystore_real=1` (off by default) wraps the keychain's keys under Argon2id of the passcode, and locking drops classes A, B and "when passcode set": a forgotten passcode loses them, `passcode_reset=1` destroys them, turning it on drops today's keychain. Files are still not encrypted. Per-selector entitlement checks only log unless `keystore_entcheck=2`, which today's phones must not set. Without the argument nothing changes. Seen in QEMU and on a Galaxy S9 with `/private/var` in memory (unlock about 0.35 s); class A while locked is unverified on a phone. See `docs/keystore.md`.
 - Kernel: AES, SHA-1 and SHA-256 by the ARMv8 crypto instructions, where the processor has them (`mc_ce=0`: the C), checked by the same known answers first. Galaxy S9: SHA-256 944 MB/s (C 130), SHA-1 944 (C 127), AES-128-CBC 311 (C 62); `sysctl kern.hakios.crypto_bench` measures both

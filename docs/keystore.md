@@ -13,7 +13,7 @@ Read this before relying on anything below. "Keychain" means items whose class i
 encrypted at all**: the data volume is plain HFS Plus, so photos, messages and mail databases are readable from the flash whatever the
 passcode (see stage 4).
 
-| Attacker | Today (no `keystore_real`) | Passcode entanglement (this page) | With a hardware-bound secret (TEE route, not available) |
+| Attacker | Today (no `keystore_real`) | Passcode entanglement (this page) | With a hardware-bound secret (TEE route, not available yet) |
 |---|---|---|---|
 | App sandbox escape to root, phone unlocked | everything | everything: root can read the keychain through securityd, or read memory, and can read the key bag file | the same while unlocked |
 | Root, phone locked since its last unlock | everything | class A and "when passcode set" items stay shut: their roots are not in memory. Class C items and all files are readable. Root can copy the key bag and guess offline (next row) | offline guessing stops; guesses go through the TEE, which could enforce the limits |
@@ -173,9 +173,20 @@ Possible, large, and not started.
 
 ## The TEE route
 
-Samsung's keymaster and gatekeeper trusted applications exist on the phone and, from strings and light disassembly only, offer a device-bound key derivation and an external retry
-count. Nothing has been run. It needs a Kinibi driver for XNU first (weeks), may depend on Knox state, and writes to RPMB cannot be undone. `hwTangle()` in `MiniAppleKeyStore.cpp` is the
-one place it would go in; until then it adds nothing. Changing it makes existing bags unreadable. No keys are extracted from firmware and EL3 and the TEE are not patched.
+Nothing in the key store depends on the TEE yet: `hwTangle()` in `MiniAppleKeyStore.cpp` is still a copy, and it is the one place this would go in. Changing it makes existing bags unreadable. No keys are extracted from firmware, and EL3 and the TEE are not patched.
+
+Kinibi starts under HakiOS on a Galaxy S9 (`tee_probe=2`: state 2, one boot on one phone). Beyond that, `drivers/core/hakios.exynos_tee.c` has two test modes, off unless asked. **Neither has run on a phone:**
+
+- `tee_probe=3`: asks Kinibi its version over MCP, then opens and closes a session on a harmless TA read from the phone's own VENDOR partition.
+- `tee_probe=4`: also runs Samsung's keymaster TA (`ffffffff00000000000000000000003e`): configure, generate an HMAC key, HMAC a fixed test value twice. The TA seals the key into a blob, kept in `/private/var/hakios-tee-km-test.blob`; a later boot reuses that file.
+
+What the plan is, once those have answered: Argon2id's output goes through an HMAC under such a key, so a guess needs this phone's TA and can't be run on someone else's machine. The bag would be marked as tangled when it's created, and old bags stay as they are. If the TEE doesn't start, a tangled bag stays locked and nothing is overwritten: that's the same fail-closed path as a damaged bag, so a boot with the TEE broken keeps the keychain shut but doesn't lose it, while losing the blob file would. It stays behind its own boot argument.
+
+What it would and wouldn't do, some of it not yet tested:
+
+- **Would:** stop guessing off the phone, if the blob can't be opened elsewhere. That's inferred from the TA's use of `tlApiDeriveKeyWithREK`; it hasn't been shown.
+- **Wouldn't:** stop a modified kernel from capturing the passcode as it's typed, or from calling the TA with guesses at the TEE's speed. There's no retry limit outside the kernel without Samsung's gatekeeper TA, which isn't approved here.
+- **Unknown:** whether the blob survives an OS version or boot state change, whether it's bound to boot state, and whether the TA's ICCC code writes anything that persists. The configure call here leaves out the TIMA measurement file because the real HAL's path with it reaches an ICCC flag write. A published analysis of Samsung's keymaster blobs (Shakevsky et al., 2022) found weaknesses in older blob formats. Whether they apply to this TA's version hasn't been checked.
 
 ## Boot arguments
 
