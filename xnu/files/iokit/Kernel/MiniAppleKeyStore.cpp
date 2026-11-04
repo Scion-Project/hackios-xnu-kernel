@@ -78,6 +78,7 @@
 #include <sys/uio.h>
 #include <sys/random.h>
 #include <sys/kauth.h>
+#include <IOKit/IOBSD.h>
 #include <kern/clock.h>
 #include <sys/sysctl.h>
 
@@ -85,6 +86,7 @@
 
 extern "C" {
 extern vfs_context_t vfs_context_kernel(void);
+extern vnode_t proc_getexecutablevnode(proc_t);
 }
 
 #include "../../osfmk/minicrypto/mc_keywrap.h"
@@ -1627,6 +1629,119 @@ setConfiguration(const uint8_t * der, size_t size)
 	}
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * who may call what */
+
+/*
+ * With keystore_real=1. The entitlements are the ones 16.5's programs carry (docs/keystore.md): a selector not listed here is open, as a
+ * question about the state is on iOS. What this kernel can check is limited: it verifies no code signature, so a program can list any
+ * entitlement it likes in its own signature (libkern/amfi/miniamfi_entitlements.cpp). So the entitlement counts only if the program runs
+ * from a read-only volume as well: what a process with root writes to /private/var and starts holds nothing. It does not stop root, which
+ * can attach to a program that holds the entitlement, or write to the flash.
+ *
+ * keystore_entcheck: 0 no check; 1 (the default) say what would be refused, once for each program and selector, and allow it; 2 refuse.
+ */
+#define kEntDevice      "com.apple.keystore.device"
+#define kEntVerify      "com.apple.keystore.device.verify"
+#define kEntKeychain    "com.apple.keystore.access-keychain-keys"
+#define kEntAssert      "com.apple.keystore.lockassertion"
+#define kEntConfig      "com.apple.keystore.config.set"
+#define kEntHakiOS      "com.hakios.keystore.change"        /* userland/src/passcoded.entitlements */
+
+struct KSAccess {
+	uint32_t     selector;
+	const char * entitlements[2];                       /* either */
+};
+
+static const KSAccess kKSAccess[] = {
+	{ kAKSLockDevice, { kEntDevice, NULL } },
+	{ kAKSLockDeviceNow, { kEntDevice, NULL } },
+	{ kAKSUnlockDevice, { kEntDevice, NULL } },
+	{ kAKSVerifyPassword, { kEntVerify, kEntDevice } },
+	{ kAKSWrapKey, { kEntKeychain, NULL } },
+	{ kAKSUnwrapKey, { kEntKeychain, NULL } },
+	{ kAKSAssertHold, { kEntAssert, kEntDevice } },
+	{ kAKSAssertDrop, { kEntAssert, kEntDevice } },
+	{ kAKSAssertPromote, { kEntAssert, kEntDevice } },
+	{ kAKSAssertConsume, { kEntAssert, kEntDevice } },
+	{ kAKSSetConfiguration, { kEntConfig, kEntDevice } },
+	{ kAKSNotifyStateSet, { kEntDevice, kEntHakiOS } },
+	{ kHKChangeSecret, { kEntHakiOS, NULL } },
+	{ kHKCopyBlob, { kEntHakiOS, NULL } },
+};
+
+enum { kAccessAllowed, kAccessNoEntitlement, kAccessWritableProgram };
+
+static uint32_t gEntCheck = 1;
+
+static bool
+currentProgramIsOnReadOnlyVolume(void)
+{
+	proc_t self = proc_self();
+	vnode_t vp = NULLVP;
+	bool readOnly = false;
+
+	if (self != NULL) {
+		vp = proc_getexecutablevnode(self);
+		proc_rele(self);
+	}
+	if (vp != NULLVP) {
+		mount_t mp = vnode_mount(vp);
+
+		readOnly = mp != NULL && (vfs_flags(mp) & MNT_RDONLY) != 0;
+		vnode_put(vp);
+	}
+	return readOnly;
+}
+
+/* Whether the calling process may use this selector; wanted says which entitlement it lacks. */
+static int
+accessCheck(uint32_t selector, const char ** wanted)
+{
+	for (size_t i = 0; i < sizeof(kKSAccess) / sizeof(kKSAccess[0]); i++) {
+		const KSAccess * a = &kKSAccess[i];
+
+		if (a->selector != selector) {
+			continue;
+		}
+		*wanted = a->entitlements[0];
+		if (!IOCurrentTaskHasEntitlement(a->entitlements[0]) &&
+		    (a->entitlements[1] == NULL || !IOCurrentTaskHasEntitlement(a->entitlements[1]))) {
+			return kAccessNoEntitlement;
+		}
+		return currentProgramIsOnReadOnlyVolume() ? kAccessAllowed : kAccessWritableProgram;
+	}
+	return kAccessAllowed;
+}
+
+/* Said once for each program and selector, up to a limit: the list to look at when deciding to turn on keystore_entcheck=2. */
+#define kAccessLogged 64
+static struct {
+	char     name[20];
+	uint32_t selector;
+} gAccessLogged[kAccessLogged];
+static uint32_t gAccessLoggedCount;
+
+static void
+accessLog(uint32_t selector, const char * wanted, int verdict)
+{
+	char name[20] = "?";
+
+	proc_selfname(name, sizeof(name));
+	for (uint32_t i = 0; i < gAccessLoggedCount; i++) {
+		if (gAccessLogged[i].selector == selector && strncmp(gAccessLogged[i].name, name, sizeof(name)) == 0) {
+			return;
+		}
+	}
+	if (gAccessLoggedCount < kAccessLogged) {
+		strlcpy(gAccessLogged[gAccessLoggedCount].name, name, sizeof(name));
+		gAccessLogged[gAccessLoggedCount].selector = selector;
+		gAccessLoggedCount++;
+	}
+	printf("MiniAppleKeyStore: %s[%d] selector 0x%x: %s %s (%s)\n", name, proc_selfpid(), selector, gEntCheck >= 2 ? "refused:" : "would be refused:",
+	    verdict == kAccessNoEntitlement ? "it lacks" : "it runs from a writable volume, so it does not count:", wanted,
+	    gEntCheck >= 2 ? "keystore_entcheck=2" : "keystore_entcheck=1");
+}
+
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * the self-test (QEMU) */
 
 /*
@@ -1723,6 +1838,9 @@ selftest(uint32_t phase)
  *   15  (migrate) the old kind of file holds abcdef: locked; no key before the first unlock; D open; a wrong try counts; abcdef opens, and
  *       the old file's verifier is gone.
  *   16  (migrate) after a restart: the bag holds; abcdef opens; the blob of 15 opens.
+ *   17  (entitlements, in a test program signed with com.apple.keystore.device and nothing else, on a read-only root): that is honoured; it may
+ *       unlock and not wrap, nor change the passcode; the state is open.
+ *   18  (the same, the test program unsigned): nothing but the state.
  */
 #define kSelftestPath   "/private/var/hakios-selftest"
 
@@ -1803,7 +1921,7 @@ realSelftest(uint32_t phase)
 	if (!gKS.loaded) {
 		load();
 	}
-	if (phase != 10 && phase != 15) {
+	if (phase != 10 && phase != 15 && phase != 17 && phase != 18) {
 		error = selftestFile(UIO_READ, saved);
 		CHECK("the blobs of the last boot are there", error == 0);
 	}
@@ -1949,6 +2067,33 @@ realSelftest(uint32_t phase)
 		}
 		CHECK("kept for the next boot", selftestFile(UIO_WRITE, saved) == 0);
 		break;
+	case 17: {
+		const char * wanted = NULL;
+
+		CHECK("the program is on a read-only volume", currentProgramIsOnReadOnlyVolume());
+		CHECK("its entitlement is seen", IOCurrentTaskHasEntitlement(kEntDevice));
+		CHECK("and one it does not have is not", !IOCurrentTaskHasEntitlement(kEntKeychain));
+		CHECK("unlock: allowed", accessCheck(kAKSUnlockDevice, &wanted) == kAccessAllowed);
+		CHECK("verify: allowed by the second of two", accessCheck(kAKSVerifyPassword, &wanted) == kAccessAllowed);
+		CHECK("wrap: refused", accessCheck(kAKSWrapKey, &wanted) == kAccessNoEntitlement);
+		CHECK("unwrap: refused", accessCheck(kAKSUnwrapKey, &wanted) == kAccessNoEntitlement);
+		CHECK("changing the passcode: refused", accessCheck(kHKChangeSecret, &wanted) == kAccessNoEntitlement);
+		CHECK("the state: open", accessCheck(kAKSGetDeviceState, &wanted) == kAccessAllowed);
+		break;
+	}
+	case 18: {
+		const char * wanted = NULL;
+
+		CHECK("no entitlements", !IOCurrentTaskHasEntitlement(kEntDevice));
+		CHECK("unlock: refused", accessCheck(kAKSUnlockDevice, &wanted) == kAccessNoEntitlement);
+		CHECK("verify: refused", accessCheck(kAKSVerifyPassword, &wanted) == kAccessNoEntitlement);
+		CHECK("wrap: refused", accessCheck(kAKSWrapKey, &wanted) == kAccessNoEntitlement);
+		CHECK("lock: refused", accessCheck(kAKSLockDevice, &wanted) == kAccessNoEntitlement);
+		CHECK("changing the passcode: refused", accessCheck(kHKChangeSecret, &wanted) == kAccessNoEntitlement);
+		CHECK("the state: open", accessCheck(kAKSGetDeviceState, &wanted) == kAccessAllowed);
+		CHECK("the lock state: open", accessCheck(kAKSGetLockState, &wanted) == kAccessAllowed);
+		break;
+	}
 	case 16:
 		CHECK("after the restart: the bag, locked", gKS.record.hasPasscode && !gKS.record.bag.migrating && lockState() == kAKSLockLocked);
 		CHECK("abcdef opens", tryPasscode((const uint8_t *) "abcdef", 6, true, &changed, &first) == kIOReturnSuccess);
@@ -2150,6 +2295,20 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 	bool changed = false, first = false;
 	IOReturn ret = kIOReturnUnsupported;
 	bool handled = true;
+
+	if (gKS.real && gEntCheck != 0) {
+		const char * wanted = NULL;
+		int verdict = accessCheck(selector, &wanted);
+
+		if (verdict != kAccessAllowed) {
+			IOLockLock(gAKSLock);
+			accessLog(selector, wanted, verdict);
+			IOLockUnlock(gAKSLock);
+			if (gEntCheck >= 2) {
+				return kIOReturnNotPrivileged;
+			}
+		}
+	}
 
 	IOLockLock(gAKSLock);
 	if (!gKS.loaded) {
@@ -2456,6 +2615,7 @@ MiniAppleKeyStoreStart(void)
 	uint32_t real = 0;
 
 	gKS.real = PE_parse_boot_argn("keystore_real", &real, sizeof(real)) && real != 0;
+	PE_parse_boot_argn("keystore_entcheck", &gEntCheck, sizeof(gEntCheck));
 	gAKSLock = IOLockAlloc();
 	if (gAKSLock == NULL || resources == NULL || store == NULL || !store->init() || !store->attach(resources)) {
 		OSSafeReleaseNULL(store);

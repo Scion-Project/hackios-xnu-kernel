@@ -277,6 +277,9 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		# the stand-in for keybagd's XPC service: setting, changing and removing a passcode reaches the
 		# kernel's key store through it (src/passcoded.m, com.hakios.passcoded.plist)
 		$DYN -fobjc-arc -framework Foundation -framework IOKit -o obj/passcoded src/passcoded.m
+		# (with keystore_entcheck=2 the kernel takes a passcode change only from a program with this entitlement, if ldid is there)
+		{ ${LDID:-ldid} -Ssrc/passcoded.entitlements obj/passcoded 2>/dev/null ||
+		  echo "build.sh: no ldid: passcoded is unsigned, and with keystore_entcheck=2 it cannot change the passcode"; }
 		$DYN -framework CoreFoundation -framework AudioToolbox -framework AVFoundation -lobjc -o obj/sound_test src/sound_test.c
 		$DYN -framework CoreFoundation -lMobileGestalt -o obj/mg_test src/mg_test.c
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/torch_test src/torch_test.c

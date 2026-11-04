@@ -257,6 +257,7 @@ iris_s9_ispdiv	k
 iris_s9_ms	k
 iris_s9_smc	k
 isa_floor	k
+keystore_entcheck	k
 keystore_kdf_kib	k
 keystore_real	k
 ksample	k

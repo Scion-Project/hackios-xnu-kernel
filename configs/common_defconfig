@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 616 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 617 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -1552,7 +1552,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_WDT is not set
 
 #
-# User space (101)
+# User space (102)
 #
 
 # read by inject_sb.c (user space)
@@ -1728,6 +1728,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by 1510-isa-floor.patch (kernel)
 # CONFIG_ISA_FLOOR is not set
+
+# read by MiniAppleKeyStore.cpp (kernel)
+# CONFIG_KEYSTORE_ENTCHECK is not set
 
 # read by MiniAppleKeyStore.cpp (kernel)
 # CONFIG_KEYSTORE_KDF_KIB is not set

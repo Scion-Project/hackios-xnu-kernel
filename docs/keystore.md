@@ -26,8 +26,9 @@ Limits to keep in mind:
 - **Wrong-attempt limits are software only.** The count and the delays are in a file: a kernel of the attacker's, or someone rewriting the
   flash, resets them, and a copy of the bag is attacked with no limits at all. Without a hardware secret they only slow someone who is using
   this phone's own lock screen.
-- **Entitlement checks are not a wall against root.** This kernel checks no code signatures. Stage 2 helps against a process that merely
-  holds a user client; it does not stop root, which can attach to a daemon that holds the entitlement.
+- **Entitlement checks are not a wall against root.** This kernel checks no code signatures, so a program can list any entitlement in its own
+  signature. An entitlement therefore counts only if the program also runs from a read-only volume. That stops a process that only holds a user
+  client, or starts something it wrote to `/private/var`. It does not stop root, which can attach to a daemon that holds the entitlement, or write to the flash.
 - **Old key material may survive on the flash.** Changing the passcode overwrites both slots of the file, but the flash's own remapping may
   keep older copies. An old record falls to its old passcode, or to no passcode at all if it dates from before one was set. Apple solves this
   with effaceable storage; there is none here. A device that has held data under a weak or no passcode should be reset (see below), not just
@@ -115,7 +116,8 @@ From 16.5's binaries (securityd, keybagd, coreauthd, SharedUtils, MobileKeyBag, 
 
 ### Entitlements
 
-As carried by 16.5's binaries, from scanning the root volume's code signatures.
+As carried by 16.5's binaries, from scanning the root volume's code signatures. The kernel's table is `kKSAccess` in `MiniAppleKeyStore.cpp`; selectors not in it are open. **The default is log-only**
+(`keystore_entcheck=1`): which programs really call what can only be seen on a phone, and `keystore_entcheck=2` must wait for that list. `passcoded` holds `com.hakios.keystore.change`, this port's own, for its selectors 0x100 and 0x101, as well as needing root.
 
 | Entitlement | Selectors | Holders |
 |---|---|---|
@@ -127,10 +129,31 @@ As carried by 16.5's binaries, from scanning the root volume's code signatures.
 
 ### The AppleCredentialManager protocol (for stage 3)
 
-`SharedUtils` (in the dyld shared cache) exports `ACM*` and `LibCall_ACM*`, each of which marshals its arguments and calls a transport block with a command number; coreauthd's
-transport is IOKit, selector 0. `ACMContextCreate` sends command 0x24 (falling back to 1) and takes back a 17- or 21-byte context handle. A stand-in has to implement at least
-context create and delete, add credential with scope, verify policy (with requirements), get and set data, credential properties, and environment variables. It can only be
-tested on a phone, or in a QEMU run with a full userland: there is no such test yet.
+`SharedUtils` (in the dyld shared cache) exports `ACM*` and `LibCall_ACM*`, each of which serializes its arguments and hands a command to a transport; coreauthd's is IOKit (`ioKitTransport`, the service `AppleCredentialManager`), and securityd's and keybagd's use the same client library.
+
+A command is built by `LibCall_BuildCommand`: the magic `DRCS`, a byte of protocol version, a byte of **command**, a byte of flags, a reserved byte, then the serialized payload. `LibSerialization`'s exported `Serialize*` and `Deserialize*` give each payload's layout. Commands, read from each `LibCall_` function:
+
+| Command | Function |
+|---|---|
+| 0x24, falling back to 0x01 | context create; answers a 17- or 21-byte handle |
+| 0x25, falling back to 0x12 | context create from external form |
+| 0x02 | context delete |
+| 0x03 | verify policy, with requirements |
+| 0x05 | add credential with scope |
+| 0x06, 0x09 | remove credentials, by value and by type, with scope |
+| 0x21, 0x1b | credential property, in a context and in the global context |
+| 0x28, 0x29 | context data, set and get |
+| 0x2e | context info |
+| 0x19, 0x2c | environment variable, get and set |
+| 0x1a | kernel control |
+| 0x1c | double-click notification |
+| 0x1f | ACL auth method |
+| 0x11 | biometry availability |
+| 0x26, 0x2d, 0x30, 0x31 | TRM state, trusted accessories, context load and unload |
+
+Credential kinds include passcode validated, passphrase entered and extractable, biometry matched, user output displayed.
+
+A stand-in has to do at least context create and delete, add a passcode credential (checked against the key bag, and counted like any attempt), verify a policy that asks for a passcode, credential properties, data and environment variables. **It is not written.** It can only be tested against coreauthd on a phone or in a QEMU run with a full userland, and neither is available yet, so writing it blind would be guesswork. Keep Face ID's rules in mind: without a Secure Enclave, a biometric unlock must keep class A's key recoverable in kernel memory while locked.
 
 ## Stage 4: files (feasibility)
 
@@ -157,6 +180,7 @@ one place it would go in; until then it adds nothing. Changing it makes existing
 | Argument | Meaning |
 |---|---|
 | `keystore_real=1` | the key bag. Off without it |
+| `keystore_entcheck=N` | who may call what. 0: no check; 1 (the default): log what would be refused, and allow it; 2: refuse |
 | `keystore_kdf_kib=N` | Argon2id's memory, for the self-test only: ignored without `passcode_selftest` |
 | `passcode_reset=1` | with `keystore_real=1`: destroys the keys, leaves no passcode, overwrites the old verifier file |
 
@@ -170,6 +194,8 @@ one place it would go in; until then it adds nothing. Changing it makes existing
 - a damaged, other-class or old-style blob is refused;
 - both slots damaged: locked, nothing opens, the right passcode gets nothing and is not counted, nothing is overwritten;
 - `passcode_reset=1` gets out of that, and every old blob then answers "never".
+
+`... entitlements` boots a test program signed with `com.apple.keystore.device` alone, then unsigned: the table allows unlock and refuses wrap and changing the passcode, then refuses all but the state.
 
 After boot 11, `tools/keybag-offline.py` reads the raw volume as a thief would, with the reference Argon2 and OpenSSL's key wrap: the test key and the passcode are not on the volume in the
 clear, wrong codes bring nothing, and the right code brings the roots and opens a blob the kernel wrapped. It needs `pip install argon2-cffi cryptography`.

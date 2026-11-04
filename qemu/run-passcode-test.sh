@@ -9,8 +9,10 @@
 #                  code gets no key; 11 the restart, after which tools/keybag-offline.py reads the volume as a thief would; 12 damage
 #                  fails closed; 13 and 14 passcode_reset=1 destroys the keys.
 #   migrate        the old kind of file first (1), then keystore_real=1: 15 and 16.
+#   entitlements   who may call what: 17 with the test program signed with com.apple.keystore.device alone ($TEST_SIGNED, or $LDID or codesign
+#                  on the test), 18 with it unsigned.
 #
-# usage: qemu/run-passcode-test.sh [old|real|migrate] [HFS-IMAGE]
+# usage: qemu/run-passcode-test.sh [old|real|migrate|entitlements] [HFS-IMAGE]
 #   default image: qemu/passcode-test/hfs-MODE.img, made with mkfs.hfsplus, or $MKFS, if absent. Use a new one for each run of real and migrate.
 # needs: a kernel built for QEMU in hakios-kernel (or $KERNEL), xnu-clang (xnu-env.sh) or a prebuilt test in $TEST
 cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
@@ -20,7 +22,8 @@ case $MODE in
 old) STEPS="1 2 3" ;;
 real) STEPS="10 11 12 13 14" ;;
 migrate) STEPS="1 15 16" ;;
-*) echo "usage: qemu/run-passcode-test.sh [old|real|migrate] [HFS-IMAGE]" >&2; exit 1 ;;
+entitlements) STEPS="17 18" ;;
+*) echo "usage: qemu/run-passcode-test.sh [old|real|migrate|entitlements] [HFS-IMAGE]" >&2; exit 1 ;;
 esac
 mkdir -p $W/root/dev $W/root/private/var $W/root/sbin
 IMG=${2:-$W/hfs-$MODE.img}
@@ -35,10 +38,21 @@ else
 	xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin \
 		-Wl,-e,__start -Wl,-pagezero_size,0x100000000 -o $W/root/sbin/launchd userland/src/passcode_test.c || exit 1
 fi
-python3 tools/apfs/mkapfs.py -o $W/root.apfs Root=$W/root >/dev/null || exit 1
+cp $W/root/sbin/launchd $W/launchd.unsigned
 LOG=$(mktemp)
 for step in $STEPS; do
 	extra=""
+	cp "$W/launchd.unsigned" $W/root/sbin/launchd
+	if [ "$step" = 17 ]; then
+		if [ -n "$TEST_SIGNED" ]; then
+			cp "$TEST_SIGNED" $W/root/sbin/launchd
+		else
+			printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.keystore.device</key><true/></dict></plist>' > $W/device.entitlements
+			${LDID:-ldid} -S$W/device.entitlements $W/root/sbin/launchd 2>/dev/null ||
+				codesign -f -s - --entitlements $W/device.entitlements $W/root/sbin/launchd || exit 1
+		fi
+	fi
+	python3 tools/apfs/mkapfs.py -o $W/root.apfs Root=$W/root >/dev/null || exit 1
 	[ "$step" = 3 ] && extra=" passcode_reset=1"
 	# QEMU's translated code is slow, so the key derivation is made cheap here: keystore_kdf_kib only counts with passcode_selftest
 	[ "$step" -ge 10 ] && extra="$extra keystore_real=1 keystore_kdf_kib=${KDF_KIB:-1024}"
