@@ -9,10 +9,11 @@
 #                  code gets no key; 11 the restart, after which tools/keybag-offline.py reads the volume as a thief would; 12 damage
 #                  fails closed; 13 and 14 passcode_reset=1 destroys the keys.
 #   migrate        the old kind of file first (1), then keystore_real=1: 15 and 16.
+#   stale          a bag with no passcode (19), then a passcode in the old file (1), then keystore_real=1: it holds, over the bag's keys (20).
 #   entitlements   who may call what: 17 with the test program signed with com.apple.keystore.device alone ($TEST_SIGNED, or $LDID or codesign
 #                  on the test), 18 with it unsigned.
 #
-# usage: qemu/run-passcode-test.sh [old|real|migrate|entitlements] [HFS-IMAGE]
+# usage: qemu/run-passcode-test.sh [old|real|migrate|entitlements|stale] [HFS-IMAGE]
 #   default image: qemu/passcode-test/hfs-MODE.img, made with mkfs.hfsplus, or $MKFS, if absent. Use a new one for each run of real and migrate.
 # needs: a kernel built for QEMU in hakios-kernel (or $KERNEL), xnu-clang (xnu-env.sh) or a prebuilt test in $TEST
 cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
@@ -23,7 +24,8 @@ old) STEPS="1 2 3" ;;
 real) STEPS="10 11 12 13 14" ;;
 migrate) STEPS="1 15 16" ;;
 entitlements) STEPS="17 18" ;;
-*) echo "usage: qemu/run-passcode-test.sh [old|real|migrate|entitlements] [HFS-IMAGE]" >&2; exit 1 ;;
+stale) STEPS="19 1 20" ;;
+*) echo "usage: qemu/run-passcode-test.sh [old|real|migrate|entitlements|stale] [HFS-IMAGE]" >&2; exit 1 ;;
 esac
 mkdir -p $W/root/dev $W/root/private/var $W/root/sbin
 IMG=${2:-$W/hfs-$MODE.img}
