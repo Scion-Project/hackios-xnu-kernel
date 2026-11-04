@@ -70,3 +70,20 @@ A configuration sets them for you (`CONFIG_GPU=y` is `gpu=1`); [every argument](
 | a run left alone on battery | `battery_stop=<percent>` ends it before the battery is flat |
 | a problem in `make config` | it names the symbol and why: a driver left out that an argument needs, firmware the open profile does not load |
 | anything else | the log in `logs/`, and `make doctor` with the phone on `adb` |
+
+## Sileo
+
+The installer's system image (scion-packaging, `build-installer.sh`) carries Sileo and the Procursus rootless bootstrap
+as `/jb`, fetched at build time by `tools/mk-jb.sh` and pinned by SHA-256. Nothing of theirs is in the repository. It needs
+no boot argument and no jailbreak; the kernel is ours, and `miniamfi` takes a binary's own signature.
+
+- **`/private/var` kept on the flash** (HFS Plus): at the first boot the job `com.hakios.jbseed` (`userland/src/jb_seed.c`)
+  waits 30 s and copies the prefix to `/private/var/jb`, about 120 MB, under another name until it is whole. Then
+  `prep.sh` registers `Sileo.app` with `uicache`, and the icon appears. What you install lasts across reboots and across
+  later system images. A later image never changes `/private/var/jb`; delete it and the next boot copies it again.
+- **`/private/var` in memory**: skipped, with no copy and no icon (`JB_KEPT_ONLY=1`). Without that option, for images made
+  for a session in RAM, init grafts the prefix at every boot as it always did, and what is installed is gone at the next.
+- A failed copy costs a line on the console. iOS does not depend on the job.
+
+Sileo's own files are not in `/Applications`, so apt can upgrade it like any other package. ElleKit and tweak loading are
+not in this image; `tools/mk-jb.sh` without `ELLEKIT=` and `PREINSTALL=` adds them.
