@@ -4,8 +4,8 @@
 encrypts nothing. With it, the keychain's keys are protected by the passcode. This page says what that means and where it stops. This is
 not Apple-grade security: there is no Secure Enclave, and today no key that lives outside the kernel.
 
-**Status.** Proven in QEMU only (see Testing). It has not run on a phone, and Apple's daemons have not yet run on it. Do not turn it on for
-data you care about.
+**Status.** Seen in QEMU and in one run on a Galaxy S9 with `/private/var` in memory (see Testing). It has not run on a phone's real data.
+Whether class A really stays shut while the phone is locked has not been checked on a phone. Do not turn it on for data you care about.
 
 ## What an attacker gets
 
@@ -119,6 +119,8 @@ From 16.5's binaries (securityd, keybagd, coreauthd, SharedUtils, MobileKeyBag, 
 As carried by 16.5's binaries, from scanning the root volume's code signatures. The kernel's table is `kKSAccess` in `MiniAppleKeyStore.cpp`; selectors not in it are open. **The default is log-only**
 (`keystore_entcheck=1`): which programs really call what can only be seen on a phone, and `keystore_entcheck=2` must wait for that list. `passcoded` holds `com.hakios.keystore.change`, this port's own, for its selectors 0x100 and 0x101, as well as needing root.
 
+**`keystore_entcheck=2` would break today's phones.** In the one phone run the log said it would refuse UserEventAgent (0x66, no `com.apple.keystore.device`), GSSCred (0x0a, no `.access-keychain-keys`), and `passcoded` itself: that ramdisk's `passcoded` was unsigned. `userland/build.sh` now signs it (ldid, or a Mac's `codesign`), but a ramdisk made by hand has to as well, and a signed `passcoded` has not been run on a phone. The list is a sample: these lines reach only the kernel's last log, seen for parts of a few boots. The phone's ramdisk root counting as read-only is also unchecked. mobileactivationd (0x2b) and sharingd (0x39) called selectors that are not implemented.
+
 | Entitlement | Selectors | Holders |
 |---|---|---|
 | `com.apple.keystore.device` | unlock 9, lock 8 and 0x20 | SpringBoard, Preferences, coreauthd, keybagd and others: 45 programs |
@@ -200,5 +202,13 @@ one place it would go in; until then it adds nothing. Changing it makes existing
 After boot 11, `tools/keybag-offline.py` reads the raw volume as a thief would, with the reference Argon2 and OpenSSL's key wrap: the test key and the passcode are not on the volume in the
 clear, wrong codes bring nothing, and the right code brings the roots and opens a blob the kernel wrapped. It needs `pip install argon2-cffi cryptography`.
 
-QEMU runs the kernel's logic and HFS only: no securityd, no lock screen. The self-test uses a cheap Argon2id (`keystore_kdf_kib=1024`, one pass). It says nothing about behaviour on the phone,
-unlock time on the S9, or the entropy available at first boot.
+QEMU runs the kernel's logic and HFS only: no securityd, no lock screen. The self-test uses a cheap Argon2id (`keystore_kdf_kib=1024`, one pass). It says nothing about behaviour on the phone
+or the entropy available at first boot.
+
+On a Galaxy S9, seven boots with `/private/var` in memory (USERDATA not mounted), through the real lock screen:
+
+- Argon2id at 64 MiB and 3 passes: 294 ms to set a passcode, 302 to 369 ms for each unlock or wrong code. No watchdog panic.
+- locking, a wrong code ("no keys") and the right code ("the class keys are in memory") all behave.
+- no daemon crashed in about 200 s locked. searchd aborted about 1 s after the first unlock, as it also has on boots without the key store. backboardd died twice: once at its old Mesa signature, once with `-[NSNull applyUIMode:]`, not seen before and not explained.
+
+Not checked on a phone: a class A item answering -25308 while locked (the console has no shell to run `keychain_test` from), real data on USERDATA, a keychain surviving a restart, and the entropy at first boot.

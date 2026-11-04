@@ -11,7 +11,7 @@ reversible transformation, and the verifier file can be removed by root or by an
 flash. It stops someone who picks the phone up; it does not protect data from someone who takes it
 apart or boots something else.
 
-With `keystore_real=1` (off by default, not yet run on a phone) the keychain's keys are protected by the passcode instead: see [the real key store](keystore.md). This page describes the kernel without it.
+With `keystore_real=1` (off by default, seen on a phone only with `/private/var` in memory) the keychain's keys are protected by the passcode instead: see [the real key store](keystore.md). This page describes the kernel without it.
 
 ## How it works
 
