@@ -283,6 +283,10 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		$DYN -O2 -o obj/camera_test src/camera_test.c src/camera_isp.c
 		$DYN -O2 -o obj/mfc_test src/mfc_test.c
 		$DYN -fobjc-arc -framework Foundation -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework QuartzCore -o obj/mfc_avtest src/mfc_avtest.m
+		# (every frame against ffmpeg's CRCs, stills through ImageIO, and a file server for the phone's own Safari: the video decoder's tests, devices/starlte/README.md)
+		$DYN -fobjc-arc -lz -framework Foundation -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework QuartzCore -framework VideoToolbox -o obj/mfc_vt src/mfc_vt.m
+		$DYN -fobjc-arc -lz -framework Foundation -framework CoreGraphics -framework ImageIO -o obj/mfc_still src/mfc_still.m
+		$DYN -o obj/mfc_http src/mfc_http.c
 		$DYN -fobjc-arc -framework Foundation -framework AVFoundation -o obj/camera_avtest src/camera_avtest.m
 		# (the microphone as an application records: allowed to, by an entitlement, if ldid is there)
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/record_test src/record_test.c &&
@@ -521,6 +525,9 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/camera_test ] && cp obj/camera_test root/bin/
 	[ -f obj/mfc_test ] && cp obj/mfc_test root/bin/
 	[ -f obj/mfc_avtest ] && cp obj/mfc_avtest root/bin/
+	[ -f obj/mfc_vt ] && cp obj/mfc_vt root/bin/
+	[ -f obj/mfc_still ] && cp obj/mfc_still root/bin/
+	[ -f obj/mfc_http ] && cp obj/mfc_http root/bin/
 	[ -f obj/camera_avtest ] && cp obj/camera_avtest root/bin/
 	[ -f obj/record_test ] && cp obj/record_test root/bin/
 	# The same binary as the application below, under /redwood/bin, for its --layer mode:

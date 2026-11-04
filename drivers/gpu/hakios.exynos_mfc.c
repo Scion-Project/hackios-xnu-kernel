@@ -544,6 +544,11 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, struct mfc_
 	}
 	I.used = R(D_USED_LOWER);
 	r->status = R(D_DISPLAY_STATUS);
+	if ((r->status >> 4) & 3) {
+		/* the stream changed size in-band: its buffers are the old size's; this instance can go no further */
+		say("exynos_mfc: the stream changes size in-band (status %#x): for the client to open again\n", r->status);
+		return ESTALE;
+	}
 	r->consumed = R(D_DECODED_NAL_SIZE);
 	r->tag = R(D_RET_TAG_TOP);
 	if ((r->status & 7) == 1 || (r->status & 7) == 2) {
@@ -844,6 +849,9 @@ frame_out(const struct mfc_result *r, struct hakios_mfc_decode *d)
 	if (d->y == 0 || d->uv == 0 || d->y_stride < w || d->uv_stride < w) {
 		return EINVAL;
 	}
+	if (w > d->room_width || h > d->room_height) {
+		return ERANGE;          /* the client's planes are for a smaller picture */
+	}
 	for (uint32_t i = 0; i < h && error == 0; i++) {
 		error = copyout(r->y + (i + I.crop_y) * I.stride + I.crop_x, (user_addr_t)d->y + i * d->y_stride, w);
 	}
@@ -868,8 +876,9 @@ mfc_ioctl(dev_t dev __unused, u_long cmd, caddr_t data, int flag __unused, proc_
 		struct hakios_mfc_open *o = (struct hakios_mfc_open *)(void *)data;
 		uint32_t consumed = 0;
 
-		if (I.open) {
-			error = EALREADY;
+		inst_close();           /* (a client's second open: after a drain, the firmware's instance has finished) */
+		if (dead) {
+			error = EIO;
 			break;
 		}
 		if (o->codec != HAKIOS_MFC_H264 && o->codec != HAKIOS_MFC_HEVC) {
