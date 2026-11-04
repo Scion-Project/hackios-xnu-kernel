@@ -9,7 +9,7 @@ open-source release commit (oosexgang, 22 October 2026). The tree's `VERSION` is
 - **Galaxy S9 (SM-G960F, Exynos 9810), a new device.** Its device repository is
   [hakios-starlte](https://github.com/Scion-Project/hakios-starlte) and its TWRP installer is
   [scion-packaging](https://github.com/Scion-Project/scion-packaging). It boots the iOS 16.5 user space that you build
-  from your own IPSW, from the phone's flash (`ufs=2 system_apfs=ufs_SYSTEM`).
+  from your own IPSW, from the phone's flash (`ufs=3 system_apfs=ufs_SYSTEM`).
 - **Android's own hypervisor (AVF/crosvm) as a host** (`avf/`): XNU as a guest on the Pixel, for
   [Scion](https://github.com/Scion-Project/scion). This adds virtio-pci, a virtio GPU with a GLES/Vulkan path through
   gfxstream, display, input, sound, camera, battery, the flashlight and `/private/var` kept across runs.
@@ -20,30 +20,31 @@ open-source release commit (oosexgang, 22 October 2026). The tree's `VERSION` is
 
 ## Galaxy S9: state on the phone
 
-Seen working on hardware (1 and 2 November 2026):
+Seen on hardware by 3 November 2026, each on its own test image. `devices/starlte/configs/starlte.config` holds the
+defaults, and [hakios-starlte's README](https://github.com/Scion-Project/hakios-starlte) has the detail.
 
 | Part | Boot-arguments |
 |---|---|
-| Six cores (A55s 2 and 3, and the four Exynos M3s). Needed: the big cluster's PMU fields written before CPU_ON, PAN off, and user space told only the ARMv8.0 features every core has | `cpus=6 bootcpu=2 m3_prep=3 pan=0` (`isa_floor` comes on with `m3_prep=3`) |
-| Touch (S6SY761), polled at priority 92 so that moves do not come in bursts | `s6sy761=1` |
-| Battery level and charger state (MAX77705, read only) | `max77705=1` |
-| Vibration for iOS | `max77705_haptic=1` |
-| The kernel's live log and a line console over USB (DWC3, CDC-ACM 1209:0001) | `usb_gadget=5 max77705_usbsw=1` |
-| GPU: CoreAnimation draws through Mesa's Panfrost on the Mali-G72 | `mali=9`, root built with `GL=1` |
-| CPU clocks through ACPM's DVFS (the A55s at 1.79 GHz) | `cpufreq_lit=1794000`, `cpufreq_big=` |
-| Widgets and lock-screen posters (PosterBoard restarted after the start-up rush) | `poster_retry` (default on; `poster_retry=0` turns it off) |
-| The log kept across a restart (exynos-snapshot's buffer, read in TWRP) | `esslog=1` |
+| All eight cores (4 A55s, 4 Exynos M3s); the S9's default | `cpus=8 bootcpu=2 m3_prep=3 pan=0` (`isa_floor` comes on with `m3_prep=3`) |
+| The low RAM bank too: `hw.memsize` 3375284224 (3218 MB) | default on the S9; `extra_ram=0` turns it off |
+| iOS drawn in the panel's shape, 1125 x 2313 (375 x 771 points); needs `libhakios.sb.dylib` from this version | default; `fb_native=0` is the old picture |
+| A passcode in Settings and on the lock screen; it gates the screen and encrypts nothing; needs `passcoded` | none; `passcode_reset=1` discards one |
+| Storage: the kernel's own UFS driver, `/private/var` in USERDATA | `ufs=3 ufs_write=1 var_hfs=ufs_USERDATA_data` |
+| Touch, keys, battery and charger, vibration, thermal watch, USB console, the log kept for TWRP | `s6sy761=1 exynos_keys=1 max77705=1 max77705_haptic=1 tmu=3 usb_gadget=5 esslog=1` |
+| GPU through Panfrost, zero-copy display, brightness from iOS's slider | `mali=9 fb_dpp=1 fb_zc=1 backlight=2 brightness_bridge=1` |
+| Wi-Fi from iOS's Settings (WPA2, DHCP, the Internet) | `wifi_pcie=6 brcmfmac=8 wifi=1` |
+| The front camera in the Camera app at 30 frames a second | `cam_s9=7 cam=5` |
+| Speakers through ABOX | `abox=8 max98512=3` |
+| Given on the line, not defaults: sensors, microphone in iOS, Bluetooth in iOS (a paired device stays connected; needs `libhakios.bluetoothd.dylib`) | `shub=6 abox_mic=1 bt=7` |
 
-Written, but not yet confirmed or tested on hardware:
+Written, but not working yet:
 
-- brightness from iOS's slider: `panel=1 backlight=2`. Not yet confirmed.
-- the front camera, stage 1 (supplies and model ID over I2C): `cam_s9=1..2`. Not yet tested on the phone. The later
-  stages (CSIS1's DMA, one sensor frame) are still under review.
-- speaker audio (ABOX, MAX98512), Wi-Fi (PCIe and brcmfmac), Bluetooth (BCM4361, HCI only), temperatures (TMU), the
-  flashlight, and the kernel's own UFS driver: all written, none seen yet.
-- booting on an M3 (`bootcpu=4`): not tried.
+- the iris camera (`iris_s9=N`, off unless asked): the sensor answers with `iris_s9_smc=1`, and no frame has reached
+  memory. `fp_s9=N` panics the kernel on its probe.
+- the headphones (`cs47l93_hp=1`).
+- booting on an M3 (`bootcpu=4`).
 
-Not supported: cellular, and Apple's services (activation, Apple ID, iCloud, the App Store).
+Not supported: cellular, the rear cameras, and Apple's services (activation, Apple ID, iCloud, the App Store).
 
 ## Other changes
 
