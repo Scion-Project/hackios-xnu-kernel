@@ -19,6 +19,10 @@ struct hakios_mfc_open {
 	uint32_t header_bytes;          /* in: Annex B with the parameter sets */
 	uint64_t header;                /* in */
 	uint32_t width, height;         /* out: the shown size */
+	uint32_t flags;                 /* in: HAKIOS_MFC_ZERO_COPY to ask; out: HAKIOS_MFC_ZERO_COPY if frames are to be the client's surfaces */
+	uint32_t stride;                /* out, zero copy: the bytes a row a surface must have, both planes */
+	uint32_t rows;                  /* out, zero copy: the rows of luma it must have (with the extended pixels); half of them of chroma */
+	uint32_t reserved;
 };
 
 struct hakios_mfc_decode {
@@ -33,8 +37,13 @@ struct hakios_mfc_decode {
 	uint32_t finished;              /* out: drained */
 	uint32_t room_width;            /* in: the most the planes above can hold; ERANGE if the picture is larger */
 	uint32_t room_height;           /* in */
-	uint32_t reserved;
+	uint32_t surface;               /* in, zero copy: the IOSurface (of the block's memory) this frame is decoded into */
+	int32_t slot;                   /* out, zero copy: the slot it went to, -1 none. The client keeps a slot's surface until `used` no longer has its bit */
+	int32_t shown_slot;             /* out, zero copy: the slot of the shown frame, instead of a copy into y and uv */
+	uint32_t used;                  /* out, zero copy: the slots the firmware keeps */
 };
+
+#define HAKIOS_MFC_ZERO_COPY    1u
 
 #define HAKIOS_MFC_OPEN         _IOWR('M', 1, struct hakios_mfc_open)
 #define HAKIOS_MFC_DECODE       _IOWR('M', 2, struct hakios_mfc_decode)

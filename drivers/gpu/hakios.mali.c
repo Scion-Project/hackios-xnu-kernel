@@ -170,6 +170,7 @@ extern uint64_t kvtophys(vm_offset_t va);                       /* pmap_paddr_t 
 extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);   /* osfmk/arm64/caches_asm.s */
 extern vm_offset_t phystokv(uint64_t pa);
 extern boolean_t pmap_valid_address(uint64_t addr);             /* memory the kernel manages */
+extern int hakios_mfc_carved(uint64_t phys);                    /* the video decoder's (hakios.exynos_mfc.c, mfc_zc; stubs.c) */
 extern int hakios_scanout_carved(uint64_t phys);                /* the DPU's pool (hakios.exynos_dpu.c; stubs.c) */
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern void HakiosMaliStart(void);                              /* drivers/gpu/hakios.mali.cpp */
@@ -723,7 +724,7 @@ map_page(uint64_t gpu, uint64_t phys)
 	if (gpu >= (1ull << GPU_VA_BITS)) {
 		return false;
 	}
-	if (phys == 0 || (!pmap_valid_address(phys) && !hakios_scanout_carved(phys))) {
+	if (phys == 0 || (!pmap_valid_address(phys) && !hakios_scanout_carved(phys) && !hakios_mfc_carved(phys))) {
 		/*
 		 * the GPU is given memory the kernel manages, and nothing else (a register block, memory of the firmware's) --
 		 * but for the scan-out pool of the DPU driver (fb_zc: the display surfaces the window server draws into)
