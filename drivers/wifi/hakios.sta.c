@@ -12,6 +12,11 @@
  * What the last scan heard is kept here, so that it can be read without entering the station
  * side, and so is the list of channels.
  *
+ * While a network is joined the thread also asks the station side, every few seconds, how it is
+ * being heard, and tells Darwin: nobody else would. wifid does not poll (it waits for Apple80211's
+ * RSSI event and scales what that says), so without this the status bar's Wi-Fi bars stand where
+ * they were when the network was joined.
+ *
  * The network the kernel was given in a file is a standing request: joined at the start, and
  * again whenever the radio is turned back on (Settings' switch), until somebody asks for
  * another network -- as Darwin itself rejoins the networks it knows. If that other network cannot
@@ -36,6 +41,9 @@ extern kern_return_t thread_terminate(thread_t thread);
 
 #define HEARD_MOST      128
 #define CHANNELS_MOST   96
+#define QUALITY_EVERY_S 5               /* how often the link is measured while joined */
+#define QUALITY_SAY_DB  2               /* a change this big is told at once; ... */
+#define QUALITY_SAY_MOST 6              /* ... a link that holds still, every so many measurements */
 
 static LCK_GRP_DECLARE(sta_lock_group, "hakios-sta");
 static LCK_MTX_DECLARE(sta_lock, &sta_lock_group);
@@ -58,6 +66,44 @@ static unsigned heard_count;
 static struct hakios_sta_channel channels[CHANNELS_MOST];
 static unsigned channel_count;
 
+/* the link's quality, while a network is joined (all under sta_lock) */
+static bool sta_linked;
+static uint64_t quality_due;                    /* mach_absolute_time() */
+static bool quality_told;                       /* ... since the network was joined (only the thread) */
+
+/* (under sta_lock) */
+static bool
+quality_can(void)
+{
+	return sta_ops != NULL && sta_ops->link_quality != NULL && sta_linked;
+}
+
+static void
+quality_after(unsigned seconds)
+{
+	clock_interval_to_deadline(seconds, NSEC_PER_SEC, &quality_due);
+}
+
+/* Measured, on the thread; said to Darwin when it has moved, and now and then when it has not. */
+static void
+quality_measure(const struct hakios_sta_ops *ops)
+{
+	static struct hakios_sta_quality quality;
+	static int16_t told_rssi;
+	static unsigned since_told;
+
+	if (ops->link_quality(&quality) == 0) {
+		int moved = quality.rssi - told_rssi;
+
+		if (!quality_told || moved >= QUALITY_SAY_DB || moved <= -QUALITY_SAY_DB || ++since_told >= QUALITY_SAY_MOST) {
+			quality_told = true;
+			told_rssi = quality.rssi;
+			since_told = 0;
+			hakios_apple80211_quality(&quality);
+		}
+	}
+}
+
 static void
 heard_one(const struct hakios_sta_bss *bss, __unused void *context)
 {
@@ -77,12 +123,17 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 
 	for (;;) {
 		const struct hakios_sta_ops *ops;
-		bool power = false, power_on = false, leave = false, do_join = false, do_scan = false;
+		bool power = false, power_on = false, leave = false, do_join = false, do_scan = false, do_quality = false;
 		int error = 0;
 
 		lck_mtx_lock(&sta_lock);
-		while (sta_ops == NULL || !(asked_power || asked_leave || asked_join || asked_scan)) {
-			lck_mtx_sleep(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_ops, THREAD_UNINT);
+		while (sta_ops == NULL || !(asked_power || asked_leave || asked_join || asked_scan ||
+		    (quality_can() && mach_absolute_time() >= quality_due))) {
+			if (quality_can()) {
+				lck_mtx_sleep_deadline(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_ops, THREAD_UNINT, quality_due);
+			} else {
+				lck_mtx_sleep(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_ops, THREAD_UNINT);
+			}
 		}
 		ops = sta_ops;
 		/* one thing at a time, in the order that makes sense when several wait */
@@ -90,14 +141,21 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 			power = true;
 			power_on = asked_power_on;
 			asked_power = false;
+			sta_linked = false;
 		} else if (asked_leave) {
 			leave = true;
 			asked_leave = false;
+			sta_linked = false;
 		} else if (asked_join) {
 			do_join = true;
 			join = asked_join_what;
 			bzero(&asked_join_what, sizeof(asked_join_what));
 			asked_join = false;
+			sta_linked = false;
+		} else if (quality_can() && mach_absolute_time() >= quality_due) {
+			/* (before a scan: Darwin asks for those one after the other for as long as it likes) */
+			do_quality = true;
+			quality_after(QUALITY_EVERY_S);
 		} else {
 			do_scan = true;
 			scan = asked_scan_what;
@@ -135,6 +193,11 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 			hakios_apple80211_event(HAKIOS_STA_JOIN_DONE, error);
 			if (error == 0) {
 				hakios_apple80211_event(HAKIOS_STA_LINK, 1);
+				quality_told = false;
+				lck_mtx_lock(&sta_lock);
+				sta_linked = true;
+				quality_after(1);       /* (the bars' first value, soon) */
+				lck_mtx_unlock(&sta_lock);
 			}
 			/* a join that did not come through (a wrong passphrase) leaves things as they were: the standing network again */
 			lck_mtx_lock(&sta_lock);
@@ -151,6 +214,8 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 			lck_mtx_unlock(&sta_lock);
 			ops->heard(heard_one, NULL);
 			hakios_apple80211_event(HAKIOS_STA_SCAN_DONE, error);
+		} else if (do_quality) {
+			quality_measure(ops);
 		}
 
 		lck_mtx_lock(&sta_lock);
@@ -171,6 +236,7 @@ hakios_sta_attach(const struct hakios_sta_ops *ops)
 		lck_mtx_lock(&sta_lock);
 		sta_ops = NULL;
 		asked_power = asked_scan = asked_join = asked_leave = false;
+		sta_linked = false;
 		while (sta_calls || sta_reads != 0) {
 			lck_mtx_sleep(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_calls, THREAD_UNINT);
 		}
@@ -206,6 +272,9 @@ hakios_sta_attach(const struct hakios_sta_ops *ops)
 void
 hakios_sta_lost(int error)
 {
+	lck_mtx_lock(&sta_lock);
+	sta_linked = false;
+	lck_mtx_unlock(&sta_lock);
 	hakios_apple80211_event(HAKIOS_STA_LINK, error != 0 ? error : ECONNRESET);
 }
 

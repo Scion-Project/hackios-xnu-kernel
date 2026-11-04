@@ -177,6 +177,31 @@ struct apple80211_link_changed {
 	uint8_t unused_3[4];
 };
 
+/*
+ * The RSSI event's data: the framework (the handler of event 39) wants at least 0xb4 bytes and makes
+ * a dictionary of them. Each group that has a flag counts only with it set; the counters and the
+ * rates have none. A driver's counters are per interval, and these stay 0: wifid's link-quality
+ * logic reads a loss rate out of them, and from nothing it concludes nothing.
+ */
+struct apple80211_rssi_changed {
+	uint8_t has_rssi, unused_0[3];
+	int32_t rssi;
+	uint8_t has_per_core, per_core[2];
+	uint8_t has_snr;
+	int16_t snr;
+	uint8_t has_noise, unused_1;
+	int16_t noise;
+	uint8_t has_cca, cca;
+	uint32_t tx_fail, tx_retrans, tx_frames, rx_retries, rx_frames, rx_beacons, beacons_due;
+	uint8_t has_beacons, has_firmware_counts, unused_2[2];
+	uint32_t firmware_tx_fail, firmware_tx_retrans, firmware_tx_frames;
+	uint32_t tx_rate, tx_fallback_rate, rx_rate;    /* Mbit/s */
+	uint8_t rest[0xb4 - 0x4c];
+};
+
+_Static_assert(sizeof(struct apple80211_rssi_changed) == 0xb4 && offsetof(struct apple80211_rssi_changed, tx_fail) == 0x14 &&
+    offsetof(struct apple80211_rssi_changed, has_beacons) == 0x30 && offsetof(struct apple80211_rssi_changed, tx_rate) == 0x40,
+    "the RSSI event as Darwin userland 16.5 reads it");
 _Static_assert(sizeof(struct apple80211_assoc) == 592 && offsetof(struct apple80211_assoc, key) == 0x48,
     "the association request as Darwin userland 16.5 has it");
 _Static_assert(sizeof(struct apple80211_link_changed) == 32 && offsetof(struct apple80211_link_changed, reason) == 0x14,
@@ -193,7 +218,7 @@ _Static_assert(sizeof(struct apple80211_scan_result) == 1164 && offsetof(struct 
 
 /* Apple80211's events (APPLE80211_M_...) */
 enum { EVENT_POWER_CHANGED = 1, EVENT_SSID_CHANGED = 2, EVENT_BSSID_CHANGED = 3, EVENT_LINK_CHANGED = 4, EVENT_ASSOC_DONE = 9,
-       EVENT_SCAN_DONE = 10 };
+       EVENT_SCAN_DONE = 10, EVENT_RSSI_CHANGED = 39 };
 
 static const char interface_name[16] = "en0";   /* (drivers/net/hakios.net.c makes one interface, and that is its name) */
 
@@ -664,6 +689,23 @@ hakios_apple80211_event(enum hakios_sta_event event, int status)
 		break;
 	}
 	}
+}
+
+/* How the network joined is heard now (drivers/wifi/hakios.sta.c, on its thread): what wifid scales the status bar's bars from. */
+void
+hakios_apple80211_quality(const struct hakios_sta_quality *quality)
+{
+	static unsigned said;
+	struct apple80211_rssi_changed event = { .has_rssi = 1, .rssi = quality->rssi, .tx_rate = quality->tx_rate,
+		                                 .tx_fallback_rate = quality->tx_rate, .rx_rate = quality->rx_rate };
+
+	/* (the first few, then now and then) */
+	if (said < 40 || said % 60 == 0) {
+		printf("apple80211: the link as the radio hears it: %d dBm, %u Mbit/s out, %u in\n", quality->rssi, quality->tx_rate,
+		    quality->rx_rate);
+	}
+	said++;
+	post(EVENT_RSSI_CHANGED, &event, sizeof(event));
 }
 
 /* ---- the requests as they arrive --------------------------------------------------------------------- */
