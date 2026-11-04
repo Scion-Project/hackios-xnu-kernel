@@ -51,7 +51,7 @@ static const CFStringRef *kVTVideoDecoderList_DecoderID_, *kVTVideoDecoderList_D
 #define ERR_BAD_DATA            (-12909)        /* kVTVideoDecoderBadDataErr */
 #define ERR_MALFUNCTION         (-12911)        /* kVTVideoDecoderMalfunctionErr */
 #define PENDING_MAX             64
-#define RECENT_FRAMES           4
+#define RECENT_FRAMES           6
 
 struct mfc_decoder {
 	int fd;

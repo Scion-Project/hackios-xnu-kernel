@@ -26,5 +26,10 @@ function start(){
     if(n>=+secs){clearInterval(tick);i++;start()}
   },1000);
 }
+// frames really presented, per stretch: requestVideoFrameCallback
+let rvf=0,rvfLast=0,rvfT=performance.now();
+if(v.requestVideoFrameCallback){const cb=(now,m)=>{rvf=m.presentedFrames;v.requestVideoFrameCallback(cb)};v.requestVideoFrameCallback(cb);
+ setInterval(()=>{const t=performance.now();say('page: presented '+((rvf-rvfLast)*1000/(t-rvfT)).toFixed(1)+' frames/s ('+list[Math.min(i,list.length-1)][0]+')');rvfLast=rvf;rvfT=t},5000);}
+else say('page: no requestVideoFrameCallback');
 say('page: loaded '+navigator.userAgent); start();
 </script></body></html>
