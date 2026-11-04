@@ -1,11 +1,12 @@
-# The real key store (`keystore_real=1`)
+# The real key store
 
-**Off by default.** Without `keystore_real=1` the kernel behaves as [the passcode](passcode.md) describes: the passcode gates the screen and
-encrypts nothing. With it, the keychain's keys are protected by the passcode. This page says what that means and where it stops. This is
+**On by default on the Galaxy S9 (`starlte`), off everywhere else.** `keystore_real=0` turns it off on the S9, `keystore_real=1` turns it on elsewhere. The S9's default is compiled in (`HAKIOS_DEVICE` from `CONFIG_DEVICE`, in `hakios.drivers.h`), because its boot line has no room for another argument. With it off the kernel behaves as [the passcode](passcode.md) describes: the passcode gates the screen and
+encrypts nothing. With it on, the keychain's keys are protected by the passcode. This page says what that means and where it stops. This is
 not Apple-grade security: there is no Secure Enclave, and today no key that lives outside the kernel.
 
-**Status.** Seen in QEMU and in one run on a Galaxy S9 with `/private/var` in memory (see Testing). It has not run on a phone's real data.
-Whether class A really stays shut while the phone is locked has not been checked on a phone. Do not turn it on for data you care about.
+**In short: this protects keychain items, not files. There is no hardware key yet, so a 6-digit passcode falls to anyone who reads the flash and guesses offline. A forgotten passcode loses the keychain.**
+
+**Status.** Seen in QEMU and on a Galaxy S9 on real `/private/var` data on USERDATA, through Settings and the lock screen (see Testing). Whether class A items refuse while the phone is locked has not been checked on a phone.
 
 ## What an attacker gets
 
@@ -59,10 +60,10 @@ RFC 3394's integrity check is the only verifier: there is nothing to compare wit
 
 With no passcode, A, B and C are wrapped under a key derived from D's root: in effect, in the clear. That is honest about what "no passcode" means.
 
-The answers are what securityd's `ks_crypt` expects (read from 16.5's securityd): locked is `0xe00002e2`, shown as
-`errSecInteractionNotAllowed`; no such key is `0xe00002f0`, `errSecNotAvailable`; a blob that will never open is `0xe007c008`, `errSecDecode`,
+The answers are what securityd's `ks_crypt` expects (read from 16.5's securityd, and seen on the phone): locked is `0xe00002e2`, shown as
+`errSecInteractionNotAllowed`; no such key is `0xe00002f0`, `errSecNotAvailable`; a blob that will never open is `0xe00002bc` (`kIOReturnError`), `errSecDecode`,
 and **securityd then drops the item**. That last one is why a damaged bag answers "locked" and not "never": the items must survive until
-someone decides.
+someone decides. AKS's own `0xe007c008` is the wrong answer here: securityd reports it as `errSecNotAvailable` and keeps the item, so every read of it fails again, and `profiled` gives up changing the passcode when it cannot read its own keychain item.
 
 **Damage fails closed.** A key bag file that exists but has no valid slot, or whose keys do not come out with no passcode set, leaves the phone
 locked: no passcode opens it, no class opens (D's root was in the file too), and nothing overwrites it. A file that does not exist is a new bag with
@@ -87,12 +88,24 @@ Turning this on means:
 3. **The existing keychain is dropped.** Items wrapped by the old reversible scheme are refused (`errSecDecode`), so securityd deletes them: saved Wi-Fi
    passwords, account tokens. The rest of `/private/var` needs no reformat for stages 1 to 3.
 4. **An existing passcode carries over** at the first unlock, and the old verifier file is overwritten: it was a far cheaper way to test guesses than the bag.
-   Booting an older kernel afterwards shows no passcode, and finds the new keychain unreadable.
+   Booting an older kernel, or `keystore_real=0`, afterwards shows no passcode, and finds the new keychain unreadable: **the screen opens, the keychain does not.** A passcode set meanwhile in the old file holds when the key bag is back, if the bag has none (over the bag's keys, which stay); if the bag has one, the bag's holds and the old file is overwritten.
 5. **Unlocking gets slower**: one Argon2id per attempt, single-threaded in the kernel. Not yet measured on the S9; the log prints `Argon2id N KiB x P: M ms`
    and the cost is stored per bag, so it can be tuned after a phone run. The target is under about a second. While it runs, 64 MiB of memory is in use.
 6. **Stage 4 (files) would need `/private/var` reformatted** and everything copied back or lost, and would cost I/O speed (below).
 7. **Daemons will see real lock behaviour**: class A items refuse while locked, class C items refuse before the first unlock. That is iOS's contract, but this
    userland has never run under it here, so expect bugs on the phone.
+
+## TWRP, wipes and installers
+
+The keys live in `/private/var/hakios-keybag`, on USERDATA, and nowhere else: the boot image and recovery hold none, so flashing either changes nothing in the bag.
+
+| What | What happens |
+|---|---|
+| Going through TWRP and back | Nothing. TWRP cannot mount HFS Plus (`Failed to mount '/data'`), does not ask to decrypt, and writes nothing: the first 16 MiB of USERDATA hashed the same across a TWRP restart, and the phone came back locked with its passcode. Seen on phone 2 |
+| Flashing a boot image | The bag stays. A `passcode_reset=1` image destroys the keys (above); a `keystore_real=0` or older image shows no passcode and cannot read the keychain |
+| Installer zip | Writes SYSTEM and BOOT only: the bag stays. The `-U` format-userdata zip destroys it with the rest of USERDATA. As the installer is described; not checked or run for this |
+| TWRP's Wipe, Factory Reset, Format Data | Not tried: they would overwrite USERDATA, bag and all. With no HFS Plus to mount, `/private/var` comes up in memory: no passcode and nothing kept, until the volume is made again. Don't use them unless that is the point |
+| A TWRP backup of data | Not tried; with data unmountable there should be nothing to back up. A raw copy of the partition holds the bag, which is the offline guessing row of the table above |
 
 ## What iOS 16.5 expects, and where this stands
 
@@ -192,7 +205,7 @@ What it would and wouldn't do, some of it not yet tested:
 
 | Argument | Meaning |
 |---|---|
-| `keystore_real=1` | the key bag. Off without it |
+| `keystore_real=N` | the key bag. 1 on, 0 off. Without it: on for the S9 (`starlte`), off for the rest |
 | `keystore_entcheck=N` | who may call what. 0: no check; 1 (the default): log what would be refused, and allow it; 2: refuse |
 | `keystore_kdf_kib=N` | Argon2id's memory, for the self-test only: ignored without `passcode_selftest` |
 | `passcode_reset=1` | with `keystore_real=1`: destroys the keys, leaves no passcode, overwrites the old verifier file |
@@ -208,6 +221,8 @@ What it would and wouldn't do, some of it not yet tested:
 - both slots damaged: locked, nothing opens, the right passcode gets nothing and is not counted, nothing is overwritten;
 - `passcode_reset=1` gets out of that, and every old blob then answers "never".
 
+`... stale` covers a bag with no passcode meeting a passcode in the old file: it holds, and what the bag's keys wrapped still opens.
+
 `... entitlements` boots a test program signed with `com.apple.keystore.device` alone, then unsigned: the table allows unlock and refuses wrap and changing the passcode, then refuses all but the state.
 
 After boot 11, `tools/keybag-offline.py` reads the raw volume as a thief would, with the reference Argon2 and OpenSSL's key wrap: the test key and the passcode are not on the volume in the
@@ -222,4 +237,6 @@ On a Galaxy S9, seven boots with `/private/var` in memory (USERDATA not mounted)
 - locking, a wrong code ("no keys") and the right code ("the class keys are in memory") all behave.
 - no daemon crashed in about 200 s locked. searchd aborted about 1 s after the first unlock, as it also has on boots without the key store. backboardd died twice: once at its old Mesa signature, once with `-[NSNull applyUIMode:]`, not seen before and not explained.
 
-Not checked on a phone: a class A item answering -25308 while locked (the console has no shell to run `keychain_test` from), real data on USERDATA, a keychain surviving a restart, and the entropy at first boot.
+On phone 2 on 4 November, `/private/var` on USERDATA with an existing keychain, by console taps through Settings and the lock screen: a 6-digit passcode set (Argon2id 471 ms), Settings shows Turn Passcode Off, the keypad shows after a lock, a wrong code is refused and counted (287 to 296 ms), the right one opens (about 290 ms); after a restart through TWRP the keypad says "iPhone requires your passcode after restarting", and before the first unlock securityd got "locked" for class 7, 83 times in that boot, and no daemon dropped an item; then unlocked, changed, and turned off. Old items were dropped by securityd, which made new metadata keys.
+
+Not checked on a phone: a class A item answering -25308 while locked (no daemon asked for one in 25 s locked, and the console has no shell to run `keychain_test` from), a keychain item surviving a restart, a passcode from the old file carried over (QEMU only), and the entropy at first boot.

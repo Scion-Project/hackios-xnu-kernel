@@ -11,7 +11,7 @@ reversible transformation, and the verifier file can be removed by root or by an
 flash. It stops someone who picks the phone up; it does not protect data from someone who takes it
 apart or boots something else.
 
-With `keystore_real=1` (off by default, seen on a phone only with `/private/var` in memory) the keychain's keys are protected by the passcode instead: see [the real key store](keystore.md). This page describes the kernel without it.
+With the key bag (on by default on the Galaxy S9; `keystore_real=0` turns it off, `keystore_real=1` turns it on elsewhere) the keychain's keys are protected by the passcode instead: see [the real key store](keystore.md). This page describes the kernel without it.
 
 ## How it works
 
@@ -59,6 +59,8 @@ If the lock screen ever cannot take the passcode (it was forgotten, the keypad d
 2. **Delete the file.** With the data volume mounted somewhere else (USERDATA is HFS Plus; TWRP does not
    mount it, a Mac or Linux with hfsplus does), delete `hakios-passcode` at the root of the volume.
    A missing, unreadable or damaged file means "no passcode".
+
+With the key bag (see [the real key store](keystore.md)) `passcode_reset=1` destroys the keychain's keys as well, and the file is `/private/var/hakios-keybag`; a damaged one fails closed.
 
 A kernel that cannot read the file, or whose key derivation fails its self-test, treats the phone as
 having no passcode: open, never shut for good.

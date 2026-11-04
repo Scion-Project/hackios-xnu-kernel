@@ -90,6 +90,7 @@ extern vnode_t proc_getexecutablevnode(proc_t);
 }
 
 #include "../../osfmk/minicrypto/mc_keywrap.h"
+#include "../../bsd/dev/hakios.drivers.h"       /* HAKIOS_DEVICE */
 
 enum {
 	kAKSOpenCheck           = 0x00,
@@ -143,7 +144,7 @@ enum {
  * errSecNotAvailable ("no key for this class") and errSecDecode ("can't be decrypted on this device, ever, so drop the item") */
 #define kAKSNoPermission        kIOReturnNotPermitted
 #define kAKSNoClassKey          kIOReturnNotFound
-#define kAKSDecodeError         ((IOReturn) 0xe007c008)
+#define kAKSDecodeError         kIOReturnError   /* not AKS's own 0xe007c008: ks_crypt gives errSecNotAvailable for that, and the item stays and fails for ever */
 
 #define kHKMaxSecret            256
 #define kHKMaxBlob              2048
@@ -958,6 +959,46 @@ wipeOldFile(void)
 	IODelete(r, HKRecord, 1);
 }
 
+/* Whether the old kind of file holds a passcode; old receives the newer of its slots. */
+static bool
+oldFilePasscode(HKRecord * old)
+{
+	HKRecord * other = IONew(HKRecord, 1);
+	bool oldGood, otherGood;
+
+	if (other == NULL) {
+		return false;
+	}
+	memset(old, 0, sizeof(*old));
+	memset(other, 0, sizeof(*other));
+	oldGood = fileIOAt(kHKPath, kHKV1Size, UIO_READ, 0, old) == 0 && recordValid(old, kHKRecordVersion);
+	otherGood = fileIOAt(kHKPath, kHKV1Size, UIO_READ, 1, other) == 0 && recordValid(other, kHKRecordVersion);
+	if (otherGood && (!oldGood || other->generation > old->generation)) {
+		memcpy(old, other, sizeof(*old));
+		oldGood = true;
+	}
+	mc_wipe(other, sizeof(*other));
+	IODelete(other, HKRecord, 1);
+	return oldGood && old->hasPasscode;
+}
+
+/* The old file's passcode is in force from now until the first unlock, which makes the bag's keys wrapped under it (migrateBag). */
+static void
+takeOldPasscode(const HKRecord * old)
+{
+	gKS.record.bag.migrating = 1;
+	gKS.record.hasPasscode = 1;
+	gKS.record.iterations = old->iterations;
+	memcpy(gKS.record.salt, old->salt, sizeof(gKS.record.salt));
+	memcpy(gKS.record.verifier, old->verifier, sizeof(gKS.record.verifier));
+	gKS.record.failedAttempts = old->failedAttempts;
+	gKS.record.gracePeriod = old->gracePeriod;
+	gKS.record.blobLength = old->blobLength;
+	memcpy(gKS.record.blob, old->blob, sizeof(gKS.record.blob));
+	gKS.locked = true;
+	gKS.unlockedOnce = false;
+}
+
 /* New keys for everything, no passcode: whatever was wrapped before is gone. In memory; the caller keeps the record. */
 static void
 newBag(HKRecord * r)
@@ -1059,42 +1100,15 @@ realLoad(void)
 			return;
 		}
 		/* No bag. The old file's passcode, if there is one, stays in force until the first unlock makes the bag from it. */
-		HKRecord * old = IONew(HKRecord, 1), * other = IONew(HKRecord, 1);
-		bool migrate = false;
+		HKRecord * old = IONew(HKRecord, 1);
+		bool migrate = old != NULL && oldFilePasscode(old);
 
-		if (old != NULL && other != NULL) {
-			bool oldGood, otherGood;
-
-			memset(old, 0, sizeof(*old));
-			memset(other, 0, sizeof(*other));
-			oldGood = fileIOAt(kHKPath, kHKV1Size, UIO_READ, 0, old) == 0 && recordValid(old, kHKRecordVersion);
-			otherGood = fileIOAt(kHKPath, kHKV1Size, UIO_READ, 1, other) == 0 && recordValid(other, kHKRecordVersion);
-			if (otherGood && (!oldGood || other->generation > old->generation)) {
-				memcpy(old, other, sizeof(*old));
-				oldGood = true;
-			}
-			migrate = oldGood && old->hasPasscode;
-		}
-		if (other != NULL) {
-			mc_wipe(other, sizeof(*other));
-			IODelete(other, HKRecord, 1);
-		}
 		newBag(&gKS.record);
 		if (migrate) {
 			wipeRoots();
 			gKS.record.bag.wrappedTiers = 0;
 			memset(gKS.record.bag.wrapped, 0, sizeof(gKS.record.bag.wrapped));
-			gKS.record.bag.migrating = 1;
-			gKS.record.hasPasscode = 1;
-			gKS.record.iterations = old->iterations;
-			memcpy(gKS.record.salt, old->salt, sizeof(gKS.record.salt));
-			memcpy(gKS.record.verifier, old->verifier, sizeof(gKS.record.verifier));
-			gKS.record.failedAttempts = old->failedAttempts;
-			gKS.record.gracePeriod = old->gracePeriod;
-			gKS.record.blobLength = old->blobLength;
-			memcpy(gKS.record.blob, old->blob, sizeof(gKS.record.blob));
-			gKS.locked = true;
-			gKS.unlockedOnce = false;
+			takeOldPasscode(old);
 		}
 		if (old != NULL) {
 			mc_wipe(old, sizeof(*old));
@@ -1108,6 +1122,28 @@ realLoad(void)
 	gKS.persisted = true;
 	stirEntropy(gKS.record.bag.seed, sizeof(gKS.record.bag.seed));
 	read_random(gKS.record.bag.seed, sizeof(gKS.record.bag.seed));
+	if (!gKS.record.bag.migrating) {
+		/*
+		 * A passcode in the old file beside a bag: an older kernel, or this one with keystore_real=0, set it after the bag was made
+		 * (everything here that makes a bag's passcode empties that file). With no passcode in the bag, the phone must not
+		 * come up open: that passcode holds, over the bag's keys. With one, the bag's holds, and the file is only a cheap way to test guesses.
+		 */
+		HKRecord * old = IONew(HKRecord, 1);
+
+		if (old != NULL) {
+			if (oldFilePasscode(old)) {
+				if (gKS.record.hasPasscode) {
+					wipeOldFile();
+					printf("MiniAppleKeyStore: the bag's passcode holds; the passcode in %s is overwritten\n", kHKPath);
+				} else {
+					takeOldPasscode(old);
+					printf("MiniAppleKeyStore: %s holds a passcode and the bag none: it stays until the first unlock\n", kHKPath);
+				}
+			}
+			mc_wipe(old, sizeof(*old));
+			IODelete(old, HKRecord, 1);
+		}
+	}
 	if (gKS.record.hasPasscode) {
 		if (!gKS.record.bag.migrating && !bagCostValid(&gKS.record)) {
 			damagedBag("an impossible key derivation cost");
@@ -1169,15 +1205,30 @@ migrateBag(const uint8_t * passcode, size_t length)
 	uint32_t memKiB, passes;
 	IOReturn ret;
 
+	/* a bag that already holds keys (under no passcode) keeps them, with what is wrapped under them; otherwise new ones */
+	if (gKS.record.bag.wrappedTiers != 0) {
+		bool good;
+
+		kekWithoutPasscode(&gKS.record, kek);
+		good = unwrapRoots(&gKS.record, kek, gKS.roots, gKS.have);
+		mc_wipe(kek, sizeof(kek));
+		if (!good) {
+			damagedBag("no passcode in it, and the keys do not come out");
+			return kAKSNoPermission;
+		}
+	}
 	kdfCost(&memKiB, &passes);
 	read_random(gKS.record.bag.kdfSalt, sizeof(gKS.record.bag.kdfSalt));
 	ret = kdfUnlocked(passcode, length, memKiB, passes, gKS.record.bag.kdfSalt, sizeof(gKS.record.bag.kdfSalt), kek);
 	if (ret != kIOReturnSuccess) {
+		wipeRoots();
 		return ret;
 	}
 	stirEntropy(NULL, 0);
 	for (int t = 0; t < kHKTiers; t++) {
-		read_random(gKS.roots[t], kHKRootSize);
+		if (!gKS.have[t]) {
+			read_random(gKS.roots[t], kHKRootSize);
+		}
 		gKS.have[t] = have[t] = true;
 	}
 	gKS.record.bag.kdfMemKiB = memKiB;
@@ -1921,7 +1972,7 @@ realSelftest(uint32_t phase)
 	if (!gKS.loaded) {
 		load();
 	}
-	if (phase != 10 && phase != 15 && phase != 17 && phase != 18) {
+	if (phase != 10 && phase != 15 && phase != 17 && phase != 18 && phase != 19) {
 		error = selftestFile(UIO_READ, saved);
 		CHECK("the blobs of the last boot are there", error == 0);
 	}
@@ -2066,6 +2117,22 @@ realSelftest(uint32_t phase)
 			}
 		}
 		CHECK("kept for the next boot", selftestFile(UIO_WRITE, saved) == 0);
+		break;
+	case 19:
+		CHECK("a new bag, no passcode", !gKS.record.hasPasscode && !gKS.record.bag.migrating && lockState() == kAKSLockDisabled);
+		CHECK("A wraps", bagWrap(6, kTestKey, 32, saved->blob[kBlobA]) == kIOReturnSuccess);
+		CHECK("D wraps", bagWrap(8, kTestKey, 32, saved->blob[kBlobD]) == kIOReturnSuccess);
+		CHECK("kept for the next boot", selftestFile(UIO_WRITE, saved) == 0);
+		break;
+	case 20:
+		CHECK("the old file's passcode holds over a bag with none", gKS.record.hasPasscode && gKS.record.bag.migrating && lockState() == kAKSLockLocked);
+		CHECK("no key yet", rootIsWiped(kTierA) && rootIsWiped(kTierC));
+		CHECK("A is shut", bagUnwrap(6, saved->blob[kBlobA], 40, out) == kAKSNoPermission);
+		CHECK("D stays open", opens(8, saved->blob[kBlobD]));
+		CHECK("a wrong try is refused and counts", tryPasscode((const uint8_t *) "000000", 6, true, &changed, &first) == kAKSWrongPasscode && gKS.record.failedAttempts >= 1);
+		CHECK("abcdef opens", tryPasscode((const uint8_t *) "abcdef", 6, true, &changed, &first) == kIOReturnSuccess && first && lockState() == kAKSLockUnlocked);
+		CHECK("the bag holds wrapped keys now", !gKS.record.bag.migrating && (gKS.record.bag.wrappedTiers & 0xf) == 0xf && gKS.record.iterations == 0);
+		CHECK("what was wrapped before it opens", opens(6, saved->blob[kBlobA]) && opens(8, saved->blob[kBlobD]));
 		break;
 	case 17: {
 		const char * wanted = NULL;
@@ -2612,9 +2679,11 @@ MiniAppleKeyStoreStart(void)
 	IOService * resources = IOService::getResourceService();
 	AppleKeyStore * store = OSTypeAlloc(AppleKeyStore);
 
-	uint32_t real = 0;
+	/* on by default on the Galaxy S9 alone, and off with keystore_real=0: compiled in, because its boot line has no room (docs/keystore.md) */
+	uint32_t real = strcmp(HAKIOS_DEVICE, "starlte") == 0;
 
-	gKS.real = PE_parse_boot_argn("keystore_real", &real, sizeof(real)) && real != 0;
+	PE_parse_boot_argn("keystore_real", &real, sizeof(real));
+	gKS.real = real != 0;
 	PE_parse_boot_argn("keystore_entcheck", &gEntCheck, sizeof(gEntCheck));
 	gAKSLock = IOLockAlloc();
 	if (gAKSLock == NULL || resources == NULL || store == NULL || !store->init() || !store->attach(resources)) {
