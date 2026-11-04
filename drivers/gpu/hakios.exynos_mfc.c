@@ -17,6 +17,11 @@
  * exynos9810: flexpmu_cal_local, cmucal-sfr, cmucal-node; the device tree's mfc0@178D0000, pd-mfc@14064068, sysmmu@17880000 and
  * @178A0000). GPL: read for these facts, nothing copied. This file is new, under the APSL as the kernel's are.
  *
+ * Seen on phone 2, 4 November 2026: the domain and the clocks the boot leaves on; the SysMMUs' CTRL 0x4 (cleared: addresses pass through); the phone's own
+ * mfc_fw.bin (21-01-12), block version 0x1200; the test stream's 6 frames with ffmpeg's CRCs in 10 ms; a 1080p H.264 clip, 225 frames a second with
+ * mfc_test; through AVPlayer (userland/src/mfc_decoder.c) H.264 and HEVC at 1080p30, the first frame's CRC ffmpeg's, mediaserverd 17% of a core
+ * against 63% in software.
+ *
  *   registers     0x178D0000, 64 KB; SPI 356 (not used yet: the driver polls RISC2HOST_INT, a sleep of a millisecond at a time)
  *   the domain    pd-mfc: the PMU's MFC_CONFIGURATION 0x14064068 [3:0] = 0xF, MFC_STATUS 0x1406406C. need_smc 0x17810204: after
  *                 the power comes, SMC 0x82000410 (1, 0x17810204, 0), the DTZPC restore (as the G3D's, ISPPRE's and AUD's)
@@ -63,6 +68,7 @@
 #include <IOKit/IOLib.h>
 #include <libkern/OSAtomic.h>
 #include <libkern/crc.h>
+#include <stdarg.h>
 #include <string.h>
 #include <mach/vm_param.h>
 
@@ -75,7 +81,23 @@
 extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 extern boolean_t pmap_valid_page(ppnum_t);
 
-#define say(...)                printf(__VA_ARGS__)
+extern void loader_log_line(const char *line);
+
+static int say(const char *format, ...) __printflike(1, 2);
+
+/* (into the log the boot loader keeps across a return as well: what a run has done is read in TWRP) */
+static int
+say(const char *format, ...)
+{
+	char line[400];
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(line, sizeof(line), format, list);
+	va_end(list);
+	loader_log_line(line);
+	return printf("%s", line);
+}
 
 #define MFC_PA                  0x178D0000UL
 #define MFC_SIZE                0x10000UL
@@ -648,8 +670,8 @@ firmware_start(void)
 		IOSleep(500);
 	}
 	say("exynos_mfc: 3: the %s partition answers after %d ms more (%llu bytes)\n", partition, waited * 500, got);
-	if (hakios_partition_file(partition, "/vendor", "/vendor/firmware/mfc_fw.bin", FW_CODE, &data, &size) != 0 || data == NULL) {
-		say("exynos_mfc: 3: mfc_fw.bin is not on the phone's %s partition (needs ufs=2): no hardware video\n", partition);
+	if (hakios_partition_file(partition, "/vendor", "/firmware/mfc_fw.bin", FW_CODE, &data, &size) != 0 || data == NULL) {
+		say("exynos_mfc: 3: /firmware/mfc_fw.bin is not on the phone's %s partition: no hardware video\n", partition);
 		return false;
 	}
 	code = mfc_alloc(FW_CODE + DEV_CTX);
