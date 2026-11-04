@@ -128,8 +128,8 @@
  * ep0.c (the control transfer's phases, 39-1160). GPL-2.0: read for facts only, no code taken. The event and TRB
  * layouts are those of core.h:1095-1205 and 676-710.
  *
- * Status: WRITTEN, NOT YET RUN on the phone. QEMU has no DWC3 device model (its DWC3 is the Xilinx boards' host-only
- * one), so the controller side is unchecked; the descriptors and requests are checked on the build machine.
+ * Status: run on the Galaxy S9 since 1 November. QEMU has no DWC3 device model (its DWC3 is the Xilinx boards' host-only
+ * one), so the controller side is checked only on the phone; the descriptors and requests on the build machine.
  */
 #include <stdarg.h>
 #include <stdint.h>
