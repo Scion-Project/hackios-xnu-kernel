@@ -307,8 +307,8 @@ hmacKey(HMACKey * k, const uint8_t * key, size_t keyLength)
 	}
 	SHA256_Init(&k->outer);
 	SHA256_Update(&k->outer, block, sizeof(block));
-	memset(block, 0, sizeof(block));
-	memset(hashed, 0, sizeof(hashed));
+	mc_wipe(block, sizeof(block));
+	mc_wipe(hashed, sizeof(hashed));
 }
 
 static void
@@ -325,6 +325,8 @@ hmac(const HMACKey * k, const uint8_t * a, size_t aLength, const uint8_t * b, si
 	c = k->outer;
 	SHA256_Update(&c, inner, sizeof(inner));
 	SHA256_Final(out, &c);
+	mc_wipe(&c, sizeof(c));
+	mc_wipe(inner, sizeof(inner));
 }
 
 static void
@@ -350,8 +352,10 @@ pbkdf2(const uint8_t * password, size_t passwordLength, const uint8_t * salt, si
 		memcpy(out, t, n);
 		out += n;
 		outLength -= n;
+		mc_wipe(u, sizeof(u));
+		mc_wipe(t, sizeof(t));
 	}
-	memset(&k, 0, sizeof(k));
+	mc_wipe(&k, sizeof(k));
 }
 
 /* RFC 7914 section 11: PBKDF2-HMAC-SHA256 (P="passwd", S="salt", c=1), the first 32 of its 64 bytes */
@@ -639,7 +643,7 @@ tryPasscode(const uint8_t * passcode, size_t length, bool unlock, bool * changed
 	}
 	pbkdf2(passcode, length, gKS.record.salt, sizeof(gKS.record.salt), gKS.record.iterations, derived, sizeof(derived));
 	good = sameBytes(derived, gKS.record.verifier, sizeof(derived));
-	memset(derived, 0, sizeof(derived));
+	mc_wipe(derived, sizeof(derived));
 
 	if (!good) {
 		uint32_t delay;
@@ -1028,6 +1032,10 @@ realLoad(void)
 		}
 	}
 
+	if (!gKS.kdfGood) {
+		damagedBag("the key derivation or key wrap fails its known answers");
+		return;
+	}
 	if (PE_parse_boot_argn("passcode_reset", &reset, sizeof(reset)) && reset != 0) {
 		/* both slots, so that no older record with the old keys is left to come back */
 		newBag(&gKS.record);
@@ -1040,10 +1048,6 @@ realLoad(void)
 		wipeOldFile();
 		printf("MiniAppleKeyStore: passcode_reset=%u: the key bag's keys are destroyed, and what they protected with them; %s now holds new keys and no passcode\n",
 		    reset, kHKBagPath);
-		return;
-	}
-	if (!gKS.kdfGood) {
-		damagedBag("the key derivation or key wrap fails its known answers");
 		return;
 	}
 	if (gKS.newestSlot < 0) {
@@ -1103,8 +1107,12 @@ realLoad(void)
 	stirEntropy(gKS.record.bag.seed, sizeof(gKS.record.bag.seed));
 	read_random(gKS.record.bag.seed, sizeof(gKS.record.bag.seed));
 	if (gKS.record.hasPasscode) {
-		if (!bagCostValid(&gKS.record) && !gKS.record.bag.migrating) {
+		if (!gKS.record.bag.migrating && !bagCostValid(&gKS.record)) {
 			damagedBag("an impossible key derivation cost");
+			return;
+		}
+		if (!gKS.record.bag.migrating && (gKS.record.bag.wrappedTiers & (1u << kTierA | 1u << kTierC)) != (1u << kTierA | 1u << kTierC)) {
+			damagedBag("a passcode, and no keys under it");
 			return;
 		}
 		uint64_t now = calendarSeconds();
@@ -2149,8 +2157,12 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 	}
 
 	switch (selector) {
-	case kAKSOpenCheck:
 	case kAKSUnlockBag:
+		/* escrow and backup bags do not exist with the key bag (docs/keystore.md); without it, "opened" meant nothing either */
+		ret = gKS.real ? kAKSNoPermission : kIOReturnSuccess;
+		break;
+
+	case kAKSOpenCheck:
 	case kAKSAssertDrop:
 	case kAKSPrewarm:
 		ret = kIOReturnSuccess;
@@ -2206,7 +2218,7 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 			memcpy(passcode, args->structureInput, length);
 		}
 		ret = tryPasscode(passcode, length, true, &changed, &first);
-		memset(passcode, 0, sizeof(passcode));
+		mc_wipe(passcode, sizeof(passcode));
 		break;
 	}
 
@@ -2230,7 +2242,7 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 		if (ret == kIOReturnSuccess) {
 			ret = tryPasscode(buf + 8, passcodeLength, false, &changed, &first);
 		}
-		memset(buf, 0, size);
+		mc_wipe(buf, size);
 		IODelete(buf, uint8_t, size);
 		break;
 	}
@@ -2382,7 +2394,7 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 				    p + head.oldLength + head.newLength, head.blobLength, &changed, &first);
 			}
 		}
-		memset(buf, 0, size);
+		mc_wipe(buf, size);
 		IODelete(buf, uint8_t, size);
 		break;
 	}

@@ -32,6 +32,7 @@ Limits to keep in mind:
   keep older copies. An old record falls to its old passcode, or to no passcode at all if it dates from before one was set. Apple solves this
   with effaceable storage; there is none here. A device that has held data under a weak or no passcode should be reset (see below), not just
   given a better one.
+- **Residue.** Secrets this code holds are wiped, but the passcode also passes through SpringBoard, Settings and `passcoded`, and an unwrapped key through IOKit's own buffers on the way to securityd. Neither is wiped here.
 - **Random numbers.** The loader's boot seed is derived only from a timer (`xnuloader/loader.c`), which is weak. The kernel's generator also takes
   interrupt timing, this file stirs in timing jitter, and from the second boot on it stirs in a seed saved in the bag. How much entropy that
   gives on the first boot of a phone has **not been measured**. It matters most at that first boot, when the keys are made.
@@ -108,7 +109,7 @@ From 16.5's binaries (securityd, keybagd, coreauthd, SharedUtils, MobileKeyBag, 
 | `LAContext`, passcode as a credential, biometric policies | Settings, apps, Face ID enrolment | needs stage 3 |
 | Biometric unlock only after a first unlock, passcode again after 48 hours, a reboot or 5 failed matches | iOS's rule | not done, stage 3. Without a Secure Enclave, holding class A's key for a biometric unlock means **keeping it in kernel memory while locked**, weaker than iOS; the owner's call |
 | File classes A, B, C, D on `/private/var` (HFS+ `cprotect`) | every app and daemon's files | **off today**: `xnu/hfs/hfs.patch` sets `CONFIG_PROTECT 0`. Stage 4 |
-| Escrow bags (`com.apple.keystore.escrow.create`, `aks_create_bag` 0x02, `aks_load_bag` 0x06, backup bags) | lockdownd pairing, MDM, backups | not done; those selectors answer unsupported, so nothing is unlocked by a bag |
+| Escrow bags (`com.apple.keystore.escrow.create`, `aks_create_bag` 0x02, `aks_load_bag` 0x06, backup bags) | lockdownd pairing, MDM, backups | not done; those selectors answer unsupported and `aks_unlock_bag` 0x0c is refused, so nothing is unlocked by a bag |
 | Effaceable storage, `obliterate-d-key` | `mobile_obliterator`, "Erase Data" | not done. **Do not turn on "Erase Data"**: untested here |
 | Secure Enclave keys, attestation (`sik`) | CryptoTokenKit, 65 programs hold the entitlement | not done and no plan: no Secure Enclave |
 
