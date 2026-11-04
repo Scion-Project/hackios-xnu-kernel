@@ -81,7 +81,8 @@
  *                     USB-C switch (hakios.max77705.c). usb restart: the link restarted, as after a replug. usb drop MS:
  *                     the pull-up off for MS ms and on again, nothing else (the host sees an unplug). usb unplug MS: the
  *                     switch open and VBUS taken as gone for MS ms (an unplug from this side, the port's). usb muic MS:
- *                     the switch open for MS ms and nothing told to the link. usb watch off/on: the check for a link
+ *                     the switch open for MS ms and nothing told to the link. usb vbus MS: VBUS taken as gone for MS ms,
+ *                     the switch left alone. usb watch off/on: the check for a link
  *                     that gets bus resets and no SETUP (see THE CABLE COMING AND GOING)
  *   return            end the run: the data volume saved, the drivers given back, the loader restarts the phone (into
  *                     TWRP on the S9). Done on a thread call of its own; should that not have ended the run after
@@ -102,9 +103,10 @@
  *   - the link's own state: a host's reset without a SETUP after it, four in a row (or twelve resets without a
  *     configuration), means what a replug nobody saw would mean: the same restart, at most every 2 s, doubling to 30 s,
  *     until the host configures it. A USB controller reset on the host's side comes in by this door or by a plain reset.
- *     VBUS there with no host saying anything for 5 s: the switch closed again and the restart, five times at most until
- *     the next change, for a host that has stopped trying (macOS gives a port up after eight failures in some 10 s) and
- *     only sees a new pull-up; a wall charger has VBUS too and never talks.
+ *     VBUS there and neither a SOF nor a reset for 5 s, configured or not: the switch closed again and the restart, five
+ *     times at most until the next change or configuration, for a host that has stopped trying (macOS gives a port up after
+ *     eight failures in some 10 s) and only sees a new pull-up. A wall charger has VBUS too and never talks, and a host
+ *     that suspends the port stops its SOFs: both get those five and no more.
  * The restart never waits on VBUS alone: a reading that stops coming puts a stopped link back up after 3 s.
  *
  * Boot-args:
@@ -351,7 +353,7 @@ static uint64_t return_asked_at;        /* when it was started (mach_absolute_ti
 #define STORM_NO_CONFIG         12      /* resets with no SET_CONFIGURATION after them */
 #define RESTART_WAIT_FIRST      2       /* seconds between restarts, doubling ... */
 #define RESTART_WAIT_MOST       30      /* ... up to this; back to the first once the host has configured the link */
-#define QUIET_SECONDS           5       /* VBUS there, not configured, not a word from a host for this long ... */
+#define QUIET_SECONDS           5       /* VBUS there and no SOF or reset from a host for this long ... */
 #define QUIET_RESTARTS          5       /* ... restarts for that, then none until the next change (a wall charger never talks) */
 static int vbus_report = VBUS_UNKNOWN, vbus_seen = VBUS_UNKNOWN;
 static uint64_t vbus_heard_at;          /* mach_absolute_time of the last report */
@@ -360,10 +362,14 @@ static bool watch_storms = true;        /* the console's usb watch */
 static bool want_restart;               /* the console's usb restart */
 static uint32_t want_drop_ms;           /* the console's usb drop */
 static uint32_t resets_no_setup, resets_no_config, quiet_restarts;
-static uint64_t last_heard;             /* mach_absolute_time of the host's last reset, or of the last restart */
+static uint64_t last_heard;             /* mach_absolute_time of the host's last SOF or reset, or of the last restart */
+static uint32_t last_sof;               /* DSTS's frame number when last looked at */
 static uint32_t restart_wait = RESTART_WAIT_FIRST;
 static uint64_t restart_after;          /* mach_absolute_time before which no storm restarts the link */
 static uint64_t n_restarts;
+static uint64_t hold_log_until;         /* after a restart: the log waits for the host to open the port, until this time */
+static uint64_t hold_open_at;           /* when the host opened the port, while the log is held */
+#define HOLD_LOG_SECONDS        10
 static uint32_t say_resets = 16, say_setups = 64;      /* log lines left; a restart gives some back */
 
 static struct usbacm acm;
@@ -1031,6 +1037,25 @@ pump_in(void)
 	if (steps < 5 || acm.config == 0 || pep[PEP_IN].active || (acm.halted & 2)) {
 		return;
 	}
+	if (hold_log_until != 0) {
+		/*
+		 * A host takes what comes before anyone has the port open and drops it: what happened meanwhile would be lost. Open
+		 * for a moment, not just opened: a reader that sets the port up (stty) closes it again before it starts reading.
+		 */
+		uint64_t now = mach_absolute_time(), ns = 0;
+
+		if (acm.lines & 1) {
+			hold_open_at = hold_open_at != 0 ? hold_open_at : now;
+			absolutetime_to_nanoseconds(now - hold_open_at, &ns);
+		} else {
+			hold_open_at = 0;
+		}
+		if (ns < 300 * NSEC_PER_MSEC && now < hold_log_until) {
+			return;
+		}
+		hold_log_until = 0;
+		hold_open_at = 0;
+	}
 	phase = os_atomic_load(&shot.phase, acquire);    /* the camera's thread sets a camshot up (hakios_usb_picture) */
 	if (phase == SHOT_PREP) {
 		return;                 /* a picture being set up: the log waits for it */
@@ -1088,9 +1113,21 @@ bulk_complete(int p)
 
 /* ---- device events ---- */
 
+/* the log waits, for a while, for the host to have the port open: see pump_in() */
+static void
+hold_log(void)
+{
+	uint64_t ns;
+
+	nanoseconds_to_absolutetime((uint64_t)HOLD_LOG_SECONDS * NSEC_PER_SEC, &ns);
+	hold_log_until = mach_absolute_time() + ns;
+	hold_open_at = 0;
+}
+
 static void
 on_reset(void)
 {
+	hold_log();
 	n_resets++;
 	last_heard = mach_absolute_time();
 	resets_no_setup++;
@@ -1435,10 +1472,10 @@ console_usb(const char *arg)
 	} else if (strcmp(arg, "watch off") == 0 || strcmp(arg, "watch on") == 0) {
 		watch_storms = arg[7] == 'n';
 		con("usb: the check for resets with no SETUP: %s\n", watch_storms ? "on" : "off");
-	} else if (strncmp(arg, "unplug ", 7) == 0 || strncmp(arg, "muic ", 5) == 0) {
+	} else if (strncmp(arg, "unplug ", 7) == 0 || strncmp(arg, "muic ", 5) == 0 || strncmp(arg, "vbus ", 5) == 0) {
 		hakios_max77705_usb_console(arg);
 	} else {
-		con("usb: usb [restart | drop MS | unplug MS | muic MS | watch on|off]\n");
+		con("usb: usb [restart | drop MS | unplug MS | muic MS | vbus MS | watch on|off]\n");
 	}
 }
 
@@ -1476,7 +1513,7 @@ console(char *line)
 		    "[PORT [PATH]] (a TCP connection and an HTTP GET, the bytes back), wifi stat (en0's frames by size and kind, IP, UDP "
 		    "and TCP counts), wifi names [off] (DNS questions and answers, TCP connections, as they come), touch X Y "
 		    "[X2 Y2 [MS]] (a tap or a swipe, in thousandths of the screen), button lock|home|up|down (a press), usb [restart | "
-		    "drop MS | unplug MS | muic MS | watch on|off] (the link and the cable), return (end the run)\n");
+		    "drop MS | unplug MS | muic MS | vbus MS | watch on|off] (the link and the cable), return (end the run)\n");
 	} else if (strcmp(line, "stat") == 0) {
 		con("usb: %s, %s speed, %llu resets, %llu requests (%llu stalled), %llu bytes sent, %llu received, %u lost, %llu events, "
 		    "%llu shots, %llu restarts\n", usb_state, high_speed ? "high" : "full", n_resets, n_setups, n_stalls, n_in, n_out,
@@ -1872,6 +1909,7 @@ out:
 	set_state(ok ? "waiting" : "stuck");
 	nanoseconds_to_absolutetime((uint64_t)restart_wait * NSEC_PER_SEC, &ns);
 	restart_after = mach_absolute_time() + ns;
+	hold_log();
 	last_heard = mach_absolute_time();
 	restart_wait = restart_wait * 2 > RESTART_WAIT_MOST ? RESTART_WAIT_MOST : restart_wait * 2;
 	return ok;
@@ -1891,6 +1929,7 @@ link_watch(void)
 {
 	int vbus = os_atomic_load(&vbus_report, acquire);
 	uint64_t now = mach_absolute_time(), ns;
+	uint32_t sof = link_stopped ? last_sof : (rd(DSTS) >> 3) & 0x3fffu;     /* [16:3], SOFFN */
 
 	if (vbus != VBUS_UNKNOWN && vbus != vbus_seen) {
 		int was = vbus_seen;
@@ -1944,10 +1983,11 @@ link_watch(void)
 		(void)link_restart(resets_no_setup >= STORM_NO_SETUP ? "bus resets, no SETUP" : "bus resets, no configuration");
 		return;
 	}
-	if (watch_storms && vbus_seen == 1 && acm.config == 0 && quiet_restarts < QUIET_RESTARTS && now >= restart_after) {
-		if (last_heard == 0) {
-			last_heard = now;
-		}
+	if (sof != last_sof || last_heard == 0) {
+		last_sof = sof;
+		last_heard = now;
+	}
+	if (watch_storms && vbus_seen == 1 && quiet_restarts < QUIET_RESTARTS && now >= restart_after) {
 		absolutetime_to_nanoseconds(now - last_heard, &ns);
 		if (ns > (uint64_t)QUIET_SECONDS * NSEC_PER_SEC) {
 			quiet_restarts++;
@@ -2018,6 +2058,7 @@ hakios_usb_gadget_quiesce(void)
 	for (int i = 0; i < 1000 && !os_atomic_cmpxchg(&busy, 0, 1, acquire); i++) {
 		delay(100);     /* the poll is mid-way; after 100 ms it is taken to be gone with its processor */
 	}
+	hold_log_until = 0;
 	if (stage >= 5 && acm.config != 0) {
 		for (uint32_t ms = 0; ms < drain_ms; ms++) {
 			events();

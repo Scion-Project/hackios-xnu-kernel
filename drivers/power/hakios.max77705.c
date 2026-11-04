@@ -351,6 +351,8 @@ say_state(const char *when, const struct hakios_battery_state *b)
  * GOING).
  */
 #define MUIC                    0x25
+#define MUIC_USBC_STATUS1       0x06
+#define MUIC_USBC_STATUS2       0x07            /* the firmware's last SYSMSG (its errors with opcodes among them) */
 #define MUIC_BC_STATUS          0x08
 #define  BC_VBUS                (1u << 7)
 #define  BC_CHGTYP(v)           ((v) & 3u)
@@ -367,7 +369,8 @@ say_state(const char *when, const struct hakios_battery_state *b)
 extern void hakios_usb_gadget_vbus(bool present);
 static bool usbsw_running;
 static volatile uint32_t usbsw_test_ms;         /* the console's usb unplug/muic: how long */
-static volatile bool usbsw_test_tell;           /* usb unplug: VBUS taken as gone meanwhile */
+static volatile bool usbsw_test_tell;           /* usb unplug, usb vbus: VBUS taken as gone meanwhile */
+static volatile bool usbsw_test_open;           /* usb unplug, usb muic: the switch open meanwhile */
 static volatile bool usbsw_want_say;            /* the console's usb */
 static volatile bool usbsw_want_close;          /* hakios_max77705_usb_close */
 
@@ -411,12 +414,34 @@ usbsw_read(void)
 static void
 usbsw_say(const char *when)
 {
-	uint8_t bc = 0;
+	uint8_t bc = 0, st1 = 0, st2 = 0;
 	uint32_t e = read8(MUIC, MUIC_BC_STATUS, &bc);
 	int ctrl1 = usbsw_read();
 
-	say("max77705: usb switch %s: CONTROL1 %#x, BC_STATUS %#x (VBUS %u, charger type %u)%s\n", when, ctrl1, bc, (bc & BC_VBUS) ? 1 : 0,
-	    BC_CHGTYP(bc), e ? " (not read)" : "");
+	(void)read8(MUIC, MUIC_USBC_STATUS1, &st1);
+	(void)read8(MUIC, MUIC_USBC_STATUS2, &st2);
+	say("max77705: usb switch %s: CONTROL1 %#x, BC_STATUS %#x (VBUS %u, charger type %u), USBC_STATUS1 %#x, SYSMSG %#x%s\n", when, ctrl1, bc,
+	    (bc & BC_VBUS) ? 1 : 0, BC_CHGTYP(bc), st1, st2, e ? " (not read)" : "");
+}
+
+/* the switch closed and read back: tried again when the firmware has not taken it; true when it says so */
+static bool
+usbsw_close(void)
+{
+	for (int attempt = 0; attempt < 4; attempt++) {
+		int ctrl1;
+
+		(void)usbsw_write(COM_USB);
+		delay_for_interval(50, NSEC_PER_MSEC);
+		ctrl1 = usbsw_read();
+		if (ctrl1 == COM_USB) {
+			return true;
+		}
+		say("max77705: usb switch: asked to close, CONTROL1 still %#x (try %d)\n", ctrl1, attempt + 1);
+		delay_for_interval(200, NSEC_PER_MSEC);
+	}
+	usbsw_say("did not close");
+	return false;
 }
 
 static void
@@ -438,24 +463,27 @@ usbsw_thread(__unused void *arg, __unused wait_result_t result)
 		if (usbsw_want_close) {
 			usbsw_want_close = false;
 			usbsw_say("asked to close it");
-			(void)usbsw_write(COM_USB);
+			(void)usbsw_close();
 		}
 		if (test != 0) {
-			bool tell = usbsw_test_tell;
-			uint32_t e;
+			bool tell = usbsw_test_tell, open = usbsw_test_open;
+			uint32_t e = 0;
 
 			usbsw_test_ms = 0;
 			usbsw_say("before the test");
-			e = usbsw_write(COM_OPEN);
-			say("max77705: usb switch open for %u ms (%x)%s\n", test, e, tell ? ", VBUS taken as gone" : "");
+			if (open) {
+				e = usbsw_write(COM_OPEN);
+			}
+			say("max77705: the test, %u ms: the switch %s (%x)%s\n", test, open ? "open" : "left alone", e, tell ? ", VBUS taken as gone" : "");
 			for (uint32_t t = 0; t < test; t += VBUS_POLL_MS) {
 				if (tell) {
 					hakios_usb_gadget_vbus(false);
 				}
 				delay_for_interval(VBUS_POLL_MS, NSEC_PER_MSEC);
 			}
-			e = usbsw_write(COM_USB);
-			say("max77705: usb switch closed again (%x)\n", e);
+			if (open) {
+				say("max77705: usb switch %s\n", usbsw_close() ? "closed again" : "NOT closed again");
+			}
 			usbsw_say("after the test");
 		}
 		if (read8(MUIC, MUIC_BC_STATUS, &bc) == 0) {
@@ -482,7 +510,7 @@ usbsw_thread(__unused void *arg, __unused wait_result_t result)
 			for (unsigned i = 0; i < sizeof(again) / sizeof(again[0]); i++) {
 				if (since_in == again[i]) {
 					usbsw_say("the cable in");
-					(void)usbsw_write(COM_USB);
+					(void)usbsw_close();
 				}
 			}
 			since_in = since_in > again[sizeof(again) / sizeof(again[0]) - 1] ? 0xffffffffu : since_in + 1;
@@ -500,7 +528,7 @@ hakios_max77705_usb_close(void)
 	usbsw_want_close = true;
 }
 
-/* the USB console's usb (the switch and VBUS said), usb unplug MS, usb muic MS: done on the thread above */
+/* the USB console's usb (the switch and VBUS said), usb unplug MS, usb muic MS, usb vbus MS: done on the thread above */
 void hakios_max77705_usb_console(const char *arg);
 
 void
@@ -527,7 +555,8 @@ hakios_max77705_usb_console(const char *arg)
 		ms = ms * 10 + (uint32_t)(*p++ - '0');
 	}
 	if (ms != 0) {
-		usbsw_test_tell = arg[0] == 'u';
+		usbsw_test_tell = arg[0] != 'm';
+		usbsw_test_open = arg[0] != 'v';
 		usbsw_test_ms = ms;
 	}
 }
