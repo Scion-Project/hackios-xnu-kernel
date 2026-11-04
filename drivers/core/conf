@@ -56,7 +56,9 @@ driver EXYNOS_TEE
 	default n
 	help    the Galaxy S9's secure OS asked whether it is there (tee_probe=1: the info fastcall on core 0, read only) and
 	help    started as far as its own state (tee_probe=2: the init call on a static block, the init values, an N-SIQ, the
-	help    state polled with yields, 30 s at most). Every answer logged; no TA, no daemon, no storage, no RPMB, no EFS.
+	help    state polled with yields, 30 s at most). tee_probe=3: one MCP round, a harmless TA from the phone's own VENDOR
+	help    opened and closed. tee_probe=4: Samsung's keymaster TA for one test, an HMAC key's blob in /private/var and an
+	help    HMAC of a test value; neither has run on a phone. Every answer logged; no daemon, no RPMB, no EFS.
 	help    Off unless asked, in nobody's default line
 
 driver EXYNOS_M3
