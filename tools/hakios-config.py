@@ -88,6 +88,9 @@ SYMBOLS = [
     # Not an argument: how much of the kernel's command line a run on this device adds itself (the loader's own words, its
     # addresses, hakios_kver=, the image's loader_return_after= and epoch=), which the check of the line's length leaves free.
     # Without it, RUN_OVERHEAD: the reference phone's, with xl's and the runner's words, the most any device adds.
+    # Not an argument: the configuration's arguments only the kernel reads are built into it, not put on the line, whose 607
+    # characters then hold the loader's and user space's arguments and a run's own.
+    ("BUILTIN_ARGS", "bool", None, "arguments only the kernel reads built into the kernel (HAKIOS_BUILTIN_ARGS); given on the line, an argument goes over its built-in value", None, None),
     ("CMDLINE_RUN", "int", None, "the characters a run on this device adds to the kernel's command line itself (not set: %d, "
                                  "the reference phone's with xl's; the Galaxy S9's mkimage.sh and loader add about 155)" % RUN_OVERHEAD, None, None),
     ("BOOTARGS", "args", None, "more kernel arguments, as `name=value` words in quotes; each name must be one docs/boot-args.md lists", None, None),
@@ -564,7 +567,7 @@ def check(config):
         if arg in seen:
             problems.append("CONFIG_BOOTARGS: %s twice" % arg)
         seen.add(arg)
-    length = len(" ".join(args))
+    length = len(" ".join(split_builtin(config, args)[0]))
     overhead = parsed.get("CMDLINE_RUN", RUN_OVERHEAD)
     if length > KERNEL_LINE - overhead:
         problems.append("the boot-arguments take %d characters; a run adds about %d of its own and the kernel's command line holds %d: "
@@ -639,6 +642,18 @@ def boot_args(parsed):
     return args
 
 
+def split_builtin(config, args):
+    """(what goes on the line, what is built into the kernel) of a configuration's arguments: with CONFIG_BUILTIN_ARGS=y the
+    arguments only the kernel reads are built in. PE_parse_boot_argn looks at the line first, then at those."""
+    readers = arg_readers()
+    if config.get("BUILTIN_ARGS") != "y" or readers is None:
+        return args, []
+    line, built = [], []
+    for word in args:
+        (built if word.partition("=")[0] in readers else line).append(word)
+    return line, built
+
+
 def merge_args(defaults, given):
     """The configuration's arguments with the ones given over them: a word name=value given replaces the configuration's word
     of that name where it stands, one the configuration has not is added at the end, a word without = (-v) is kept as it is.
@@ -681,7 +696,7 @@ def cmd_defconfig(a):
     problems, args = check(config)
     write_config(config, a.output, [rel(a.root, f) for f in files])
     print("hakios-config: %s made from %s" % (rel(os.getcwd(), a.output), ", ".join(os.path.basename(f) for f in files)))
-    print("hakios-config: %d characters of boot-arguments; kernel.ver=%s" % (len(" ".join(args)), kernel_ver(a.root, a.output)))
+    print("hakios-config: %d characters of boot-arguments on the line; kernel.ver=%s" % (len(" ".join(split_builtin(config, args)[0])), kernel_ver(a.root, a.output)))
     report(problems)
     return 1 if problems else 0
 
@@ -710,9 +725,13 @@ def cmd_args(a):
         for p in problems:
             print("hakios-config: PROBLEM: " + p, file=sys.stderr)
         return 1
+    line, built = split_builtin(config, args)
     if a.with_args is not None:
-        args = merge_args(args, a.with_args.split())
-    print(" ".join(args))
+        names = {word.partition("=")[0] for word in built}
+        # `name=` takes a default out: one that is built in can only be given as off
+        given = [word + "0" if word.endswith("=") and word[:-1] in names else word for word in a.with_args.split()]
+        line = merge_args(line, given)
+    print(" ".join(line))
     return 0
 
 
@@ -970,11 +989,12 @@ def soc_header(root, soc):
     return ""
 
 
-def drivers_header(built, sources, device="", soc=""):
+def drivers_header(built, sources, device="", soc="", builtin_args=()):
     on = [d.name.lower() for d in DRIVERS if built[d.symbol]]
     return ("/* The drivers this kernel is built with: made by tools/hakios-config.py kernel from %s. Not part of the patch. */\n"
             "#define HAKIOS_DRIVERS_LIST     \"%s\"\n#define HAKIOS_DRIVERS_COUNT    %d\n#define HAKIOS_DRIVERS_CONFIG   \"%s\"\n"
-            "#define HAKIOS_DEVICE           \"%s\"\n" % (sources, " ".join(on), len(on), sources, device)) + soc
+            "#define HAKIOS_DEVICE           \"%s\"\n#define HAKIOS_BUILTIN_ARGS     \"%s\"\n" %
+            (sources, " ".join(on), len(on), sources, device, " ".join(builtin_args))) + soc
 
 
 def write_if_changed(path, text):
@@ -1056,7 +1076,8 @@ def cmd_kernel(a):
     if choice_changed:
         changed.append("config/MASTER.hakios")
     if write_if_changed(os.path.join(tree, "bsd", "dev", "hakios.drivers.h"), drivers_header(built, sources, str(config.get("DEVICE", "")).strip('"'),
-                                                                                         soc_header(a.root, str(config.get("SOC", "")).strip('"')))):
+                                                                                         soc_header(a.root, str(config.get("SOC", "")).strip('"')),
+                                                                                         split_builtin(config, check(config)[1])[1])):
         changed.append("bsd/dev/hakios.drivers.h")
     removed = stale_objects(tree) if choice_changed and os.path.isdir(os.path.join(tree, "BUILD", "obj")) else 0
     on = [d.name.lower() for d in DRIVERS if built[d.symbol]]
