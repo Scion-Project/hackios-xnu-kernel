@@ -1,0 +1,3 @@
+# The compile target of the Google Tensor G3 (zuma): make zuma_defconfig kernel. Compile-tested at most; never booted.
+#include qemu_defconfig
+#include zuma.config

@@ -1,0 +1,3 @@
+# The compile target of the Google Tensor G2 (gs201): make gs201_defconfig kernel. Compile-tested at most; never booted.
+#include qemu_defconfig
+#include gs201.config

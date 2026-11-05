@@ -20,6 +20,15 @@ An empty cell is a part nobody has looked at on that device yet.
 
 | SoC | What | |
 |---|---|---|
+| `exynos2100` | Samsung Exynos 2100 (S5E9840) | `socs/exynos2100/` |
+| `exynos850` | Samsung Exynos 850 (S5E3830) | `socs/exynos850/` |
+| `exynos8895` | Samsung Exynos 8895 (S5E8895) | `socs/exynos8895/` |
 | `exynos9810` | Samsung Exynos 9810 (S5E9810) | `socs/exynos9810/` |
+| `exynos9820` | Samsung Exynos 9820 (S5E9820) | `socs/exynos9820/` |
+| `exynos990` | Samsung Exynos 990 (S5E9830) | `socs/exynos990/` |
+| `gs101` | Google Tensor G1 (gs101) | `socs/gs101/` |
+| `gs201` | Google Tensor G2 (gs201) | `socs/gs201/` |
 | `lga` | Google Tensor G5 (laguna, "lga") | `socs/lga/` |
 | `sc7280` | Qualcomm SC7280 family (SM7325 "Snapdragon 778G", QCM6490; "yupik", "kodiak") | carried by redwood (`devices/redwood/soc/`) |
+| `zuma` | Google Tensor G3 (zuma) | `socs/zuma/` |
+| `zumapro` | Google Tensor G4 (zumapro) | `socs/zumapro/` |
