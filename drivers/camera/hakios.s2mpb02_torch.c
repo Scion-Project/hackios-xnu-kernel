@@ -42,7 +42,7 @@
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern kern_return_t thread_terminate(thread_t thread);
@@ -73,8 +73,8 @@ say(const char *format, ...)
 #define TORCH_CODE_MAX  3               /* 60 mA: Android's flashlight, never more */
 #define HOT_C           45
 
-#define GPIO_PERIC0_PA  0x10430000UL
-#define GPIO_PERIC1_PA  0x10830000UL
+#define GPIO_PERIC0_PA  EXYNOS_GPIO_PERIC0_PA
+#define GPIO_PERIC1_PA  EXYNOS_GPIO_PERIC1_PA
 #define GPG2            0x0C0           /* in PERIC0's: torch1 is pin 4 */
 #define GPG3            0x0C0           /* in PERIC1's: flash1 is pin 5 */
 #define TORCH_PIN       4
@@ -82,12 +82,12 @@ say(const char *format, ...)
 
 static struct hakios_hsi2c bus = {
 	.name = "s2mpb02",
-	.regs_pa = 0x10920000,                  /* hsi2c@10920000: USI10 of PERIC1 */
-	.usi_mode_pa = 0x1081103C,              /* its mode word */
-	.cmu_pa = 0x10800000, .cmu_size = 0x4000,       /* CMU_PERIC1 */
+	.regs_pa = EXYNOS_PERIC1_USI10_HSI2C0_PA,                  /* hsi2c@10920000: USI10 of PERIC1 */
+	.usi_mode_pa = EXYNOS_PERIC1_USI10_MODE_PA,              /* its mode word */
+	.cmu_pa = EXYNOS_CMU_PERIC1_PA, .cmu_size = 0x4000,       /* CMU_PERIC1 */
 	.gates = { 0x2048, 0x20AC, 0x2114, 0x2118 }, .ngates = 4,
 	.qch = 0x3050, .div = 0x1828, .mux = 0x0120,       /* DIV_CLK_PERIC1_USI10_USI; MUX_CLKCMU_PERIC1_IP_USER */
-	.pins_pa = 0x10830040,                  /* PERIC1's GPIO, bank gpp6: SCL pin 0, SDA pin 1 */
+	.pins_pa = EXYNOS_GPIO_PERIC1_PA + 0x40,                  /* PERIC1's GPIO, bank gpp6: SCL pin 0, SDA pin 1 */
 	.pins_mask = 0xffu, .pins_want = 0x22u,
 	.ipclk_mhz = 200, .bus_hz = 400000,
 };
@@ -347,7 +347,7 @@ hakios_s2mpb02_torch_init(void)
 	if (!PE_parse_boot_argn("torch", &steps, sizeof(steps)) || steps == 0) {
 		return;
 	}
-	if (pe_arm_get_soc_base_phys() != 0x10000000) {
+	if (pe_arm_get_soc_base_phys() != EXYNOS_SOC_BASE_PA) {
 		return;                 /* not the Exynos 9810's (the POCO's torch=N is its own driver's) */
 	}
 	if (PE_parse_boot_argn("cam_s9", &camera, sizeof(camera)) && camera != 0) {

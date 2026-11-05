@@ -79,7 +79,7 @@
 #include <pexpert/pexpert.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
-
+#include <sys/hakios.exynos_soc.h>
 #include "hakios.exynos_tmu.h"
 #include "hakios.thermal_provider.h"
 
@@ -111,9 +111,9 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define CMU_PERIS_PA            0x10020000u     /* cmucal-sfr.c:36 */
-#define CMU_PERIS_TMU_GATE      0x2014u         /* :1656 CLK_CON_GAT_GOUT_BLK_PERIS_UID_BUSIF_TMU_IPCLKPORT_PCLK */
-#define CMU_PERIS_TMU_QCH       0x3004u         /* :1675 QCH_CON_BUSIF_TMU_QCH */
+#define CMU_PERIS_PA            ((uint32_t)EXYNOS_CMU_PERIS_PA)     /* cmucal-sfr.c:36 */
+#define CMU_PERIS_TMU_GATE      EXYNOS_TMU_CMU_PERIS_TMU_GATE         /* :1656 CLK_CON_GAT_GOUT_BLK_PERIS_UID_BUSIF_TMU_IPCLKPORT_PCLK */
+#define CMU_PERIS_TMU_QCH       EXYNOS_TMU_CMU_PERIS_TMU_QCH         /* :1675 QCH_CON_BUSIF_TMU_QCH */
 #define GATE_MANUAL             (1u << 20)      /* :7017 */
 #define GATE_CG_VAL             (1u << 21)      /* :7016 */
 #define NOT_READ_MC             (-273000)

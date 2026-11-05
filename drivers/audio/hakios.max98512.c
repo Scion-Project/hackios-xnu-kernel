@@ -105,7 +105,7 @@
 #include <sys/hakios.input.h>
 #include <sys/hakios.max98512.h>
 #include <sys/systm.h>
-
+#include <sys/hakios.exynos_soc.h>
 #include "hakios.drivers.h"      /* HAKIOS_EXYNOS_ABOX: ABOX's driver in this kernel */
 
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
@@ -200,12 +200,12 @@ say(const char *format, ...)
 
 static struct hakios_hsi2c bus = {
 	.name = "max98512",
-	.regs_pa = 0x108C0000,                  /* hsi2c@108C0000: USI07 of PERIC1 */
-	.usi_mode_pa = 0x10811024,              /* usi@10811024: its mode word */
-	.cmu_pa = 0x10800000, .cmu_size = 0x4000,       /* CMU_PERIC1 */
+	.regs_pa = EXYNOS_PERIC1_USI07_HSI2C0_PA,                  /* hsi2c@108C0000: USI07 of PERIC1 */
+	.usi_mode_pa = EXYNOS_PERIC1_USI07_MODE_PA,              /* usi@10811024: its mode word */
+	.cmu_pa = EXYNOS_CMU_PERIC1_PA, .cmu_size = 0x4000,       /* CMU_PERIC1 */
 	.gates = { 0x203C, 0x2094, 0x20E4, 0x20E8 }, .ngates = 4,
 	.qch = 0x3038, .div = 0x181C, .mux = 0x0120,
-	.pins_pa = 0x10830000,                  /* PERIC1's GPIO, bank gpp4: SCL pin 4, SDA pin 5 */
+	.pins_pa = EXYNOS_GPIO_PERIC1_PA,                  /* PERIC1's GPIO, bank gpp4: SCL pin 4, SDA pin 5 */
 	.pins_mask = 0xffu << 16, .pins_want = 0x22u << 16,
 	.ipclk_mhz = 200, .bus_hz = 400000,
 };
@@ -855,7 +855,7 @@ max98512_init(void)
 	if (!PE_parse_boot_argn("max98512", &steps, sizeof(steps)) || steps == 0) {
 		return;
 	}
-	if (pe_arm_get_soc_base_phys() != 0x10000000) {
+	if (pe_arm_get_soc_base_phys() != EXYNOS_SOC_BASE_PA) {
 		return;                 /* not the Exynos 9810's */
 	}
 	if (PE_parse_boot_argn("max98512_gain", &gain, sizeof(gain)) && gain >= GAIN_RECEIVER && gain <= GAIN_SPEAKER) {

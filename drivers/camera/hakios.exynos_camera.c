@@ -229,7 +229,7 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <vm/vm_kern.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern kern_return_t thread_terminate(thread_t thread);
@@ -285,12 +285,12 @@ static const struct ldo {
 
 static struct hakios_hsi2c pmic_bus = {
 	.name = "cam-s2mpb02",
-	.regs_pa = 0x10920000,                  /* hsi2c@10920000: USI10 of PERIC1 */
-	.usi_mode_pa = 0x1081103C,              /* usi@1081103C: its mode word */
-	.cmu_pa = 0x10800000, .cmu_size = 0x4000,       /* CMU_PERIC1 */
+	.regs_pa = EXYNOS_PERIC1_USI10_HSI2C0_PA,                  /* hsi2c@10920000: USI10 of PERIC1 */
+	.usi_mode_pa = EXYNOS_PERIC1_USI10_MODE_PA,              /* usi@1081103C: its mode word */
+	.cmu_pa = EXYNOS_CMU_PERIC1_PA, .cmu_size = 0x4000,       /* CMU_PERIC1 */
 	.gates = { 0x2048, 0x20AC, 0x2114, 0x2118 }, .ngates = 4,
 	.qch = 0x3050, .div = 0x1828, .mux = 0x0120,       /* DIV_CLK_PERIC1_USI10_USI; MUX_CLKCMU_PERIC1_IP_USER */
-	.pins_pa = 0x10830040,                  /* gpp6: SCL pin 0, SDA pin 1, function 2 */
+	.pins_pa = EXYNOS_GPIO_PERIC1_PA + 0x40,                  /* gpp6: SCL pin 0, SDA pin 1, function 2 */
 	.pins_mask = 0xffu, .pins_want = 0x22u,
 	.ipclk_mhz = 400, .bus_hz = 100000,     /* the device tree gives this bus no speed: Linux's default */
 };
@@ -303,32 +303,32 @@ static uint8_t sensor_addr_given = SENSOR;      /* cam_s9_addr's, or 0x35 */
 
 static struct hakios_hsi2c sensor_bus = {
 	.name = "cam-3h1",
-	.regs_pa = 0x108F0000,                  /* hsi2c@108F0000: USI08_I2C of PERIC1 (hsi2c21) */
-	.usi_mode_pa = 0x1081102C,              /* usi@1081102C: USI08's mode word ("i2c" in the device tree) */
-	.cmu_pa = 0x10800000, .cmu_size = 0x4000,       /* CMU_PERIC1 */
+	.regs_pa = EXYNOS_PERIC1_USI08_HSI2C1_PA,                  /* hsi2c@108F0000: USI08_I2C of PERIC1 (hsi2c21) */
+	.usi_mode_pa = EXYNOS_PERIC1_USI08_MODE_PA,              /* usi@1081102C: USI08's mode word ("i2c" in the device tree) */
+	.cmu_pa = EXYNOS_CMU_PERIC1_PA, .cmu_size = 0x4000,       /* CMU_PERIC1 */
 	/* GATE_CLK_PERIC1_USI_I2C, RSTNSYNC_CLK_PERIC1_USI08_I2C, USI08_I2C IPCLK, USI08_I2C PCLK */
 	.gates = { 0x2050, 0x2098, 0x20EC, 0x20F0 }, .ngates = 4,
 	.qch = 0x303C, .div = 0x1830, .mux = 0x0120,       /* QCH_CON_USI08_I2C_QCH; DIV_CLK_PERIC1_USI_I2C */
-	.pins_pa = 0x10830020,                  /* gpp5: SCL pin 2, SDA pin 3, function 3 */
+	.pins_pa = EXYNOS_GPIO_PERIC1_PA + 0x20,                  /* gpp5: SCL pin 2, SDA pin 3, function 3 */
 	.pins_mask = 0xff00u, .pins_want = 0x3300u,
 	.ipclk_mhz = 400, .bus_hz = 400000,     /* clock-frequency = <400000> */
 };
 
 /* ---- pins and the clock ---- */
 
-#define GPIO_PERIC0_PA  0x10430000UL
-#define GPIO_PERIC1_PA  0x10830000UL
+#define GPIO_PERIC0_PA  EXYNOS_GPIO_PERIC0_PA
+#define GPIO_PERIC1_PA  EXYNOS_GPIO_PERIC1_PA
 #define GPG2            0x0C0           /* PERIC0: the reset, pin 5 */
 #define GPC1            0x080           /* PERIC1: MCLK1, pin 5 */
 #define GPP5            0x020           /* PERIC1: the sensor's bus, pins 2 and 3 */
 #define RESET_PIN       5
 #define MCLK_PIN        5
 
-#define CMU_TOP_PA      0x1A240000UL
-#define CIS1_MUX        0x101C          /* [0]: 0 OSCCLK, 1 DIV_PLL_SHARED2_DIV2 */
-#define CIS1_DIV        0x1818          /* [4:0]: the ratio less one */
-#define CIS1_GATE       0x201C          /* bit 20 manual, bit 21 on */
-#define CIS1_QCH        0x3008          /* DMYQCH_CON_DFTMUX_TOP_QCH_CIS_CLK1: [0] enable, [1] clock request */
+#define CMU_TOP_PA      EXYNOS_CMU_TOP_PA
+#define CIS1_MUX        EXYNOS_CAM_CIS1_MUX          /* [0]: 0 OSCCLK, 1 DIV_PLL_SHARED2_DIV2 */
+#define CIS1_DIV        EXYNOS_CAM_CIS1_DIV          /* [4:0]: the ratio less one */
+#define CIS1_GATE       EXYNOS_CAM_CIS1_GATE          /* bit 20 manual, bit 21 on */
+#define CIS1_QCH        EXYNOS_CAM_CIS1_QCH          /* DMYQCH_CON_DFTMUX_TOP_QCH_CIS_CLK1: [0] enable, [1] clock request */
 #define GATE_MANUAL     (1u << 20)
 #define GATE_ON         (1u << 21)
 
@@ -593,13 +593,13 @@ look_pins(const char *when)
 
 /* ---- stage 2: the ISPPRE domain, CSIS1, its D-PHY and its DMA ---- */
 
-#define PMU_PA                  0x14060000UL
+#define PMU_PA                  EXYNOS_PMU_PA
 #define PMU_SIZE                0x5000
-#define PMU_DPHY_ISO_CSIS1      0x0730          /* bit 0: 1 the isolation bypassed (CSIS1 and CSIS3's M0S4S2) */
-#define PMU_DPU_STATUS          0x4024          /* pd-dpu, pd-isppre's parent */
-#define PMU_ISPPRE_CONFIG       0x4048
-#define PMU_ISPPRE_STATUS       0x404C
-#define PMU_ISPPRE_MEMORY       0x4730          /* MEMORY_ISPPRE_OPTION: [1:0] = 2 before the power goes */
+#define PMU_DPHY_ISO_CSIS1      EXYNOS_CAM_PMU_DPHY_ISO_CSIS1          /* bit 0: 1 the isolation bypassed (CSIS1 and CSIS3's M0S4S2) */
+#define PMU_DPU_STATUS          EXYNOS_CAM_PMU_DPU_STATUS          /* pd-dpu, pd-isppre's parent */
+#define PMU_ISPPRE_CONFIG       EXYNOS_CAM_PMU_ISPPRE_CONFIG
+#define PMU_ISPPRE_STATUS       EXYNOS_CAM_PMU_ISPPRE_STATUS
+#define PMU_ISPPRE_MEMORY       EXYNOS_CAM_PMU_ISPPRE_MEMORY          /* MEMORY_ISPPRE_OPTION: [1:0] = 2 before the power goes */
 #define PD_ON                   0xfu
 #define PD_WAIT_US              10000u
 #define ISO_BYPASS              1u
@@ -607,13 +607,13 @@ look_pins(const char *when)
 #define DTZPC_SMC               0x82000410u     /* Samsung's SiP call, SMC_CMD_PREPARE_PD_ONOFF */
 #define DTZPC_SAVE              0u
 #define DTZPC_RESTORE           1u
-#define DTZPC_ISPPRE            0x16210004u     /* pd-isppre's need_smc */
+#define DTZPC_ISPPRE            EXYNOS_CAM_DTZPC_ISPPRE     /* pd-isppre's need_smc */
 
-#define CMU_ISPPRE_PA           0x16200000UL
+#define CMU_ISPPRE_PA           EXYNOS_CMU_ISPPRE_PA
 #define ISPPRE_BUS_USER         0x0100          /* bit 4 MUX_SEL (1: CMU_TOP's CLKCMU_ISPPRE_BUS), bit 7 busy */
 #define ISPPRE_BUSP_DIV         0x1804
-#define QCH_CSIS1               0x3024
-#define QCH_SYSMMU              0x305C
+#define QCH_CSIS1               EXYNOS_CAM_QCH_CSIS1
+#define QCH_SYSMMU              EXYNOS_CAM_QCH_SYSMMU
 /*
  * the Q-channels asked on: the four CSISs' (as setup-fimc-is-sensor.c does), the PDP's DMA's and the SysMMU's, and the
  * way the WDMA's writes leave the block: LHS_AXI_D_ISPPRE (+0x306C, the AXI master to the bus) and BTM_ISPPRE (+0x3010,
@@ -622,22 +622,22 @@ look_pins(const char *when)
 static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_SYSMMU, 0x306C, 0x3010 };
 #define NQCHS                   (sizeof(qchs) / sizeof(qchs[0]))
 #define QCH_REQ                 (1u << 1)
-#define TOP_ISPPRE_MUX          0x1094          /* CMU_TOP: MUX_CLKCMU_ISPPRE_BUS [1:0] */
-#define TOP_ISPPRE_DIV          0x1890          /* DIV_CLKCMU_ISPPRE_BUS [3:0] */
-#define TOP_ISPPRE_GATE         0x209C          /* GATE_CLKCMU_ISPPRE_BUS: bit 20 manual, 21 on */
+#define TOP_ISPPRE_MUX          EXYNOS_CAM_TOP_ISPPRE_MUX          /* CMU_TOP: MUX_CLKCMU_ISPPRE_BUS [1:0] */
+#define TOP_ISPPRE_DIV          EXYNOS_CAM_TOP_ISPPRE_DIV          /* DIV_CLKCMU_ISPPRE_BUS [3:0] */
+#define TOP_ISPPRE_GATE         EXYNOS_CAM_TOP_ISPPRE_GATE          /* GATE_CLKCMU_ISPPRE_BUS: bit 20 manual, 21 on */
 #define TOP_BUSY                (1u << 16)      /* the mux's and the divider's busy bit */
 #define ISPPRE_MUX_SHARED1_DIV4 1u              /* the mux's parents: 0 SHARED0_DIV4, 1 SHARED1_DIV4, 2 SHARED2_DIV2, 3 */
 #define ISPPRE_CTRL_OPTION      0x0800          /* ISPPRE_CMU_ISPPRE_CONTROLLER_OPTION: [29:28] the CMU's power management */
-#define QCH_FIRST               0x3010          /* QCH_CON_*: 0x3010 (BTM) to 0x3070 (SYSREG), bit 0 enable, 1 clock request */
-#define QCH_LAST                0x3070
-#define QCH_DBG                 0x4000          /* DBG_NFO_QCH_CON_*: each QCH_CON's state at +0x4000 */
-#define SYSREG_DRCG_EN          0x0104          /* SYSREG_ISPPRE's BUS_COMPONENT_DRCG_EN */
+#define QCH_FIRST               EXYNOS_CAM_QCH_FIRST          /* QCH_CON_*: 0x3010 (BTM) to 0x3070 (SYSREG), bit 0 enable, 1 clock request */
+#define QCH_LAST                EXYNOS_CAM_QCH_LAST
+#define QCH_DBG                 EXYNOS_CAM_QCH_DBG          /* DBG_NFO_QCH_CON_*: each QCH_CON's state at +0x4000 */
+#define SYSREG_DRCG_EN          EXYNOS_CAM_SYSREG_DRCG_EN          /* SYSREG_ISPPRE's BUS_COMPONENT_DRCG_EN */
 
-#define SYSREG_ISPPRE_PA        0x16210000UL
+#define SYSREG_ISPPRE_PA        EXYNOS_SYSREG_ISPPRE_PA
 #define DPHY_RESET              0x0500          /* the MIPI PHYs' resets: bit 2 CSIS1's M0S4S2 (1: running) */
 #define DPHY_RESET_CSIS1        (1u << 2)
 
-#define CSIS1_PA                0x16240000UL
+#define CSIS1_PA                EXYNOS_CSIS1_PA
 #define CSIS_VERSION            0x000
 #define CSIS_CMN_CTRL           0x004
 #define CSIS_CLK_CTRL           0x008           /* CLKGATE_TRAIL [31:16], CLKGATE_EN [7:4] (reset 0xF), read only here */
@@ -662,7 +662,7 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define CSIS_IRQ_MASK0          0x011FFF1Fu     /* the BSP's default masks */
 #define CSIS_IRQ_MASK1          0x0000FFF0u
 
-#define CSIS1_PHY_PA            0x16180000UL
+#define CSIS1_PHY_PA            EXYNOS_CSIS1_PHY_PA
 #define DPHY_ACTRL_SC_06        0x1018
 #define DPHY_DCTRL_SC_02        0x1084
 #define DPHY_LANE(n)            (0x400u * (n))
@@ -672,7 +672,7 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define DPHY_DCTRL_SD_13        0x14E0          /* bit 0 SKEWCAL_EN */
 #define SETTLE_719              36              /* fimc-is-hw-settle-10nm-lpp.h at 720 */
 
-#define CSIS1_WDMA_PA           0x162C0000UL    /* VC0's; the DMA common of CSIS1 at +0x400 */
+#define CSIS1_WDMA_PA           EXYNOS_CSIS1_WDMA_PA    /* VC0's; the DMA common of CSIS1 at +0x400 */
 #define DMA_CTRL                0x000
 #define DMA_FMT                 0x004
 #define DMA_ADDR(n)             (0x010 + 4 * (n))
@@ -698,7 +698,7 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define DMA_ABORT_DONE          (1u << 16)
 #define DMA_OVERLAP0            (1u << 20)
 
-#define CSIS_DMA_PA             0x162F0000UL    /* the DMA common of the four */
+#define CSIS_DMA_PA             EXYNOS_CSIS_DMA_PA    /* the DMA common of the four */
 #define CDMA_ARB_PRI            0x00
 #define CDMA_CTRL               0x08
 #define CDMA_SRAM_SPLIT         0x0C
@@ -711,7 +711,7 @@ static const uint32_t qchs[] = { 0x3020, QCH_CSIS1, 0x3028, 0x302C, 0x3038, QCH_
 #define TP_DUAL                 (1u << 30)
 #define TP_VBLANK               100000u         /* clocks: a short pause before the frame, whatever the clock is */
 
-#define SYSMMU_PA               0x16310000UL
+#define SYSMMU_PA               EXYNOS_CSIS_SYSMMU_PA
 #define MMU_CTRL                0x000
 #define MMU_CFG                 0x004
 #define MMU_STATUS              0x008
@@ -2890,7 +2890,7 @@ hakios_exynos_camera_init(void)
 	if (!PE_parse_boot_argn("cam_s9", &steps, sizeof(steps)) || steps == 0) {
 		return;
 	}
-	if (pe_arm_get_soc_base_phys() != 0x10000000) {
+	if (pe_arm_get_soc_base_phys() != EXYNOS_SOC_BASE_PA) {
 		return;                 /* not the Exynos 9810 */
 	}
 	PE_parse_boot_argn("cam_s9_ipclk", &ipclk, sizeof(ipclk));

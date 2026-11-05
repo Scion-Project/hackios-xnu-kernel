@@ -102,7 +102,7 @@
 #include <sys/fcntl.h>
 #include <sys/systm.h>
 #include <sys/vnode.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern void loader_log_line(const char *line);
 extern int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
 extern void IOSleep(unsigned milliseconds);
@@ -144,7 +144,7 @@ extern vfs_context_t vfs_context_kernel(void);
 #define MCI_TIME_LEN            32u
 #define IV_FLAG_TIME            (1u << 1)
 #define IV_FLAG_IWP             (1u << 2)
-#define SSIQ_GIC_NUMBER         (233u + 32)
+#define SSIQ_GIC_NUMBER         EXYNOS_TEE_SSIQ_GIC_NUMBER
 _Static_assert(MCI_SESSIONS == MCI_MCP + MCI_MCP_LEN && MCI_TIME == MCI_SESSIONS + MCI_SESSIONS_LEN &&
     MCI_TIME + MCI_TIME_LEN <= MCI_BYTES, "the MCI block's layout");
 

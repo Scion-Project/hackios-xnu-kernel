@@ -74,7 +74,18 @@ and `soc/configs/<soc>.config`, the SoC's facts: `CONFIG_SOC`, its cores, and **
 Two devices with the same SoC each carry a copy. The copies must be the same: the tools take the SoC once, and refuse two copies that
 differ, naming both, because a build would otherwise depend on which device was checked out. `tools/hakios-device.py new --soc sc7280`
 copies the layer from a device that has it; a SoC nobody has yet gets a new layer to fill in. A SoC many devices share can also be a
-repository of its own in `socs/<soc>/` (a `soc` block in the manifest); the tools read both.
+repository of its own in `socs/<soc>/` (a `soc` block in the manifest), or be kept in this tree there (`path`, as `socs/exynos9810` is, and
+the Galaxy S9, S9+ and Note9 carry no copy); the tools read all three. `new --soc` does not copy a layer kept in this tree.
+
+### A new Exynos
+
+The drivers shared by the Exynos family are in `drivers/`; what differs from one Exynos to the next is numbers. A SoC's layer gives them in
+`include/hakios.<soc>_soc.h` (`EXYNOS_*`: where each block is, interrupts, PMU and CMU offsets, the USI blocks; `socs/exynos9810/include/` is
+the example), which `xnu/apply.sh` lays into `bsd/sys/`, and `sys/hakios.exynos_soc.h` includes the one `CONFIG_SOC` names. So:
+
+1. `socs/<soc>/`: `soc.conf`, `configs/<soc>.config`, and the header with the SoC's numbers from its own device tree and Samsung's source.
+2. A `soc <soc>` block in the manifest (`path`).
+3. A driver whose hardware really differs: a `#if` on the SoC's own macro in that driver, or a driver of the layer's (`drivers/<sub>/conf`).
 
 ## The manifest
 

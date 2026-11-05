@@ -102,7 +102,7 @@
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.exynos_spi.h>
 #include <sys/systm.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern kern_return_t thread_terminate(thread_t thread);
@@ -124,7 +124,7 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define STARLTE_SOC_BASE        0x10000000UL
+#define STARLTE_SOC_BASE        EXYNOS_SOC_BASE_PA
 #define STEPS                   6
 
 /* the S2MPS18's PMIC block (HAKIOS_ACPM_PMIC_PMIC) */
@@ -136,7 +136,7 @@ say(const char *format, ...)
 #define L34_RAMP_US             5000    /* regulator-enable-ramp-delay */
 
 /* PERIC0's GPIO: bank gpg1 (the reset, pin 0) */
-#define GPIO_PERIC0_PA          0x10430000UL
+#define GPIO_PERIC0_PA          EXYNOS_GPIO_PERIC0_PA
 #define GPG1                    0xA0
 #define RESET_PIN               0
 
@@ -149,9 +149,9 @@ say(const char *format, ...)
 
 static struct hakios_exynos_spi bus = {
 	.name = "cs47l93",
-	.regs_pa = 0x10470000,                  /* spi@10470000: USI01 of PERIC0 */
-	.usi_mode_pa = 0x1041100C,              /* usi@1041100c: its mode word */
-	.cmu_pa = 0x10400000, .cmu_size = 0x4000,       /* CMU_PERIC0 */
+	.regs_pa = EXYNOS_PERIC0_USI01_SPI_PA,                  /* spi@10470000: USI01 of PERIC0 */
+	.usi_mode_pa = EXYNOS_PERIC0_USI01_MODE_PA,              /* usi@1041100c: its mode word */
+	.cmu_pa = EXYNOS_CMU_PERIC0_PA, .cmu_size = 0x4000,       /* CMU_PERIC0 */
 	.gates = { 0x2010, 0x205C, 0x20BC, 0x20C0 }, .ngates = 4,
 	.qch = 0x3028, .div = 0x1808, .mux = 0x0120,
 	.div_ratio = 15, .ipclk_mhz = 400,      /* 400 MHz / 16 = 25 MHz, SCLK 6.25 MHz (the codec takes up to 25) */
@@ -510,7 +510,7 @@ step_jack(void)
  * clear), THETA, LAMBDA, FBDIV, REFDIV, the gains, HP and PHASEDET, the lock threshold, the fast source; the reference
  * source (CS47L92: CONTROL_1 [15:12]); ENA; LOCKDET; CTRL_UPD; HOLD off; then FLL1_LOCK_STS1 (IRQ1_RAW_STATUS_2 bit 8).
  */
-#define PMU_PA                  0x14060000UL
+#define PMU_PA                  EXYNOS_PMU_PA
 #define PMU_CLKOUT0             0x0A00
 #define SYSTEM_CLOCK_1          0x0101
 #define SAMPLE_RATE_1           0x0102

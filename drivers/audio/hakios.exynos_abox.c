@@ -164,7 +164,7 @@
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 #ifndef VM_WIMG_WCOMB
@@ -191,7 +191,7 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define STARLTE_SOC_BASE        0x10000000UL
+#define STARLTE_SOC_BASE        EXYNOS_SOC_BASE_PA
 #define STEPS                   8
 #define ACPM_DVFS_AUD           9u              /* ACPM_DVFS_AUD 0x0B040009 (dt-bindings/clock/exynos9810.h): its index */
 
@@ -1402,10 +1402,10 @@ step_sink(void)
  * channel's mean, RMS and peak are said, and the recording goes to the USB console as a camshot's bytes do (16-bit
  * little-endian stereo at 48 kHz, "camshot ... RGB" in the header only because it rides that framing).
  */
-#define CMU_DIV_UAIF0           0x1824
-#define CMU_MUX_UAIF0           0x1004
-#define CMU_QCH_BCLK0           0x3028
-#define GPIO_GPB0               0x0000
+#define CMU_DIV_UAIF0           EXYNOS_ABOX_CMU_DIV_UAIF0
+#define CMU_MUX_UAIF0           EXYNOS_ABOX_CMU_MUX_UAIF0
+#define CMU_QCH_BCLK0           EXYNOS_ABOX_CMU_QCH_BCLK0
+#define GPIO_GPB0               EXYNOS_ABOX_GPIO_GPB0
 #define UAIF0_PINS_MASK         0xFFFF0u        /* gpb0-1..4 */
 #define UAIF0_PINS_FUNC         0x22220u
 #define UAIF0_PINS_PUD          0x11110u

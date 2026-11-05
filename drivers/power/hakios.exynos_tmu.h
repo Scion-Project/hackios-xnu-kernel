@@ -21,10 +21,10 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-
+#include <sys/hakios.exynos_soc.h>
 /* the two blocks: TMU_TOP (the BIG and LITTLE zones) and TMU_SUB (G3D and ISP); reg = <0 0x10070000 0x700> and 0x10074000 */
-#define TMU_TOP_PA              0x10070000u
-#define TMU_SUB_PA              0x10074000u
+#define TMU_TOP_PA              ((uint32_t)EXYNOS_TMU_TOP_PA)
+#define TMU_SUB_PA              ((uint32_t)EXYNOS_TMU_SUB_PA)
 #define TMU_SIZE                0x700u
 
 /* registers (exynos_tmu.c:69-187) */

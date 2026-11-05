@@ -39,7 +39,7 @@
 #include <sys/errno.h>
 #include <sys/systm.h>
 #include <sys/hakios.exynos_acpm.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_line(const char *line);
 extern void hakios_var_save_on_return(void);
@@ -65,8 +65,8 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define PMU_PA                  0x14060000u     /* flexpmu_cal_system_exynos9810.h:39 */
-#define PMU_PS_HOLD_CONTROL     0x330Cu         /* sec_ext.h:33 */
+#define PMU_PA                  ((uint32_t)EXYNOS_PMU_PA)     /* flexpmu_cal_system_exynos9810.h:39 */
+#define PMU_PS_HOLD_CONTROL     EXYNOS_POWEROFF_PMU_PS_HOLD_CONTROL         /* sec_ext.h:33 */
 #define PS_HOLD_HIGH            (1u << 8)       /* sec_reboot.c:135, exynos-reboot.c:252 */
 
 static bool

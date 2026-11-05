@@ -244,7 +244,7 @@
 #include <vm/vm_kern.h>
 #include <vm/memory_types.h>
 #include "hakios.ufshc.h"
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
@@ -385,7 +385,7 @@ static const struct ufshc_soc hc_socs[] = {
 		.default_step = 5,
 	},
 	{
-		.name = "exynos9810", .pa = 0x11120000, .size = 0x200, .vs_pa = 0x11121100, .vs_size = 0x200,
+		.name = "exynos9810", .pa = EXYNOS_UFS_HCI_PA, .size = 0x200, .vs_pa = EXYNOS_UFS_VS_PA, .vs_size = 0x200,
 		.prdt_bytes = true, .prd_entry = 128, .prd_max = 4096, .rsp_offset = 1024, .rsp_length = 1024,
 		.prdt_offset = 2048, .clear_with_ones = true, .dma32 = true, .slot_buffer = 64u << 10,
 		.default_step = 1, .dma_lo = 0x80000000ULL, .dma_hi = 0x100000000ULL,
@@ -646,13 +646,13 @@ hc_dma_sync(const volatile void *p, size_t bytes)
 #define EXY_CLKSTOP_MPHY_APB    (1u << 3)
 
 /* the blocks beside the controller, read and never written here */
-#define EXY_UNIPRO_PA           0x11110000ULL   /* the ufs node's third reg, 32 KB */
+#define EXY_UNIPRO_PA           ((uint64_t)EXYNOS_UFS_UNIPRO_PA)   /* the ufs node's third reg, 32 KB */
 #define EXY_UNIPRO_SIZE         0x8000
-#define EXY_PMA_PA              0x11124000ULL   /* ufs-phy, 2 KB: the M-PHY's PMA */
+#define EXY_PMA_PA              ((uint64_t)EXYNOS_UFS_PMA_PA)   /* ufs-phy, 2 KB: the M-PHY's PMA */
 #define EXY_PMA_SIZE            0x800
-#define EXY_PMU_PHY_PA          0x14060724ULL   /* ufs-phy-sys: PMU UFS_PHY_CONTROL, bit 0 the isolation bypassed */
-#define EXY_SYSREG_COH_PA       0x11010700ULL   /* ufs-io-coherency: SYSREG_FSYS0, bits 8-9 */
-#define EXY_SYSREG_COH_BITS     0x300u
+#define EXY_PMU_PHY_PA          ((uint64_t)EXYNOS_UFS_PMU_PHY_PA)   /* ufs-phy-sys: PMU UFS_PHY_CONTROL, bit 0 the isolation bypassed */
+#define EXY_SYSREG_COH_PA       ((uint64_t)EXYNOS_UFS_SYSREG_COH_PA)   /* ufs-io-coherency: SYSREG_FSYS0, bits 8-9 */
+#define EXY_SYSREG_COH_BITS     EXYNOS_UFS_EXY_SYSREG_COH_BITS
 #define UNIP_COMP_VERSION       0x0000
 #define UNIP_COMP_INFO          0x0004
 #define UNIP_LINKSTARTUP_CNF    0x7854

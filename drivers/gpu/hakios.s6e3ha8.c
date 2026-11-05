@@ -109,7 +109,7 @@
 #include <pexpert/pexpert.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
-
+#include <sys/hakios.exynos_soc.h>
 #include "hakios.s6e3ha8_gamma.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -134,7 +134,7 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define DSIM_PA         0x16080000UL
+#define DSIM_PA         EXYNOS_DSIM0_PA
 #define DSIM_CONFIG     0x4C
 #define  PER_FRAME_READ (1u << 8)       /* (a read only once a frame; Samsung leaves it off) */
 #define DSIM_INTSRC     0x50

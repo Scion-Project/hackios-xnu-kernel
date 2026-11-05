@@ -108,7 +108,7 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <miscfs/devfs/devfs.h>
-
+#include <sys/hakios.exynos_soc.h>
 #include "hakios.bcm_shub.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -134,30 +134,30 @@ say(const char *format, ...)
 
 /* ---- where ---------------------------------------------------------------------------------------------------- */
 
-#define PMU_PA                  0x14060000UL
+#define PMU_PA                  EXYNOS_PMU_PA
 #define  CHUB_CONFIGURATION     0x4080
 #define  CHUB_STATUS            0x4084
-#define CMU_TOP_PA              0x1A240000UL
+#define CMU_TOP_PA              EXYNOS_CMU_TOP_PA
 #define  TOP_CHUB_MUX           0x1014
 #define  TOP_CHUB_DIV           0x1810
 #define  TOP_CHUB_GATE          0x2014
-#define CMU_CHUB_PA             0x13A00000UL
+#define CMU_CHUB_PA             EXYNOS_CMU_CHUB_PA
 #define  CHUB_BUS_USER_MUX      0x0100  /* PLL_CON0_MUX_CLKCMU_CHUB_BUS_USER: bit 4 CMU_TOP's clock, else the oscillator */
 #define  CHUB_USI00_MUX         0x100C
 #define  CHUB_USI00_DIV         0x1808
 #define  CHUB_GPIO_QCH          0x3028
-#define GPIO_CHUB_PA            0x13A80000UL
+#define GPIO_CHUB_PA            EXYNOS_GPIO_CHUB_PA
 #define  BANK_GPH0              0x00
 #define  PIN_MCU_RESP           4
 #define  PIN_MCU_REQ            5
-#define GPIO_ALIVE_PA           0x14050000UL
+#define GPIO_ALIVE_PA           EXYNOS_GPIO_ALIVE_PA
 #define  BANK_GPA0              0x20
 #define  BANK_GPA1              0x40
 #define  BANK_GPA4              0xC0
 #define  PIN_AP_SLEEP           5       /* gpa0 */
 #define  PIN_HOST_REQ           7       /* gpa1 */
 #define  PIN_SHUB_INT           0       /* gpa4 */
-#define GPIO_PERIC0_PA          0x10430000UL
+#define GPIO_PERIC0_PA          EXYNOS_GPIO_PERIC0_PA
 #define  BANK_GPG0              0x80
 #define  PIN_NSTDBY             2       /* gpg0 */
 #define LDO37_CTRL              0x6E
@@ -192,8 +192,8 @@ say(const char *format, ...)
 
 static struct hakios_exynos_spi bus = {
 	.name = "shub-spi",
-	.regs_pa = 0x13AC0000,                  /* spi@13AC0000: USI_CHUB00 */
-	.usi_mode_pa = 0x13A13000,              /* usi@13A13000, usi_00_chub */
+	.regs_pa = EXYNOS_CHUB_USI00_SPI_PA,                  /* spi@13AC0000: USI_CHUB00 */
+	.usi_mode_pa = EXYNOS_CHUB_USI00_MODE_PA,              /* usi@13A13000, usi_00_chub */
 	.cmu_pa = CMU_CHUB_PA, .cmu_size = 0x4000,
 	.gates = { 0x2010, 0x2090, 0x20A8 }, .ngates = 3,
 	.qch = 0x305C, .div = CHUB_USI00_DIV, .mux = CHUB_USI00_MUX,
@@ -1742,7 +1742,7 @@ hakios_ssp_init(void)
 	if (!PE_parse_boot_argn("shub", &n, sizeof(n)) || n == 0) {
 		return;
 	}
-	if (pe_arm_get_soc_base_phys() != 0x10000000) {
+	if (pe_arm_get_soc_base_phys() != EXYNOS_SOC_BASE_PA) {
 		return;                 /* the Exynos 9810's only */
 	}
 	if (n > 6) {

@@ -56,7 +56,7 @@
 #include <sys/hakios.exynos_hsi2c.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern kern_return_t thread_terminate(thread_t thread);
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void delay(int usec);
@@ -94,7 +94,7 @@ say(const char *format, ...)
 #define CHG_DTLS_01     0xB4
 
 
-#define ADC_PA          0x14230000UL
+#define ADC_PA          EXYNOS_ADC_PA
 #define ADC_CON1        0x00
 #define ADC_CON2        0x04
 #define ADC_DAT         0x08
@@ -146,9 +146,9 @@ static vm_offset_t adc;
 
 static struct hakios_hsi2c bus = {
 	.name = "max77705",
-	.regs_pa = 0x14360000,                  /* hsi2c@14360000: USI03 of CMGP */
-	.usi_mode_pa = 0x14212030,              /* usi@14212030: its mode word */
-	.cmu_pa = 0x14200000, .cmu_size = 0x4000,       /* CMU_CMGP */
+	.regs_pa = EXYNOS_CMGP_USI03_HSI2C_PA,                  /* hsi2c@14360000: USI03 of CMGP */
+	.usi_mode_pa = EXYNOS_CMGP_USI03_MODE_PA,              /* usi@14212030: its mode word */
+	.cmu_pa = EXYNOS_CMU_CMGP_PA, .cmu_size = 0x4000,       /* CMU_CMGP */
 	/* GATE_CLK_USI_CMGP03 (the divider's source), USI_CMGP03 IPCLK and PCLK, its RSTnSYNC: as the touch's bus */
 	.gates = { 0x2014, 0x20A8, 0x20AC, 0x2074 }, .ngates = 4,
 	.qch = 0x3050, .div = 0x1814, .mux = 0x1018,
@@ -585,7 +585,7 @@ hakios_max77705_usb_console(const char *arg)
 #define TOP                     0x66
 #define MAINCTRL1               0x02
 #define MCONFIG                 0x10
-#define PWM_PA                  0x10510000UL
+#define PWM_PA                  EXYNOS_PWM_PA
 #define PWM_TCFG0               0x00
 #define PWM_TCFG1               0x04
 #define PWM_TCON                0x08
@@ -598,8 +598,8 @@ hakios_max77705_usb_console(const char *arg)
 #define PWM_PERIOD_NS           48828u
 #define PWM_MAX_DUTY_NS         34179u
 #define OSC_HZ                  26000000u
-#define CMU_PERIC0_PA           0x10400000UL
-#define GPIO_PERIC0_PA          0x10430000UL
+#define CMU_PERIC0_PA           EXYNOS_CMU_PERIC0_PA
+#define GPIO_PERIC0_PA          EXYNOS_GPIO_PERIC0_PA
 #define GPP3                    0x060           /* pin 1: the PWM's output (function 2) */
 #define GPG1                    0x0A0           /* pin 7: the motor's boost, an output held high */
 #define HAPTIC_ACTIVE_US        30000

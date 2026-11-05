@@ -298,7 +298,10 @@ def cmd_new(a):
         # the device carries its SoC's layer: a copy of one there is (another device's, synced), or a new one to fill in
         socs = soc_homes()
         os.makedirs(top, exist_ok=True)
-        if a.soc in socs:
+        shared = a.soc in socs and any(k == "soc" and n == a.soc and "path" in f for k, n, f, _line in manifest())
+        if shared:
+            print("hakios-device: %s is shared, in %s: nothing of it copied" % (a.soc, os.path.relpath(socs[a.soc], ROOT)))
+        elif a.soc in socs:
             shutil.copytree(socs[a.soc], os.path.join(top, "soc"), ignore=shutil.ignore_patterns(".git"))
             print("hakios-device: devices/%s/soc/: the %s layer, copied from %s" % (name, a.soc, os.path.relpath(socs[a.soc], ROOT)))
         else:
@@ -312,6 +315,8 @@ def cmd_new(a):
     hc = config_tool()
     # what a new device begins without: every driver written for one machine (not QEMU's), but the ones its SoC's fragment builds
     soc_fragment = os.path.join(top, "soc", "configs", a.soc + ".config")      # the copy the device now carries
+    if a.soc != "none" and not os.path.isfile(soc_fragment):
+        soc_fragment = os.path.join(socs[a.soc], "configs", a.soc + ".config")   # or the one in socs/, which all share
     soc_has = hc.parse(soc_fragment)[0] if a.soc != "none" else {}
     left_out = [d.symbol for d in hc.DRIVERS if not d.name.startswith("VIRTIO_") and soc_has.get(d.symbol) != "y"]
     os.makedirs(os.path.join(top, "configs"), exist_ok=True)

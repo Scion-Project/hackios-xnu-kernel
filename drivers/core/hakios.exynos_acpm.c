@@ -52,18 +52,18 @@
 #include <mach/mach_types.h>
 #include <sys/errno.h>
 #include <sys/hakios.exynos_acpm.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void delay(int usec);
 
-#define MBOX_PA         0x14100000UL
+#define MBOX_PA         EXYNOS_APM_MBOX_PA
 #define MBOX_INTGR0     0x08
 #define MBOX_INTCR1     0x20
 #define MBOX_INTMR1     0x24
 #define MBOX_INTSR1     0x28
-#define SRAM_PA         0x02039000UL
-#define SRAM_SIZE       0x30000
-#define SRAM_FIRST      0x3000          /* below: pages that fault; not mapped, never read */
+#define SRAM_PA         EXYNOS_APM_SRAM_PA
+#define SRAM_SIZE       EXYNOS_ACPM_SRAM_SIZE
+#define SRAM_FIRST      EXYNOS_ACPM_SRAM_FIRST          /* below: pages that fault; not mapped, never read */
 #define INITDATA        0x7F00
 
 #define ID_CHANNELS     0x08
@@ -468,7 +468,7 @@ hakios_acpm_dvfs_set(uint32_t index, uint32_t khz)
 #define PL_FWSIZE       0x24
 #define PL_STAYS        0x28
 #define PL_NAME         0x2C
-#define FVMAP_OFFSET    0x6700          /* the device tree's acpm { fvmap_offset = <26368>; } */
+#define FVMAP_OFFSET    EXYNOS_ACPM_FVMAP_OFFSET          /* the device tree's acpm { fvmap_offset = <26368>; } */
 #define FV_HEADER       24
 #define FV_NUM_LV       0x01
 #define FV_O_RATEVOLT   0x14

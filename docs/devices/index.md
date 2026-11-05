@@ -20,6 +20,6 @@ An empty cell is a part nobody has looked at on that device yet.
 
 | SoC | What | |
 |---|---|---|
-| `exynos9810` | Samsung Exynos 9810 (S5E9810) | carried by crownlte, star2lte, starlte (`devices/crownlte/soc/`) |
+| `exynos9810` | Samsung Exynos 9810 (S5E9810) | `socs/exynos9810/` |
 | `lga` | Google Tensor G5 (laguna, "lga") | `socs/lga/` |
 | `sc7280` | Qualcomm SC7280 family (SM7325 "Snapdragon 778G", QCM6490; "yupik", "kodiak") | carried by redwood (`devices/redwood/soc/`) |
