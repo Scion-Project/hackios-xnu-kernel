@@ -54,30 +54,14 @@
 #include <pexpert/pexpert.h>
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.exynos_hsi2c.h>
+#include <sys/hakios.exynos_soc.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
+#include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern kern_return_t thread_terminate(thread_t thread);
-extern void delay(int usec);
 
 /* (every line to the loader's log as well, as the other drivers do: see hakios.buttons.c) */
-extern void loader_log_line(const char *line);
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[400];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 /* ---- where things are ---- */
 #define ALIVE_PA                0x14050000UL
@@ -87,12 +71,12 @@ say(const char *format, ...)
 
 static struct hakios_hsi2c bus = {
 	.name = "s6sy761",
-	.regs_pa = 0x104B0000,                  /* hsi2c@104B0000: USI03 of PERIC0 */
-	.usi_mode_pa = 0x1041101C,              /* SYSREG_PERIC0: USI03's mode */
-	.cmu_pa = 0x10400000, .cmu_size = 0x4000,       /* CMU_PERIC0 */
+	.regs_pa = EXYNOS_PERIC0_USI03_HSI2C_PA,                  /* hsi2c@104B0000: USI03 of PERIC0 */
+	.usi_mode_pa = EXYNOS_PERIC0_USI03_MODE_PA,              /* SYSREG_PERIC0: USI03's mode */
+	.cmu_pa = EXYNOS_CMU_PERIC0_PA, .cmu_size = 0x4000,       /* CMU_PERIC0 */
 	.gates = { 0x2018, 0x206C, 0x20DC, 0x20E0 }, .ngates = 4,
 	.qch = 0x3038, .div = 0x1810, .mux = 0x0120,
-	.pins_pa = 0x10430020,                  /* PERIC0 GPIO, bank gpp1: SCL pin 4, SDA pin 5 */
+	.pins_pa = EXYNOS_GPIO_PERIC0_PA + 0x20,                  /* PERIC0 GPIO, bank gpp1: SCL pin 4, SDA pin 5 */
 	.pins_mask = 0xffu << 16, .pins_want = 0x22u << 16,
 	.ipclk_mhz = 400, .bus_hz = 400000,       /* seen on the phone, 1 November: CMU divider 0 on the 400 MHz branch */
 };
