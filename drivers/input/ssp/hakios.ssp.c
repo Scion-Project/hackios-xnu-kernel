@@ -111,11 +111,8 @@
 #include <sys/hakios.exynos_soc.h>
 #include "hakios.bcm_shub.h"
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern vm_offset_t pe_arm_get_soc_base_phys(void);
-extern kern_return_t thread_terminate(thread_t thread);
-extern void delay(int usec);
 
 /* ---- where ---------------------------------------------------------------------------------------------------- */
 

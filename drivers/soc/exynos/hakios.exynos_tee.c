@@ -103,14 +103,13 @@
 #include <sys/systm.h>
 #include <sys/vnode.h>
 #include <sys/hakios.exynos_soc.h>
-extern void loader_log_line(const char *line);
+#include <sys/hakios.xnu.h>
 extern int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
 extern void IOSleep(unsigned milliseconds);
 extern bool ml_cpu_idle_time(int cpu_id, uint64_t *idle);
 extern void *cpu_to_processor(int cpu);
 extern void *thread_bind(void *processor);
 extern int thread_block(void *continuation);
-extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
 extern void *IOMallocAligned(size_t size, size_t alignment);
 extern void IOFreeAligned(void *address, size_t size);
 extern vfs_context_t vfs_context_kernel(void);

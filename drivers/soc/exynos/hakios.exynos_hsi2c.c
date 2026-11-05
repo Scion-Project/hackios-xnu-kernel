@@ -17,9 +17,8 @@
 #include <mach/mach_time.h>
 #include <mach/mach_types.h>
 #include <sys/hakios.exynos_hsi2c.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void delay(int usec);
 
 #define CTL                     0x00
 #define  CTL_MASTER             (1u << 3)

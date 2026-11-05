@@ -19,9 +19,8 @@
 #include <mach/mach_time.h>
 #include <mach/mach_types.h>
 #include <sys/hakios.exynos_spi.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void delay(int usec);
 
 #define CH_CFG                  0x00
 #define  CH_TXCH_ON             (1u << 0)

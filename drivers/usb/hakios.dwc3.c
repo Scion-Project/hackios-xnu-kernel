@@ -149,17 +149,12 @@
 #include <console/video_console.h>
 #include <sys/hakios.input.h>
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
 #include "hakios.usb_acm.h"
 #include "hakios.usb_glue.h"
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
-extern uint64_t kvtophys(vm_offset_t va);
-extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);
-extern void loader_log_line(const char *line);
 extern uint32_t loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len));
-extern void loader_return(void);
 extern void hakios_var_save_on_return(void);
 extern void hakios_ufs_summary(const char *when, int how);     /* hakios.ufs.c (or the stub): ufs=3's summary */
 extern void hakios_adreno_stop(void);
@@ -179,10 +174,7 @@ extern void hakios_abox_console(const char *arg);  /* sys/hakios.exynos_abox.h *
 extern void hakios_cs47l93_console(const char *arg);       /* sys/hakios.cs47l93.h */
 extern void hakios_ssp_console(const char *arg);    /* sys/hakios.sensors.h: the S9's sensor hub (shub=N) */
 extern void hakios_adsp_stop(void);
-extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern int hakios_panel_brightness(int level);  /* hakios.backlight.cpp (always built): ENODEV with no panel driver */
-extern void delay(int usec);
-extern void IOSleep(unsigned int milliseconds);
 extern void hakios_exynos_cpufreq_touch(void);  /* the governor's touch boost, as the touch screen's driver asks it */
 extern kern_return_t kernel_thread_start(thread_continue_t continuation, void *parameter, thread_t *new_thread);
 extern void thread_deallocate(thread_t thread);

@@ -41,10 +41,12 @@ standard bsd/dev/hakios.scfb_battery.c
 
 driver EXYNOS_CPUFREQ
 	file    bsd/dev/hakios.exynos_cpufreq.c
+	file    bsd/dev/hakios.scion_gov.c
 	requires EXYNOS_ACPM
 	default n
 	help    the Galaxy S9's CPU frequency governor (cpufreq_gov=1): both clusters' rates moved with the load through ACPM's
 	help    DVFS, within the limits of Samsung's device tree for the M3s online, and lowered when the TMU reads them hot
+	help    (gov_policy=3: the scion governor, whose law is hakios.scion_gov.c)
 
 driver MAX77705
 	file    bsd/dev/hakios.max77705.c

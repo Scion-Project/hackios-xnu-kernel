@@ -83,16 +83,14 @@
 #include "hakios.exynos_tmu.h"
 #include "hakios.thermal_provider.h"
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void loader_return(void);
 extern void hakios_var_save_on_return(void);
 extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_adsp_stop(void);
 extern int hakios_battery_temperature(void);  /* drivers/power/hakios.battery.c; a stand-in says -273 */
 extern bool hakios_exynos_power_off(const char *who, int (*say)(const char *, ...));  /* hakios.exynos_poweroff.c */
-extern void delay(int usec);
 
 SYSCTL_DECL(_kern_hakios);
 
@@ -133,11 +131,12 @@ SYSCTL_INT(_kern_hakios_temp, OID_AUTO, battery_c, CTLFLAG_RD | CTLFLAG_LOCKED, 
     "the battery's temperature as the battery driver says it (-273: not known)");
 
 /*
- * Every zone's last reading for other drivers (the CPU governor, drivers/power/hakios.exynos_cpufreq.c), whatever the step:
+ * Every zone's last reading for other drivers (the CPU governor, drivers/power/exynos/hakios.exynos_cpufreq.c), whatever the step:
  * the zones in tmu_zones' order (0 BIG, 1 LITTLE, 2 G3D, 3 ISP), millidegrees, NOT_READ_MC before the first reading.
  * Asked directly: the governor read kern.hakios.temp.* through kernel_sysctlbyname at first, and got nothing on the phone.
  */
 static volatile int32_t last_zone_mc[TMU_NZONES] = { NOT_READ_MC, NOT_READ_MC, NOT_READ_MC, NOT_READ_MC };
+static volatile uint64_t last_zone_at;
 
 int32_t hakios_exynos_tmu_zone_mc(unsigned zone);
 
@@ -145,6 +144,18 @@ int32_t
 hakios_exynos_tmu_zone_mc(unsigned zone)
 {
 	return zone < TMU_NZONES ? last_zone_mc[zone] : NOT_READ_MC;
+}
+
+/* for the CPU governor's fall-back: how long ago the zones were last read, ms */
+uint64_t hakios_exynos_tmu_age_ms(void);
+
+uint64_t
+hakios_exynos_tmu_age_ms(void)
+{
+	uint64_t ns;
+
+	absolutetime_to_nanoseconds(mach_absolute_time() - last_zone_at, &ns);
+	return ns / NSEC_PER_MSEC;
 }
 
 /* the POCO's names, kern.hakios.thermal_* and hakios_thermal_max_mc() (hakios.thermal_provider.c), read these at step 2 */
@@ -241,6 +252,33 @@ power_off_or_return(void)
 	loader_return();
 }
 
+int32_t hakios_exynos_tmu_zone_now_mc(unsigned zone);
+
+/*
+ * A zone's hottest sensor, read now, for the CPU governor above its all-core rates: two M3s at 2314000 kHz go from 46 C to 92 C
+ * in the few seconds that a reading a second sees five of (phone 2, 5 November). Registers only; nothing changes.
+ */
+int32_t
+hakios_exynos_tmu_zone_now_mc(unsigned zone)
+{
+	int32_t hottest = NOT_READ_MC;
+
+	if (zone >= TMU_NZONES || reads == 0) {
+		return NOT_READ_MC;
+	}
+	for (unsigned s = 0; s < 8; s++) {
+		if (tmu_zones[zone].sensors & (1u << s)) {
+			uint32_t code = code_of(tmu_zones[zone].block, s);
+			int32_t mc = tmu_code_to_mc(&cal[tmu_zones[zone].block][s], code);
+
+			if (tmu_reading_ok(code, mc) && mc > hottest) {
+				hottest = mc;
+			}
+		}
+	}
+	return hottest;
+}
+
 static void
 look(void)
 {
@@ -288,6 +326,7 @@ look(void)
 	reads++;
 	for (unsigned z = 0; z < TMU_NZONES; z++) {
 		last_zone_mc[z] = zone_mc[z] == INT32_MIN ? NOT_READ_MC : zone_mc[z];
+		last_zone_at = mach_absolute_time();
 	}
 	if (steps >= 2) {
 		for (unsigned z = 0; z < TMU_NZONES; z++) {

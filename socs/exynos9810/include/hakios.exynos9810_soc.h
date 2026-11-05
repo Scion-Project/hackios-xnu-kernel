@@ -106,6 +106,8 @@
 
 /* USI blocks: each one's I2C or SPI and its mode word; which device is on which is the driver's */
 #define EXYNOS_PERIC0_USI01_MODE_PA             0x1041100CUL
+#define EXYNOS_PERIC0_USI03_MODE_PA             0x1041101CUL
+#define EXYNOS_PERIC0_USI03_HSI2C_PA            0x104B0000UL
 #define EXYNOS_PERIC0_USI00_SPI_PA              0x10450000UL
 #define EXYNOS_PERIC0_USI01_SPI_PA              0x10470000UL
 #define EXYNOS_PERIC1_USI07_MODE_PA             0x10811024UL
@@ -260,5 +262,23 @@
 
 /* Mali's DTZPC */
 #define EXYNOS_MALI_DTZPC_G3D                   0x17410204u
+
+/*
+ * The scion governor's limits (struct scion_soc, sys/hakios.scion_gov.h). Samsung's device tree for the S9
+ * (exynos9810-starlte_eur_open_26.dts): hotplug_governor's dual_freq and quad_freq (single_freq is dual_freq, triple_freq
+ * quad_freq), big_heavy_thr 640, big_idle_thr 113 and lit_heavy_thr 200 of 1024, dual_change_ms; cpufreq's min-freq. Measured:
+ * the floors, 1261000 and 1469000 from the replay of usb-1104.log; the A55s' 1248000 because the interface does not run on
+ * them during a touch (the busiest 2% at the median second); the safe rates, the frame floor, what the phone spent 71% of a
+ * day of use below. The temperatures (phone 2, 5 November): 2314000 on two M3s went from 46 C to 92 C in seconds, and 1794000
+ * on two sits at 78 to 83 C once it has run a while, so a burst ends at 78 C and only under 70 C can a new one start.
+ */
+#define EXYNOS_SCION_GOV { \
+	.big_limit = { { 2, 2314000 }, { 4, 1794000 } }, \
+	.big_floor = 650000, .big_touch = 1469000, .big_frame = 1261000, .big_safe = 1261000, \
+	.lit_floor = 1053000, .lit_touch = 1248000, .lit_safe = 1248000, \
+	.heavy_pct = 62, .idle_pct = 11, .lit_heavy_pct = 20, \
+	.change_ms = 100, \
+	.park_under_mc = 70000, .unpark_at_mc = 78000, \
+}
 
 #endif /* _SYS_HAKIOS_EXYNOS9810_SOC_H_ */

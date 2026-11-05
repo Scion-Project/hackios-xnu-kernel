@@ -83,9 +83,23 @@ void hakios_exynos_cpufreq_frame(void) {}
 
 #ifndef HAKIOS_EXYNOS_TMU
 int32_t hakios_exynos_tmu_zone_mc(unsigned zone);
+uint64_t hakios_exynos_tmu_age_ms(void);
+int32_t hakios_exynos_tmu_zone_now_mc(unsigned zone);
 /* no TMU driver: no temperature ("not read", as the driver says before its first reading) */
 int32_t
 hakios_exynos_tmu_zone_mc(__unused unsigned zone)
+{
+	return -273000;
+}
+
+uint64_t
+hakios_exynos_tmu_age_ms(void)
+{
+	return UINT64_MAX;
+}
+
+int32_t
+hakios_exynos_tmu_zone_now_mc(__unused unsigned zone)
 {
 	return -273000;
 }
