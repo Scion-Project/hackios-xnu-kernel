@@ -168,6 +168,18 @@ extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation
 /* s6sy761_trace=N: the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate */
 static uint32_t trace_left;
 
+/* the CPU governor's held touch boost (gov_policy=2): how many fingers are down, after a change */
+static void
+fingers_changed(void)
+{
+	uint32_t down = 0;
+
+	for (uint32_t f = 0; f < FINGERS; f++) {
+		down += finger_down[f] ? 1 : 0;
+	}
+	hakios_exynos_cpufreq_fingers(down);
+}
+
 static void
 all_up(void)
 {
@@ -177,6 +189,7 @@ all_up(void)
 			hakios_touch_post(HAKIOS_TOUCH_UP, f, 0, 0);
 		}
 	}
+	fingers_changed();
 }
 
 static void
@@ -206,10 +219,12 @@ handle_event(const uint8_t *e)
 		if (state == 3) {
 			if (finger_down[id]) {
 				finger_down[id] = false;
+				fingers_changed();
 				hakios_touch_post(HAKIOS_TOUCH_UP, id, nx, ny);
 			}
 		} else if (!finger_down[id]) {
 			finger_down[id] = true;
+			fingers_changed();
 			stats.downs++;
 			hakios_touch_post(HAKIOS_TOUCH_DOWN, id, nx, ny);
 		} else {

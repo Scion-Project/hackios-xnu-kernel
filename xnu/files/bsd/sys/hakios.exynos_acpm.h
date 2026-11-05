@@ -47,6 +47,8 @@ bool hakios_exynos_cpufreq_gov_start(void);
  * nothing waited for. Nothing when the governor does not run (and stubs without CONFIG_HAKIOS_EXYNOS_CPUFREQ).
  */
 void hakios_exynos_cpufreq_touch(void);
+/* how many fingers are down now, after a change: the touch screen's thread, as above */
+void hakios_exynos_cpufreq_fingers(uint32_t down);
 void hakios_exynos_cpufreq_frame(void);
 /*
  * Ask the APM to stop before the phone is powered off (Samsung's acpm_enter_wfi(), from exynos_acpm_reboot()): the firmware

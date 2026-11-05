@@ -75,6 +75,8 @@ hakios_exynos_cpufreq_gov_start(void)
 /* the governor's boosts (hakios.s6sy761.c, MiniIOMobileFramebuffer.cpp): no governor, nothing to boost */
 void hakios_exynos_cpufreq_touch(void);
 void hakios_exynos_cpufreq_touch(void) {}
+void hakios_exynos_cpufreq_fingers(uint32_t down);
+void hakios_exynos_cpufreq_fingers(uint32_t down __unused) {}
 void hakios_exynos_cpufreq_frame(void);
 void hakios_exynos_cpufreq_frame(void) {}
 #endif
