@@ -1660,6 +1660,18 @@ audio_plugins(void)
 		return;
 	}
 	if (lstat("/System/Library/Audio/Plug-Ins/HAL/HakiosAudio.driver", &st) == 0) {
+		/*
+		 * The system image has our audio device, and only that. The audio server's Bluetooth plug-in
+		 * (BTAudioHALPlugin.driver, from the user's own IPSW, which BT=1 puts in this image's /lib and /hal)
+		 * is in no system image built so far, and with it bluetoothd's A2DP and HFP devices have no
+		 * client ("no available xpc client connections"): so when this image's /hal has it and the
+		 * system's directory has not, ours goes over the system's (which holds our device alone).
+		 */
+		if (lstat(in_image("/hal/BTAudioHALPlugin.driver"), &st) == 0 &&
+		    lstat("/System/Library/Audio/Plug-Ins/HAL/BTAudioHALPlugin.driver", &st) != 0) {
+			check(bind_dir(in_image("/hal"), hal), "our audio devices (and the Bluetooth plug-in) over the system image's");
+			return;
+		}
 		printf("init: the system image has our audio device\n");
 		return;
 	}
