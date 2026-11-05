@@ -35,26 +35,11 @@
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
 #include <sys/hakios.exynos_soc.h>
+#include <sys/hakios.log.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern kern_return_t thread_terminate(thread_t thread);
 
 /* (every line to the loader's log as well, as the other drivers do: see hakios.buttons.c) */
-extern void loader_log_line(const char *line);
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[300];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 #define ALIVE_PA        EXYNOS_GPIO_ALIVE_PA    /* pinctrl@14050000: the ALIVE GPIO block */
 #define ALIVE_SIZE      0x1000

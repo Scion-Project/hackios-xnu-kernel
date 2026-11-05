@@ -82,9 +82,9 @@
 #include <sys/hakios.exynos_soc.h>
 #include "hakios.exynos_tmu.h"
 #include "hakios.thermal_provider.h"
+#include <sys/hakios.log.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void loader_log_line(const char *line);
 extern void loader_return(void);
 extern void hakios_var_save_on_return(void);
 extern void hakios_adreno_stop(void);
@@ -95,21 +95,6 @@ extern bool hakios_exynos_power_off(const char *who, int (*say)(const char *, ..
 extern void delay(int usec);
 
 SYSCTL_DECL(_kern_hakios);
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[600];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 #define CMU_PERIS_PA            ((uint32_t)EXYNOS_CMU_PERIS_PA)     /* cmucal-sfr.c:36 */
 #define CMU_PERIS_TMU_GATE      EXYNOS_TMU_CMU_PERIS_TMU_GATE         /* :1656 CLK_CON_GAT_GOUT_BLK_PERIS_UID_BUSIF_TMU_IPCLKPORT_PCLK */

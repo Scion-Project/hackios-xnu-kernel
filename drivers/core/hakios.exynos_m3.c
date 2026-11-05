@@ -71,8 +71,8 @@ extern void hakios_esslog_start(void);
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/systm.h>
 #include <sys/hakios.exynos_soc.h>
+#include <sys/hakios.log.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void loader_log_line(const char *line);
 
 int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);
 
@@ -116,21 +116,6 @@ static const struct {
 static vm_offset_t pmu;
 static uint32_t m3_steps;
 static bool m3_read_args, m3_looked, m3_written;
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[400];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 static uint32_t
 pmu_rd(uint32_t offset)

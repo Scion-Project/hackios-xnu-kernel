@@ -81,28 +81,13 @@
 #include <sys/hakios.input.h>
 #include <sys/hakios.mfc.h>
 #include <sys/hakios.physmap.h>
+#include <sys/hakios.log.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 extern boolean_t pmap_valid_page(ppnum_t);
 
-extern void loader_log_line(const char *line);
-
-static int say(const char *format, ...) __printflike(1, 2);
 
 /* (into the log the boot loader keeps across a return as well: what a run has done is read in TWRP) */
-static int
-say(const char *format, ...)
-{
-	char line[400];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
-
 #define MFC_PA                  EXYNOS_MFC_PA
 #define MFC_SIZE                0x10000UL
 #define PMU_PA                  EXYNOS_PMU_PA

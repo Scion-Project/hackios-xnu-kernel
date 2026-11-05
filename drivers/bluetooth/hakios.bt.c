@@ -49,24 +49,9 @@
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
+#include <sys/hakios.log.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void loader_log_line(const char *line);
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[200];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 #define TLMM_PHYS               0x0f100000UL
 #define TLMM_SIZE               0x100000UL

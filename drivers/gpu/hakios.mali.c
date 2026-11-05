@@ -164,6 +164,7 @@
 #include <vm/vm_kern.h>
 #include <sys/hakios.exynos_soc.h>
 #include "hakios.mali_va.h"
+#include <sys/hakios.log.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern uint64_t kvtophys(vm_offset_t va);                       /* pmap_paddr_t */
@@ -178,22 +179,6 @@ extern uint32_t gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShow
 extern struct mali_made { uint64_t address, size; uint32_t asked, flags; } gMaliMade[32];
 
 /* (every line of the steps to the loader's log as well, as the other drivers do: see hakios.buttons.c) */
-extern void loader_log_line(const char *line);
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[400];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 #define STARLTE_SOC_BASE        EXYNOS_SOC_BASE_PA    /* where the loader's platform "starlte" says the SoC's registers begin */
 
