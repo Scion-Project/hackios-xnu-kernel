@@ -1,164 +1,40 @@
 #define HAKIOS_SOC_FIXED
 /*
- * The Galaxy S9's iris camera (starlte, Exynos 9810): the Samsung S5K5F1 infrared sensor ("fimc-is-secure@10",
- * Android's camera position 3) and its infrared LED, from the supplies to one raw infrared frame in memory and a
- * picture of it on the USB console, without the ISP's libraries. Only with boot-arg iris_s9=N; nothing is written at
- * iris_s9=0 (the default). Every address and number below belongs to this phone, from its device tree and the S9
- * kernel's camera and LED drivers, read as data. The way the front camera's driver (hakios.exynos_camera.c) goes, on
- * the other side of the same ISPPRE block: this one has CSIS3 where that one has CSIS1.
+ * Iris camera on the Galaxy S9 (starlte, Exynos 9810): the Samsung S5K5F1 infrared sensor (fimc-is-secure@10) and
+ * the S2MPB02's infrared LED channel. Powers the sensor from the S2MPS18's LDOs, streams one raw RAW8 frame of
+ * 2400 x 2400 into a reserved buffer, and can send a grey picture of it on the USB console. The ISP's libraries
+ * are not used. The sensor link is CSIS3 and the ISPPRE block is shared with the front camera (CSIS1), driven in
+ * hakios.exynos_camera.c.
  *
- * THE SENSOR
- *   the bus        0x10 (7 bits) on hsi2c@108D0000 ("hsi2c19"), the I2C of USI07 of PERIC1 ("USI07_I2C"), 400 kHz;
- *                  its mode word usi@10811024; its clocks GATE_USI07_I2C: CMU_PERIC1 0x2050 (USI_I2C), 0x2090
- *                  (RSTNSYNC), 0x20DC (IPCLK), 0x20E0 (PCLK), Q-channel 0x3034; its pins gpp4-6 (SCL) and gpp4-7
- *                  (SDA) of PERIC1's GPIO (0x10830000), function 3 ("hsi2c19-bus", on_i2c), 0 when off. 16-bit register
- *                  addresses: the model ID 0x0000 (16 bits), the version 0x0002 (0xA1: the final module), mode_select
- *                  0x0100, the coarse integration time 0x0202 (lines), the analog gain 0x0204 (0x20 is 1x), the frame
- *                  length 0x0340
- *   reset          gpg2-3 of PERIC0's GPIO (0x104300C0), an output, high = running
- *   iris_en        gpg0-7 of PERIC0's GPIO (0x10430080), an output, high while the module is powered (the module file's
- *                  first step up, its last down)
- *   MCLK           CIS_CLK2 of CMU_TOP (0x1A240000): MUX_CLKCMU_CIS_CLK2 0x1020 [0] (0: OSCCLK, 26 MHz), the divider
- *                  0x181C [4:0], the gate 0x2020 (bit 20 manual, 21 on), its Q-channel 0x300C; Android's 26 MHz is
- *                  OSCCLK undivided. Out on gpc1-6 of PERIC1's GPIO (0x10830080), function 2 ("fimc_is_mclk2_fn",
- *                  drive 1); function 1 (an output, low) when off ("fimc_is_mclk2_out")
- *   the supplies   three LDOs of the main PMIC, the S2MPS18, whose registers the AP reaches only through ACPM
- *                  (hakios.exynos_acpm.c; block 1, "PMIC"): an LDO's control register [7:6] the enable (3 on), [5:0]
- *                  the voltage:
- *                    VDDD_1.05V_IRIS   LDO39, L39CTRL 0x70, 0.7 V + 12.5 mV n: 1.05 V = 28 (0x1C)
- *                    VDDA_2.8V_IRIS    LDO40, L40CTRL 0x71, 1.8 V + 25 mV n:   2.8 V  = 40 (0x28)
- *                    VDDIO_1.8V_IRIS   LDO41, L41CTRL 0x72, 0.7 V + 25 mV n:   1.8 V  = 44 (0x2C)
- *   power-up       (fimc-is-device-module-5f1.c, its secure scenario): CIS_CLK2 on at 26 MHz; reset low; iris_en high;
- *                  VDDIO on; VDDA on; VDDD at 1.05 V and on, 1 ms; the bus pins to I2C, 10 us; reset high; MCLK out
- *                  on its pin, 2 ms. Each supply is given 200 us
- *   power-down     MCLK's pin to an output, low, 200 us; reset low; the bus pins back to inputs; VDDD, VDDA, VDDIO off;
- *                  iris_en low; CIS_CLK2's gate, Q-channel, mux and divider as found
- *   the init       (sensor_5f1_init): 0xFCFC = 0x4000, 0x6010 = 1 (the sensor's reset), 5 ms, 0xFCFC = 0x4000, 0x6214 =
- *                  0x7971, 0x6218 = 0x7150 (its clocks); the version and the OTP's test result read as the module file
- *                  reads them (stream on, page 62's page_info at 0x0A12, the page it names, 0x0A04-0x0A09), stream off
- *   the mode       setfile_vision_5f1_fps_30_26MHz: 2400 x 2400 RAW8, 30 frames a second, two lanes; 56 16-bit writes
- *                  taken as given; then 0x0340 = 0x13D7 (sensor_5f1_s_duration). Its line is 0x0A38 pixel clocks of 4 x
- *                  99.67 MHz, 6.56 us; the frame 0x13D7 lines, 33.3 ms. The exposure the table leaves: 0x0339 lines,
- *                  5.4 ms (iris_s9_exp changes it, at most the frame's less 4); the analog gain 0x0204, 0x20 is 1x
- *                  (sensor_5f1_s_again: gain x 32 / 10)
- *   stream         0x0100 = 1 (8 bits); off: 0x0100 = 0 and one frame, 40 ms (sensor_5f1_stream_on/off)
+ * Depends on: hakios.exynos_acpm.c (S2MPS18 LDOs), sys/hakios.exynos_hsi2c.h (I2C masters), sys/hakios.physmap.h,
+ * sys/hakios.exynos9810_mem.h (frame buffer), hakios.dwc3.c (irshot), and the ISPPRE domain steps in
+ * hakios.exynos_camera.c.
  *
- * THE LINK (fimc_is_sensor@16260000: csi_ch 3, scenario 6, the secure one)
- *   CSIS3          0x16260000, the same block as CSIS1 (fimc-is-hw-csi-v5_1.h): its registers are named in
- *                  hakios.exynos_camera.c's head. CMN_CTRL: two lanes ([9:8] = 1), INTERLEAVE_MODE 0 (CSI_MODE_CH0_ONLY);
- *                  CH0: VC 0, RAW8 (0x2A), dual pixel mode, 2400 x 2400
- *   its WDMA       VC0's at 0x162E0000, its DMA common at +0x400: RAW8 is a "packet" format to csi_hw_s_config_dma:
- *                  DMA0_FMT bit 4 (STORAGE_MODE 1, packet), 2D, no PACK12; the bytes as they come, 2400 a line
- *   the D-PHY      M0S4S2's other slave (dphy_m0s4s2_csis3): its isolation the PMU's 0x14060730 bit 0, shared with
- *                  CSIS1's; its reset bit 3 of SYSREG_ISPPRE's 0x16210500; its registers at 0x16190000 (the CSIS3
- *                  node's second region), the same layout as CSIS1's. At 2041 Mb/s a lane (the 5F1's config):
- *                  CLKSETTLECTL 1; for each lane HS_MODE_SEL 0, SKEWCAL_EN 1, SKEW_DLYSEL 2 (2 to 3 Gb/s), HSSETTLECTL
- *                  10 (fimc_is_hw_find_settle(2041): ALIGN to 2050, 10) (csi_hw_s_phy_config)
- *   the domain     ISPPRE (pd-isppre), its DTZPC SMC, CMU_TOP's CLKCMU_ISPPRE_BUS, CMU_ISPPRE's Q-channels (CSIS3's
- *                  0x302C among them), the DMA common of the four CSISs at 0x162F0000: as hakios.exynos_camera.c has
- *                  them, and only while this driver holds them. The SysMMU is never touched (taken as off, pass-through)
- *   the buffer     16 MB below 4 GB, outside XNU's RAM: IRIS in sys/hakios.exynos9810_mem.h (0xD8000000, the front camera's: never together): the raw frame
- *                  (8 MB slot, filled with 0xA5 first), then the picture (RGB, at most 6 MB)
+ * Boot-args. Nothing is written unless iris_s9 or fp_s9 is nonzero.
+ *   iris_s9=N          run the first N steps: 1 read the pins, CIS_CLK2, LDOs and the LED's ID; 2 power the sensor,
+ *                      read its ID, version and OTP, power down; 3 set the LED registers and read them back; 4 take
+ *                      one frame; 5 stay for the USB console's "irshot [N]". Refused with a nonzero cam_s9= or torch=,
+ *                      which own the S2MPB02 bus and the ISPPRE domain (remove the S9's default cam_s9=7).
+ *   iris_s9_exp=LINES  exposure in lines of 6.56 us (default 0x0339 = 825, at most 5075)
+ *   iris_s9_gain=CODE  analog gain, 0x20 is 1x (default 0x20, range 0x20 to 0x200)
+ *   iris_s9_ms=MS      longest a capture may stream (default 600, range 100 to 2000)
+ *   iris_s9_smc=M      secure monitor calls around the run: 0 none, 1 PREPARE, 2 also holds ISPPRE, 3 also SYSREG_PROT
+ *   iris_s9_ispdiv=D   CLKCMU_ISPPRE_BUS = 466 MHz / (D + 1) while the frame is taken (default 0, range 0 to 3)
+ *   fp_s9=N            read-only probe of the rear fingerprint sensor's SPI1 (1); 2 also writes two registers and
+ *                      restores them. Runs with or without iris_s9.
  *
- * THE INFRARED LED (the S2MPB02's second flash channel, FLED2: 0x59 on hsi2c@10920000, the front camera's PMIC)
- *   It is not lit by this driver. In Android's set-up FLED2 is in its infrared mode (FLED_CTRL2 0x38: remote mode off,
- *   power-LED mode, GPIO polarity) and pulses on a strobe that does not come from the AP: once per frame while the
- *   sensor streams, IRON long after IRD. The kernel's own values are the only ones in Samsung's GPL sources (its iris
- *   HAL sets others per shot, through V4L2 controls, and is not open): leds-s2mpb02.c's s2mpb02_led_setup() with
- *   CONFIG_LEDS_IRIS_IRLED_SUPPORT, and the active discharge its probe adds:
- *     FLED_CTRL2 0x13 = 0x38   FLED_CUR2 0x16 = 0xAF ("1050 mA", the flash nibble's step 10; the torch nibble unused)
- *     FLED_IRON1 0x18 = 0x19   FLED_IRON2 0x19 = 0x0B ([7:6] the pulse width's low bits, [4:0] the IR max time)
- *     FLED_IRD1  0x1A = 0x00   FLED_IRD2  0x1B = 0x2E (0x2C, and bit 1: the active discharge, "to prevent faint light")
- *   and, from s2mpb02_ir_led_max_time(), the PMIC's own guard: FLED_TIME2 0x17 bit 0, the IR max timer, on (its time the
- *   IRON2 field the kernel leaves). Before every stream these seven are written to exactly those values and each is read
- *   back; one that does not read back, and the sensor is not started. Nothing else of the LED's is ever written:
- *   never its torch mode, never another current or pulse.
- *   EYE SAFETY, whatever asks: the sensor streams only inside one capture, at most iris_s9_ms (default 600, at most
- *   2000) ms by the clock, stopped on every way out (a failed step, the run's end, a panic's loader_return); two
- *   captures are at least 2 s apart, and a run makes at most 40. The LED cannot be on without the sensor streaming.
+ * Limits. The S2MPS18 is written only in the control registers of LDO39 to LDO41. The S2MPB02 is written only in
+ * the seven LED registers listed below. A write that does not read back, or a missing acknowledgement, powers
+ * everything down and writes nothing more in that run.
  *
- * THE STEPS. iris_s9=N makes the first N and stops; each is said before it is taken:
- *   1  reads   the pins, CMU_TOP's CIS_CLK2, the sensor's bus as found, the three LDOs (ACPM), the S2MPB02's ID and its
- *              FLED registers (0x12-0x1B)
- *   2  writes  the sensor powered up, its init, model ID, version and OTP read; powered down again
- *   3  writes  the LED's seven registers set to the kernel's values and read back (no light: nothing strobes)
- *   4  writes  one frame: the ISPPRE domain and its clocks, CSIS3 and its D-PHY, VC0's WDMA on the buffer; the sensor up,
- *              its mode, streaming until VC0's frame end (iris_s9_ms at most); streaming off, everything off again; the
- *              link's counters, how much of the buffer changed, and the mean and the spread of the middle 256 x 256
- *   5  irshot: steps 1 to 4 at the start, then the thread stays for the USB console's "irshot [N]" (hakios.dwc3.c,
- *              usb_gadget=5): each one makes steps 2 to 4 again and sends the frame as a grey picture, every Nth pixel
- *              (N 2 to 8, default 2: 1200 x 1200), stretched between the 1st and the 99th percentile. tools/usb-shot.py
- *              --cam takes it as it takes camshot's
+ * Eye safety. The sensor streams only during one capture, for at most iris_s9_ms, and is stopped on every exit
+ * path, including loader_return. Captures are at least 2 s apart and a run makes at most 40. The LED cannot be on
+ * without the sensor streaming.
  *
- * Boot-args:
- *   iris_s9=N          the iris camera's first N steps (1 a look, 2 the sensor's ID, 3 the LED's registers, 4 one frame,
- *                      5 the USB console's irshot; 0 or none: nothing). Not with cam_s9= or torch= in the same run (the
- *                      front camera's and the flashlight's drivers own the S2MPB02's bus and the ISPPRE domain): the S9's
- *                      default cam_s9=7 must be taken out (cam_s9=)
- *   iris_s9_exp=LINES  the exposure in lines of 6.56 us (default the table's 0x0339, 825; at most 5075)
- *   iris_s9_gain=CODE  the analog gain, 0x20 being 1x (default 0x20, at most 0x200)
- *   iris_s9_ms=MS      how long a capture may stream at most (default 600, 100 to 2000)
- *   iris_s9_smc=M      the secure monitor's camera calls around the run (0 none; 1 PREPARE; 2 also ISPPRE; 3 SYSREG_PROT)
- *   fp_s9=N            the rear fingerprint sensor's SPI1, whose it is (1 read; 2 also one write each, read back, put back)
- *   iris_s9_ispdiv=D   CLKCMU_ISPPRE_BUS = SHARED1_DIV4 (466 MHz) / (D + 1) while the frame is taken (default 0, Android's
- *                      466 MHz: two lanes at 2 Gb/s are 4.6 times the front camera's, which needed 233 MHz)
- *
- * THE SECURE MONITOR (iris_s9_smc=M, an experiment; 0 and none: no call). On the phone gpg0-7 (iris_en)
- * and gpp4-6/7 (the sensor's bus) do not keep what the AP writes into them, though the rest of their banks do, and the
- * sensor does not answer: something above the kernel holds them, most likely EL3 for the iris camera's secure scenario.
- * Samsung's kernel calls, for that scenario (fimc_is_sensor_s_input, fimc-is-device-sensor_v2.c), MC_SECURE_CAMERA_
- * PREPARE (0x83000043, 0, 0, 0) before it powers the module up, and UNPREPARE (0x83000044) after; SYSREG_PROT
- * (0x82002132, 1 / 0) only where NOT_SEPERATED_SYSREG is defined, which is fimc-is-v5_2_0's config, not the 9810's
- * (v6_0_0): M = 3 tries it anyway. After step 1, before step 2: SMCCC_VERSION and PSCI_VERSION, logged (Carbon answers
- * PSCI_VERSION itself and passes what it does not know to EL3: smc/smc_handler.c), each pin's register written and read back and put back as found (iris_en stays low:
- * only its function and its pull are tried, the bus pins' function 3), [M >= 2: the ISPPRE domain and its clocks up and
- * held for the run], [M = 3: SYSREG_PROT(1)], PREPARE, the pins tried again; then the steps as asked. At the run's end
- * (and on loader_return), after everything is powered down: UNPREPARE if PREPARE returned 0, [SYSREG_PROT(0)], [ISPPRE
- * down]. Every return value is logged. The calls take no address: nothing of the secure_camera region (0xE1900000, 30
- * MB, in neither the bank from 0x880000000 nor the loader's extra_ram ranges) is ever touched, and the iris buffer ends before it.
- *   What the phone showed (3 November, one kernel, phone 1). Without PREPARE, the sensor does not answer at 0x10. With
- * M = 1, PREPARE returns 0 and it does: 0x0000 reads 0x5061 (not the 0x5F1x once expected here; no source says which
- * is right), the version 0xA1, the OTP's test 1 1 1, UNPREPARE returns 0. So the call does reach EL3 and is what lets
- * the sensor answer. The pins' read-back says nothing about it: gpg0-7 and gpp4-6/7 read as ignoring every write both
- * before and after PREPARE, while the bus works. The frame does NOT reach memory: at the default exposure the WDMA reports
- * a frame end and CSIS3 counts frames, with ERR_CODE 0, and every byte of the buffer still holds its 0xA5 (the check
- * flushes with dc civac first; the front camera's frames do reach this same range). At 2000 lines and gain 0x100, and at 5075 and 0x200,
- * no frame end is seen at all in the 600 ms; why is not known. Not known either: where the bytes go. PREPARE putting
- * the CSIS3 path in the secure world, as the secure scenario suggests, would explain it; nothing here proves it. M = 2
- * and 3 have not been run. No irshot has made a picture, and whether the LED pulsed was not observed.
- *
- * THE FINGERPRINT'S BUS (fp_s9=N, an experiment beside the iris one; it needs no iris_s9=). The S9's rear fingerprint
- * sensor (Egis ET5xx) is on SPI1, spi@10450000 (USI00 of PERIC0, its mode word usi@10411004 "spi"), marked
- * "secure-mode" in the device tree: Samsung's TA drives it from the secure world. Does the secure world also hold the
- * block and its pins (gpp0-0..3: CLK, MOSI, MISO, CS, at PERIC0's GPIO + 0x000)? N = 1 reads: the mode word, CMU_PERIC0's
- * USI00 gates (PCLK 0x20B0, IPCLK 0x20AC, GATE_CLK 0x200C, the divider 0x1804, the Q-channel 0x3020; a gate found
- * manually off is opened for the reads and closed again), gpp0's CON, DAT and PUD, SPI1's CH_CFG, MODE_CFG and STATUS;
- * last, the mode word.
- *   What the phone showed. THIS PROBE PANICS THE KERNEL: reading SPI1's CH_CFG is a synchronous external
- * abort (ESR 0x96000410), with USI00's gates open (0x200000) and gpp0's CON, DAT and its four pins' PUD reading 0. An
- * earlier order died the same way on the mode word at SYSREG_PERIC0 (ESR 0x96000610), after the CMU's reads. So neither
- * is the normal world's; N = 2's writes and the sensor itself were never reached. The expected end of a run is TWRP.
- * N = 2 also writes, reads back and puts back: MODE_CFG's TX_RDY_LVL [8:5] (only with both channels found off) and
- * gpp0-3's pull. Nothing is powered and no SMC is made (none of the MC_FC_FP calls). It runs after the iris camera's
- * steps (before irshot's wait), or alone.
- *
- * Limits. The S2MPS18 is written only in the three LDOs' control registers, at Android's voltages, on or off, each read
- * back; one found on is left on and as it is, one found on at another voltage stops the run before anything is written.
- * The S2MPB02 is written only in the seven LED registers above, with those values. A write that does not read back, or
- * a byte nobody acknowledges, and everything is powered down and nothing more is written for the run.
- *
- * Sources: the phone's device tree (exynos9810-starlte_eur_open_26.dts of the BSP: hsi2c@108D0000 and its
- * fimc-is-secure@10, the hsi2c19-bus pin states, usi@10811024, fimc_is_mclk2_out/_fn, fimc_is_sensor@16260000,
- * dphy_m0s4s2_csis3, the S2MPS18's LDO39-41, s2mpb02_pmic@59 and its torch node); the S9 kernel's
- * fimc-is-device-module-5f1.c (the power sequence, the init, the mode table, the stream, the gain and the exposure's
- * arithmetic, the 2400 x 2400 RAW8 two-lane 2041 Mb/s config), include/fimc-is-hw.h (HW_FORMAT_RAW8),
- * include/fimc-is-hw-settle-10nm-lpp.h and ischain/fimc-is-v6_0_0/fimc-is-hw-chain.c (fimc_is_hw_find_settle),
- * sensor/csi2/fimc-is-hw-csi-v5_1.c and .h (csi_hw_s_config, csi_hw_s_config_dma's packet mode, csi_hw_s_phy_config),
- * drivers/leds/leds-s2mpb02.c and include/linux/leds-s2mpb02.h, include/linux/mfd/s2mpb02-private.h (the FLED
- * registers), include/linux/mfd/samsung/s2mps18-private.h and drivers/regulator/s2mps18.c (LDO39-41's registers and
- * steps), include/dt-bindings/clock/exynos9810.h, cal-if/exynos9810/cmucal-sfr.c (USI07_I2C's gates and Q-channel,
- * CIS_CLK2's), drivers/pinctrl/samsung/pinctrl-exynos.c (the banks) (android_kernel_samsung_exynos9810, lineage-24.0,
- * e5906667; GPL: read for these facts, not copied). The ISPPRE domain's way up and down: hakios.exynos_camera.c.
+ * Sources for the values: the phone's device tree (exynos9810-starlte_eur_open_26.dts of the BSP) and the S9
+ * kernel's drivers: fimc-is-device-module-5f1.c, fimc-is-hw-csi-v5_1.c, leds-s2mpb02.c, s2mps18 driver and headers,
+ * the 9810 clock and pinctrl tables (android_kernel_samsung_exynos9810, lineage-24.0, e5906667). GPL sources, read
+ * for the facts only.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
@@ -259,8 +135,12 @@ cache_flush(vm_offset_t start, uint32_t bytes)
 	__asm__ volatile ("dsb sy" : : : "memory");
 }
 
-/* ---- the buses ---- */
-
+/*
+ * The sensor's bus: hsi2c@108D0000, USI07 of PERIC1 ("hsi2c19"), 400 kHz, 7-bit address 0x10. Its clock gates
+ * (GATE_USI07_I2C), Q-channel and divider, and its pins (gpp4-6 SCL, gpp4-7 SDA, PERIC1 GPIO function 3 while this
+ * driver holds them, function 0 when off) are taken from the device tree and the 9810 clock tables.
+ * The sensor's registers are 16-bit addresses; see sensor_up() and the mode table.
+ */
 #define SENSOR          0x10            /* fimc-is-secure@10, reg = <16> */
 #define PB02            0x59            /* the S2MPB02 */
 
@@ -289,8 +169,11 @@ static struct hakios_hsi2c pb02_bus = {
 	.ipclk_mhz = 400, .bus_hz = 100000,
 };
 
-/* ---- pins and the clock ---- */
-
+/*
+ * Pins. iris_en is gpg0-7 of PERIC0 (an output, high while the module is powered). The reset is gpg2-3 of PERIC0
+ * (an output, high while the sensor runs). MCLK2 is gpc1-6 of PERIC1: function 2 ("fimc_is_mclk2_fn", drive 1)
+ * while the clock runs, and function 1 (an output, low) when off. Pin values are from the device tree.
+ */
 #define GPIO_PERIC0_PA  EXYNOS_GPIO_PERIC0_PA
 #define GPIO_PERIC1_PA  EXYNOS_GPIO_PERIC1_PA
 #define GPG0            0x080           /* PERIC0: iris_en, pin 7 */
@@ -310,12 +193,19 @@ static struct hakios_hsi2c pb02_bus = {
 #define GATE_MANUAL     (1u << 20)
 #define GATE_ON         (1u << 21)
 
+/*
+ * CIS_CLK2 in CMU_TOP: the mux selects OSCCLK, 26 MHz, which is Android's rate undivided. The *_found values hold
+ * each register as this run found it. The *_mine flags say this driver changed the register and must restore it.
+ */
 static vm_offset_t peric0, peric1, cmu_top;
 static uint32_t gate_found, mux_found, div_found, qch_found, drv_found;
 static bool clock_mine, drv_mine, powered, broken;
 
-/* ---- the S2MPS18's three LDOs, through ACPM ---- */
-
+/*
+ * The S2MPS18's LDOs, through ACPM (hakios.exynos_acpm.c, block PMIC). Control register: [7:6] enable (3 on),
+ * [5:0] voltage. LDO39 VDDD_1.05V_IRIS at 0x70, 0.7 V + 12.5 mV a step (1.05 V = 0x1C). LDO40 VDDA_2.8V_IRIS at
+ * 0x71, 1.8 V + 25 mV a step (2.8 V = 0x28). LDO41 VDDIO_1.8V_IRIS at 0x72, 0.7 V + 25 mV a step (1.8 V = 0x2C).
+ */
 #define SLDO_ON         0xC0            /* [7:6] = 3: on (normal mode) */
 #define SLDO_VSEL       0x3F
 
@@ -356,6 +246,7 @@ sldo_put(uint32_t i, bool on)
 	return true;
 }
 
+/* a supply already on is left on, and not switched off at power-down */
 static bool
 sldo_on(uint32_t i)
 {
@@ -386,8 +277,16 @@ sldo_off(uint32_t i)
 	}
 }
 
-/* ---- the S2MPB02's LED registers ---- */
-
+/*
+ * The infrared LED is the S2MPB02's second flash channel (FLED2), on the pb02 bus at 0x59. This driver does not
+ * light it. In Android's set-up FLED2 is in infrared mode and pulses on a strobe the AP does not drive: once per
+ * frame while the sensor streams, with IRON set long after IRD. The values below are the kernel's own, from
+ * leds-s2mpb02.c (CONFIG_LEDS_IRIS_IRLED_SUPPORT) and the active discharge its probe adds (bit 1 of FLED_IRD2,
+ * "to prevent faint light"). Samsung's iris HAL sets other values per shot through V4L2 controls, and those are
+ * not in the GPL sources.
+ * Only these seven registers are written, with these values. Nothing else of the LED is written: no torch mode,
+ * no other current or pulse. FLED_TIME2 bit 0 is the IR max timer that s2mpb02_ir_led_max_time() sets.
+ */
 static const struct led_reg {
 	uint8_t reg, value, mask;       /* mask: the bits written (the rest as found) */
 	const char *name;
@@ -457,8 +356,11 @@ led_look(const char *step)
 	    "IRD1 %#x IRD2 %#x\n", step, id, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9]);
 }
 
-/* ---- the sensor ---- */
-
+/*
+ * The sensor's registers are 16-bit addresses, written with an 8- or 16-bit value. Used here: model ID 0x0000,
+ * version 0x0002 (0xA1 is the final module), mode_select 0x0100 (1 streams), coarse integration 0x0202 (lines),
+ * analog gain 0x0204 (0x20 is 1x), frame length 0x0340 (lines).
+ */
 static bool sensor_broken;
 
 static uint32_t
@@ -498,10 +400,16 @@ sensor_put(uint16_t reg, uint16_t value, uint32_t bytes)
 	return true;
 }
 
+/* sensor_5f1_init: a reset (0x6010), 5 ms, then the clock registers; 0xFCFC is written before each group */
 static const uint16_t init_reset[][2] = { { 0xFCFC, 0x4000 }, { 0x6010, 0x0001 } };
 static const uint16_t init_clock[][2] = { { 0xFCFC, 0x4000 }, { 0x6214, 0x7971 }, { 0x6218, 0x7150 } };
 
-/* setfile_vision_5f1_fps_30_26MHz (S5K5F1S_EVT0_Ver_0.5_20170710): the sensor's own values, as data; 16-bit writes */
+/*
+ * setfile_vision_5f1_fps_30_26MHz from S5K5F1S_EVT0_Ver_0.5_20170710 (the S9 kernel's module file), as 16-bit
+ * writes: 2400 x 2400 RAW8, two lanes, 30 frames a second. Its line length 0x0342 = 0x0A38 pixel clocks of 4 x
+ * 99.67 MHz, 6.56 us. Its frame length 0x0340 = 0x13D7 lines, 33.3 ms. Its exposure 0x0202 = 0x0339 lines, 5.4 ms.
+ * The capture rewrites frame length, exposure and gain after the table (sensor_5f1_s_duration, s_again).
+ */
 static const uint16_t mode_2400[][2] = {
 	{ 0xF43E, 0x24CE }, { 0xF440, 0x402F }, { 0x354C, 0x0004 }, { 0x3544, 0x110B }, { 0x3540, 0x110B },
 	{ 0x3082, 0x0100 }, { 0x3168, 0x00A0 }, { 0x31A6, 0x0100 }, { 0xF470, 0x0000 }, { 0xF43A, 0x0010 },
@@ -573,7 +481,11 @@ clock_on(void)
 
 static void stream_stop(void);
 
-/* the power-down, in the module file's order; only what this run switched on */
+/*
+ * Power-down, in the module file's order. The stream stops first. Then MCLK2 goes low for 200 us, reset goes low,
+ * the bus pins become inputs, the LDOs go off in reverse order, iris_en goes low, and CIS_CLK2's gate, Q-channel,
+ * divider and mux are put back as found. Only what this run switched on is undone.
+ */
 static void
 power_down(void)
 {
@@ -606,7 +518,11 @@ power_down(void)
 	    (sldo_mine[0] || sldo_mine[1] || sldo_mine[2]) ? "NOT ALL OFF (a write failed)" : "off as found");
 }
 
-/* the power-up (the module file's order), then the sensor's init; false: powered down again */
+/*
+ * Power-up, in the module file's order (fimc-is-device-module-5f1.c, secure scenario): CIS_CLK2 on at 26 MHz, reset
+ * low, iris_en high, VDDIO then VDDA then VDDD at 1.05 V (200 us each), 1 ms, the bus pins to I2C (10 us), reset
+ * high, MCLK2 out on its pin, 2 ms. Then the sensor's init. Returns false after powering down again.
+ */
 static bool
 sensor_up(void)
 {
@@ -668,7 +584,10 @@ sensor_up(void)
 	return true;
 }
 
-/* the OTP's test result and date, as sensor_5f1_init reads them (stream on, two pages, stream off) */
+/*
+ * The OTP test result and date, read as sensor_5f1_init reads them. The sensor streams during the read: page_info
+ * at 0x0A12 (page 62's) names the page, which is read at 0x0A04-0x0A09.
+ */
 static void
 sensor_otp(void)
 {
@@ -698,7 +617,27 @@ sensor_otp(void)
 	    "%#x\n", page, t[0], t[1], t[2], t[3], t[4], t[5]);
 }
 
-/* ---- the ISPPRE domain, CSIS3, its D-PHY, its WDMA (as hakios.exynos_camera.c, with CSIS3's addresses) ---- */
+/*
+ * The link is CSIS3 (0x16260000, the same block as CSIS1; register layout from fimc-is-hw-csi-v5_1.h), its D-PHY
+ * (dphy_m0s4s2_csis3, registers at 0x16190000), the DMA common block at 0x162F0000 and VC0's WDMA at 0x162E0000.
+ * The ISPPRE power domain, CMU_TOP's CLKCMU_ISPPRE_BUS and the CMU_ISPPRE Q-channels are used as in
+ * hakios.exynos_camera.c, and only while this driver holds them. The SysMMU is not touched: it is taken as off,
+ * pass-through.
+ *
+ * Link settings: CMN_CTRL two lanes, interleave mode 0 (channel 0 only). Channel 0 is VC 0, RAW8 (data type 0x2A),
+ * dual pixel mode, 2400 x 2400. RAW8 is packet storage: one byte a pixel, 2400 bytes a line (DMA0_FMT bit 4, set by
+ * csi_hw_s_config_dma).
+ * D-PHY at 2041 Mb/s a lane: CLKSETTLECTL 1; per lane HS_MODE_SEL 0, SKEWCAL_EN 1, SKEW_DLYSEL 2 (2 to 3 Gb/s),
+ * HSSETTLECTL 10 (fimc_is_hw_find_settle(2041), csi_hw_s_phy_config). The D-PHY isolation is PMU 0x14060730 bit 0,
+ * shared with CSIS1. Its reset is bit 3 of SYSREG_ISPPRE 0x16210500.
+ *
+ * Frame buffer: 16 MB below 4 GB, outside XNU's RAM, from sys/hakios.exynos9810_mem.h (0xD8000000; the front
+ * camera uses the same range, and the two are never used together). The raw frame takes the first 8 MB, filled
+ * with 0xA5 before the capture. The RGB picture follows it and is at most 6 MB.
+ *
+ * Sources: fimc-is-hw-csi-v5_1.c and .h (csi_hw_s_config, csi_hw_s_config_dma, csi_hw_s_phy_config),
+ * fimc-is-hw-settle-10nm-lpp.h and fimc-is-hw-chain.c (fimc_is_hw_find_settle), fimc-is-hw.h (HW_FORMAT_RAW8).
+ */
 
 #define PMU_PA                  EXYNOS_PMU_PA
 #define PMU_SIZE                0x5000
@@ -812,7 +751,7 @@ static bool domain_up, domain_mine, clocks_mine, top_gate_mine, top_rate_mine, p
 static bool buffer_busy;
 static bool isp_held;           /* iris_s9_smc >= 2: the domain stays up from before PREPARE to after UNPREPARE */
 
-/* One SMC to EL3 (through Carbon at EL2): x0 back (hakios.exynos_camera.c's) */
+/* One SMC to EL3, through Carbon at EL2. Returns x0. The same helper as in hakios.exynos_camera.c. */
 static uint64_t
 smc(uint64_t function, uint64_t first, uint64_t second, uint64_t third)
 {
@@ -847,8 +786,9 @@ dma_stop(void)
 	wr(wdma, DMA_CTRL, rd(wdma, DMA_CTRL) & ~(DMA_ON | DMA_UPDT_PTR_EN));
 	dma_on = false;
 	if (!wait_for(wdma, DMA_ACT_CTRL, DMA_ON, 0, 100000)) {
-		/* ACT_CTRL takes DMA_CTRL's ON at a frame start, and none comes after the sensor's stream off (seen on the
-		 * phone, 3 November: 0xff11 after a whole frame): the link is stopped next, so nothing more reaches the WDMA */
+		/* ACT_CTRL takes DMA_CTRL's ON only at a frame start. On the phone no frame start came after the sensor
+		 * stopped (ACT_CTRL read 0xff11 after a whole frame), so the link is stopped next and nothing more reaches
+		 * the WDMA. */
 		say("exynos_iris: the WDMA's active bit is still set (ACT_CTRL %#x): it changes at the next frame start, and "
 		    "the link is stopped now\n", rd(wdma, DMA_ACT_CTRL));
 	}
@@ -884,7 +824,7 @@ phy_off(void)
 	phy_mine = false;
 }
 
-/* everything of the ISPPRE block this run switched on, off again (hakios.exynos_camera.c's isp_down, for CSIS3) */
+/* everything of the ISPPRE block this run switched on, off again; as isp_down() in hakios.exynos_camera.c, for CSIS3 */
 static void
 isp_down(void)
 {
@@ -1041,7 +981,7 @@ isp_up(void)
 	return true;
 }
 
-/* the D-PHY's isolation off, its reset released, set for 2041 Mb/s a lane (csi_hw_s_phy_config, deskew on) */
+/* the D-PHY's isolation off and its reset pulsed; the settings for 2041 Mb/s a lane, with deskew on */
 static void
 phy_setup(void)
 {
@@ -1170,7 +1110,10 @@ frame_report(void)
 	    last / LINE_BYTES, sum / (256 * 256), lo, hi, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
 }
 
-/* the mode and the exposure; the LED's registers; the link; streaming until VC0's first whole frame, bounded */
+/*
+ * One capture: the mode and exposure, the LED's registers, the link, then streaming until the second VC0 frame end,
+ * for at most iris_s9_ms. The exposure is kept within 2 to (frame length - MODE_MARGIN) lines.
+ */
 static bool
 capture(void)
 {
@@ -1236,7 +1179,7 @@ capture(void)
 	if (!sensor_put(0x0100, 0x01, 1)) {
 		return false;
 	}
-	/* the first frame end is a frame begun before the WDMA was ready, perhaps: the second is the one taken */
+	/* The first frame end may belong to a frame begun before the WDMA was ready, so the second one is taken. */
 	for (uint32_t ends = 0; mach_absolute_time() < until;) {
 		src = rd(wdma, VCMN + VCMN_INT_SRC);
 		if (src & (DMA_FRM_START0 | DMA_ERROR)) {
@@ -1264,10 +1207,12 @@ capture(void)
 	return got;
 }
 
-/* ---- the picture: every Nth pixel, grey, stretched; sent by the USB console ---- */
-
 extern int hakios_usb_picture(uintptr_t rgb, uint32_t width, uint32_t height, const char *what);   /* hakios.dwc3.c */
 
+/*
+ * Grey picture of every Nth pixel of the raw frame. The 1st and 99th percentiles of a sample set the black and
+ * white points, which are stretched to 0 and 255.
+ */
 static void
 picture(uint32_t n, uint32_t *wp, uint32_t *hp)
 {
@@ -1307,13 +1252,38 @@ picture(uint32_t n, uint32_t *wp, uint32_t *hp)
 	*hp = h;
 }
 
-/* ---- the run ---- */
-
+/* The LED's budget: at most 40 captures a run, at least 2 s apart. */
 #define SHOTS_MAX       40
 #define SHOT_GAP_MS     2000
 
-/* ---- iris_s9_smc=M: the secure monitor's camera calls (the head: THE SECURE MONITOR) ---- */
-
+/*
+ * Secure monitor calls, iris_s9_smc=M (an experiment; 0 makes no calls). On this phone gpg0-7 (iris_en) and
+ * gpp4-6/7 (the sensor bus) ignore writes from the AP while other pins in those banks take them, and the sensor
+ * does not answer. Something above the kernel probably holds those pins, most likely EL3 for the iris camera's
+ * secure scenario.
+ * Samsung's kernel makes MC_SECURE_CAMERA_PREPARE (0x83000043) before it powers the module and UNPREPARE
+ * (0x83000044) after (fimc_is_sensor_s_input in fimc-is-device-sensor_v2.c). SYSREG_PROT (0x82002132: 1 on, 0 off)
+ * is called there only where NOT_SEPERATED_SYSREG is defined. That is the v5_2_0 config, not the 9810's v6_0_0, so
+ * M = 3 tries it anyway.
+ * Order: SMCCC_VERSION and PSCI_VERSION, logged (PSCI_VERSION is answered by Carbon, which passes other calls on
+ * to EL3: smc/smc_handler.c). Pin tries. [M >= 2: ISPPRE up and held for the run.] [M = 3: SYSREG_PROT(1).]
+ * PREPARE. Pin tries again. Then the steps. At the end, after the sensor is off: UNPREPARE if PREPARE returned 0,
+ * [SYSREG_PROT(0)], [ISPPRE down]. Every return value is logged. The calls take no address. The secure_camera
+ * region (0xE1900000, 30 MB, outside both the 0x880000000 RAM bank and the loader's extra_ram ranges) is not
+ * touched, and the iris buffer ends before it.
+ *
+ * Observed on one phone and one kernel build. Without PREPARE the sensor does not answer at 0x10. With M = 1,
+ * PREPARE returns 0 and the sensor does answer: 0x0000 reads 0x5061 (the sources do not say which model ID is
+ * right), the version is 0xA1, the OTP test reads 1 1 1, and UNPREPARE returns 0. So the call reaches EL3 and is
+ * what lets the sensor answer. The pin read-back does not change: gpg0-7 and gpp4-6/7 ignore writes before and
+ * after PREPARE, while the bus works.
+ * The frame does not reach memory at the default exposure. The WDMA reports a frame end and CSIS3 counts frames,
+ * with ERR_CODE 0, yet every byte of the buffer still holds 0xA5. The check flushes the cache first with dc civac.
+ * The front camera's frames do reach this same range. At 2000 lines with gain 0x100, and at 5075 lines with gain
+ * 0x200, no frame end is seen in 600 ms. The cause is not known, and neither is where the bytes go. PREPARE moving
+ * the CSIS3 path into the secure world would explain it, but nothing here shows that. M = 2 and 3 have not been
+ * run. No irshot has produced a picture, and whether the LED pulsed has not been observed.
+ */
 #define SMCCC_VERSION           0x80000000u
 #define PSCI_VERSION            0x84000000u
 #define SECCAM_SYSREG_PROT      0x82002132u     /* MC_SECURE_CAMERA_SYSREG_PROT (1 on, 0 off) */
@@ -1412,7 +1382,21 @@ smc_end(void)
 	}
 }
 
-/* ---- fp_s9=N: whose is the rear fingerprint sensor's SPI1 (the head: THE FINGERPRINT'S BUS) ---- */
+/*
+ * fp_s9=N: a probe of the rear fingerprint sensor's bus, SPI1 (spi@10450000, USI00 of PERIC0, mode word
+ * usi@10411004 "spi"). The device tree marks it "secure-mode", so Samsung's TA drives it from the secure world.
+ * The question is whether the secure world also holds the block and its pins (gpp0-0..3 of PERIC0: CLK, MOSI,
+ * MISO, CS).
+ * N = 1 reads: USI00's gates in CMU_PERIC0 (a gate found manually off is opened for the reads and closed again),
+ * gpp0's CON, DAT and PUD, SPI1's CH_CFG, MODE_CFG and STATUS, and last the mode word.
+ * N = 2 also writes, reads back and restores MODE_CFG's TX_RDY_LVL [8:5] (only when both channels are off) and
+ * gpp0-3's pull. Nothing is powered and no SMC is made. It runs after the iris steps, or alone.
+ * On the phone, the read of SPI1's CH_CFG panics the kernel: a synchronous external abort (ESR 0x96000410), with
+ * USI00's gates open and gpp0 reading 0. An earlier order aborted the same way on the mode word at SYSREG_PERIC0
+ * (ESR 0x96000610), after the CMU reads. The SPI read and the mode-word read are each preceded by a log line, so
+ * the log shows where an abort happened. Neither read succeeded, so the N = 2 writes and the sensor were never
+ * reached.
+ */
 
 #define CMU_PERIC0_PA           EXYNOS_CMU_PERIC0_PA
 #define SYSREG_PERIC0_PA        EXYNOS_SYSREG_PERIC0_PA
@@ -1465,8 +1449,8 @@ fp_probe(void)
 			    rd(cmu, fp_gates[i].off));
 		}
 	}
-	/* SYSREG_PERIC0's 0x10411004 (USI00's mode word) aborts a read (an external abort, 3 November): it is the last
-	 * thing read, after its own line, so that the log says what the SPI's registers did first */
+	/* The SPI registers are read before SYSREG_PERIC0's 0x10411004 (USI00's mode word), which aborted a read on the
+	 * phone, so that the log shows what the SPI registers did first. */
 	say("exynos_iris: fp: 1: reading SPI1's CH_CFG, MODE_CFG, STATUS (a panic right after this line: SPI1 is not the "
 	    "normal world's)\n");
 	ch = rd(spi, SPI_CH_CFG);
@@ -1570,6 +1554,18 @@ hakios_exynos_iris_shot(uint32_t n)
 	return NULL;
 }
 
+/*
+ * The run, in the boot-arg's order. Each step is logged before it is taken.
+ *   1  read the pins, CIS_CLK2, the three LDOs through ACPM, and the S2MPB02's ID and FLED registers (0x00, 0x12-0x1B)
+ *   2  power the sensor up, read its ID, version and OTP, power it down
+ *   3  set the LED's seven registers to the kernel's values and read them back. Nothing strobes.
+ *   4  take one frame: the ISPPRE domain and clocks, CSIS3 and its D-PHY, VC0's WDMA on the buffer; the sensor up and
+ *      streaming until the second frame end, for at most iris_s9_ms; streaming off and everything down; then the
+ *      link's counters, how much of the buffer changed, and the mean and spread of the middle 256 x 256
+ *   5  stay after step 4 for the USB console's "irshot [N]" (hakios.dwc3.c, usb_gadget=5). Each request repeats
+ *      steps 2 to 4 and sends the frame as a grey picture of every Nth pixel (N 2 to 8, default 2). tools/usb-shot.py
+ *      --cam fetches it.
+ */
 static void
 iris_thread(void *arg, __unused wait_result_t result)
 {
