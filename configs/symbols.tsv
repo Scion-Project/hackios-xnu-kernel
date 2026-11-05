@@ -160,6 +160,7 @@ FB_DPP	arg	fb_dpp	GPU and display	k	MiniIOMobileFramebuffer.cpp	three buffers of
 FB_FILTER	arg	fb_filter	GPU and display	k	MiniIOMobileFramebuffer.cpp	the picture is scaled to the panel nearest neighbour, as it once was
 FB_FLIP	arg	fb_flip	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_HZ	arg	fb_hz	GPU and display	k	MiniIOMobileFramebuffer.cpp	
+FB_INTF	arg	fb_intf	GPU and display	k	MiniIOMobileFramebuffer.cpp	the registers of the display interface the panel is on, for a port
 FB_MEASURE	arg	fb_measure	GPU and display	k	MiniIOMobileFramebuffer.cpp	how often the panel is really refreshed
 FB_NATIVE	arg	fb_native	GPU and display	k	MiniIOMobileFramebuffer.cpp	the iPhone's 1125 x 2436 on every panel, as before (the picture stretched to the panel's shape)
 FB_PRI	arg	fb_pri	GPU and display	k	MiniIOMobileFramebuffer.cpp	

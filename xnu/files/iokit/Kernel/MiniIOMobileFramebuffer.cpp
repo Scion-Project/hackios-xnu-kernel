@@ -192,8 +192,13 @@ static TUNABLE(uint32_t, gFilter, "fb_filter", 2);
  * 4.3 by nearest neighbour (touch_lat=1, 30 October) -- and at 120 Hz a refresh is 8.3 ms. What nearest neighbour
  * gets wrong (a column in 25 and a row in 67 left out) does not show while the picture moves; so a frame drawn so is
  * drawn again, filtered, when no other has come for SETTLE_MS: what stands still on the screen is the bilinear one.
+ *
+ * Frames that come slowly are filtered at once: a clock asking for 10 frames a second had each drawn by nearest neighbour and
+ * 40 ms later by bilinear, every edge of a still screen moving back and forth. Nearest neighbour is for FAST_FRAMES in a row and
+ * on. (Upstream hakios-xnu-kernel 539d35e, seen there on an Adreno phone; not yet on the S9.)
  */
 #define SETTLE_MS       40
+#define FAST_FRAMES     2
 static TUNABLE(uint32_t, gRefreshHz, "fb_hz", kFBRefreshHz);
 /*
  * Boot-arg fb_ca_hz=N: the refresh rate told to CoreAnimation (IOMFBDisplayRefresh) when it is not to be fb_hz's. On
@@ -420,12 +425,30 @@ micros(uint64_t absolute)
  * does not come back with the phone's log), in a thread of its own; off by default.
  */
 static TUNABLE(uint32_t, gMeasure, "fb_measure", 0);
-#define DPU_INTF1_PAGE          0x0ae34000UL            /* the 16 KB page INTF_1 is in */
-#define DPU_INTF1_OFFSET        0x2000
+#define DPU_SC7280_INTF1        0x0ae36000UL            /* SM7325 (sc7280): INTF_1, what the panel of redwood is on */
 #define INTF_TIMING_ENGINE_EN   0x000
 #define INTF_FRAME_COUNT        0x0ac
 extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 static inline uint32_t refreshHz(void);
+
+/*
+ * Boot-arg fb_intf=PHYSICAL: the registers of the display interface the panel is on, for a port. Without it the SoC the kernel was
+ * configured for says (hakios_kver): SM7325's address read on another SoC is somebody else's registers, or an abort, so on a SoC
+ * not known here nothing is read. (Upstream hakios-xnu-kernel f8976bc.)
+ */
+static TUNABLE(uint64_t, gIntfPhysical, "fb_intf", 0);
+
+static vm_offset_t
+panelInterface(void)
+{
+	char version[128] = "";
+	uint64_t physical = gIntfPhysical;
+
+	if (physical == 0 && PE_parse_boot_argn("hakios_kver", version, sizeof(version)) && strnstr(version, "-sc7280-", sizeof(version)) != NULL) {
+		physical = DPU_SC7280_INTF1;
+	}
+	return physical != 0 ? ml_io_map((vm_offset_t) (physical & ~0x3fffULL), 0x4000) + (vm_offset_t) (physical & 0x3fffULL) : 0;
+}
 
 static void
 measurePanel(__unused void * arg, __unused wait_result_t wr)
@@ -434,7 +457,11 @@ measurePanel(__unused void * arg, __unused wait_result_t wr)
 	uint32_t on, first, second;
 
 	IOSleep(60000);
-	intf = ml_io_map(DPU_INTF1_PAGE, 0x4000) + DPU_INTF1_OFFSET;
+	intf = panelInterface();
+	if (intf == 0) {
+		IOLog("MiniIOMobileFramebuffer: fb_measure: no display interface known for this SoC (fb_intf=)\n");
+		return;
+	}
 	on = *(volatile uint32_t *)(intf + INTF_TIMING_ENGINE_EN);
 	first = *(volatile uint32_t *)(intf + INTF_FRAME_COUNT);
 	IOSleep(1000);
@@ -607,6 +634,7 @@ public:
 	void show(const uint8_t * swap, MiniIOSurface ** surfaces);
 	void settle(const uint8_t * swap, MiniIOSurface ** surfaces);
 	bool fSettling;                 /* drawing the last frame again, filtered (fb_filter=2) */
+	bool fFilterFrame;              /* this frame came slowly: filtered as it is (fb_filter=2) */
 	void presenter(void);
 	static void presenterMain(void * self, wait_result_t result);
 	void reportFrameTimes(void);
@@ -1189,7 +1217,7 @@ IOMobileFramebuffer::drawLayer(MiniIOSurface * s, const int32_t * src, const int
 	int32_t sx = src[0], sy = src[1], sw = src[2], sh = src[3];
 	int32_t dx = dst[0], dy = dst[1], dw = dst[2], dh = dst[3];
 	int32_t px0, py0, px1, py1, cx0, cx1;
-	bool filter = gFilter == 1 || (gFilter == 2 && fSettling);
+	bool filter = gFilter == 1 || (gFilter == 2 && (fSettling || fFilterFrame));
 	RowJob job;
 
 	if (fZcFrame) {
@@ -1573,6 +1601,12 @@ IOMobileFramebuffer::presenter(void)
 	MiniIOSurface * surfaces[SWAP_LAYERS] = { NULL };
 	uint8_t inUse = 0;                      /* (fb_zc_hold 1: the layers whose use count SwapEnd raised) */
 	bool unsettled = false;                 /* the frame on the panel was drawn unfiltered, and its surfaces are held */
+	uint64_t lastFrame = 0, settleTime;
+	unsigned fastFrames = 0;
+	uint32_t shownDrawn[SWAP_LAYERS] = { 0 };       /* what the GPUs had last been asked to draw into the surfaces on the panel */
+	uint64_t shownMali[SWAP_LAYERS] = { 0 };
+
+	nanoseconds_to_absolutetime(SETTLE_MS * NSEC_PER_MSEC, &settleTime);
 
 	for (;;) {
 		IOLockLock(fSwapLock);
@@ -1597,8 +1631,20 @@ IOMobileFramebuffer::presenter(void)
 			}
 			clock_interval_to_deadline(SETTLE_MS, NSEC_PER_MSEC, &deadline);
 			if (IOLockSleepDeadline(fSwapLock, fSwap, deadline, THREAD_UNINT) == THREAD_TIMED_OUT && fSwapsWaiting == 0) {
+				bool reused = false;
+
 				IOLockUnlock(fSwapLock);
-				settle(swap, surfaces);
+				/*
+				 * Not from a surface a GPU has been asked to draw into since: CoreAnimation has it back, and the next frame
+				 * in it half drawn is what the panel would get (the next frame comes in a moment anyway). (Upstream 539d35e.)
+				 */
+				for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
+					reused = reused || (surfaces[layer] != NULL &&
+					    (surfaces[layer]->drawn != shownDrawn[layer] || surfaces[layer]->maliSeq != shownMali[layer]));
+				}
+				if (!reused) {
+					settle(swap, surfaces);
+				}
 				unsettled = false;
 				IOLockLock(fSwapLock);
 			}
@@ -1620,8 +1666,19 @@ IOMobileFramebuffer::presenter(void)
 		memcpy(surfaces, fSwapSurfaces[fSwapFirst], sizeof(surfaces));
 		inUse = fSwapInUse[fSwapFirst];
 		IOLockUnlock(fSwapLock);
-		show(swap, surfaces);
-		unsettled = gFilter == 2 && fScanMode != 2 && fScanMode != -2;     /* (the DPU's scaler filters) */
+		{
+			uint64_t now = mach_absolute_time();
+
+			fastFrames = lastFrame != 0 && now - lastFrame <= settleTime ? fastFrames + 1 : 0;
+			fFilterFrame = fastFrames < FAST_FRAMES;
+			for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
+				shownDrawn[layer] = surfaces[layer] != NULL ? surfaces[layer]->drawn : 0;
+				shownMali[layer] = surfaces[layer] != NULL ? surfaces[layer]->maliSeq : 0;
+			}
+			show(swap, surfaces);
+			lastFrame = mach_absolute_time();
+		}
+		unsettled = gFilter == 2 && !fFilterFrame && fScanMode != 2 && fScanMode != -2;     /* (the DPU's scaler filters) */
 		if (!unsettled) {
 			for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
 				if (surfaces[layer] != NULL) {

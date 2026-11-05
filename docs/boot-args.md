@@ -2,13 +2,13 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **574 arguments**: 505 read by the kernel, 21 by the loader, 63 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **575 arguments**: 506 read by the kernel, 21 by the loader, 63 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
 Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl kern.bootargs`).
 
-## GPU and display (106)
+## GPU and display (108)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -33,6 +33,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `fb_filter` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_FILTER` |  |
 | `fb_flip` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_FLIP` |  |
 | `fb_hz` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_HZ` |  |
+| `fb_intf` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_INTF` |  |
 | `fb_measure` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_MEASURE` |  |
 | `fb_native` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_NATIVE` |  |
 | `fb_pri` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_PRI` |  |
@@ -92,6 +93,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `gpu_log` | K | `hakios.adreno.c` | `CONFIG_GPU_LOG` |  |
 | `gpu_recover` | K | `hakios.adreno.c` | `CONFIG_GPU_RECOVER` |  |
 | `gpu_va` | K | `hakios.adreno.c` | `CONFIG_GPU_VA` |  |
+| `hakios_kver` | K | `MiniIOMobileFramebuffer.cpp`, `hakios.version.c` |  | the loader (from the payload's kernel.ver) |
 | `mali` | K | `hakios.mali.c` | `CONFIG_MALI` |  |
 | `mali_acpm` | K | `hakios.mali.c` | `CONFIG_MALI_ACPM` |  |
 | `mali_fastmap` | K | `hakios.mali.c` | `CONFIG_MALI_FASTMAP` |  |
@@ -495,12 +497,6 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `tmu_poll` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_POLL` |  |
 | `tmu_stop` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_STOP` |  |
 | `tmu_ungate` | K | `hakios.exynos_tmu.c` | `CONFIG_TMU_UNGATE` |  |
-
-## Version (1)
-
-| Argument | Layer | Read by | Configuration | Set by |
-|---|---|---|---|---|
-| `hakios_kver` | K | `hakios.version.c` |  | the loader (from the payload's kernel.ver) |
 
 ## CPU, memory and boot (23)
 
