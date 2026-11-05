@@ -32,6 +32,11 @@ struct scion_pace {
 	uint32_t floor, calm_ms;        /* the floor now (0: start over), how long only on-time frames have come at it */
 };
 
+enum scion_state { SCION_STATIC, SCION_TOUCHED, SCION_ANIMATING, SCION_STATES };
+
+/* what the phone is doing now; quiet_ms since the last frame or finger */
+enum scion_state scion_state(uint32_t fingers, bool moving, uint64_t quiet_ms, enum scion_state was);
+
 /* a temperature to trust: read, plausible and recent */
 bool scion_temp_ok(int32_t mc, uint64_t age_ms);
 

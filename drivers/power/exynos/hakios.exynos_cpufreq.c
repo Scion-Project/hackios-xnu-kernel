@@ -122,6 +122,7 @@
  *   gov_frame_ms=<ms>        a frame this recent keeps the frame boost on (100; 20 to 1000)
  *   gov_target=<percent>     the busiest core's share wanted at the new rate (60; 30 to 95)
  *   gov_down=<windows>       windows in a row that want less before the rate comes down (5; 1 to 50)
+ *   gov_wake=1               a finger coming down asks for the GPU's frame floor at once, before the first frame needs it (off)
  *   gov_policy=<n>           1 the policy above; 3 the scion governor; 2 scion without parking; 4 that with frame pacing (1 for now)
  *   gov_stat=<n>             the line of numbers to compare by (1; 0: none)
  *
@@ -268,6 +269,9 @@ static uint64_t burst_span, hold_span;
 static uint32_t big_cores = SCION_BIG_CORES;    /* the M3s the scheduler may use */
 static struct scion_park park;
 static struct scion_pace pace;
+static uint32_t gov_wake;
+static enum scion_state dev_state = SCION_STATIC;
+static uint64_t dev_since, dev_ms[SCION_STATES];
 static uint64_t few_since, few_time;
 static const struct scion_soc scion_soc = EXYNOS_SCION_GOV;
 static uint32_t fingers;                        /* how many are down (hakios_exynos_cpufreq_fingers()) */
@@ -309,6 +313,8 @@ hakios_exynos_cpufreq_touch(void)
  * How many fingers are down now, after the touch screen's thread has changed it (hakios.s6sy761.c; all up when it gives up on
  * the bus). One coming down wakes this file's thread even with the touch boost on: the burst is new. No wait, no lock.
  */
+extern void hakios_mali_frame(void);
+
 void
 hakios_exynos_cpufreq_fingers(uint32_t down)
 {
@@ -321,6 +327,9 @@ hakios_exynos_cpufreq_fingers(uint32_t down)
 	now = mach_absolute_time();
 	before = __atomic_exchange_n(&fingers, down, __ATOMIC_RELEASE);
 	if (before == 0 && down != 0) {
+		if (gov_wake) {
+			hakios_mali_frame();
+		}
 		__atomic_store_n(&finger_since, now, __ATOMIC_RELEASE);
 	} else if (before != 0 && down == 0) {
 		uint64_t since = __atomic_exchange_n(&finger_since, 0, __ATOMIC_ACQ_REL);
@@ -499,6 +508,23 @@ static bool
 interactive(uint64_t now)
 {
 	return touch_held(now) || frames_moving(now);
+}
+
+/* this file's thread only: time spent in each state, for the stat line */
+static void
+dev_state_update(uint64_t now)
+{
+	uint64_t last = __atomic_load_n(&frame_last, __ATOMIC_ACQUIRE), touch = __atomic_load_n(&touch_last, __ATOMIC_ACQUIRE), ns;
+	enum scion_state to;
+
+	absolutetime_to_nanoseconds(now - MAX(last, touch), &ns);
+	to = scion_state(__atomic_load_n(&fingers, __ATOMIC_ACQUIRE), frames_moving(now), ns / NSEC_PER_MSEC, dev_state);
+	if (dev_since != 0) {
+		absolutetime_to_nanoseconds(now - dev_since, &ns);
+		dev_ms[dev_state] += ns / NSEC_PER_MSEC;
+	}
+	dev_since = now;
+	dev_state = to;
 }
 
 /* the window now, in mach_absolute_time units */
@@ -820,6 +846,7 @@ decide_scion(struct cluster *c, uint64_t now, uint32_t window)
 	if (c == &clusters[1]) {
 		int32_t mc = hakios_exynos_tmu_zone_now_mc(c->tmu_zone);
 
+		dev_state_update(now);
 		cores_set(gov_policy != 3 || !temp_fresh(c) || !scion_temp_ok(mc, 0) || c->thermal != 0 ? SCION_BIG_CORES :
 		    scion_cores(&park, &scion_soc, big_cores, c->core_load, clusters[0].load, c->cur, mc, window), now);
 		if (gov_policy == 4) {
@@ -989,6 +1016,9 @@ stat_line(uint64_t seconds, uint64_t now, bool active)
 	if (since != 0 && __atomic_compare_exchange_n(&finger_since, &since, now, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 		fingered += now - since;
 	}
+	say("cpufreq_gov: state ms static %llu touched %llu animating %llu\n", dev_ms[SCION_STATIC], dev_ms[SCION_TOUCHED],
+	    dev_ms[SCION_ANIMATING]);
+	dev_ms[SCION_STATIC] = dev_ms[SCION_TOUCHED] = dev_ms[SCION_ANIMATING] = 0;
 	say("cpufreq_gov: stat %llu s: policy %u | big ms %llu %llu %llu %llu %llu, lit ms %llu %llu | sat big %u lit %u of %u | rev big "
 	    "%u lit %u | sum big %llu%% lit %llu%% | raise %u avg %llu us max %llu | top %u avg %llu ms max %llu, %u missed | acpm %u "
 	    "avg %llu us max %llu | fingers %llu ms | few %llu ms | cooled %u\n", seconds, gov_policy, to_us(b->res[0]) / 1000,
@@ -1170,6 +1200,7 @@ hakios_exynos_cpufreq_gov_start(void)
 		gov_policy = value;
 	}
 	(void)PE_parse_boot_argn("gov_stat", &gov_stat, sizeof(gov_stat));
+	(void)PE_parse_boot_argn("gov_wake", &gov_wake, sizeof(gov_wake));
 	if (boost_ms == 0) {
 		touch_big = touch_lit = 0;
 	}

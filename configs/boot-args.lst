@@ -238,6 +238,7 @@ gov_frame_ms	k
 gov_policy	k
 gov_stat	k
 gov_target	k
+gov_wake	k
 gpu	k
 gpu3d	k
 gpu3d_size	k

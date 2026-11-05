@@ -229,6 +229,7 @@ GOV_FRAME_MS	arg	gov_frame_ms	User space	k	hakios.exynos_cpufreq.c	a frame this 
 GOV_POLICY	arg	gov_policy	User space	k	hakios.exynos_cpufreq.c	
 GOV_STAT	arg	gov_stat	User space	k	hakios.exynos_cpufreq.c	the line of numbers to compare by (1; 0: none)
 GOV_TARGET	arg	gov_target	User space	k	hakios.exynos_cpufreq.c	the busiest core's share wanted at the new rate (60; 30 to 95)
+GOV_WAKE	arg	gov_wake	User space	k	hakios.exynos_cpufreq.c	a finger coming down asks for the GPU's frame floor at once, before the first frame needs it (off)
 GPU3D	arg	gpu3d	User space	k	hakios.vgpu3d_xnu.c	
 GPU3D_SIZE	arg	gpu3d_size	User space	k	hakios.vgpu3d_xnu.c	
 GPU_CACHED	arg	gpu_cached	GPU and display	k	hakios.gpu.cpp	

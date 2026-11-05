@@ -10,6 +10,8 @@
  *           unpark_at_mc, read every window: a burst has its heat to spend and sustained load stays out. The caller lowers the rate before it brings a core back and never raises it before one is parked.
  *   pace    while a finger is down, the frames say whether the floor is enough: one that came late raises the floor two levels at
  *           once, and a floor that has seen only on-time frames for PACE_CALM_MS falls a level. A late frame is what load cannot see.
+ *   state   what the phone is doing, from the two signals the kernel sees first: a finger down is touched, frames under 50 ms
+ *           apart are animating, nothing for STATE_STATIC_MS is static. Other drivers act on it: a finger coming down wakes the GPU.
  *   heat    a temperature that is not read, not plausible or not recent means the safe rate and every core, at once.
  *
  * It never asks for a rate outside the APM's table or above the SoC's limits, and sends no voltage. The TMU driver's stop and
@@ -21,6 +23,7 @@
 #define DOWN_MS         300
 #define PACE_UP         2       /* levels, per window with a late frame */
 #define PACE_CALM_MS    400
+#define STATE_STATIC_MS 300
 #define TEMP_TOO_OLD_MS 3000    /* three of the TMU's 1 s polls missed */
 #define TEMP_LOW_MC     1000
 #define TEMP_HIGH_MC    125000
@@ -83,6 +86,18 @@ scion_pace(struct scion_pace *s, const uint32_t *levels, uint32_t n, uint32_t la
 	}
 	s->floor = levels[l] > low ? levels[l] : low;
 	return s->floor;
+}
+
+enum scion_state
+scion_state(uint32_t fingers, bool moving, uint64_t quiet_ms, enum scion_state was)
+{
+	if (fingers != 0) {
+		return SCION_TOUCHED;
+	}
+	if (moving) {
+		return SCION_ANIMATING;
+	}
+	return quiet_ms >= STATE_STATIC_MS ? SCION_STATIC : was;
 }
 
 uint32_t
