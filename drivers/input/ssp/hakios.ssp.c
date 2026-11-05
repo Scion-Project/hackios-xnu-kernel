@@ -1,95 +1,49 @@
 #define HAKIOS_SOC_FIXED
 /*
- * The Galaxy S9's sensors (starlte, Exynos 9810): the accelerometer, gyroscope, magnetometer, barometer, light and
- * proximity sensors all sit behind one sensor hub, the MCU inside the Broadcom BCM4775 B0 GNSS chip ("ssp,BCM4773" in
- * Samsung's device tree), which the AP reaches over one SPI bus and four pins. On Android the proprietary daemon lhd
- * powers the chip, loads the hub's firmware into its RAM through the chip's ROM, and carries Samsung's sensor protocol
- * (SSP) to the kernel; here this file does all of it, so nothing of Android's runs. Only with boot-arg shub=N on this
- * phone (the SoC's registers at 0x10000000); nothing is touched without it.
+ * Sensor hub driver for the Galaxy S9 (starlte, Exynos 9810).
  *
- *   shub=1   a look, reading only: the CHUB power domain and its clocks first (a block whose domain or clock is off can
- *            stop the bus, so nothing of CHUB is read unless both are on), then the hub's supply (LDO37 of the S2MPS18),
- *            the SPI's clocks and pins and the hub's five pins as found
- *   shub=2   ... the hub powered: LDO37 on if it is off, the SPI (USI_CHUB00) set up, AP_SLEEP high (the AP is awake),
- *            NSTDBY low 20 ms then high (the chip out of standby: it starts in its ROM); MCU_REQ / MCU_RESP tried once
- *            and what the chip has to say read
- *   shub=3   ... the ROM: the autobaud burst, the transport layer's sync, the version (RPC 0x00 -> 0x03): the chip's ASIC
- *            and ROM versions
- *   shub=4   ... the firmware: the patch (fw/bcm_sensorhub_a1.bin of the small image, devices/starlte/firmware/sensorhub/)
- *            read through and checked, then written record by record (RPC 0x05 in reliable packets, each acknowledged),
- *            started (RPC 0x2E at its PatchAddress 0x00800161), synced again and asked its version: the application's
- *   shub=5   ... SSP: the hub's "sensor init done", WHOAMI (0x55), the sensors' formation (from the device tree), the
- *            sensors it found (SENSOR_SCANNING), its firmware revision and the accelerometer's range
- *   shub=6   ... the sensors on (shub_sensors=, default the accelerometer, gyroscope, magnetometer, barometer, light and
- *            proximity), their samples read for as long as the phone runs: the USB console's "sensors" shows the last
- *            of each, and /dev/hakios-sensors hands them to user space (sys/hakios.sensors.h: iOS's side is
- *            userland/src/inject.c in backboardd, which makes them HID events)
- *   shub_sensors=<mask>  which sensors step 6 turns on, a bitmap of Samsung's sensor numbers (sensor_list.h: 0 accel,
- *            1 gyro, 4 magnetometer, 5 pressure, 7 proximity, 9 light; default 0x2b3 = those six), only those the hub
- *            found
- *   shub_ms=<n>          their period in ms (default 20; light, proximity and pressure 200)
- *   shub_div=<n>         USI_CHUB00's clock divider ratio, 0-15 (default 15: the SPI's clock at most a sixteenth of
- *            CHUB's bus clock, divided by 4 again in the SPI: about 5.5 MHz; Samsung's runs it up to 25 MHz); 255
- *            leaves it as found
- *   shub_chub_on=1       at step 2, power the CHUB domain on if step 1 found it off (the PMU's sequence, chub_on of
- *            Samsung's flexpmu tables); default: stop there
- *   shub_keep=0          at the end of the steps, or when one fails, power the hub off again (NSTDBY low); default 1:
- *            leave it running (it is what the sensors need)
- *   shub_log=1           every SPI frame's first bytes in the log (very loud; the first 40 frames are always logged)
- *   shub_hello=1         wait for MCU_RESP before every exchange, as Samsung's driver does (default: MCU_REQ raised, 1 ms,
- *            then the transfer: on the S9 MCU_RESP reads 0 whatever the chip does, and the chip answers without it)
- *   shub_req_rpc=<n>     the RPC that carries SSP to the hub (default 0x20 = 32: inferred from the hub's answers in
- *            0x21, not seen; lhd builds it); shub_req_len=0 sends the SSP bytes without the u16 length before them
+ * The accelerometer, gyroscope, magnetometer, barometer, light and proximity sensors sit behind one sensor hub: the MCU
+ * of the Broadcom BCM4775 B0 GNSS chip ("ssp,BCM4773" in Samsung's device tree), reached over one SPI bus and four
+ * GPIOs. On Android the proprietary lhd daemon powers the chip, loads the hub firmware into its RAM through the chip's
+ * ROM and carries Samsung's sensor protocol (SSP) to the kernel. This file does all three.
  *
- * What is where (Samsung's device tree for the S9, exynos9810-starlte_eur_open_26.dts, its node spi@13AC0000 / BCM4773@0,
- * and its drivers):
- *   SPI          spi@13AC0000 = USI_CHUB00, "samsung,exynos-spi", 64-byte FIFO, mode 3 (spi-cpol, spi-cpha), at most
- *                25 MHz, one chip select (gph0-3, the controller's own nSS in function 2). Its USI mode word usi@13A13000
- *                (usi_00_chub): 2 = SPI. Driven by drivers/soc/exynos/hakios.exynos_spi.c
- *   pins         gph0 of CHUB's GPIO (pinctrl@13A80000, bank +0x00): -0 SCLK, -1 MOSI, -3 nSS function 2, -2 MISO
- *                function 2 pull-down ("sensorhub_mosi_sck_ssn", "sensorhub_miso"); -4 MCU_RESP input (the chip's
- *                "awake"), -5 MCU_REQ output (the AP's "wake up"). -7 is the MST driver's: its bits are never written
- *                HOST_REQ gpa1-7 of ALIVE's GPIO (0x14050000, bank +0x40): the chip's "I have data", read by polling here
- *                (Samsung: a level-high interrupt). AP_SLEEP gpa0-5 (bank +0x20, "ssp-batch-wake-irq"): an output, high
- *                while the AP runs (ssp_dev.c). SHUB_INT gpa4-0 (bank +0xC0): gyro time stamps for the camera, unused
- *                NSTDBY gpg0-2 of PERIC0's GPIO (0x10430000, bank +0x80): the "gps" node's pin (ssp-gps-pwr-en), the
- *                chip's out-of-standby: low holds it in standby (Samsung's kernel leaves it low; lhd drives it)
- *   supply       vdd_mcu_1p8, LDO37 of the S2MPS18 (CTRL 0x6E, on = bits 7:6 set), through ACPM; always-on in Samsung's
- *                tree. The sensors' own supplies are the hub's business
- *   clocks       CMU_CHUB 0x13A00000: GATE_CLK_CHUB_USI00 +0x2010, RSTNSYNC_CLK_CHUB_USI00 +0x2090, USI_CHUB00 IPCLK
- *                +0x20A8, Q-channel +0x305C, DIV_CLK_CHUB_USI00 +0x1808, MUX_CLK_CHUB_USI00 +0x100C (cmucal-sfr.c);
- *                Samsung's table runs the IP clock at 177.666 MHz (DIV 1 from CHUB's bus, cmucal-vclk.c). CHUB's bus
- *                clock comes from CMU_TOP (0x1A240000): GATE_CLKCMU_CHUB_BUS +0x2014, DIV +0x1810, MUX +0x1014
- *   CHUB domain  PMU 0x14060000: CHUB_CONFIGURATION +0x4080, CHUB_STATUS +0x4084 ([3:0] 0xF = on); Samsung's S9 never
- *                switches it (no power domain in its tree for it), so it is on as the boot left it, or this stops
+ * Depends on: the Exynos SPI driver (sys/hakios.exynos_spi.h), PMIC access through ACPM (sys/hakios.exynos_acpm.h),
+ * the protocol layers in hakios.bcm_shub.h (tested on a host by tools/bcm_shub_test.c) and the hub firmware patch
+ * fw/bcm_sensorhub_a1.bin in the small image (devices/starlte/firmware/sensorhub/). Runs only when the SoC base
+ * address is the Exynos 9810's (0x10000000).
  *
- * The protocol, layer by layer, is drivers/input/ssp/hakios.bcm_shub.h (checked on a computer by tools/bcm_shub_test.c);
- * how the chip is driven:
- *   SSI      every exchange: MCU_REQ high, MCU_RESP waited for (up to 100 ms, MCU_REQ pulsed every 20 polls), then while
- *            HOST_REQ is high one read frame each ([0x50][0 0] -> [status][len], then len + 3 bytes), and the bytes to
- *            send in write frames ([0x58][len][bytes][0 0], the chip saying how many it took in the last two: the rest
- *            sent again, three tries), MCU_REQ low (bcm_gps_spi.c: bcm477x_hello/_bye, bcm_ssi_rx/_tx)
- *   ROM      36 bytes 0x80 (autobaud), 100 ms; the transport layer's sync (an INTERNAL "sequence request" every 100 ms,
- *            six times, the whole thing five times); the version, a reliable RPC 0x00, answered by RPC 0x03 [u32 ASIC]
- *            [u32 ROM][u32 patch level] (the Tab Active3's notes on lhd, section 6.3)
- *   patch    each write record as RPC 0x05 [u32 address][u16 n][data] in a reliable packet, acknowledged (RELIABLE_ACK)
- *            before the next; then RPC 0x2E [u32 PatchAddress], a plain packet, 40 ms, autobaud and sync again, the
- *            version again: the application's
- *   SSP      9-byte instructions in RPC 0x20 [u16 n][bytes]; the hub's answers and data frames in RPC 0x21 (ssp_bbd.c,
- *            ssp_i2c.c, ssp_data.c). Reliable packets from the hub are acknowledged at once, plain ones every 100
- *
- * What was checked: compiled with the driver on and off; the protocol's bytes on a computer (above, with the sample
- * frames of Samsung's driver and the real patch). What the chip does with it is for the phone to say: the ROM's half
- * of the download is known only from the Tab Active3's description of lhd (same chip family, same SoC, the patch a
- * different build of the same firmware).
- *
- * Sources (Samsung's GPL kernel for the S9, Scion-Project/android_kernel_samsung_exynos9810 at e5906667068e, read for
- * these facts, not copied): drivers/sensorhub/brcm/ (ssp.h, ssp_dev.c, ssp_bbd.c, ssp_i2c.c, ssp_data.c, ssp_sysfs.c,
- * sensor_list.h, bbdpl/bcm_gps_spi.c and .h, bbd.c, bbd_rpc_lh.c, bcm_gps_regs.c, q_os/bbd_patch_file_star.h),
- * drivers/spi/spi-s3c64xx.c, drivers/pinctrl/samsung/pinctrl-exynos.c, drivers/soc/samsung/cal-if/exynos9810/
- * (cmucal-sfr.c, cmucal-vclk.c, cmucal-vclklut.c, cmucal-node.c, flexpmu_cal_local_exynos9810.h),
- * include/linux/mfd/samsung/s2mps18-private.h, arch/arm64/boot/dts/exynos/exynos9810-starlte_eur_open_26.dts;
- * exynos-linux/samsung-gtactive3wifi docs/re/sensorhub.md (facts only).
+ * Boot args. Nothing is touched without shub=N; the others apply only to the steps that use them.
+ *   shub=N   run steps 1..N (N is capped at 6); each step includes the ones before it:
+ *            1  read only: CHUB power domain and clocks (nothing of CHUB is read unless both are on, since a block
+ *               whose domain or clock is off can stop the bus), LDO37, the SPI's clocks and pins, the hub's five pins
+ *            2  power up: LDO37 on if off, SPI set up, AP_SLEEP high, NSTDBY low 20 ms then high (the chip leaves
+ *               standby and starts in its ROM); MCU_REQ / MCU_RESP tried once; read what the chip sends
+ *            3  ROM: autobaud burst, transport layer sync, version request (RPC 0x00, answered by RPC 0x03): the
+ *               chip's ASIC and ROM versions
+ *            4  firmware: read and check the patch, write it record by record (RPC 0x05, reliable packets, each
+ *               acknowledged), start it (RPC 0x2E at PatchAddress 0x00800161), sync again, read the application's
+ *               version
+ *            5  SSP: wait for the hub's "sensor init done", WHOAMI (0x55), send the sensor formation (from the device
+ *               tree), read the sensors found (SENSOR_SCANNING), the firmware revision and the accelerometer range
+ *            6  enable the sensors in shub_sensors and read samples for as long as the phone runs. The USB console's
+ *               "sensors" shows the last of each; /dev/hakios-sensors hands them to user space (sys/hakios.sensors.h;
+ *               the reader is userland/src/inject.c in backboardd, which turns them into HID events)
+ *   shub_sensors=<mask>  sensors step 6 enables, a bitmap of Samsung's sensor numbers (sensor_list.h: 0 accel, 1 gyro,
+ *            4 magnetometer, 5 pressure, 7 proximity, 9 light). Default 0x2b3, those six. Only sensors the hub
+ *            found are enabled.
+ *   shub_ms=<n>          sample period in ms (default 20; light, proximity and pressure use 200)
+ *   shub_div=<n>         USI_CHUB00 clock divider ratio, 0-15 (default 15: at most 1/16 of CHUB's bus clock, divided
+ *            by 4 again in the SPI, about 5.5 MHz; Samsung runs it up to 25 MHz). 255 leaves it as found.
+ *   shub_chub_on=1       at step 2, power the CHUB domain on if step 1 found it off, using the PMU's chub_on sequence
+ *            from Samsung's flexpmu tables. Default: stop.
+ *   shub_keep=0          power the hub off again (NSTDBY low) when the steps end or one fails. Default 1: leave it
+ *            running, which the sensors need.
+ *   shub_log=1           log the first bytes of every SPI frame (very loud). The first 40 frames are always logged.
+ *   shub_hello=1         wait for MCU_RESP before every exchange, as Samsung's driver does. Default: raise MCU_REQ,
+ *            wait 1 ms, then transfer: on the S9 MCU_RESP reads 0 whatever the chip does, and the chip answers
+ *            without it.
+ *   shub_req_rpc=<n>     RPC that carries SSP to the hub. Default 0x20: inferred from the hub's answers in RPC 0x21,
+ *            not observed (lhd builds it). shub_req_len=0 sends the SSP bytes without the u16 length before them.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -114,8 +68,43 @@
 #include <sys/hakios.log.h>
 #include <sys/hakios.xnu.h>
 
-
-/* ---- where ---------------------------------------------------------------------------------------------------- */
+/*
+ * Hardware, from Samsung's device tree for the S9 (exynos9810-starlte_eur_open_26.dts, nodes spi@13AC0000 and
+ * BCM4773@0) and its drivers:
+ *
+ * SPI      spi@13AC0000 = USI_CHUB00, "samsung,exynos-spi", 64-byte FIFO, mode 3 (spi-cpol, spi-cpha), at most 25 MHz,
+ *          one chip select (gph0-3: the controller's own nSS, function 2). Its USI mode word usi@13A13000
+ *          (usi_00_chub): 2 = SPI. Driven by drivers/soc/exynos/hakios.exynos_spi.c.
+ * pins     gph0 of CHUB's GPIO block (pinctrl@13A80000, bank +0x00): -0 SCLK, -1 MOSI, -3 nSS (function 2), -2 MISO
+ *          (function 2, pull-down) ("sensorhub_mosi_sck_ssn", "sensorhub_miso"); -4 MCU_RESP input (the chip's
+ *          "awake"), -5 MCU_REQ output (the AP's "wake up"). -7 belongs to the MST driver: its bits are never written.
+ *          HOST_REQ: gpa1-7 of ALIVE's GPIO block (0x14050000, bank +0x40), the chip's "I have data". Samsung uses a
+ *          level-high interrupt; here it is polled.
+ *          AP_SLEEP: gpa0-5 (bank +0x20, "ssp-batch-wake-irq"), an output, high while the AP runs (ssp_dev.c).
+ *          SHUB_INT: gpa4-0 (bank +0xC0), gyro time stamps for the camera. Unused here.
+ *          NSTDBY: gpg0-2 of PERIC0's GPIO block (0x10430000, bank +0x80), the "gps" node's pin (ssp-gps-pwr-en).
+ *          Low holds the chip in standby. Samsung's kernel leaves it low; lhd drives it.
+ * supply   vdd_mcu_1p8 = LDO37 of the S2MPS18 (CTRL 0x6E, on = bits 7:6 set), reached through ACPM. Always-on in
+ *          Samsung's tree. The sensors' own supplies are the hub's business.
+ * clocks   CMU_CHUB 0x13A00000: GATE_CLK_CHUB_USI00 +0x2010, RSTNSYNC_CLK_CHUB_USI00 +0x2090, USI_CHUB00 IPCLK +0x20A8,
+ *          Q-channel +0x305C, DIV_CLK_CHUB_USI00 +0x1808, MUX_CLK_CHUB_USI00 +0x100C (cmucal-sfr.c). Samsung's table
+ *          runs the IP clock at 177.666 MHz (DIV 1 from CHUB's bus clock, cmucal-vclk.c). CHUB's bus clock comes from
+ *          CMU_TOP (0x1A240000): GATE_CLKCMU_CHUB_BUS +0x2014, DIV +0x1810, MUX +0x1014.
+ * CHUB domain  PMU 0x14060000: CHUB_CONFIGURATION +0x4080, CHUB_STATUS +0x4084 ([3:0] 0xF = on). Samsung's S9 never
+ *          switches it (its tree has no power domain for it), so it is on as the boot left it; if it is off, this
+ *          driver stops unless shub_chub_on=1.
+ *
+ * Sources: Samsung's GPL kernel for the S9, Scion-Project/android_kernel_samsung_exynos9810 at e5906667068e, read for
+ * these facts, not copied: drivers/sensorhub/brcm/ (ssp.h, ssp_dev.c, ssp_bbd.c, ssp_i2c.c, ssp_data.c, ssp_sysfs.c,
+ * sensor_list.h, bbdpl/bcm_gps_spi.c and .h, bbd.c, bbd_rpc_lh.c, bcm_gps_regs.c, q_os/bbd_patch_file_star.h),
+ * drivers/spi/spi-s3c64xx.c, drivers/pinctrl/samsung/pinctrl-exynos.c, drivers/soc/samsung/cal-if/exynos9810/
+ * (cmucal-sfr.c, cmucal-vclk.c, cmucal-vclklut.c, cmucal-node.c, flexpmu_cal_local_exynos9810.h),
+ * include/linux/mfd/samsung/s2mps18-private.h, arch/arm64/boot/dts/exynos/exynos9810-starlte_eur_open_26.dts;
+ * exynos-linux/samsung-gtactive3wifi docs/re/sensorhub.md (facts only).
+ *
+ * The ROM half of the firmware download is known only from the Tab Active3's description of lhd (same chip family,
+ * same SoC; its patch is a different build of the same firmware).
+ */
 
 #define PMU_PA                  EXYNOS_PMU_PA
 #define  CHUB_CONFIGURATION     0x4080
@@ -125,7 +114,7 @@
 #define  TOP_CHUB_DIV           0x1810
 #define  TOP_CHUB_GATE          0x2014
 #define CMU_CHUB_PA             EXYNOS_CMU_CHUB_PA
-#define  CHUB_BUS_USER_MUX      0x0100  /* PLL_CON0_MUX_CLKCMU_CHUB_BUS_USER: bit 4 CMU_TOP's clock, else the oscillator */
+#define  CHUB_BUS_USER_MUX      0x0100  /* PLL_CON0_MUX_CLKCMU_CHUB_BUS_USER: bit 4: CMU_TOP's clock, else oscillator */
 #define  CHUB_USI00_MUX         0x100C
 #define  CHUB_USI00_DIV         0x1808
 #define  CHUB_GPIO_QCH          0x3028
@@ -149,13 +138,13 @@
 #define GATE_MANUAL             (1u << 20)
 #define GATE_ON                 (1u << 21)
 
-/* the device tree's numbers for the hub */
+/* sensor formation values sent in step 5, from the device tree */
 #define ACC_POSITION            4
 #define MAG_POSITION            5
 #define PATCH_ENTRY             0x00800161u     /* <PatchAddress=> of bbd_patch_file_star.h */
 #define PATCH_FILE              "bcm_sensorhub_a1.bin"
 
-/* timings (bcm_gps_spi.c, ssp_*.c, and lhd as the Tab Active3's notes describe it) */
+/* Timings: from bcm_gps_spi.c and ssp_*.c, and for lhd from the Tab Active3's notes */
 #define HELLO_POLLS             100
 #define NSTDBY_LOW_MS           20
 #define AFTER_POWER_MS          50
@@ -230,8 +219,6 @@ now_ns(void)
 	return ns;
 }
 
-/* ---- pins ---------------------------------------------------------------------------------------------------- */
-
 static uint32_t
 pin_con(vm_offset_t gpio, uint32_t bank, unsigned pin)
 {
@@ -252,7 +239,7 @@ pin_set(vm_offset_t gpio, uint32_t bank, unsigned pin, bool high)
 	wr(gpio, bank + 4, high ? dat | 1u << pin : dat & ~(1u << pin));
 }
 
-/* an output at a level: the level first, then the function (so it never drives the other one) */
+/* Set the level before switching the pin to output, so it never drives the opposite level. */
 static void
 pin_output(vm_offset_t gpio, uint32_t bank, unsigned pin, bool high)
 {
@@ -299,8 +286,6 @@ look_pins(const char *when)
 	    pin_dat(peric0, BANK_GPG0, PIN_NSTDBY));
 }
 
-/* ---- step 1: what is on ------------------------------------------------------------------------------------------ */
-
 static bool
 chub_clocked(void)
 {
@@ -309,6 +294,7 @@ chub_clocked(void)
 	return (rd(pmu, CHUB_STATUS) & 0xf) == 0xf && (!(g & GATE_MANUAL) || (g & GATE_ON));
 }
 
+/* Read only. Returns false, having read nothing of CHUB, when its domain is off or not clocked. */
 static bool
 look(void)
 {
@@ -341,7 +327,7 @@ look(void)
 	return true;
 }
 
-/* the PMU's chub_on (flexpmu_cal_local_exynos9810.h): the domain on, then its resets, clamps and sweeper in order */
+/* The PMU's chub_on sequence (flexpmu_cal_local_exynos9810.h): domain on, then resets, clamps, sweeper in order. */
 static bool
 chub_power_on(void)
 {
@@ -370,8 +356,6 @@ chub_power_on(void)
 	return true;
 }
 
-/* ---- step 2: power and the SPI ---------------------------------------------------------------------------------- */
-
 static void
 power_off(const char *why)
 {
@@ -385,6 +369,9 @@ power_off(const char *why)
 	say("shub: the hub in standby again (NSTDBY low): %s\n", why);
 }
 
+/*
+ * Order: LDO37, SPI, pin directions, then NSTDBY low for NSTDBY_LOW_MS and high; the chip starts in its ROM.
+ */
 static bool
 power_on(void)
 {
@@ -425,8 +412,6 @@ power_on(void)
 	look_pins("2");
 	return true;
 }
-
-/* ---- SSI ------------------------------------------------------------------------------------------------------- */
 
 static uint8_t txf[SHUB_SSI_FRAME + 8], rxf[SHUB_SSI_FRAME + 8];
 static struct shub_tl_rx tlrx;
@@ -481,9 +466,9 @@ feed(const uint8_t *p, size_t n)
 }
 
 /*
- * MCU_RESP is not waited for unless shub_hello=1: on the S9 it reads 0 whatever the chip does (pulled up or down, the
- * hub running or not), while everything else works when MCU_REQ is raised and the transfer follows a millisecond
- * later (3 November, phone 2). The console's "nohello 0|1" changes it on a running phone.
+ * MCU_RESP is not waited for unless shub_hello=1: on the S9 it reads 0 whatever the chip does (pulled up or down, hub
+ * running or not), while everything else works when MCU_REQ is raised and the transfer follows 1 ms later. The
+ * console's "nohello 0|1" changes it at run time.
  */
 static uint32_t no_hello = 1;
 
@@ -512,7 +497,7 @@ hello(void)
 	return true;
 }
 
-/* one read frame: what the chip has, into the transport layer */
+/* Read one frame and feed it to the transport layer. */
 static bool
 ssi_rx(void)
 {
@@ -526,7 +511,7 @@ ssi_rx(void)
 	last_status = rxf[0];
 	len = shub_le16(rxf + 1);
 	if (len == 0) {
-		len = 254;      /* bcm_ssi_rx(): read anyway */
+		len = 254;      /* zero length: read anyway, as bcm_ssi_rx() does */
 	}
 	if (len > SHUB_SSI_FRAME - 3) {
 		len = SHUB_SSI_FRAME - 3;
@@ -546,7 +531,8 @@ ssi_rx(void)
 	return true;
 }
 
-/* one write frame of m bytes (and what the chip sends back meanwhile), resent until the chip took them all */
+/* Send m bytes in a write frame, resending the remainder until the chip has taken all of it (three tries). Bytes the
+ * chip returns meanwhile go to the transport layer. */
 static bool
 ssi_tx(const uint8_t *p, size_t m)
 {
@@ -558,7 +544,7 @@ ssi_tx(const uint8_t *p, size_t m)
 	}
 	memcpy(pending, p, m);
 	if (shub_ssi_room(last_status) != 0 && m > shub_ssi_room(last_status)) {
-		delay(1000);    /* bcm_rxtx_work_func(): the chip's buffer is short of room; a millisecond, then anyway */
+		delay(1000);    /* as bcm_rxtx_work_func(): chip short of buffer room; wait 1 ms, then send anyway */
 	}
 	for (int tries = 0; tries < 3 && left > 0; tries++) {
 		uint16_t nread, taken;
@@ -591,7 +577,12 @@ ssi_tx(const uint8_t *p, size_t m)
 	return left == 0;
 }
 
-/* an exchange: the chip woken, everything it has read, `p` sent (if any), MCU_REQ dropped */
+/*
+ * One SSI exchange: raise MCU_REQ and, with shub_hello=1, wait for MCU_RESP (up to 100 ms, pulsing MCU_REQ every 20
+ * polls). While HOST_REQ is high read one frame at a time ([0x50][0 0] -> [status][len], then len + 3 bytes). Send
+ * the bytes in write frames ([0x58][len][bytes][0 0]); the chip returns in the last two how many it took. Then drop
+ * MCU_REQ. After bcm_gps_spi.c: bcm477x_hello/_bye, bcm_ssi_rx/_tx.
+ */
 static bool
 exchange(const uint8_t *p, size_t n)
 {
@@ -618,8 +609,8 @@ exchange(const uint8_t *p, size_t n)
 }
 
 /*
- * read what the chip has for `ms`, or until `done()`: HOST_REQ looked at every idle_us (half a millisecond while the
- * firmware loads and answers are awaited; 4 ms once the sensors run, where samples come every 20 ms or slower)
+ * Read what the chip has for `ms`, or until done() is true, checking HOST_REQ every idle_us: 0.5 ms while the firmware
+ * loads and answers are awaited, 4 ms once the sensors run (samples come every 20 ms or slower).
  */
 static uint32_t idle_us = 500;
 
@@ -642,14 +633,12 @@ pump(uint32_t ms, bool (*done)(void))
 	} while (mach_absolute_time() < deadline);
 }
 
-/* ---- the transport layer ----------------------------------------------------------------------------------------- */
-
 static struct {
-	uint8_t tx_seq, tx_rel;                 /* the next to send */
-	uint8_t rx_seq, rx_rel;                 /* the last received */
+	uint8_t tx_seq, tx_rel;                 /* next to send */
+	uint8_t rx_seq, rx_rel;                 /* last received */
 	bool rx_rel_any;
-	uint32_t unacked;                       /* payload packets received and not acknowledged yet */
-	uint8_t rel_acked;                      /* the peer's last RELIABLE_ACK */
+	uint32_t unacked;                       /* payload packets received and not yet acknowledged */
+	uint8_t rel_acked;                      /* last RELIABLE_ACK from the hub */
 	bool rel_ack_seen, rel_nacked;
 	bool synced;
 	uint32_t packets, bad, internal, dup, out_of_order, rpcs, unknown_rpcs;
@@ -688,8 +677,8 @@ send_packet(uint16_t flags, const uint8_t *payload, uint16_t size, bool reliable
 }
 
 /*
- * An acknowledgement owed: noted while a frame is being read (the frame's buffer is still being parsed), sent by
- * exchange() once the read is done. A later one replaces an earlier one (they acknowledge the latest).
+ * Acknowledgement owed to the hub. Recorded while a frame is parsed, because the frame buffer is still in use, and
+ * sent by exchange() once the read is done. A later one replaces an earlier one: each acknowledges the latest packet.
  */
 static struct {
 	bool want;
@@ -799,13 +788,17 @@ handle_packet(const uint8_t *raw, size_t len)
 	}
 }
 
-/* the transport layer's sync: "sequence request" until answered */
 static bool
 synced(void)
 {
 	return tl.synced;
 }
 
+/*
+ * ROM entry: 36 bytes of 0x80 (autobaud), 100 ms, then the transport layer's sync: an INTERNAL "sequence request"
+ * every 100 ms, six times, the whole thing up to five times. The version is a reliable RPC 0x00, answered by RPC 0x03
+ * [u32 ASIC][u32 ROM][u32 patch level] (the Tab Active3's notes on lhd, section 6.3).
+ */
 static bool
 autobaud_and_sync(const char *who)
 {
@@ -834,7 +827,7 @@ autobaud_and_sync(const char *who)
 	return false;
 }
 
-/* a reliable packet, sent again until acknowledged */
+/* Send a reliable packet, resending until it is acknowledged or the tries run out. */
 static bool
 send_reliable(const uint8_t *payload, uint16_t size)
 {
@@ -867,8 +860,6 @@ send_reliable(const uint8_t *payload, uint16_t size)
 	tl.tx_rel = (uint8_t)(rel + 1);
 	return false;
 }
-
-/* ---- RPCs ---------------------------------------------------------------------------------------------------- */
 
 static struct shub_ssp_rx ssprx;
 static void ssp_stream(void);
@@ -960,8 +951,11 @@ ask_version(const char *who)
 	return false;
 }
 
-/* ---- step 4: the patch --------------------------------------------------------------------------------------------- */
-
+/*
+ * Each write record goes as RPC 0x05 [u32 address][u16 n][data] in a reliable packet, acknowledged (RELIABLE_ACK)
+ * before the next. Then RPC 0x2E [u32 PatchAddress] as a plain packet, 40 ms, autobaud and sync again, and the version
+ * request again: it now returns the application's.
+ */
 static bool
 load_patch(void)
 {
@@ -1028,8 +1022,11 @@ load_patch(void)
 	return ask_version("4 (the application)");
 }
 
-/* ---- SSP ------------------------------------------------------------------------------------------------------- */
-
+/*
+ * SSP: 9-byte instructions go in RPC 0x20 [u16 n][bytes]; the hub's answers and data frames come in RPC 0x21
+ * (ssp_bbd.c, ssp_i2c.c, ssp_data.c). Reliable packets from the hub are acknowledged at once, plain ones every
+ * ACK_EVERY packets.
+ */
 static struct {
 	uint32_t init_done, frames, frame_errors, unexpected;
 	bool answered;
@@ -1043,7 +1040,7 @@ static struct {
 } ssp;
 
 static LCK_GRP_DECLARE(shub_lck_grp, "hakios_ssp");
-static LCK_MTX_DECLARE(shub_lock, &shub_lck_grp);       /* last[], the queue: the hub's thread and the readers */
+static LCK_MTX_DECLARE(shub_lock, &shub_lck_grp);       /* last[], the queue: hub thread and readers */
 
 static struct {
 	uint8_t data[24];
@@ -1140,7 +1137,11 @@ ssp_send(const uint8_t *p, uint16_t n)
 	return send_packet(0, pay, (uint16_t)k, false);
 }
 
-/* one SSP transaction (ssp_i2c.c's ssp_spi_sync): a READ of `len` bytes into buf, a WRITE of `len` from it, or 0 */
+/*
+ * One SSP transaction, after ssp_spi_sync() in ssp_i2c.c. Send the 9-byte header. READ: wait for the answer and copy
+ * len bytes into buf. WRITE: wait for the hub's answer, then send len bytes from buf. With len 0 only the header
+ * is sent.
+ */
 static bool
 ssp_cmd(uint8_t cmd, uint16_t type, uint32_t arg, uint8_t *buf, uint16_t len)
 {
@@ -1175,7 +1176,7 @@ init_seen(void)
 	return ssp.init_done > 0;
 }
 
-/* the AP's time to the hub: the header and its 8 bytes sent as one, no go-ahead awaited (bbd_send_timestamp()) */
+/* Send the AP's time to the hub: header and 8 bytes in one packet, no go-ahead awaited (as bbd_send_timestamp()). */
 static void
 send_time(void)
 {
@@ -1240,8 +1241,6 @@ sensor_on(uint8_t id, uint32_t ms)
 	return true;
 }
 
-/* ---- /dev/hakios-sensors ------------------------------------------------------------------------------------------ */
-
 #define QUEUE 256
 static struct hakios_sensor_sample queue[QUEUE];
 static uint32_t q_head, q_tail, q_lost;
@@ -1249,14 +1248,14 @@ static bool q_waiting;
 static int q_readers;
 
 /*
- * The console's "sensors fake X Y Z S": for S seconds the accelerometer's samples handed to user space say X, Y, Z
- * (counts, Android's axes and sign: 4096 is 1 g at the 8 g range) in place of what the hub measured, so that iOS's
- * rotation can be tried on a phone nobody is holding. The hub's own samples still go to the console's "sensors".
+ * Set by the console's "sensors fake X Y Z S": for S seconds the accelerometer samples handed to user space read X, Y,
+ * Z (counts, Android's axes and sign; 4096 is 1 g at the 8 g range) instead of the hub's, to try iOS's rotation on a
+ * phone nobody is holding. The console's "sensors" still shows the hub's own samples.
  */
 static volatile int32_t fake_v[3];
 static volatile uint64_t fake_until_ns;
 
-/* a sample in iOS's units (sys/hakios.sensors.h); false when it is not one user space is given */
+/* Convert a sample to the units of sys/hakios.sensors.h. False for sensors that are not passed to user space. */
 static bool
 convert(const struct shub_sample *s, struct hakios_sensor_sample *o)
 {
@@ -1267,7 +1266,7 @@ convert(const struct shub_sample *s, struct hakios_sensor_sample *o)
 	o->hub_ns = s->time;
 	switch (s->sensor) {
 	case SSP_ACCEL:
-		/* Samsung's HAL: 4096 LSB per g at the 8 g range... the scale comes with the record (SENSORS.md) */
+		/* Samsung's HAL: 4096 LSB per g at the 8 g range. scale is the range read in ssp_init(), 8 if not read. */
 		o->type = HAKIOS_SENSOR_ACCEL;
 		o->v[0] = (int16_t)shub_le16(d);
 		o->v[1] = (int16_t)shub_le16(d + 2);
@@ -1411,8 +1410,6 @@ make_device(void)
 	say("shub: /dev/%s made\n", HAKIOS_SENSORS_NAME);
 }
 
-/* ---- the thread ---------------------------------------------------------------------------------------------- */
-
 static volatile uint64_t console_want_on, console_want_off;
 static volatile bool console_cmd_pending;
 static char console_cmd[64];
@@ -1469,7 +1466,7 @@ run(void)
 	}
 }
 
-/* steps 2 to `steps` (again, for the console's "sensors retry"); false where one stopped */
+/* Run steps 2 to `steps`; also used again by the console's "retry". Returns false if a step stopped. */
 static bool
 from_step2(void)
 {
@@ -1552,9 +1549,8 @@ out:
 }
 
 /*
- * The console's experiments, done by the hub's thread (ACPM and the SPI are its): "pins" step 1's look again and the
- * hub's pins now; "ldo 0|1" LDO37 off or on; "nstdby 0|1" and "req 0|1" the two pins; "hello" MCU_REQ / MCU_RESP once;
- * "retry" steps 2 on again
+ * Bring-up experiments from the console, run on the hub thread because ACPM and the SPI belong to it. The commands are
+ * listed above hakios_ssp_console().
  */
 static void
 console_do(void)
@@ -1563,7 +1559,7 @@ console_do(void)
 	uint8_t v = 0;
 
 	strlcpy(a, console_cmd, sizeof(a));
-	console_cmd_pending = false;    /* before: "retry" may end in run(), which serves the console itself */
+	console_cmd_pending = false;    /* clear first: "retry" can end in run(), which also polls console_cmd_pending */
 
 	if (strncmp(a, "pins", 4) == 0) {
 		(void)look();
@@ -1572,7 +1568,7 @@ console_do(void)
 		char line[200];
 		size_t k = 0;
 
-		/* S2MPS18: LDOn's CTRL at 0x49 + n (LDO2 has two, 0x4A and 0x4B); read only */
+		/* S2MPS18 LDOn CTRL is 0x49 + n for n >= 3; LDO1 is 0x49, LDO2 0x4A (second one, 0x4B, not read). Read only. */
 		for (unsigned n = 1; n <= 45; n++) {
 			uint8_t reg = (uint8_t)(n == 1 ? 0x49 : n == 2 ? 0x4A : 0x49 + n);
 
@@ -1585,8 +1581,8 @@ console_do(void)
 			}
 		}
 	} else if (strncmp(a, "ldo ", 4) == 0) {
-		/* "ldo 0|1" is LDO37; "ldo N 0|1" one of the LDOs Samsung's tree keeps always on and names nothing else uses
-		 * (30, 32, 37, 42): Linux turns them on at boot, the boot here may not have */
+		/* "ldo 0|1" is LDO37; "ldo N 0|1" is one of the LDOs that Samsung's tree keeps always-on and no other consumer
+		 * uses (30, 32, 37, 42). Linux turns them on at boot; this boot may not have. */
 		unsigned n = 37;
 		bool on;
 		const char *p = a + 4;
@@ -1621,8 +1617,8 @@ console_do(void)
 		say("sensors: hello %s; MCU_RESP %u HOST_REQ %u\n", ok ? "answered" : "NOT answered", mcu_resp(), host_req());
 		mcu_req(false);
 	} else if (strncmp(a, "r ", 2) == 0 || strncmp(a, "w ", 2) == 0) {
-		/* "r BLOCK OFF", "w BLOCK OFF VALUE": BLOCK gpio (CHUB's GPIO), alive, peric0 (their GPIO), cmu (CMU_CHUB,
-		 * read only), pmu (read only) */
+		/* "r BLOCK OFF", "w BLOCK OFF VALUE": BLOCK is gpio (CHUB's GPIO), alive or peric0 (their GPIO blocks), all
+		 * writable, or cmu (CMU_CHUB) or pmu, read only */
 		char block[12] = "";
 		const char *p = a + 2;
 		size_t k = 0;
@@ -1664,9 +1660,9 @@ console_do(void)
 		}
 	} else if (strncmp(a, "tap ", 4) == 0 || strncmp(a, "swipe ", 6) == 0) {
 		/*
-		 * "tap X Y", "swipe X1 Y1 X2 Y2": a finger on the touch screen's queue (hakios_touch_post), positions in
-		 * thousandths of the screen's width and height: to open an application whose rotation is to be seen with
-		 * nobody at the phone
+		 * "tap X Y", "swipe X1 Y1 X2 Y2": inject a finger into the touch queue (hakios_touch_post), positions in
+		 * thousandths of the screen's width and height. For opening an app to look at its rotation with nobody at
+		 * the phone.
 		 */
 		long v[4] = { 0, 0, 0, 0 };
 		const char *p = a + (a[0] == 't' ? 4 : 6);
@@ -1698,7 +1694,7 @@ console_do(void)
 		no_hello = a[8] == '1';
 		say("sensors: MCU_RESP %s\n", no_hello ? "not waited for" : "waited for");
 	} else if (strcmp(a, "raw") == 0) {
-		/* one read frame, MCU_REQ raised, whatever MCU_RESP says: what the chip clocks out */
+		/* read one frame with MCU_REQ raised, whatever MCU_RESP says, to see what the chip clocks out */
 		mcu_req(true);
 		delay(2000);
 		memset(txf, 0, 8);
@@ -1726,7 +1722,7 @@ hakios_ssp_init(void)
 		return;
 	}
 	if (pe_arm_get_soc_base_phys() != EXYNOS_SOC_BASE_PA) {
-		return;                 /* the Exynos 9810's only */
+		return;                 /* Exynos 9810 only */
 	}
 	if (n > 6) {
 		n = 6;
@@ -1750,14 +1746,12 @@ hakios_ssp_init(void)
 		period_ms = 5;
 	}
 	if (n >= 6) {
-		make_device();          /* now, so that backboardd finds it when it starts; samples come once the hub runs */
+		make_device();          /* before the hub thread starts, so backboardd finds it at launch */
 	}
 	if (kernel_thread_start(shub_thread, (void *)(uintptr_t)n, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}
 }
-
-/* ---- the USB console's "sensors" (hakios.dwc3.c) -------------------------------------------------------------------- */
 
 static const char *
 sensor_name(uint8_t id)
@@ -1778,13 +1772,16 @@ sensor_name(uint8_t id)
 }
 
 /*
- *   sensors            the hub's state, what it found and has on, and the last sample of each sensor
- *   sensors on N       sensor N on (Samsung's number), at shub_ms
- *   sensors off N      and off
- *   sensors fake X Y Z S   the accelerometer as user space gets it says X Y Z (counts, Android's axes: 4096 = 1 g) for
- *                      S seconds: iOS's rotation tried without a hand on the phone
- *   sensors pins | ldos | ldo [N] 0|1 | nstdby 0|1 | req 0|1 | hello | nohello 0|1 | raw | r BLOCK OFF | w BLOCK OFF V |
- *   retry              the bring-up's experiments, done by the hub's thread (console_do())
+ * USB console "sensors" command (called from hakios.dwc3.c):
+ *   sensors                the hub's state, the sensors found and on, and the last sample of each
+ *   sensors on N | off N   turn sensor N (Samsung's number) on, at shub_ms, or off
+ *   sensors fake X Y Z S   for S seconds, accelerometer samples to user space read X Y Z (counts, Android's axes;
+ *                          4096 = 1 g); S outside 1..3599 means 10
+ *   sensors tap X Y | swipe X1 Y1 X2 Y2
+ *                          synthetic touch, run on the hub thread
+ *   sensors pins | ldos | ldo [N] 0|1 | nstdby 0|1 | req 0|1 | hello | nohello 0|1 | raw | r BLOCK OFF |
+ *           w BLOCK OFF V | retry
+ *                          bring-up experiments, run on the hub thread (console_do())
  */
 void
 hakios_ssp_console(const char *arg)
