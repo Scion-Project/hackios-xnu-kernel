@@ -1,33 +1,31 @@
 /*
- * HakiosGPU: the phone's Adreno for programs to draw with.
+ * HakiosGPU: the phone's Adreno GPU, for programs to draw with.
  *
- * drivers/gpu/adreno/hakios.adreno.c wakes the GPU and, with boot-arg adreno_keep=1, keeps it on and
- * starts this service. A program that opens it speaks the interface of Linux's msm DRM driver,
- * the one Mesa's freedreno knows: every request of that interface is a call of the user client
- * with the request's number as the selector and the request's structure passed in and back
- * (userland: tools/mesa/hakios-drm, which stands in for libdrm inside Mesa). What Linux does
- * with mmap() on the device is the client memory of the type that is the buffer's handle.
+ * Depends on drivers/gpu/adreno/hakios.adreno.c, which wakes the GPU and, with boot-arg
+ * adreno_keep=1, keeps it on and starts this service. The userland side is tools/mesa/hakios-drm,
+ * a stand-in for libdrm inside Mesa.
  *
- * What there is of the interface is what freedreno uses to draw: parameters, buffers (made,
- * told their address in the GPU's address space, mapped, given back), submission of command
- * buffers, and waiting for one to be done. A buffer is wired kernel memory entered into the 3D
- * core's SMMU context; it is zero when made, and write-combined: what the program writes goes to
- * memory, where the GPU reads it, and not into this processor's cache (as Linux maps them for
- * freedreno; boot-arg gpu_cached=1 makes them ordinary memory, pushed out of the cache whenever
- * the GPU is given something to do: see submit()).
+ * The interface is Linux's msm DRM one, as Mesa's freedreno uses it. Each request is a call to the
+ * user client with the request number as the selector; the request structure is passed in and back.
+ * mmap() on the device gives the client memory of the type that is the buffer's handle, as on Linux.
  *
- * One request is not Linux's: a buffer that is the memory of an IOSurface (surfaceBuffer()), for
- * drawing into what the display shows and for reading pictures where other programs have drawn
- * them. Linux hands such memory around as file descriptors; here it has a name already. That
- * memory is ordinary, cached memory, which everybody else reads and writes as such.
+ * Supported: parameters, buffers (create, get GPU address, map, free), command buffer submission,
+ * and waiting for a submission to finish. A buffer is wired kernel memory entered into the 3D core's
+ * SMMU context. It is zeroed when made and write-combined, so CPU writes go to memory where the GPU
+ * reads them, not through this processor's cache. Boot-arg gpu_cached=1 makes buffers ordinary cached
+ * memory; they are then pushed out of the cache before each submission (see submit()).
  *
- * Not here yet: interrupts (waiting is asking again five times a millisecond), more than one
- * program's worth of care (every client's buffers are in the one address space; a client that
- * goes takes its own away), fences and buffers as file descriptors. A GPU that has stopped
- * answering is reported (hakios_gpu_report()) and, with boot-arg gpu_recover=1, reset and
- * started again, so that the submission that hung is all that is lost: what that does and
- * which source says so is at hakios_gpu_recover() in bsd/dev/hakios.adreno.c. Without the
- * boot-arg it stays stopped and nothing is waited for again.
+ * Not Linux's: kHakiosSurface (surfaceBuffer()) gives a buffer backed by an IOSurface's memory, so a
+ * program can draw into what the display shows, or read frames other programs drew. Linux passes such
+ * memory as file descriptors; here the surface is named by its ID. That memory is ordinary cached
+ * memory, shared with the other users of the surface.
+ *
+ * Not implemented: interrupts (waits poll every GPU_ASK_AGAIN_US), fences and buffers as file
+ * descriptors, and per-client address spaces. All clients share one address space, so a client's
+ * buffers go away with it. A GPU that stops answering is reported (hakios_gpu_report()) and, with
+ * boot-arg gpu_recover=1, reset and restarted, which loses the submission that hung; see
+ * hakios_gpu_recover() in bsd/dev/hakios.adreno.c. Without the boot-arg it stays stopped, and nothing
+ * is waited for again.
  */
 
 #include <IOKit/IOLib.h>
@@ -48,14 +46,14 @@
 extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
 
 extern "C" {
-/* drivers/gpu/adreno/hakios.adreno.c ("the GPU kept on"; declared in bsd/sys/hakios.input.h, which is not seen from here) */
+/* from drivers/gpu/adreno/hakios.adreno.c; declared in bsd/sys/hakios.input.h, not included here */
 bool hakios_gpu_ready(void);
 bool hakios_gpu_parameter(uint32_t which, uint64_t * value);
 uint64_t hakios_gpu_address(uint64_t size);
 void hakios_gpu_address_free(uint64_t address, uint64_t size);
 void hakios_gpu_space(uint64_t * used, uint32_t * live, uint64_t * largest, unsigned * holes, unsigned * most,
     uint64_t * lost, uint32_t * refused);
-extern uint32_t gpu_va;                 /* boot-arg gpu_va: 0 as before, 1 describe the addresses, 2 also guard them */
+extern uint32_t gpu_va;                 /* boot-arg gpu_va: 0 off, 1 log the address space (see submit()), 2 also guard the addresses */
 bool hakios_gpu_map(uint64_t address, uint64_t phys, bool read_only);
 void hakios_gpu_mapped(void);
 void hakios_gpu_unmap(uint64_t address, uint64_t size);
@@ -89,13 +87,13 @@ enum {
 	kMsmSubmitQueueNew      = 0x4a,
 	kMsmSubmitQueueClose    = 0x4b,
 	kMsmSubmitQueueQuery    = 0x4c,
-	kHakiosGPUWorked       = 0x7d,         /* ours: how long the 3D core itself has worked, and on how many */
-	kHakiosSurface         = 0x7e,         /* ours: an IOSurface's memory as a buffer */
-	kHakiosShow            = 0x7f,         /* ours: pixels of the caller's onto the panel, to see a test's result */
+	kHakiosGPUWorked       = 0x7d,         /* not Linux's: the 3D core's busy time and submission count, see struct hakios_worked */
+	kHakiosSurface         = 0x7e,         /* not Linux's: an IOSurface's memory as a buffer */
+	kHakiosShow            = 0x7f,         /* not Linux's: copy the caller's pixels to the panel */
 };
 
 struct msm_timespec {
-	int64_t seconds, nanoseconds;           /* of the clock that goes on while the machine sleeps */
+	int64_t seconds, nanoseconds;           /* of the continuous clock, which runs during sleep */
 };
 struct msm_param {
 	uint32_t pipe, param;
@@ -151,32 +149,27 @@ struct drm_gem_close {
 };
 struct hakios_surface {
 	uint32_t surface;                       /* the IOSurface's ID */
-	uint32_t handle;                        /* kHakiosDescribe: no buffer is wanted; else, back: the buffer, */
-	uint64_t size;                          /* how big it is, */
-	uint32_t offset, rowBytes;              /* where the pixels start in it and how long a row of them is, */
-	uint32_t width, height, pixelFormat, planes;    /* and what they are */
+	uint32_t handle;                        /* in: kHakiosDescribe for the layout only; out: the buffer's handle */
+	uint64_t size;                          /* out: the buffer's size */
+	uint32_t offset, rowBytes;              /* out: where the pixels start, and bytes per row */
+	uint32_t width, height, pixelFormat, planes;    /* out: the pixel layout */
 };
 struct hakios_show {
 	uint64_t pixels;
 	uint32_t width, height, rowBytes, pad;
 };
 /*
- * kHakiosGPUWorked: the GPU's own side of a measurement a program makes with its own clock.
+ * kHakiosGPUWorked: the GPU core's own time for a measurement the program makes.
  *
- * A program timing this driver (userland/src/metal_drv_test.m --time) can measure only wall
- * time: the whole of a draw, which is its own work, this ioctl, the submission, the core's
- * execution and the wait. Nothing it can reach says how much of that was the core -- and the
- * kernel has known all along, because bsd/dev/hakios.adreno.c times every submission off
- * CP_ALWAYS_ON_COUNTER (19.2 ticks a microsecond) and until now only ever printed it. This
- * request hands the same three numbers to the program, so the subtraction happens where the
- * two halves are both in hand instead of in whoever reads the log afterwards.
+ * A program timing this driver (userland/src/metal_drv_test.m --time) sees only wall time, which
+ * includes its own work, this request, the submission, the core's execution and the wait. The
+ * kernel times every submission from CP_ALWAYS_ON_COUNTER (19.2 ticks a microsecond, in
+ * bsd/dev/hakios.adreno.c) and only logged the result. This request returns those numbers, so the
+ * subtraction can be done where both halves are known.
  *
- * It RESETS what it reports, which is hakios_gpu_worked()'s own contract ("since this was
- * last asked") and is what makes it useful: a caller reads once to zero the counters, does the
- * work it wants to price, and reads again. Two consequences, and they are the whole of the
- * sharp edge: two programs asking at once each get a part of the truth, and the kernel's own
- * five-second report in submit() below shares the same counters -- so a boot that reads this
- * will see gaps in those lines, and that is expected rather than a fault.
+ * Reading resets the counters (hakios_gpu_worked(): "since this was last asked"). Two programs
+ * reading at once each get part of the total. submit()'s five-second log line uses the same
+ * counters, so a boot in which this request is used has gaps in those log lines.
  */
 struct hakios_worked {
 	uint64_t microseconds;                  /* the core's own time on the submissions counted here */
@@ -196,29 +189,30 @@ struct hakios_worked {
 #define MSM_SUBMIT_CMD_BUF      1
 #define MSM_SUBMIT_FENCE_FD_OUT 0x20000000
 
-#define GPU_BUFFERS             8192            /* a client's, at most */
+#define GPU_BUFFERS             8192            /* per client */
 #define GPU_BUFFER_MAX          (256u << 20)
 #define GPU_SUBMIT_CMDS         128
 #define GPU_SUBMIT_BOS          8192
-#define GPU_PATIENCE_MS         5000            /* for a buffer or a submission that somebody waits for without a limit */
-#define GPU_ASK_AGAIN_US        200             /* while waiting for the core: how long between two looks at how far it is */
-#define GPU_PUSH_AGAIN_MS       4               /* a surface is pushed out of the cache again for a submission this long after the last */
+#define GPU_PATIENCE_MS         5000            /* longest a wait lasts, however far off its deadline */
+#define GPU_ASK_AGAIN_US        200             /* between polls of the GPU during a wait */
+#define GPU_PUSH_AGAIN_MS       4               /* minimum interval between cache flushes of an unchanged surface */
 
-static IOLock * gGPULock;                       /* around everything that is the GPU's (hakios_gpu_...) */
+static IOLock * gGPULock;                       /* guards the GPU and all buffer state; the hakios_gpu_*() calls are made under it */
 static bool gGPUReported;
 static bool gGPUCached;                         /* boot-arg gpu_cached=1 */
-static bool gGPUSaidSetIova;                    /* MSM_INFO_SET_IOVA has been refused out loud once */
+static bool gGPUSaidSetIova;                    /* the MSM_INFO_SET_IOVA refusal has been logged */
 
-/* What the last seconds' submissions were and cost here, for the log. */
+/* Counters for the periodic log line in submit(); reset after each line. */
 static struct {
 	uint64_t since, flushing, waiting, taking;      /* times of the processor's clock */
 	uint64_t flushed;                       /* bytes sent out of the cache */
 	uint32_t submissions, commands, buffers, surfaces, waits, over;
-	uint32_t made, given_again;             /* buffers of their own made for programs, and of those kept ones given again */
-	uint64_t making;                        /* ... and the time it took to make the others */
+	uint32_t made, given_again;             /* buffers made for programs, and kept buffers given again */
+	uint64_t making;                        /* time spent making buffers */
 } gGPUStat;
 
-/* Wait for the 3D core to be done with submission `fence`; with the lock held, which is let go of while waiting. */
+/* Waits up to `milliseconds` for the 3D core to finish submission `fence`. Called with gGPULock held;
+ * the lock is dropped while polling. Returns false on timeout. */
 static bool
 gpuWait(uint32_t fence, uint64_t milliseconds)
 {
@@ -234,19 +228,17 @@ gpuWait(uint32_t fence, uint64_t milliseconds)
 			return true;
 		}
 		if (mach_absolute_time() - began >= patience || gGPUReported) {
-			break;                  /* (a GPU that has stopped answering is not waited for again) */
+			break;                  /* once the GPU is reported stopped, waits end at once */
 		}
 		IOLockUnlock(gGPULock);
 		delay_for_interval(GPU_ASK_AGAIN_US, NSEC_PER_USEC);
 		IOLockLock(gGPULock);
 	}
 	/*
-	 * A wait of a second or more that came to nothing: the core has stopped answering. What it
-	 * and its SMMU context say is put down, and then, with boot-arg gpu_recover=1, the core is
-	 * reset and started again, which gives up the submission that hung and leaves later ones
-	 * the core's own. Without that -- or if it does not work -- nothing is waited for again in
-	 * this run: a GPU that may yet write memory of ours is given nothing more. Either way this
-	 * wait has failed, and says so: the submission did not finish.
+	 * A wait of a second or more that timed out means the core has stopped answering. Its state is
+	 * reported. With boot-arg gpu_recover=1 the core is then reset and restarted, which gives up the
+	 * hung submission. If that does not happen, waits end at once for the rest of the run, since the
+	 * stopped GPU may still write memory. This wait fails either way.
 	 */
 	if (milliseconds >= 1000 && !gGPUReported) {
 		hakios_gpu_report("no answer");
@@ -262,7 +254,7 @@ MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds)
 	bool done = true;
 
 	if (surface->maliSeq != 0) {
-		/* drawn by the Mali (drivers/gpu/mali/hakios.mali.cpp), in a kernel built with both GPUs' drivers */
+		/* drawn by the Mali GPU instead (drivers/gpu/mali/hakios.mali.cpp); present when both GPU drivers are built in */
 		return HakiosMaliDrawn(surface, milliseconds);
 	}
 	if (fence != 0 && gGPULock != NULL) {
@@ -274,8 +266,7 @@ MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds)
 }
 
 /*
- * Boot-arg touch_lat=1: a line for every wait of a program's for the GPU that took a millisecond or
- * more ("tl: f KIND US at US"), for telling apart what holds a frame up (tools/frames.py).
+ * Boot-arg touch_lat=1: logs each wait of 1 ms or more as tl: f KIND US at US, for tools/frames.py.
  */
 static TUNABLE(uint32_t, gWaitLines, "touch_lat", 0);
 
@@ -294,7 +285,8 @@ slowWait(const char * kind, uint64_t began)
 	}
 }
 
-/* How long from now a time of msm's is, in milliseconds; 0: now or past. */
+/* Milliseconds from now until `when` (a msm_timespec on the continuous clock), capped at
+ * GPU_PATIENCE_MS; 0 if now or past. */
 static uint64_t
 millisecondsUntil(const struct msm_timespec * when)
 {
@@ -302,12 +294,12 @@ millisecondsUntil(const struct msm_timespec * when)
 	int64_t left, end;
 
 	absolutetime_to_nanoseconds(mach_continuous_time(), &now);
-	/* the seconds are the caller's: a number too big to be nanoseconds is a time far ahead (or far behind), not a wrapped one */
+	/* a time too large for nanoseconds is far ahead (capped) or far behind (0), not a wrapped value */
 	if (__builtin_mul_overflow(when->seconds, (int64_t) NSEC_PER_SEC, &end) || __builtin_add_overflow(end, when->nanoseconds, &end)) {
 		return when->seconds > 0 && when->nanoseconds >= 0 ? GPU_PATIENCE_MS : 0;
 	}
 	if (end <= 0) {
-		return 0;                       /* (the clock's reading is never negative: this is past) */
+		return 0;                       /* the clock never reads negative, so this time is in the past */
 	}
 	left = end - (int64_t) now;
 	if (left <= 0) {
@@ -317,9 +309,9 @@ millisecondsUntil(const struct msm_timespec * when)
 }
 
 /*
- * A wait that was to end at a time that had passed when it was asked for, and the GPU was not
- * done: whoever asked goes on as if it were (a picture is shown half drawn). That is what comes
- * of a caller whose clock is not this one, so the first few are told.
+ * A wait whose deadline had already passed when it was asked for, and the GPU was not done. The
+ * caller goes on as if the work were done (a picture may be shown half drawn). This usually means
+ * the caller's clock is not this one. The first four are logged.
  */
 static void
 waitOver(const struct msm_timespec * when, uint32_t fence)
@@ -335,8 +327,6 @@ waitOver(const struct msm_timespec * when, uint32_t fence)
 		    "over before it began\n", fence, when->seconds, when->nanoseconds, now / NSEC_PER_SEC, now % NSEC_PER_SEC);
 	}
 }
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 class HakiosGPU : public IOService
 {
@@ -382,7 +372,8 @@ HakiosGPUStart(void)
 	gpu->release();
 }
 
-/* The run is ending (hakios.adreno.c): nobody is in the middle of anything when the GPU goes. */
+/* Called by hakios.adreno.c when the run ends. Holding gGPULock means no request is in progress
+ * when the GPU stops. */
 void
 HakiosGPUStop(void)
 {
@@ -391,27 +382,24 @@ HakiosGPUStop(void)
 	IOLockUnlock(gGPULock);
 }
 
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
 struct gpu_buffer {
 	IOMemoryDescriptor *            memory;         /* NULL: this handle is free */
-	uint8_t *                       kernel;         /* where it is in the kernel */
-	MiniIOSurface *                 surface;        /* whose memory it is, when not its own */
-	uint64_t                        address;        /* the GPU's for it */
+	uint8_t *                       kernel;         /* kernel address of the memory */
+	MiniIOSurface *                 surface;        /* the IOSurface whose memory this is, if not its own */
+	uint64_t                        address;        /* GPU address */
 	uint64_t                        size;
 	uint32_t                        flags;
-	uint32_t                        seed;           /* the surface's when it was last pushed out of the cache, */
-	uint64_t                        pushed;         /* ... and when that was */
-	bool                            seen;           /* by the program: mapped, and from then on written by it */
+	uint32_t                        seed;           /* the surface's seed at its last cache flush, */
+	uint64_t                        pushed;         /* ... and the time of that flush */
+	bool                            seen;           /* mapped by the program; the program may write it from then on */
 	uint32_t                        fence;          /* the last submission that names it (0: none has) */
 };
 
 /*
- * A buffer given back while the GPU is still at it: its memory and its place in the GPU's
- * address space are kept until the submission is done, and nobody waits for that. (A window
- * server that makes a surface for every frame gives the last frame's back while the GPU draws
- * this one: waiting there, for all the GPU had been given, cost it some five milliseconds a
- * frame.)
+ * A buffer freed while the GPU still uses it. Its memory and GPU address stay allocated until the
+ * submission finishes; reap() releases them later, so freeing does not wait. (Waiting here cost a
+ * window server about five milliseconds a frame: it frees the last frame's surface while the GPU
+ * draws this one.)
  */
 struct gpu_left {
 	IOMemoryDescriptor *            memory;
@@ -422,16 +410,14 @@ struct gpu_left {
 #define GPU_LEFT                64
 
 /*
- * A buffer of the program's own given back, and done with: kept, memory and place in the GPU's
- * address space, for the next one of the same size and kind. CoreAnimation makes a new texture to
- * draw a blur into for every frame of an animation with one (Search: 1082 x 1226, 6 MB with Mesa's
- * rounding), and gives them back only later, a score at a time; Mesa keeps what is given back for
- * a second and then lets it go. Each made afresh here took 2 to 3.5 ms of the window server's frame
- * (memory got, cleared, made write-combined, and entered page by page into the GPU's address
- * space). A buffer kept is given again as it is, not cleared: it was the same program's (Mesa's own
- * cache gives buffers back the same way). At most GPU_KEPT_BYTES are kept (the one kept longest
- * makes way), none for longer than GPU_KEPT_SECONDS. rc.jobs.fps, Search: 8 such textures made
- * slowly instead of 77, the window server's frames drawn in 6.8 ms instead of 9.3-10 (median).
+ * A program's buffer that was freed and is no longer used by the GPU. It is kept, with its memory and
+ * GPU address, for the next buffer of the same size and flags, saving the cost of making one: zeroing,
+ * write-combining, and entering each page into the GPU's address space, which took 2 to 3.5 ms of the
+ * window server's frame. A kept buffer is handed out as it is, not cleared, since it was the same
+ * program's (Mesa keeps given-back buffers the same way). Limits: GPU_KEPT_BYTES in total, with the
+ * longest-kept dropped first, and none kept for longer than GPU_KEPT_SECONDS.
+ * Measured with rc.jobs.fps in Search: 8 such textures made instead of 77 (a blur's texture, 1082 x
+ * 1226, 6 MB with Mesa's rounding), and window-server frames at 6.8 ms median instead of 9.3-10 ms.
  */
 struct gpu_kept {
 	IOMemoryDescriptor *            memory;         /* NULL: this place is free */
@@ -442,8 +428,8 @@ struct gpu_kept {
 #define GPU_KEPT                48
 #define GPU_KEPT_BYTES          (160ull << 20)
 #define GPU_KEPT_SECONDS        60              /* a buffer not asked for again in so long is let go */
-#define GPU_KEEP_FROM           (256u << 10)    /* bytes: smaller ones are not worth it */
-static TUNABLE(uint32_t, gGPUKeep, "gpu_keep", 1);      /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
+#define GPU_KEEP_FROM           (256u << 10)    /* smaller buffers are not kept */
+static TUNABLE(uint32_t, gGPUKeep, "gpu_keep", 1);      /* boot-arg gpu_keep: 0 keeps none (for tests), 1 keeps buffers, 2 also clears them when given again */
 
 class HakiosGPUUserClient : public IOUserClient
 {
@@ -452,7 +438,7 @@ class HakiosGPUUserClient : public IOUserClient
 	task_t                  fTask;
 	struct gpu_buffer *     fBuffers;               /* handle n is fBuffers[n - 1] */
 	uint32_t                fNextQueue;
-	uint32_t                fNextBuffer;            /* where the search for a free handle starts: one given back is not the next given */
+	uint32_t                fNextBuffer;            /* where the search for a free handle starts, so a freed handle is not reused at once */
 	uint32_t                fBufferCount;
 	uint64_t                fBufferBytes;
 	uint32_t                fSubmits;
@@ -507,16 +493,16 @@ HakiosGPUUserClient::start(IOService * provider)
 }
 
 /*
- * With the lock held, and the GPU done with everything it has been given (`idle`). If it is
- * not -- it has stopped answering -- the buffer's memory stays the GPU's for good: it may yet be
- * written, and must not be somebody else's by then.
+ * Frees a buffer's handle and memory. Called with gGPULock held. If the GPU still uses the buffer,
+ * its memory is kept until the GPU is done (see reap()). If there is no room for that, the memory
+ * keeps an extra reference and is never freed, since a GPU that has stopped may still write to it.
  */
 void
 HakiosGPUUserClient::freeBuffer(struct gpu_buffer * slot)
 {
 	/*
-	 * gpuWait() below lets go of the lock: take the buffer out of its handle first and work on a copy, so that
-	 * a second close of the same handle (or the client's closing) cannot free the same memory and address twice.
+	 * gpuWait() drops the lock. The buffer is taken out of its handle first and handled as a copy, so a
+	 * second close of the same handle cannot free its memory or address twice.
 	 */
 	struct gpu_buffer saved = *slot;
 	struct gpu_buffer * b = &saved;
@@ -529,7 +515,7 @@ HakiosGPUUserClient::freeBuffer(struct gpu_buffer * slot)
 	bool busy = hakios_gpu_ready() && b->fence != 0 && !hakios_gpu_done(b->fence);
 
 	if (busy && fLeftCount == GPU_LEFT) {
-		busy = !gpuWait(b->fence, 1000);        /* (nowhere to keep it: this one is waited for) */
+		busy = !gpuWait(b->fence, 1000);        /* no room in fLeft: wait for this one */
 	}
 	if (busy && fLeftCount < GPU_LEFT) {
 		struct gpu_left * left = &fLeft[fLeftCount++];
@@ -553,7 +539,7 @@ HakiosGPUUserClient::freeBuffer(struct gpu_buffer * slot)
 				IOLog("HakiosGPU: the GPU is not done with what it was given: a buffer of %llu bytes stays its own\n", b->size);
 			}
 		} else if (b->surface == NULL && hakios_gpu_ready() && keep(b->memory, b->kernel, b->address, b->size, b->flags)) {
-			b->memory = NULL;               /* (now the kept one's) */
+			b->memory = NULL;               /* the memory now belongs to the kept entry */
 		} else if (hakios_gpu_ready()) {
 			hakios_gpu_unmap(b->address, b->size);
 			hakios_gpu_address_free(b->address, b->size);
@@ -567,7 +553,7 @@ HakiosGPUUserClient::freeBuffer(struct gpu_buffer * slot)
 	}
 }
 
-/* The buffers that were given back early and that the GPU is done with now: freed. With the lock held. */
+/* Releases the fLeft buffers the GPU has finished with. Called with gGPULock held. */
 void
 HakiosGPUUserClient::reap(void)
 {
@@ -600,7 +586,7 @@ HakiosGPUUserClient::clientClose(void)
 {
 	if (fBuffers != NULL) {
 		IOLockLock(gGPULock);
-		/* what the client had the GPU do last may still be going on, in these buffers */
+		/* the client's last submission may still be using these buffers */
 		if (hakios_gpu_ready()) {
 			gpuWait(hakios_gpu_last(), 1000);
 		}
@@ -638,7 +624,7 @@ struct gpu_buffer *
 HakiosGPUUserClient::buffer(uint32_t handle)
 {
 	if (handle == 0 || handle > GPU_BUFFERS || fBuffers[handle - 1].memory == NULL) {
-		/* (a program that names a buffer it has given back draws into somebody else's next: worth knowing) */
+		/* a program naming a freed handle may be drawing into someone else's newer buffer */
 		if (handle != 0 && fStrangers++ < 16) {
 			IOLog("HakiosGPU: buffer %u is asked for and is not there\n", handle);
 		}
@@ -648,8 +634,9 @@ HakiosGPUUserClient::buffer(uint32_t handle)
 }
 
 /*
- * A handle and addresses of the GPU's for `size` bytes of a memory descriptor, from byte `from`
- * of it on (wired memory; both in whole pages). With the lock held; NULL: there is no room.
+ * Allocates a handle and a GPU address range for `size` bytes of `memory`, from byte `from` on
+ * (wired memory, whole pages). Called with gGPULock held. Returns NULL when there is no free handle,
+ * address range or mapping.
  */
 struct gpu_buffer *
 HakiosGPUUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint64_t size, uint32_t flags, uint32_t * handle)
@@ -696,7 +683,7 @@ HakiosGPUUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint6
 	return b;
 }
 
-/* With the lock held. */
+/* Called with gGPULock held. */
 void
 HakiosGPUUserClient::dropKept(struct gpu_kept * k)
 {
@@ -712,7 +699,8 @@ HakiosGPUUserClient::dropKept(struct gpu_kept * k)
 	fKeptBytes -= k->size;
 }
 
-/* With the lock held, the GPU done with the buffer: kept if it is worth it (those kept longest make way). */
+/* Called with gGPULock held, and the GPU done with the buffer. Keeps it if it is large enough and
+ * fits; the oldest kept buffers are dropped to make room. */
 bool
 HakiosGPUUserClient::keep(IOMemoryDescriptor * memory, uint8_t * kernel, uint64_t address, uint64_t size, uint32_t flags)
 {
@@ -758,7 +746,7 @@ HakiosGPUUserClient::gemNew(struct msm_gem_new * request)
 	if (size == 0 || size > GPU_BUFFER_MAX) {
 		return kIOReturnBadArgument;
 	}
-	/* one kept of this size and kind, if there is one (the one kept last: likeliest still in the caches' way) */
+	/* reuse a kept buffer of the same size and flags: the most recently kept (likeliest still in the caches) */
 	IOLockLock(gGPULock);
 	struct gpu_kept * found = NULL;
 	uint64_t old;
@@ -801,7 +789,7 @@ HakiosGPUUserClient::gemNew(struct msm_gem_new * request)
 		}
 	}
 	IOLockUnlock(gGPULock);
-	/* (the memory comes zeroed, and making it write-combined pushes the zeroes out of the cache) */
+	/* the new memory is zeroed; making it write-combined pushes the zeroes out of the cache */
 	memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut | kIOMemoryKernelUserShared |
 	    (gGPUCached ? 0 : kIOMapWriteCombineCache), (vm_size_t) size, PAGE_SIZE);
 	if (memory == NULL) {
@@ -830,11 +818,10 @@ HakiosGPUUserClient::gemNew(struct msm_gem_new * request)
 }
 
 /*
- * The memory of an IOSurface as a buffer: its pixels, from the page after the surface's shared
- * state on (MiniIOSurface.h). The surface is held for as long as the buffer is there. A surface
- * that is a buffer of this client's already is that buffer again, as with Linux's handles: so
- * the client must not be giving that buffer back at the same moment (freedreno asks under the
- * lock it gives buffers back under). Asked only to describe (kHakiosDescribe), no buffer is made.
+ * An IOSurface's memory as a buffer: its pixels, from the page after the surface's shared state
+ * (MiniIOSurface.h). The surface is retained while the buffer exists. Asking again for a surface that
+ * already has a buffer of this client returns that buffer. The client must not give that buffer back
+ * at the same moment. kHakiosDescribe asks for the layout only; no buffer is made.
  */
 IOReturn
 HakiosGPUUserClient::surfaceBuffer(struct hakios_surface * request)
@@ -848,7 +835,7 @@ HakiosGPUUserClient::surfaceBuffer(struct hakios_surface * request)
 		return kIOReturnNotFound;
 	}
 	if (s->client != NULL) {
-		/* (memory of a program's own with a surface made around it: not in whole pages, and seldom in rows the GPU takes) */
+		/* a surface made around a program's own memory: its pixels are not in whole pages, and rows seldom suit the GPU */
 		MiniIOSurfaceDrop(s);
 		return kIOReturnUnsupported;
 	}
@@ -911,23 +898,19 @@ HakiosGPUUserClient::gemInfo(struct msm_gem_info * request)
 	if (b == NULL) {
 		ret = kIOReturnBadArgument;
 	} else if (request->info == MSM_INFO_GET_OFFSET) {
-		request->value = (uint64_t) request->handle << 32;      /* nobody maps by it here */
+		request->value = (uint64_t) request->handle << 32;      /* mmap uses the handle (clientMemoryForType), not an offset */
 	} else if (request->info == MSM_INFO_GET_IOVA) {
 		/*
-		 * The address the buffer was given when it was made, and the buffer's until it is
-		 * given back. Nothing here ever moves a live buffer, so a caller may ask once and
-		 * keep the answer -- which is what freedreno does (fd_bo_init_common).
+		 * The buffer's GPU address: fixed from when it is made until it is freed, so a caller may read it
+		 * once and keep it (freedreno does, in fd_bo_init_common).
 		 */
 		request->value = b->address;
 	} else if (request->info == MSM_INFO_SET_IOVA) {
 		/*
-		 * Where a buffer goes is not the program's to choose here: every client is in the
-		 * one SMMU context 0, so an address one program picked would be a place in every
-		 * other program's space as well. Linux draws the line in the same place for the
-		 * two parameters that describe a space -- VA_START and VA_SIZE are refused unless
-		 * the client has page tables of its own (adreno_gpu.c, adreno_get_param) -- and
-		 * placing a buffer is the stronger request of the two. Said once, by name, rather
-		 * than returned as a bare code nobody can look up.
+		 * Buffer addresses are the kernel's to choose. Every client shares SMMU context 0, so an address one
+		 * program picked would also be in every other program's space. Linux refuses VA_START and VA_SIZE
+		 * unless the client has page tables of its own (adreno_gpu.c, adreno_get_param), and placing a
+		 * buffer is the stronger request of the two. The refusal is logged once, by name.
 		 */
 		if (!gGPUSaidSetIova) {
 			gGPUSaidSetIova = true;
@@ -938,7 +921,7 @@ HakiosGPUUserClient::gemInfo(struct msm_gem_info * request)
 		ret = kIOReturnUnsupported;
 	} else if (request->info == MSM_INFO_GET_FLAGS) {
 		request->value = b->flags;
-	} else if (request->info != MSM_INFO_SET_NAME) {            /* a name for somebody's debugger: not kept */
+	} else if (request->info != MSM_INFO_SET_NAME) {            /* SET_NAME: a debugging name, not kept */
 		ret = kIOReturnUnsupported;
 	}
 	IOLockUnlock(gGPULock);
@@ -972,15 +955,15 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 	}
 	IOLockLock(gGPULock);
 	/*
-	 * The GPU reads memory and writes memory. What this processor's cache holds of an IOSurface
-	 * (somebody has written it, or has read it, as the display's driver does, and the GPU is to
-	 * draw into it again) goes out of the cache now: when the surface is said to have changed
-	 * (its seed: who writes one is to lock it, and so does a program that has had the GPU draw
-	 * into one: userland/src/eagl.c), and in any case once in a few milliseconds, which is once
-	 * a frame and not once a submission: not everybody who draws into a surface says so (an
-	 * application drawing a picture that is on the screen meanwhile). A surface this program
-	 * has mapped, every time. The buffers made here need none of that, unless they are
-	 * ordinary memory (gpu_cached=1).
+	 * Cache coherence. The GPU reads and writes memory, so what this processor's cache holds of a buffer
+	 * is pushed out before a submission that may use it:
+	 * - an IOSurface buffer when its seed has changed since the last push (writers are to lock the
+	 *   surface, and so is a program that has had the GPU draw into it: userland/src/eagl.c), and in any
+	 *   case once every GPU_PUSH_AGAIN_MS, since not every writer changes the seed (an application
+	 *   drawing a picture that is on screen meanwhile does not);
+	 * - a surface this program has mapped, every time;
+	 * - a buffer made here, when gpu_cached=1 and the program has mapped it.
+	 * The pushes are followed by a barrier.
 	 */
 	began = mach_absolute_time();
 	nanoseconds_to_absolutetime(GPU_PUSH_AGAIN_MS * NSEC_PER_MSEC, &again);
@@ -1004,14 +987,14 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 		hakios_gpu_to_memory(b->kernel, b->size);
 		gGPUStat.flushed += b->size;
 	}
-	hakios_gpu_to_memory(NULL, 0);                 /* (and what was written last is in memory: a barrier) */
+	hakios_gpu_to_memory(NULL, 0);                 /* barrier after the pushes */
 	gGPUStat.flushing += mach_absolute_time() - began;
 	gGPUStat.buffers += request->nr_bos;
 	for (uint32_t i = 0; i < request->nr_cmds; i++) {
 		struct gpu_buffer * b = cmds[i].submit_idx < request->nr_bos ? buffer(bos[cmds[i].submit_idx].handle) : NULL;
 
 		if (cmds[i].type != MSM_SUBMIT_CMD_BUF) {
-			continue;                               /* the other kinds are for a GPU shared between address spaces */
+			continue;                               /* other command types apply to GPUs shared between address spaces; skipped here */
 		}
 		if (b == NULL || cmds[i].nr_relocs != 0 || (cmds[i].size & 3) || (cmds[i].submit_offset & 3) ||
 		    (uint64_t) cmds[i].submit_offset + cmds[i].size > b->size) {
@@ -1025,10 +1008,10 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 	}
 	request->fence = hakios_gpu_submit(addresses, words, count);
 	/*
-	 * The ring is full and the core is not reading it: it has stopped. With gpu_recover=1 it is
-	 * reset and given this submission again -- after a reset the ring is empty, so there is
-	 * room for it. (A wait of a second or more notices a stopped core first, as a rule; this is
-	 * for a program that submits without waiting.)
+	 * A zero fence means the ring is full, so the core is not reading it and has stopped. The stop is
+	 * reported; with gpu_recover=1 the core is reset and the submission given again, since the ring is
+	 * empty after a reset. (A wait of a second or more usually finds a stopped core first; this case is
+	 * for programs that submit without waiting.)
 	 */
 	if (request->fence == 0 && !gGPUReported) {
 		hakios_gpu_report("the ring is full");
@@ -1038,7 +1021,7 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 		}
 	}
 	if (gpu_log && request->fence != 0) {
-		/* "tl: Q FENCE at US: N buffers, B of 4 MB or more, W words of commands": what was given (tl: q: what it took) */
+		/* with gpu_log: "tl: Q FENCE at US: N buffers, B of 4 MB or more, W words of commands" per submission */
 		uint32_t big = 0, all_words = 0;
 		uint64_t ns;
 
@@ -1057,10 +1040,9 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 		request->fence_fd = -1;
 	}
 	/*
-	 * The surfaces named are being drawn into, or read, until this submission is done: the
-	 * display's driver waits for that before it puts one on the panel (MiniIOSurfaceDrawn()).
-	 * (freedreno names every buffer for reading and writing alike, so which it is cannot be
-	 * told; the last submission of a frame names the surface the frame is drawn into.)
+	 * Buffers named here are busy until this submission finishes. MiniIOSurfaceDrawn() waits for that
+	 * before a surface is shown. freedreno names every buffer for both reading and writing, so the
+	 * direction cannot be told; the last submission of a frame names the surface the frame draws into.
 	 */
 	for (uint32_t i = 0; request->fence != 0 && i < request->nr_bos; i++) {
 		struct gpu_buffer * b = buffer(bos[i].handle);
@@ -1074,11 +1056,11 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 	}
 	reap();
 	if (fSubmits++ < 4) {
-		/* (addresses and words are only set up to `count`: with no command buffer among the commands, the first would be stack garbage) */
+		/* the first is printed only if count != 0: addresses[] and words[] are set only below count */
 		IOLog("HakiosGPU: submission %u: %u command buffers, the first at %#llx, %u words\n", request->fence, count,
 		    count != 0 ? addresses[0] : 0ull, count != 0 ? words[0] : 0u);
 	}
-	/* every five seconds in which something was submitted: how much, and what it cost here */
+	/* once every five seconds of submissions: a summary log, then the counters are reset */
 	gGPUStat.submissions++;
 	gGPUStat.commands += count;
 	if (gGPUStat.since == 0) {
@@ -1110,10 +1092,8 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 		    fBufferBytes >> 20);
 		if (gpu_va != 0) {
 			/*
-			 * The address space itself, because nothing else said anything about it: what
-			 * argument buffers and heaps are built on is that this allocator holds, and
-			 * "lost" and "refused" are the two ways it stops holding (bsd/dev/
-			 * hakios.adreno.c, hakios_gpu_address_free).
+			 * Address space summary (gpu_va != 0). "lost" and "refused" count the two ways the allocator fails
+			 * to hold addresses it was given; argument buffers and heaps depend on it holding them.
 			 */
 			uint64_t used, largest, lost;
 			uint32_t live, refused;
@@ -1138,7 +1118,7 @@ out:
 	return ret;
 }
 
-/* Pixels of the caller's (32 bits each, blue first) copied to the panel: for a test to show what it has drawn. */
+/* Copies the caller's pixels (32 bits each, blue first) to the panel, for tests. */
 IOReturn
 HakiosGPUUserClient::show(const struct hakios_show * request)
 {
@@ -1150,7 +1130,7 @@ HakiosGPUUserClient::show(const struct hakios_show * request)
 	    request->rowBytes < 4 * request->width) {
 		return kIOReturnBadArgument;
 	}
-	/* rowBytes is the caller's own number: without a limit it asks for terabytes of wired memory (no more than a buffer may be) */
+	/* rowBytes comes from the caller; without this limit it could request terabytes of wired memory */
 	if (size > GPU_BUFFER_MAX) {
 		return kIOReturnBadArgument;
 	}
@@ -1214,7 +1194,7 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 		return kIOReturnBadArgument;
 	}
 	if (!hakios_gpu_ready() && selector != kHakiosShow) {
-		return kIOReturnNotReady;                       /* given back: the run is ending */
+		return kIOReturnNotReady;                       /* the GPU has been stopped: the run is ending */
 	}
 	bzero(&r, sizeof(r));
 	memcpy(&r, args->structureInput, size);
@@ -1223,7 +1203,7 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 	case kMsmGetParam:
 		ret = hakios_gpu_parameter(r.param.param, &r.param.value) ? kIOReturnSuccess : kIOReturnBadArgument;
 		break;
-	case kMsmSetParam:                              /* the program's name, for Linux's lists of who uses the GPU */
+	case kMsmSetParam:                              /* SET_PARAM names the program, for Linux's lists of GPU users; the other two cases need nothing */
 	case kMsmGemCpuFini:
 	case kMsmSubmitQueueClose:
 		break;
@@ -1233,7 +1213,8 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 	case kMsmGemInfo:
 		ret = gemInfo(&r.gemInfo);
 		break;
-	case kMsmGemCpuPrep:                            /* is the GPU done with a buffer: with all it has been given, here */
+	case kMsmGemCpuPrep:                            /* is the GPU done with the buffers: waits for the last submission, up to the caller's timeout;
+		 * MSM_PREP_NOSYNC only checks */
 		waitBegan = mach_absolute_time();
 		IOLockLock(gGPULock);
 		patience = (r.cpuPrep.op & MSM_PREP_NOSYNC) ? 0 : millisecondsUntil(&r.cpuPrep.timeout);
@@ -1252,7 +1233,8 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 	case kMsmWaitFence:
 		waitBegan = mach_absolute_time();
 		IOLockLock(gGPULock);
-		/* a fence that was never issued is never done: refuse it, so that waiting for it cannot make gpuWait() declare the GPU dead for every client */
+		/* a fence never issued is never done: refuse it, or waiting would make gpuWait() report the GPU
+		 * stopped for every client (fences compare with wraparound) */
 		if ((int32_t)(r.waitFence.fence - hakios_gpu_last()) > 0) {
 			IOLockUnlock(gGPULock);
 			ret = kIOReturnBadArgument;
@@ -1274,7 +1256,7 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 	case kMsmSubmitQueueNew:
 		r.queue.id = ++fNextQueue;
 		break;
-	case kMsmSubmitQueueQuery:                      /* how often the GPU has faulted on this client's commands */
+	case kMsmSubmitQueueQuery:                      /* faults on this client's commands: always reported as zero here */
 		if (r.query.data != 0 && r.query.len >= sizeof(zero)) {
 			copyout(&zero, (user_addr_t) r.query.data, sizeof(zero));
 		}
@@ -1292,13 +1274,10 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 		break;
 	case kHakiosGPUWorked:
 		/*
-		 * Under gGPULock because hakios_gpu_worked() calls gpu_times(), which reads the
-		 * scratch page and advances the same counters the submit path advances -- and
-		 * submit() holds this lock while it does exactly that. The output goes back
-		 * through the common copy at the end of this method, so a caller that passes a
-		 * struct of this size in gets it filled on the way out; one that passes fewer
-		 * bytes gets as many as it asked for, and the rest of the numbers are lost with
-		 * the reset, which is the one way to misuse this request.
+		 * Called under gGPULock: hakios_gpu_worked() (via gpu_times()) reads the scratch page and advances the
+		 * counters that submit() also advances. The output is copied back at the end of this function. A
+		 * caller passing fewer bytes than struct hakios_worked gets only that prefix; the rest is lost, since
+		 * the read resets the counters.
 		 */
 		IOLockLock(gGPULock);
 		hakios_gpu_worked(&r.worked.microseconds, &r.worked.submissions, r.worked.by);
