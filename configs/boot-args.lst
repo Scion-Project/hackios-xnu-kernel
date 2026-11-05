@@ -358,6 +358,7 @@ panel_gamma_log	k
 passcode_debug	u
 passcode_reset	k
 passcode_selftest	k
+perfctl	k
 pmic	k
 pmic_list	k
 poster_retry	u

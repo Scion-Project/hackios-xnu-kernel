@@ -12,7 +12,7 @@ for h in kern/clock.h kern/thread.h libkern/libkern.h mach/mach_time.h mach/mach
 	echo '#include "simstub.h"' > "$tmp/stub/$h"
 done
 cp "$root/socs/exynos9810/include/hakios.exynos9810_soc.h" "$tmp/stub/sys/hakios.exynos_soc.h"
-clang -O1 -w -I "$here" -I "$tmp/stub" -I "$root/drivers/power" -I "$root/xnu/files/bsd" -o "$tmp/sim" "$here/sim.c" -lm
+clang -O1 -w -I "$here" -I "$tmp/stub" -I "$root/drivers/power/exynos" -I "$root/xnu/files/bsd" -o "$tmp/sim" "$here/sim.c" -lm
 input=$1; shift
 if [ "$input" = test ]; then
 	for t in stale garbage burst cut; do "$tmp/sim" 3 test:$t; done
