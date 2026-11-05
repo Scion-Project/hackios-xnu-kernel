@@ -1,7 +1,7 @@
 /*
  * The radio's bus for brcmfmac: one struct pci_dev, the BCM4361 at 1:00.0, which the kernel's PCIe root complex has
  * enumerated, placed and handed over (lx_os_pci_*() of sys/hakios.lx.h; the kernel's side is
- * drivers/wifi/hakios.brcmfmac.c on drivers/wifi/hakios.exynos_pcie.c). What brcmfmac does through LinuxKPI's
+ * drivers/wifi/brcmfmac/hakios.brcmfmac.c on drivers/wifi/brcmfmac/hakios.exynos_pcie.c). What brcmfmac does through LinuxKPI's
  * linux/pci.h ends here: its configuration space a word at a time (lx_prelude.h turns FreeBSD's pci_read_config()
  * and its kin into the functions below), its BARs, its driver's registration and probe, its interrupt.
  *

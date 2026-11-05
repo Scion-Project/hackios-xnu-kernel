@@ -12,7 +12,7 @@
  * /etc/bluetool/<HW model>.<script>.script, then /etc/bluetool/<platform>.<script>.script, and run that instead.
  *
  * The S9's chip needs no sequence of Apple's: the kernel has powered it, patched it and raised it to 4 Mbaud (bt=7,
- * drivers/bluetooth/hakios.bcm4361_bt.c). So, in BlueTool and nowhere else:
+ * drivers/bluetooth/bcm4361/hakios.bcm4361_bt.c). So, in BlueTool and nowhere else:
  *   - ReleaseType is "Vendor" (every other answer is MobileGestalt's own), so that BlueTool runs the S9's scripts;
  *   - /etc/bluetool/ is the small image's /redwood/etc/bluetool/ (the system volume has no such directory), where
  *     D22AP.boot.script and D22AP.init.script (bluetool/ of this directory: D22AP is the HW model MobileGestalt gives)

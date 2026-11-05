@@ -57,7 +57,7 @@ Things to know:
 | `drivers/input/hakios.input.c`, `hakios.goodix.c` | input: `/dev/hakios-touch`, the Goodix GT9916 touch controller |
 | `drivers/power/hakios.cpufreq.c` | CPU clocks (Qualcomm EPSS) |
 | `drivers/net/hakios.net.c`, `hakios.virtio_net.c` | the `en0` network interface |
-| `drivers/gpu/hakios.adreno.c`, `drivers/gpu/hakios.gpu.cpp` | the Adreno 642L GPU |
+| `drivers/gpu/adreno/hakios.adreno.c`, `drivers/gpu/hakios.gpu.cpp` | the Adreno 642L GPU |
 | `drivers/wifi/hakios.wifi.c`, `hakios.wlfw.c` | Wi-Fi (WCN6750): shared memory, the radio's DSP, the driver |
 | `drivers/modem/hakios.qmi.c`, `hakios.nas.c` | QMI and the NAS client |
 | `drivers/modem/hakios.mpss.c` | the modem: firmware, file systems, IPA, SIM, registration |

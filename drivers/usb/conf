@@ -1,0 +1,16 @@
+# drivers/usb/conf: the USB port: DWC3 in device mode, CDC-ACM, the Exynos glue.
+# docs/drivers-config.md says what each word means.
+
+driver USB_GADGET
+	file    bsd/dev/hakios.dwc3.c
+	default n
+	help    a USB device link for phones with a DesignWare DWC3: the kernel's log streamed to a host over a CDC-ACM serial
+	help    port (/dev/ttyACM0) and a line console back, in steps (usb_gadget=N, 5 for all); the SoC's half is a glue
+	help    driver (EXYNOS_USB). Device-neutral; descriptors and requests in hakios.usb_acm.h
+
+driver EXYNOS_USB
+	file    bsd/dev/hakios.exynos_usb.c
+	default n
+	requires USB_GADGET EXYNOS_ACPM
+	help    the Galaxy S9's USB port, the SoC's half for USB_GADGET: the Exynos 9810's PMU isolation, clocks and USB 2.0
+	help    PHY (the BSP's USB 3.1 CAL sequence), the SuperSpeed side held idle; usb_gadget_clk=1, usb_gadget_ldo=1

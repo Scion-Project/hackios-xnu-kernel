@@ -1,6 +1,6 @@
 /*
  * The Galaxy S9's audio codec, a Cirrus Logic CS47L93 (the Madera family) on spi@10470000 (USI01 of PERIC0):
- * drivers/audio/hakios.cs47l93.c, boot-arg cs47l93=N. The headphones, the jack and the microphones go through it; the
+ * drivers/audio/codec/hakios.cs47l93.c, boot-arg cs47l93=N. The headphones, the jack and the microphones go through it; the
  * speakers do not (ABOX's UAIF1 drives the MAX98512s directly).
  */
 #ifndef _SYS_HAKIOS_CS47L93_H_

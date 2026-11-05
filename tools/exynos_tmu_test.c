@@ -1,5 +1,5 @@
 /*
- * The Exynos 9810 TMU's arithmetic and register map (drivers/power/hakios.exynos_tmu.h, what drivers/power/
+ * The Exynos 9810 TMU's arithmetic and register map (drivers/power/exynos/hakios.exynos_tmu.h, what drivers/power/
  * hakios.exynos_tmu.c reads the Galaxy S9's temperatures with) checked on this machine:
  *
  *   cc -O1 -Wall -Wextra tools/exynos_tmu_test.c -o exynos_tmu_test && ./exynos_tmu_test
@@ -27,7 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "../drivers/power/hakios.exynos_tmu.h"
+#include "../drivers/power/exynos/hakios.exynos_tmu.h"
 
 static int failures, checks;
 

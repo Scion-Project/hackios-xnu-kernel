@@ -27,7 +27,7 @@
 #                                   (default: src/inject.c in backboardd, src/inject_sb.c in SpringBoard,
 #                                   src/inject_media.c in mediaserverd);
 #                                   init hands the list to the kernel (etc/inject.conf -> sysctl kern.exec_inject)
-#                      BT=1         Bluetooth on the Galaxy S9 (kernel bt=7, drivers/bluetooth/hakios.bcm4361_bt.c):
+#                      BT=1         Bluetooth on the Galaxy S9 (kernel bt=7, drivers/bluetooth/bcm4361/hakios.bcm4361_bt.c):
 #                                   the jobs com.apple.bluetoothd (its transport BT_HCI_TRANSPORT=H4:POSIX:
 #                                   com.apple.uart.bluetooth,4000000 -- the kernel's control at the chip's rate; give
 #                                   BT_HCI_TRANSPORT= for another) and com.apple.BlueTool; BlueTool started with
@@ -706,7 +706,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -n "$DARWIN_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $DARWIN/rootfs root/LaunchDaemons $DARWIN_JOBS
 fi
 # firmware of the phone's own hardware, where somebody has pulled it from the phone's Android into ../fw-gpu
-# (it is the vendor's and never in the repository): the kernel's GPU bring-up, drivers/gpu/hakios.adreno.c, finds it in fw/
+# (it is the vendor's and never in the repository): the kernel's GPU bring-up, drivers/gpu/adreno/hakios.adreno.c, finds it in fw/
 if [ -d ../fw-gpu ]; then
 	mkdir -p root/fw
 	cp ../fw-gpu/* root/fw/
@@ -726,7 +726,7 @@ if [ -f ../fw-wifi/wpss.mdt ]; then
 	# SHARE=1: leave it out, for an image that is going to somebody else -- it is a passphrase
 	if [ -z "$SHARE" ] && [ -f ../fw-wifi/network ]; then install -m 0600 ../fw-wifi/network root/fw/network; fi
 fi
-# ... and the Galaxy S9's (drivers/wifi/hakios.brcmfmac.c, brcmfmac=2 and up): the BCM4361's firmware, NVRAM and CLM,
+# ... and the Galaxy S9's (drivers/wifi/brcmfmac/hakios.brcmfmac.c, brcmfmac=2 and up): the BCM4361's firmware, NVRAM and CLM,
 # pulled from the phone's own Android into ../fw-wifi under the names brcmfmac asks for (brcmfmac4361b2-pcie.bin, .txt,
 # .clm_blob; devices/starlte/WIFI.md says which of the phone's files each is). The vendor's: never in the repository
 for f in ../fw-wifi/brcmfmac4361*-pcie.*; do
@@ -743,7 +743,7 @@ if ls ../fw-wifi/brcmfmac4361*-pcie.bin >/dev/null 2>&1; then
 		install -m 0600 ../fw-wifi/network root/fw/network
 	fi
 fi
-# ... and the Galaxy S9's Bluetooth patch (drivers/bluetooth/hakios.bcm4361_bt.c, bt=6): the phone's own
+# ... and the Galaxy S9's Bluetooth patch (drivers/bluetooth/bcm4361/hakios.bcm4361_bt.c, bt=6): the phone's own
 # /vendor/firmware/bcm4361B2_murata.hcd or _semco.hcd, whichever module the phone has, pulled into ../fw-bt as
 # bcm4361B2.hcd (devices/starlte/BLUETOOTH.md; 106 KB). The vendor's: never in the repository
 for f in ../fw-bt/*.hcd; do

@@ -66,7 +66,7 @@ extern void hakios_exynos_iris_quiesce(void);
 extern void hakios_s2mpb02_torch_quiesce(void);
 extern void hakios_exynos_pcie_quiesce(void);
 extern void hakios_ufs_quiesce(void);
-extern void hakios_var_save_on_return(void);   /* drivers/storage/hakios.ufs.c: the data volume into the flash */
+extern void hakios_var_save_on_return(void);   /* drivers/storage/ufs/hakios.ufs.c: the data volume into the flash */
 void loader_checkpoint(uint64_t n);
 
 /* Also referenced from the early exception vector in start.s. */

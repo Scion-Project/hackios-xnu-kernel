@@ -153,7 +153,7 @@ static uint32_t         gSurfacesGivenAgain;    /* for MiniIOSurfaceCost() */
 static TUNABLE(uint32_t, gSurfaceClear, "surf_clear", 1);
 /*
  * fb_zc (MiniIOMobileFramebuffer.cpp): the window server's display surfaces made of the scan-out pool of the S9's DPU
- * driver (drivers/gpu/hakios.exynos_dpu.c), for the display controller to scan them out with nothing copied. Which
+ * driver (drivers/display/dpu/hakios.exynos_dpu.c), for the display controller to scan them out with nothing copied. Which
  * ones: of the size the display's driver says (MiniIOSurfaceScanout()), one plane of 'BGRA', made by backboardd; at most
  * as many as the pool has slots (14), the others ordinary. Write-combined in every mapping, the kernel's, the window
  * server's and the GPU's: the Mali and the DPU read memory, not the processors' caches.

@@ -1,5 +1,5 @@
 #!/bin/sh
-# The Galaxy S9 Mali's GPU addresses (drivers/gpu/hakios.mali_va.h, what drivers/gpu/hakios.mali.c gives the buffers of
+# The Galaxy S9 Mali's GPU addresses (drivers/gpu/mali/hakios.mali_va.h, what drivers/gpu/mali/hakios.mali.c gives the buffers of
 # Mesa's panfrost) on this machine: tools/mali_va_test.c built against it under the address and undefined-behaviour
 # sanitizers, and run. The header is plain C.
 # usage: tools/mali-va-test.sh

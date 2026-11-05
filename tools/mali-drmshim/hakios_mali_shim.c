@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  *
  * A drm-shim driver for Mesa's panfrost that answers the way the Galaxy S9's HakiosMali does
- * (drivers/gpu/hakios.mali.c, drivers/gpu/hakios.mali.cpp, tools/mesa/hakios-drm), so that
+ * (drivers/gpu/mali/hakios.mali.c, drivers/gpu/mali/hakios.mali.cpp, tools/mesa/hakios-drm), so that
  * panfrost can be run on a Linux machine with no GPU and build the job chains it would hand the
  * phone's Mali-G72. Written for tools/mali-drmshim-check.sh; Mesa's own panfrost_noop.c
  * (src/panfrost/drm-shim) was the model, nothing of it is copied.
@@ -16,7 +16,7 @@
  *     ones where there are any and assumptions otherwise, each said. HAKIOS_MALI_REGS overrides
  *     any (e.g. HAKIOS_MALI_REGS=shader_present=0x3ffff,tls_alloc=0x180) -- the values step 4
  *     of mali=N logs on the phone go straight in
- *   - gives GPU addresses with the kernel's own allocator, drivers/gpu/hakios.mali_va.h
+ *   - gives GPU addresses with the kernel's own allocator, drivers/gpu/mali/hakios.mali_va.h
  *     (#included as it is), sizes rounded to the kernel's 16 KB pages, executable unless
  *     PANFROST_BO_NOEXEC, and gives them back when a buffer is closed
  *   - accepts and does not run job chains (there is no GPU); every chain's address is checked

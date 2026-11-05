@@ -15,7 +15,7 @@ separate tracks from conflicting in the one big patch:
 The patches change Apple's files and upstream's drivers. The AVF guest's own drivers are whole files in `drivers/`
 (`drivers/map`, the last block), built by `standard` lines of their subsystem's `conf`: the patches do not touch
 `bsd/conf/files`, whose HakiOS block `tools/hakios-config.py kernel` writes. (1301-1303, the virtio GPU's cursor queue,
-fast completion and interrupt count, were changes to `hakios.vgpu.c` alone, and are in `drivers/gpu/hakios.vgpu.c` now;
+fast completion and interrupt count, were changes to `hakios.vgpu.c` alone, and are in `drivers/gpu/vgpu/hakios.vgpu.c` now;
 1403, which started the AVF battery from `hakios.input.c`, is a line of that file now.)
 
 **A file one of these patches touches is changed by a patch here, never in place** (`grep '^+++ b/' xnu/patches/*.patch`

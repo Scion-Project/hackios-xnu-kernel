@@ -1,5 +1,5 @@
 /*
- * mali_test: the Galaxy S9's GPU from a program, without Mesa -- what HakiosMali (drivers/gpu/hakios.mali.cpp) does
+ * mali_test: the Galaxy S9's GPU from a program, without Mesa -- what HakiosMali (drivers/gpu/mali/hakios.mali.cpp) does
  * for a client, one request at a time, so that a run of the phone says whether the kernel's half works before Mesa's
  * panfrost is asked to draw through it.
  *

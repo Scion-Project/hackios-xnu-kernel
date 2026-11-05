@@ -1,5 +1,5 @@
 /*
- * An Exynos HSI2C (an I2C master of a USI block) as this port drives it: drivers/core/hakios.exynos_hsi2c.c.
+ * An Exynos HSI2C (an I2C master of a USI block) as this port drives it: drivers/soc/exynos/hakios.exynos_hsi2c.c.
  * A driver describes its bus (where the controller is, the USI mode word that makes the block an I2C, the clock gates
  * to force on, the pins) and calls these from its own thread; one driver per bus, no locking.
  */

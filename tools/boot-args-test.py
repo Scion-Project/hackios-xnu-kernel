@@ -52,7 +52,7 @@ def found(d):
 
 FILES = {
     # kernel: the direct forms, in the old place (xnu/files) and the new one (drivers/)
-    "drivers/gpu/hakios.adreno.c": 'void f(void) { PE_parse_boot_argn("k_direct", &v, sizeof(v)); PE_parse_boot_arg_str("k_string", b, 8); }\n',
+    "drivers/gpu/adreno/hakios.adreno.c": 'void f(void) { PE_parse_boot_argn("k_direct", &v, sizeof(v)); PE_parse_boot_arg_str("k_string", b, 8); }\n',
     "drivers/gpu/hakios.gpu.cpp": 'static TUNABLE(uint32_t, gOnTheBeat, "k_tunable", 1);\nstatic TUNABLE_WRITEABLE(uint32_t, gW, "k_writeable", 0);\n',
     # kernel: a file with its own option(name) that calls PE_parse_boot_argn(name)
     "drivers/modem/hakios.mpss.c": 'static bool\noption(const char *name)\n{\n\treturn PE_parse_boot_argn(name, &v, 4);\n}\nvoid g(void) { if (option("k_wrapped")) {} }\n',

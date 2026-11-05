@@ -192,7 +192,7 @@ virtio_input.c:
 
 ## Fix status
 
-Edited: drivers/input/hakios.goodix.c, hakios.input.c, hakios.virtio_input.c. Nothing was compiled or run; every edit was re-read for syntax and types.
+Edited: drivers/input/touch/hakios.goodix.c, hakios.input.c, hakios.virtio_input.c. Nothing was compiled or run; every edit was re-read for syntax and types.
 
 - F1 FIXED. goodix.c: `rpmh_write()` now takes `hakios_rsc_lock` (extern declared next to the other externs, `<kern/locks.h>` included) before the first TCS 0 access and releases it on the busy return and at the end. Same lock the audio DSP and modem drivers take; the lock is a leaf here (nothing else is taken while it is held), so no ordering problem. The mutex is held across `sleep_us`, exactly as adsp.c does.
 - F2 FIXED (the ignored error). goodix.c: `power_on()` returns bool and `bring_up()` stops with a message before AVDD or any bus work if `io_supply_on()` fails. NOT done: driving AVDD low and clearing the GCC clock votes when a later bring-up step fails. Power-down order and clock-vote semantics are hardware knowledge; SKIPPED for that part.

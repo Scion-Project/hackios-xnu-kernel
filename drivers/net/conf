@@ -4,8 +4,3 @@
 
 standard bsd/dev/hakios.net.c
 	help    en0, an interface that is Ethernet to the rest of the kernel, for whatever link carries its frames
-
-driver VIRTIO_NET
-	file    bsd/dev/hakios.virtio_net.c
-	requires WIFI_STA
-	help    QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only

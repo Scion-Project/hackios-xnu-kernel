@@ -1,0 +1,37 @@
+# drivers/soc/conf: the Exynos family's shared blocks: I2C and SPI on USI, the power processor, the big cluster, the secure OS.
+# docs/drivers-config.md says what each word means.
+
+driver EXYNOS_HSI2C
+	file    bsd/dev/hakios.exynos_hsi2c.c
+	help    an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery
+	help    (sys/hakios.exynos_hsi2c.h); nothing of its own on the command line
+
+driver EXYNOS_SPI
+	file    bsd/dev/hakios.exynos_spi.c
+	help    an Exynos 9810 SPI master (the SPI of a USI block), polled, the chip select by hand, for the Galaxy S9's
+	help    audio codec (sys/hakios.exynos_spi.h); nothing of its own on the command line
+
+driver EXYNOS_ACPM
+	file    bsd/dev/hakios.exynos_acpm.c
+	help    the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the
+	help    clocks' DVFS rates (sys/hakios.exynos_acpm.h), for the Galaxy S9's GPU; nothing of its own on the command line
+
+driver EXYNOS_TEE
+	file    bsd/dev/hakios.exynos_tee.c
+	default n
+	help    the Galaxy S9's secure OS asked whether it is there (tee_probe=1: the info fastcall on core 0, read only) and
+	help    started as far as its own state (tee_probe=2: the init call on a static block, the init values, an N-SIQ, the
+	help    state polled with yields, 30 s at most). tee_probe=3: one MCP round, a harmless TA from the phone's own VENDOR
+	help    opened and closed. tee_probe=4: Samsung's keymaster TA for one test, an HMAC key's blob in /private/var and an
+	help    HMAC of a test value; neither has run on a phone. Every answer logged; no daemon, no RPMB, no EFS.
+	help    Off unless asked, in nobody's default line
+
+driver EXYNOS_M3
+	file    bsd/dev/hakios.exynos_m3.c
+	requires EXYNOS_ACPM
+	default n
+	help    the Galaxy S9's big cores (four Exynos M3s): the six CLUSTER1 fields of the PMU that Samsung's kernel writes
+	help    before it starts any other core, and the cluster's state logged before CPU_ON (m3_prep=N, the first N of 3
+	help    steps: read, write, start the M3s; patch 1508 asks it before every CPU_ON)
+	help    and cohtest=N, a check that the big cluster is coherent with the A55s once started (cached ping-pong,
+	help    cache maintenance by VA across the clusters, read back through an uncached alias), off by default

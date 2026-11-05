@@ -8,7 +8,7 @@ all in microseconds of mach_absolute_time (the kernel's clock, which user space 
 
   tl: p TYPE FINGER X Y at US              the kernel posts a sample (drivers/input/hakios.input.c)
   tl: c before US seen US read US          the touch driver finds the interrupt line low and reads the
-                                           report (drivers/input/hakios.goodix.c; only for a real finger)
+                                           report (drivers/input/touch/hakios.goodix.c; only for a real finger)
   tl: i TYPE posted US read US sent US     the window server reads it and hands it to the event system
                                            (userland/src/inject.c)
   tl: g FRAME began US ended US DRAWS      the window server draws a frame (userland/src/eagl.c)

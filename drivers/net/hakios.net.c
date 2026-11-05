@@ -743,7 +743,7 @@ hakios_net_init(void)
 }
 
 /*
- * ---- the USB console's "wifi ip", "wifi ping", "wifi dns", "wifi tcp" and "wifi stat" (drivers/core/hakios.dwc3.c) ----
+ * ---- the USB console's "wifi ip", "wifi ping", "wifi dns", "wifi tcp" and "wifi stat" (drivers/usb/hakios.dwc3.c) ----
  * What en0 was given (configd's DHCP, once the radio has joined and said its link is up), and whether the network
  * answers: four ICMP echo requests from an ICMP datagram socket of the kernel's own (the kind ping uses without root),
  * a second for each answer, of any size up to 8000 bytes (more than a frame: fragments both ways); with no address, the

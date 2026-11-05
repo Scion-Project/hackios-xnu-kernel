@@ -11,7 +11,7 @@
 #                        through tools/mesa/hakios-drm, which stands in for libdrm (tools/mesa/freedreno-darwin.patch
 #                        makes Mesa build it where there is no DRM). panfrost: the Mali's (the Galaxy S9's
 #                        G72, Bifrost v6, OpenGL ES 3.1), through the same stand-in to the service
-#                        HakiosMali (drivers/gpu/hakios.mali.cpp; tools/mesa/panfrost-darwin.patch). The
+#                        HakiosMali (drivers/gpu/mali/hakios.mali.cpp; tools/mesa/panfrost-darwin.patch). The
 #                        library takes the GPU when the kernel has one -- whichever of the two services is
 #                        there -- and the environment does not say OSMESA_SOFTWARE=1.
 #

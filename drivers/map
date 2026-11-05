@@ -8,42 +8,42 @@
 #
 # Subsystems: input storage gpu camera haptic audio power wifi bluetooth modem net core
 
-input    bsd/dev/hakios.goodix.c
-input    bsd/dev/hakios.focaltech_fw.h
+input/touch bsd/dev/hakios.goodix.c
+input/touch bsd/dev/hakios.focaltech_fw.h
 input    bsd/dev/hakios.input.c
 input    bsd/dev/hakios.buttons.c
 input    bsd/dev/hakios.exynos_keys.c
 input    bsd/dev/hakios.s6sy761.c
-input    bsd/dev/hakios.ssp.c
-input    bsd/dev/hakios.bcm_shub.h
-input    bsd/dev/hakios.virtio_input.c
+input/ssp bsd/dev/hakios.ssp.c
+input/ssp bsd/dev/hakios.bcm_shub.h
+virtio   bsd/dev/hakios.virtio_input.c
 
-storage  bsd/dev/hakios.ufs.c
-storage  bsd/dev/hakios.ufshc.c
-storage  bsd/dev/hakios.ufshc.h
+storage/ufs bsd/dev/hakios.ufs.c
+storage/ufs bsd/dev/hakios.ufshc.c
+storage/ufs bsd/dev/hakios.ufshc.h
 storage  bsd/dev/hakios.ext4.c
 storage  bsd/dev/hakios.sparse.c
 storage  bsd/dev/hakios.image.c
 storage  bsd/dev/hakios.apfs_check.c
-storage  bsd/dev/hakios.virtio_blk.c
+virtio   bsd/dev/hakios.virtio_blk.c
 
-gpu      bsd/dev/hakios.adreno.c
-gpu      bsd/dev/hakios.exynos_dpu.c
-gpu      bsd/dev/hakios.exynos_mfc.c
-gpu      bsd/dev/hakios.exynos_mfc_test.h
-gpu      bsd/dev/hakios.s6e3ha8.c
-gpu      bsd/dev/hakios.s6e3ha8_gamma.h
-gpu      iokit/Kernel/hakios.backlight.cpp
+gpu/adreno bsd/dev/hakios.adreno.c
+display/dpu bsd/dev/hakios.exynos_dpu.c
+media/mfc bsd/dev/hakios.exynos_mfc.c
+media/mfc bsd/dev/hakios.exynos_mfc_test.h
+display/panel bsd/dev/hakios.s6e3ha8.c
+display/panel bsd/dev/hakios.s6e3ha8_gamma.h
+display/panel iokit/Kernel/hakios.backlight.cpp
 gpu      iokit/Kernel/hakios.gpu.cpp
-gpu      bsd/dev/hakios.mali.c
-gpu      bsd/dev/hakios.mali_va.h
-gpu      iokit/Kernel/hakios.mali.cpp
+gpu/mali bsd/dev/hakios.mali.c
+gpu/mali bsd/dev/hakios.mali_va.h
+gpu/mali iokit/Kernel/hakios.mali.cpp
 
 camera   bsd/dev/hakios.camera.c
 camera   bsd/dev/hakios.torch.c
-camera   bsd/dev/hakios.s2mpb02_torch.c
-camera   bsd/dev/hakios.exynos_camera.c
-camera   bsd/dev/hakios.exynos_iris.c
+camera/exynos bsd/dev/hakios.s2mpb02_torch.c
+camera/exynos bsd/dev/hakios.exynos_camera.c
+camera/exynos bsd/dev/hakios.exynos_iris.c
 
 haptic   bsd/dev/hakios.haptic.c
 
@@ -52,28 +52,28 @@ audio    bsd/dev/hakios.audio.c
 audio    bsd/dev/hakios.sound.c
 audio    bsd/dev/hakios.speaker.c
 audio    bsd/dev/hakios.mic.c
-audio    bsd/dev/hakios.virtio_sound.c
+virtio   bsd/dev/hakios.virtio_sound.c
 audio    bsd/dev/hakios.guard.c
-audio    bsd/dev/hakios.exynos_abox.c
-audio    bsd/dev/hakios.max98512.c
-audio    bsd/dev/hakios.cs47l93.c
+audio/abox bsd/dev/hakios.exynos_abox.c
+audio/codec bsd/dev/hakios.max98512.c
+audio/codec bsd/dev/hakios.cs47l93.c
 
 power    bsd/dev/hakios.battery.c
 power    iokit/Kernel/hakios.battery.cpp
-power    bsd/dev/hakios.max77705.c
+power/max77705 bsd/dev/hakios.max77705.c
 power    bsd/dev/hakios.exynos_cpufreq.c
-power    bsd/dev/hakios.exynos_tmu.c
-power    bsd/dev/hakios.exynos_tmu.h
-power    bsd/dev/hakios.exynos_poweroff.c
+power/exynos bsd/dev/hakios.exynos_tmu.c
+power/exynos bsd/dev/hakios.exynos_tmu.h
+power/exynos bsd/dev/hakios.exynos_poweroff.c
 power    bsd/dev/hakios.cpufreq.c
 
 wifi     bsd/dev/hakios.wifi.c
 wifi     bsd/dev/hakios.wlfw.c
-wifi     bsd/dev/hakios.lx.c
+wifi/lx  bsd/dev/hakios.lx.c
 wifi     bsd/dev/hakios.sta.c
 wifi     bsd/dev/hakios.apple80211.c
-wifi     bsd/dev/hakios.exynos_pcie.c
-wifi     bsd/dev/hakios.brcmfmac.c
+wifi/brcmfmac bsd/dev/hakios.exynos_pcie.c
+wifi/brcmfmac bsd/dev/hakios.brcmfmac.c
 wifi     iokit/Kernel/hakios.wlan.cpp
 
 modem    bsd/dev/hakios.mpss.c
@@ -83,20 +83,20 @@ modem    bsd/dev/hakios.nas.c
 modem    bsd/dev/hakios.ipa.c
 
 net      bsd/dev/hakios.net.c
-net      bsd/dev/hakios.virtio_net.c
+virtio   bsd/dev/hakios.virtio_net.c
 
 core     bsd/dev/hakios.version.c
 core     bsd/dev/hakios.platform.c
 core     bsd/dev/hakios.stubs.c
-core     bsd/dev/hakios.exynos_hsi2c.c
-core     bsd/dev/hakios.exynos_spi.c
-core     bsd/dev/hakios.exynos_acpm.c
-core     bsd/dev/hakios.exynos_m3.c
-core     bsd/dev/hakios.exynos_tee.c
-core     bsd/dev/hakios.dwc3.c
-core     bsd/dev/hakios.usb_acm.h
-core     bsd/dev/hakios.usb_glue.h
-core     bsd/dev/hakios.exynos_usb.c
+soc/exynos bsd/dev/hakios.exynos_hsi2c.c
+soc/exynos bsd/dev/hakios.exynos_spi.c
+soc/exynos bsd/dev/hakios.exynos_acpm.c
+soc/exynos bsd/dev/hakios.exynos_m3.c
+soc/exynos bsd/dev/hakios.exynos_tee.c
+usb      bsd/dev/hakios.dwc3.c
+usb      bsd/dev/hakios.usb_acm.h
+usb      bsd/dev/hakios.usb_glue.h
+usb      bsd/dev/hakios.exynos_usb.c
 core     iokit/Kernel/hakios.stubs.cpp
 core     iokit/Kernel/hakios.physmap.cpp
 core    bsd/dev/hakios.socinfo.c
@@ -108,18 +108,18 @@ power   bsd/dev/hakios.pmic.c
 power   bsd/dev/hakios.s2mps18_rtc.c
 power   bsd/dev/hakios.battguard.c
 bluetooth bsd/dev/hakios.bt.c
-bluetooth bsd/dev/hakios.bcm4361_bt.c
-bluetooth iokit/Kernel/hakios.bt_node.cpp
-bluetooth bsd/dev/hakios.bcm_hci.h
+bluetooth/bcm4361 bsd/dev/hakios.bcm4361_bt.c
+bluetooth/bcm4361 iokit/Kernel/hakios.bt_node.cpp
+bluetooth/bcm4361 bsd/dev/hakios.bcm_hci.h
 
 # The AVF guest's (Scion: avf/README.md): the PCI bus and the virtio transport every virtio driver goes through, the
 # console, the virtio GPU and its 3D path (SCGPU), and the Scion app's sound, flashlight and battery
-core    bsd/dev/hakios.pci.c
-core    bsd/dev/hakios.virtio.c
-core    bsd/dev/hakios.virtio_console.c
-gpu     bsd/dev/hakios.vgpu.c
-gpu     bsd/dev/hakios.vgpu3d.c
-gpu     bsd/dev/hakios.vgpu3d_xnu.c
+virtio   bsd/dev/hakios.pci.c
+virtio   bsd/dev/hakios.virtio.c
+virtio   bsd/dev/hakios.virtio_console.c
+gpu/vgpu bsd/dev/hakios.vgpu.c
+gpu/vgpu bsd/dev/hakios.vgpu3d.c
+gpu/vgpu bsd/dev/hakios.vgpu3d_xnu.c
 audio   bsd/dev/hakios.scsnd.c
 camera  bsd/dev/hakios.sccam_torch.c
 power   bsd/dev/hakios.scfb_battery.c

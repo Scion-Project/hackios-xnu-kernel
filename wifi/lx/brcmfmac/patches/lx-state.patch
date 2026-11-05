@@ -1,6 +1,6 @@
 What the firmware and the driver share, said (HakiOS): lx_brcmf_say_state() prints the shared area, the common
 rings' addresses and indices, the mailbox and the firmware's console on the setup's failure and on the USB
-console's "wifi" (lx_os_wifi_state(), drivers/wifi/hakios.lx.c); brcmfmac_tcm_idx=1 keeps the rings' indices in
+console's "wifi" (lx_os_wifi_state(), drivers/wifi/lx/hakios.lx.c); brcmfmac_tcm_idx=1 keeps the rings' indices in
 the chip's RAM although the firmware offers to write them into ours by DMA.
 On the failure it also says the first items of the control rings as they are in memory, and the whole of the
 firmware's console ring from its oldest byte, whatever the driver had read of it before.

@@ -50,7 +50,7 @@ void hakios_exynos_cpufreq_touch(void);
 void hakios_exynos_cpufreq_frame(void);
 /*
  * Ask the APM to stop before the phone is powered off (Samsung's acpm_enter_wfi(), from exynos_acpm_reboot()): the firmware
- * goes to WFI and no longer answers. Only on the way to PS_HOLD (drivers/power/hakios.exynos_poweroff.c). 0, or an errno.
+ * goes to WFI and no longer answers. Only on the way to PS_HOLD (drivers/power/exynos/hakios.exynos_poweroff.c). 0, or an errno.
  */
 int hakios_acpm_stop(void);
 

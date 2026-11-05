@@ -6,7 +6,7 @@ usage: mkdatavol.py OUT.simg [MKFS]      (MKFS: mkfs.hfsplus, default the one in
 
     fastboot flash darwin OUT.simg
 
-The kernel gives that stretch of darwin out as /dev/ufs_darwin_data (drivers/storage/hakios.ufs.c, ufs_write=1) and
+The kernel gives that stretch of darwin out as /dev/ufs_darwin_data (drivers/storage/ufs/hakios.ufs.c, ufs_write=1) and
 init mounts it on /private/var (userland/src/init.c, var_hfs=ufs_darwin_data). Flashing this again empties it.
 
 The image says DONT_CARE for darwin's blocks before the volume -- the Darwin volume and both cryptexes, which the
@@ -18,7 +18,7 @@ included: which those are is read from the volume's own allocation bitmap.
 Case-sensitive (HFSX), as Darwin's own data volume is, and journaled.
 
 The Galaxy S9 has no darwin: Android's USERDATA, given up, is the data volume, all of it, from its first block
-(drivers/storage/hakios.ufs.c and xnuloader/loader.c: data_part; init: var_hfs=ufs_USERDATA_data). TWRP has no
+(drivers/storage/ufs/hakios.ufs.c and xnuloader/loader.c: data_part; init: var_hfs=ufs_USERDATA_data). TWRP has no
 fastboot sparse images to flash, so for it:
 
 usage: mkdatavol.py --userdata BLOCKS OUTDIR [MKFS]   (BLOCKS: USERDATA's size in blocks of 4096, as TWRP's
@@ -41,7 +41,7 @@ import tempfile
 
 BS = 4096
 DARWIN_BLOCKS = 5242875            # darwin, in blocks of 4096 (README, "The port's partition")
-DATA_FIRST = 2042368               # where the volume begins: drivers/storage/hakios.ufs.c, UFS_WRITE_FIRST
+DATA_FIRST = 2042368               # where the volume begins: drivers/storage/ufs/hakios.ufs.c, UFS_WRITE_FIRST
 MAGIC, RAW, FILL, DONT_CARE = 0xED26FF3A, 0xCAC1, 0xCAC2, 0xCAC3
 
 

@@ -14,7 +14,7 @@ Reviewed in full:
 |---|---|
 | `xnu/files/bsd/sys/hakios.net.h` | the link ⇄ interface contract |
 | `drivers/net/hakios.net.c` | `enN`: the Ethernet-looking interface on the kernel KPI |
-| `drivers/net/hakios.virtio_net.c` | the QEMU virtio-net link behind `en0` |
+| `drivers/virtio/hakios.virtio_net.c` | the QEMU virtio-net link behind `en0` |
 | `drivers/modem/hakios.cell.c` | `en1`: the modem's IP packets as Ethernet (ARP/DHCP in kernel) |
 | `drivers/modem/hakios.ipa.c` | the IPA/GSI data path (rings, endpoints, tables) |
 | `drivers/wifi/hakios.apple80211.c` | the Apple80211 ioctl/event surface for `wifid` |

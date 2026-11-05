@@ -3647,7 +3647,7 @@ smmu_look(void)
  * Everything written is put back when the DSP has been stopped, and on the way back to the
  * loader after a panic (radio_space_off()).
  *
- * What the phone said (13 October): the hypervisor grants it. The boot chain uses match
+ * What the phone said: the hypervisor grants it. The boot chain uses match
  * registers 0 to 7 and contexts 0 to 6; register 8 and context 7 (at 0x15087000) were taken,
  * everything read back as written (but two bits that the SMMU does not keep), and the radio
  * then read and wrote the memory it was shown without a fault.

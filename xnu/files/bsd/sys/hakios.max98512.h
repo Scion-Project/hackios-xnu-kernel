@@ -1,5 +1,5 @@
 /*
- * The Galaxy S9's speaker amplifiers (drivers/audio/hakios.max98512.c): two Maxim MAX98512s on the HSI2C of USI07 of
+ * The Galaxy S9's speaker amplifiers (drivers/audio/codec/hakios.max98512.c): two Maxim MAX98512s on the HSI2C of USI07 of
  * PERIC1, fed by UAIF1 of ABOX over I2S. The driver starts itself (boot-arg max98512=N); what it offers the rest of the
  * kernel is the hook below, through which ABOX's driver turns the amplifiers on once UAIF1's clocks run and off before
  * they stop.

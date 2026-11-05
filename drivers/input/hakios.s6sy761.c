@@ -8,7 +8,7 @@
  * supplies) works without touching them. The PMIC is reached through the always-on processor (ACPM, over SPEEDY): not
  * from here. If the chip does not answer, that is the first thing to suspect (step 4 says so).
  *
- * The bus is an Exynos HSI2C in its "auto" mode, polled (drivers/core/hakios.exynos_hsi2c.c). What the bring-up does
+ * The bus is an Exynos HSI2C in its "auto" mode, polled (drivers/soc/exynos/hakios.exynos_hsi2c.c). What the bring-up does
  * before the first transfer (the clock gates of USI03, the USI block set to I2C, the two pins to their I2C function)
  * is what Linux's drivers and the WoA port do; the UEFI does none of it (Silicium has no I2C for this SoC).
  *   HSI2C (USI03)      0x104B0000

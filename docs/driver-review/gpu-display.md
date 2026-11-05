@@ -6,7 +6,7 @@ Read-only review of the user-reachable surface of the GPU and display code. Noth
 
 | File | Lines |
 |---|---|
-| `drivers/gpu/hakios.adreno.c` | 3843 |
+| `drivers/gpu/adreno/hakios.adreno.c` | 3843 |
 | `drivers/gpu/hakios.gpu.cpp` | 1192 |
 | `xnu/files/iokit/Kernel/MiniIOMobileFramebuffer.cpp` | 1531 |
 | `xnu/files/iokit/Kernel/MiniIOSurface.cpp` | 1814 |
@@ -199,7 +199,7 @@ Before each submission buffers are cleaned and invalidated (`dc civac`, adreno.c
 
 ## Fix status
 
-Edited: drivers/gpu/hakios.gpu.cpp, drivers/gpu/hakios.adreno.c, xnu/files/iokit/Kernel/MiniIOSurface.cpp, MiniIOMobileFramebuffer.cpp (MiniIOSurface.h unchanged). Nothing was compiled or run; every edit was re-read for syntax and types.
+Edited: drivers/gpu/hakios.gpu.cpp, drivers/gpu/adreno/hakios.adreno.c, xnu/files/iokit/Kernel/MiniIOSurface.cpp, MiniIOMobileFramebuffer.cpp (MiniIOSurface.h unchanged). Nothing was compiled or run; every edit was re-read for syntax and types.
 
 - G1 SKIPPED. Command-stream validation, CP_PROTECT and kernel-only mappings are a design and hardware matter (register semantics, privilege bit meaning); not invented here.
 - G2 FIXED. MiniIOMobileFramebuffer.cpp: new `surfaceHolds()` (64-bit arithmetic) is checked in `drawLayer()` for the rows and columns it reads (offset + (rows-1)*stride + columns*4 must be within allocSize) and in `record()` for the whole display; a surface that does not hold them is not read. This covers a small stride, element height above 1 and a wrapped client size, whatever they were created with. MiniIOSurface.cpp `surfaceCreate()`: wrapped surfaces' owner-given IOSurfaceAllocSize must be non-zero and at most 512 MB (same limit as other surfaces); plane width/height are capped at 16384 and a computed plane size is done in 64 bits and refused above 512 MB. NOT changed: creation still accepts a stride below width*bytes-per-element and the element-height row count, because a client with an unusual element definition would be refused; the read-side check makes both memory-safe.

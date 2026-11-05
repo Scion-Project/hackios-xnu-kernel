@@ -1104,7 +1104,7 @@ micros(uint64_t absolute)
 /* ---- backboardd: the sensors ---------------------------------------------------------------------------- */
 
 /*
- * The phone's sensors (the Galaxy S9's sensor hub, drivers/input/hakios.ssp.c with shub=6) come as samples on
+ * The phone's sensors (the Galaxy S9's sensor hub, drivers/input/ssp/hakios.ssp.c with shub=6) come as samples on
  * /dev/hakios-sensors (sys/hakios.sensors.h). iOS's own consumers want them as HID events from built-in services of
  * Apple's vendor page (what iOS 16.5 reads, from its binaries: the kernel's devices/starlte/SENSORS.md):
  *

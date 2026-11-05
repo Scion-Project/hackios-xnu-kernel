@@ -16,7 +16,7 @@
 
 #if TARGET_OS_IPHONE
 
-/* ---- iOS: /dev/vgpu3d (drivers/gpu/hakios.vgpu3d_xnu.c), one virtio-gpu context and pipe an open */
+/* ---- iOS: /dev/vgpu3d (drivers/gpu/vgpu/hakios.vgpu3d_xnu.c), one virtio-gpu context and pipe an open */
 
 static int
 dev_write(void *arg, const void *buf, size_t n)

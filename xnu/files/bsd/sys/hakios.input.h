@@ -119,7 +119,7 @@ bool hakios_wlfw_exchange(uint32_t step);                              /* step 1
 bool hakios_wlfw_registers(uint64_t *address, uint32_t *size, bool *mission); /* ... and what it learnt for step 16 */
 void hakios_wlfw_stop(uint32_t step);                                  /* ... and its end, before the DSP is stopped */
 void hakios_wifi_quiesce(void);        /* on the way back to the loader: the Wi-Fi DSP, if it still runs, shut down */
-/* ath11k's object and the kernel's side of it (drivers/wifi/hakios.lx.c), and what that asks of the phone's radio */
+/* ath11k's object and the kernel's side of it (drivers/wifi/lx/hakios.lx.c), and what that asks of the phone's radio */
 int hakios_lx_start(void);             /* the driver brought up on the radio as far as it is built: 0 or an errno */
 void hakios_lx_stop(void);             /* ... and down again, if it stayed up (a network joined) */
 int hakios_lx_prepare(void);           /* before all that: the memory the radio will be shown, taken; 0 or an errno */
@@ -134,7 +134,7 @@ bool hakios_wifi_network(uint8_t *name, unsigned *name_length, uint8_t *passphra
 
 /*
  * The GPU kept on (boot-arg adreno_keep=1), for drivers/gpu/hakios.gpu.cpp: see "the GPU kept on"
- * in drivers/gpu/hakios.adreno.c. One caller at a time.
+ * in drivers/gpu/adreno/hakios.adreno.c. One caller at a time.
  */
 bool hakios_gpu_ready(void);
 bool hakios_gpu_parameter(uint32_t which, uint64_t *value);
@@ -156,8 +156,8 @@ bool hakios_gpu_recover(void);
 void hakios_gpu_stop(void);
 
 /*
- * The Mali brought up to its last step (mali=9), for drivers/gpu/hakios.mali.cpp: see "what the service that programs
- * talk to uses" in drivers/gpu/hakios.mali.c. hakios_keep(): a line of the kernel's own, said again every minute.
+ * The Mali brought up to its last step (mali=9), for drivers/gpu/mali/hakios.mali.cpp: see "what the service that programs
+ * talk to uses" in drivers/gpu/mali/hakios.mali.c. hakios_keep(): a line of the kernel's own, said again every minute.
  */
 bool hakios_mali_ready(void);
 bool hakios_mali_parameter(uint32_t which, uint64_t *value);

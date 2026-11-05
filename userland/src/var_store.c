@@ -9,7 +9,7 @@
  * here -- what is needed is that the bytes come back. So the tree is packed into a plain archive
  * and the archive is written into the one place on the phone's flash this port owns and nothing of
  * it uses: the partition darwin, past the Darwin volume and both cryptexes. The kernel takes those
- * writes on /dev/rufs_darwin alone and refuses anything else (drivers/storage/hakios.ufs.c, ufs_write=1).
+ * writes on /dev/rufs_darwin alone and refuses anything else (drivers/storage/ufs/hakios.ufs.c, ufs_write=1).
  *
  *   var_store save          pack /private/var into the store
  *   var_store load          unpack the newest good store into /private/var (init, at boot)
@@ -30,7 +30,7 @@
  *
  * Nobody has to remember to save. `watch` registers with the kernel (kern.hakios.var_save), and
  * on the orderly way back to the loader -- the run's time up, or "xl stop" -- the kernel asks it
- * for the volume and waits, bounded, before it goes (drivers/storage/hakios.ufs.c,
+ * for the volume and waits, bounded, before it goes (drivers/storage/ufs/hakios.ufs.c,
  * hakios_var_save_on_return). A save every SECS seconds is there as well but is not the default:
  * one costs seconds of the run and a hundred-odd megabytes of flash, and while it runs the
  * storage is read through the loader rather than through this kernel's own driver.
@@ -201,7 +201,7 @@ claim(void)
 {
 	if (sysctl_set_int("kern.hakios.var_busy", 1) != 0) {
 		/*
-		 * The claim is the UFS driver's (drivers/storage/hakios.ufs.c), and a kernel built without it -- QEMU's
+		 * The claim is the UFS driver's (drivers/storage/ufs/hakios.ufs.c), and a kernel built without it -- QEMU's
 		 * qemu_defconfig -- has none to take. The virtio disk does not ask for one: go on there.
 		 */
 		if (errno == 2 /* ENOENT */ && strcmp(device, VIRTIO_DEVICE) == 0) {
@@ -1402,7 +1402,7 @@ save_once(void)
 	/*
 	 * The device is opened for the save and closed again, not held: while a write is in flight
 	 * this kernel's own transfer list is out of the controller, and it goes back in when the
-	 * device is closed (drivers/storage/hakios.ufs.c, ufs_cclose). A watcher that kept the device open
+	 * device is closed (drivers/storage/ufs/hakios.ufs.c, ufs_cclose). A watcher that kept the device open
 	 * would leave Darwin reading the flash through the loader for the rest of the run.
 	 */
 	fd = open(device, O_RDWR, 0);

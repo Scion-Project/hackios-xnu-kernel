@@ -17,7 +17,7 @@ import importlib.util
 import os
 import sys
 
-SUBSYSTEMS = {"input", "storage", "gpu", "camera", "haptic", "audio", "power", "wifi", "bluetooth", "modem", "net", "core"}
+SUBSYSTEMS = {"input", "storage", "gpu", "camera", "haptic", "audio", "power", "wifi", "bluetooth", "modem", "net", "core", "display", "media", "usb", "virtio", "soc"}
 TREE_DIRS = ("bsd/dev/", "iokit/Kernel/")
 
 
@@ -37,7 +37,7 @@ def read_map(root):
                 problems.append("drivers/map:%d: want '<subsystem> <path>', got %r" % (number, text))
                 continue
             sub, tree = parts
-            if sub not in SUBSYSTEMS:
+            if sub.split("/")[0] not in SUBSYSTEMS:
                 problems.append("drivers/map:%d: unknown subsystem %r (known: %s)" % (number, sub, " ".join(sorted(SUBSYSTEMS))))
             if not tree.startswith(TREE_DIRS) or not os.path.basename(tree).startswith("hakios."):
                 problems.append("drivers/map:%d: %r is not a hakios.* file of bsd/dev/ or iokit/Kernel/" % (number, tree))
@@ -58,17 +58,17 @@ def check(root):
         seen_name[name] = tree
         if not os.path.isfile(os.path.join(root, "drivers", sub, name)):
             problems.append("drivers/%s/%s is listed but is not there" % (sub, name))
-    listed = {(sub, os.path.basename(tree)) for sub, tree in entries}
+    listed = {os.path.join("drivers", sub, os.path.basename(tree)) for sub, tree in entries}
     drivers = os.path.join(root, "drivers")
-    for sub in sorted(os.listdir(drivers)) if os.path.isdir(drivers) else []:
-        sub_dir = os.path.join(drivers, sub)
-        if not os.path.isdir(sub_dir):
+    for top, _dirs, names in sorted(os.walk(drivers)):
+        shown = os.path.relpath(top, root).replace(os.sep, "/")
+        if shown == "drivers":
             continue
-        if sub not in SUBSYSTEMS:
-            problems.append("drivers/%s is not a known subsystem directory" % sub)
-        for name in sorted(os.listdir(sub_dir)):
-            if name not in ("README.md", "conf") and (sub, name) not in listed:
-                problems.append("drivers/%s/%s is not in drivers/map, so it would never reach the kernel" % (sub, name))
+        if shown.split("/")[1] not in SUBSYSTEMS:
+            problems.append("%s is not in a known subsystem directory" % shown)
+        for name in sorted(names):
+            if name not in ("README.md", "conf") and os.path.join(shown, name) not in listed:
+                problems.append("%s/%s is not in drivers/map, so it would never reach the kernel" % (shown, name))
     for tree in seen_tree:
         stale = os.path.join(root, "xnu", "files", tree)
         if os.path.exists(stale):
@@ -99,8 +99,8 @@ def check_conf(root, entries):
         if not tree.endswith((".c", ".cpp")):
             continue
         if tree not in built:
-            problems.append("%s is in drivers/map but no drivers/*/conf builds it (add it to drivers/%s/conf)" % (tree, sub))
-        elif built[tree][0] != sub:
+            problems.append("%s is in drivers/map but no drivers/*/conf builds it (add it to drivers/%s/conf)" % (tree, sub.split("/")[0]))
+        elif built[tree][0] != sub.split("/")[0]:
             problems.append("%s is drivers/%s's, but drivers/%s/conf builds it (%s)" % (tree, sub, built[tree][0], built[tree][1]))
     mapped = {tree for _sub, tree in entries}
     for path, (sub, what) in sorted(built.items()):

@@ -1,7 +1,7 @@
 /*
  * Darwin-on-hakios: a file of one of the phone's own ext4 partitions, read only, for the drivers that load the user's
- * own firmware at run time instead of from an image: the Galaxy S9's Wi-Fi (drivers/wifi/hakios.brcmfmac.c: the
- * BCM4361's firmware, NVRAM and CLM) and Bluetooth (drivers/bluetooth/hakios.bcm4361_bt.c: its patch), both from the
+ * own firmware at run time instead of from an image: the Galaxy S9's Wi-Fi (drivers/wifi/brcmfmac/hakios.brcmfmac.c: the
+ * BCM4361's firmware, NVRAM and CLM) and Bluetooth (drivers/bluetooth/bcm4361/hakios.bcm4361_bt.c: its patch), both from the
  * VENDOR partition Android mounts at /vendor. So nothing of the vendor's is in an image, a repository or a download: the
  * phone gives its own files to the kernel that runs on it.
  *

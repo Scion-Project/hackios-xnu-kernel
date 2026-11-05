@@ -276,7 +276,7 @@ static TUNABLE(uint32_t, gTouchLat, "touch_lat", 0);
 /*
  * Boot-args fb_flip=1 and fb_dpp=1: every frame drawn into a buffer of its own and shown from the display controller's
  * next refresh on, never drawn into the buffer the controller is reading (which tears: half a frame and half the next
- * reach the panel). The Galaxy S9 only, through its DPU (drivers/gpu/hakios.exynos_dpu.c, which says how; elsewhere the
+ * reach the panel). The Galaxy S9 only, through its DPU (drivers/display/dpu/hakios.exynos_dpu.c, which says how; elsewhere the
  * stand-ins of drivers/core/hakios.stubs.c say no and nothing changes).
  *   fb_flip=1  three buffers of the panel's size (the boot framebuffer and two more); the scaling on the processor, as
  *              without it.
@@ -2066,7 +2066,7 @@ IOMobileFramebuffer::scanDrop(const char * why)
 }
 
 /*
- * The buffer the display controller scans out now, for the USB console's shot (drivers/core/hakios.dwc3.c): with fb_dpp
+ * The buffer the display controller scans out now, for the USB console's shot (drivers/usb/hakios.dwc3.c): with fb_dpp
  * one of the three display-sized buffers VGF0 scales (the flip asked for, once the DECON has taken it, else the one
  * before), with fb_flip one of the panel-sized ones. 2 (fb_dpp) or 1 (fb_flip) and where it is; 0 when frames go into
  * the boot framebuffer, which is then what is shown. Read without the lock: the presenter may move on meanwhile, and
@@ -2194,7 +2194,7 @@ IOMobileFramebuffer::fpsLine(void)
 		IOLog("%s", line);
 		/*
 		 * the second line: refreshes missed while frames came (and the longest gap between two), fb_zc's frames, and
-		 * the GPU's second (drivers/gpu/hakios.mali.c): its share of the time running jobs, its time a frame shown, its
+		 * the GPU's second (drivers/gpu/mali/hakios.mali.c): its share of the time running jobs, its time a frame shown, its
 		 * jobs and their wait in the queue, its clock and the G3D's temperature
 		 */
 		gpu = hakios_mali_second(&busy, &jobs, &queued, &mhz, &switches, &g3d);

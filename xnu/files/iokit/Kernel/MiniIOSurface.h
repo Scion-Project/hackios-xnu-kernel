@@ -128,7 +128,7 @@ public:
 	bool                            scanMFC;        /* (the same, of the video decoder's memory: mfc_zc; a frame of video, never the display's) */
 	uint32_t                        drawn;          /* the GPU's last submission that names the pixels (0: none; hakios.gpu.cpp) */
 	/*
-	 * ... and the Mali's (drivers/gpu/hakios.mali.cpp): the number of its last job that names the pixels (0: none), or
+	 * ... and the Mali's (drivers/gpu/mali/hakios.mali.cpp): the number of its last job that names the pixels (0: none), or
 	 * ~0 while the program drawing into them has its frame still to send
 	 */
 	uint64_t                        maliSeq;
@@ -179,7 +179,7 @@ void            MiniIOSurfaceCost(uint32_t * made, uint64_t * making, uint32_t *
 void            MiniIOSurfaceClearKept(void);
 /* Wait, for so many milliseconds at most, until the GPU is done with a surface's pixels (hakios.gpu.cpp). */
 bool            MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds);
-/* The same for the Mali's jobs (`maliSeq`; drivers/gpu/hakios.mali.cpp): what MiniIOSurfaceDrawn() asks, whoever's it is. */
+/* The same for the Mali's jobs (`maliSeq`; drivers/gpu/mali/hakios.mali.cpp): what MiniIOSurfaceDrawn() asks, whoever's it is. */
 bool            HakiosMaliDrawn(MiniIOSurface * surface, uint64_t milliseconds);
 MiniIOSurface * MiniIOSurfaceCreateSimple(uint32_t width, uint32_t height, uint32_t pixelFormat);
 void            MiniIOSurfaceDrop(MiniIOSurface * surface);

@@ -1,6 +1,6 @@
 /*
  * An Exynos SPI master -- the SPI of a USI block of the Exynos 9810 (Samsung's "samsung,exynos-spi", the s3c64xx
- * family) -- polled, without DMA or interrupts, the chip select held by hand. drivers/core/hakios.exynos_spi.c; first
+ * family) -- polled, without DMA or interrupts, the chip select held by hand. drivers/soc/exynos/hakios.exynos_spi.c; first
  * used for the Galaxy S9's audio codec (hakios.cs47l93.c, USI01 of PERIC0). A driver describes its bus in a struct
  * hakios_exynos_spi and calls map, power, reset, then select / transfer / deselect for each message.
  */

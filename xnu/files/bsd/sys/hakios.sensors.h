@@ -1,6 +1,6 @@
 /*
  * /dev/hakios-sensors: the phone's motion and environment sensors, sample by sample, on their way from the kernel driver
- * that reads them (the Galaxy S9's sensor hub: drivers/input/hakios.ssp.c, shub=6) to the code of ours in backboardd that
+ * that reads them (the Galaxy S9's sensor hub: drivers/input/ssp/hakios.ssp.c, shub=6) to the code of ours in backboardd that
  * turns them into the HID events iOS's own consumers read (userland/src/inject.c). The same idea as /dev/hakios-touch
  * (sys/hakios.input.h): a queue, read() blocking until there is at least one sample and returning as many whole ones as
  * fit. The queue only fills while the device is open; a reader that falls 256 samples behind loses the oldest.

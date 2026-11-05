@@ -1,5 +1,5 @@
 #!/bin/sh
-# The USB gadget's CDC-ACM descriptors and control requests (drivers/core/hakios.usb_acm.h, what drivers/core/hakios.dwc3.c
+# The USB gadget's CDC-ACM descriptors and control requests (drivers/usb/hakios.usb_acm.h, what drivers/usb/hakios.dwc3.c
 # answers a host with) on this machine: tools/usb_acm_test.c built against it under the address and undefined-behaviour
 # sanitizers, and run. The header is plain C.
 # usage: tools/usb-acm-test.sh

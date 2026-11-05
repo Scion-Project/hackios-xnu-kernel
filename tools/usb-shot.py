@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A picture of the phone's screen, or of its front camera, over the USB console (drivers/core/hakios.dwc3.c, usb_gadget=5).
+"""A picture of the phone's screen, or of its front camera, over the USB console (drivers/usb/hakios.dwc3.c, usb_gadget=5).
 
 usage: tools/usb-shot.py [-p PORT] [-n N] [-o FILE.png] [--log FILE] [--timeout S] [--raw FILE] [--cam [--tp] | --iris]
 
@@ -17,7 +17,7 @@ and writes it as a PNG (zlib only, no PIL). N (1-16, default 4) keeps every Nth 
   --raw FILE   also write the raw pixels as they came
   --timeout S  give up after S seconds without the picture (default 20; 40 with --cam)
   --cam        the Galaxy S9's front camera instead of the screen ("camshot N": boot-arg cam_s9=6 or 7,
-               drivers/camera/hakios.exynos_camera.c). The kernel powers the camera up, exposes it to 18 % grey,
+               drivers/camera/exynos/hakios.exynos_camera.c). The kernel powers the camera up, exposes it to 18 % grey,
                takes one RAW10 frame, powers it down (cam_s9=7: the newest frame of its stream) and demosaics it:
                the whole 1632x1224 at N=1 (the default with --cam, 6 MB), every Nth pixel for N > 1. A grey-world
                balance, a saturation, no colour matrix of the module's, the picture as the sensor sees it

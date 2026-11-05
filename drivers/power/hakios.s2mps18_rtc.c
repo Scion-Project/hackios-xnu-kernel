@@ -5,7 +5,7 @@
  * working on the phone, 2 November.
  *
  * The way. The S2MPS18 is on SPEEDY, which the APM owns: the AP reaches its registers only by asking the APM through
- * ACPM (drivers/core/hakios.exynos_acpm.c, channel 2, the same path the GPU's and the touch screen's supplies take, and
+ * ACPM (drivers/soc/exynos/hakios.exynos_acpm.c, channel 2, the same path the GPU's and the touch screen's supplies take, and
  * Samsung's kernel's own s2mps18 driver: every one of its reads and writes is an ACPM request). The RTC is the PMIC's
  * block 2 ("type" 2; Samsung's kernel calls it the i2c address 0x02 of the PMIC). Its registers, as Samsung's kernel
  * has them for the S9 (CONFIG_RTC_DRV_S2MP not set, so the layout with milliseconds):
