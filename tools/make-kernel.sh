@@ -42,6 +42,7 @@ fi
 
 # what was edited in drivers/ goes into the kernel tree first (only what is newer than the tree's copy), and then the
 # drivers the .config builds (CONFIG_HAKIOS_*; every driver when there is no .config): docs/drivers-config.md
+python3 tools/os-profile.py require || exit 1
 if [ -d xnu-src/xnu-8796.121.2 ]; then
 	xnu/sync-drivers.sh xnu-src/xnu-8796.121.2 || exit 1
 	python3 tools/hakios-config.py kernel --tree xnu-src/xnu-8796.121.2 || exit 1

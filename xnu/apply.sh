@@ -10,8 +10,8 @@ set -e
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DIR=${1:-${XNU_SRC:-$HERE/../xnu-src/xnu-8796.121.2}}
 URL=${XNU_URL:-https://github.com/apple-oss-distributions/xnu.git}
-TAG=xnu-8796.121.2
-BASE=c54f35ca767986246321eb901baf8f5ff7923f6a
+TAG=$(python3 "$HERE/../tools/os-profile.py" get xnu_tag)
+BASE=$(python3 "$HERE/../tools/os-profile.py" get xnu_commit)
 
 [ -e "$DIR" ] && { echo "apply.sh: $DIR already exists; not touching it" >&2; exit 1; }
 [ -s "$HERE/hakios.patch" ] && [ -d "$HERE/files" ] || { echo "apply.sh: no hakios.patch and files/ in $HERE" >&2; exit 1; }
