@@ -114,6 +114,7 @@ cam_s9	k
 cam_s9_addr	k
 cam_s9_ae	k
 cam_s9_ae_frames	k
+cam_s9_always	k
 cam_s9_bayer	k
 cam_s9_dgain	k
 cam_s9_exp	k

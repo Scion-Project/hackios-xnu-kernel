@@ -146,11 +146,13 @@
  *              a gamma of about 1/2.2) and handed to the USB link, which sends it as it sends a shot of the panel. A
  *              capture that fails says "usb: camshot failed: ..." with CSIS1's and the WDMA's status.
  *              tools/usb-shot.py --cam
- *   7  the stream: after step 1's look, the sensor streams for the rest of the run into the ring, with the
- *              auto-exposure running all along; /dev/hakios-camera gives the newest frame to user space (the POCO's
- *              protocol, bsd/sys/hakios.camera.h: libhakios.media's capture device and camera_test read it); camshot
- *              takes the newest frame without powering anything up or down; the log says the frame rate every ten
- *              seconds
+ *   7  the stream: after step 1's look (nothing is powered), the sensor streams into the ring while something wants
+ *              the frames, with the auto-exposure running all along; /dev/hakios-camera gives the newest frame to user
+ *              space (the POCO's protocol, bsd/sys/hakios.camera.h: libhakios.media's capture device and camera_test
+ *              read it). The first read after an open brings the camera up; it goes down again (the sensor, its
+ *              supplies, the link, the domain) at the last close, or after STREAM_IDLE_MS without a read. camshot
+ *              wakes it too, and takes its frame once the auto-exposure has had cam_s9_ae_frames frames. The log says
+ *              the frame rate every ten seconds of a stream
  * Whatever a run switched on is switched off again in the reverse order, also when a step fails, and at the run's end
  * (loader_return(), a panic's way out too): the WDMA and the pattern first, then the sensor, the link, the PHY, the
  * domain (if this run switched it on). A WDMA not seen to stop: no more DMA into the buffer for the run.
@@ -159,6 +161,7 @@
  *   cam_s9=N           the front camera's first N steps: 1 a look, 2 the sensor's ID, 3 the ISPPRE domain and CSIS1,
  *                      4 one frame of the test pattern into memory, 5 one frame of the sensor's, 6 that and then the
  *                      USB console's camshot, 7 the stream and /dev/hakios-camera (0 or none: nothing)
+ *   cam_s9_always=1    with 7: the stream from the boot to the run's end, wanted or not (the old behaviour, for debugging)
  *   cam_s9_addr=A      the sensor's 7-bit I2C address, if not 0x35 (the device tree's) and not found by the scan
  *   cam_s9_ipclk=MHZ   the two HSI2Cs' input clock in MHz (default 400, as the phone showed for the other buses on 1
  *                      November: a wrong guess on the high side only makes the bus slower)
@@ -197,7 +200,7 @@
  * wait is bounded by the clock.
  *
  * Not written yet (docs/devices/starlte-camera.md): the CSIS's frame-end interrupt (the stream polls every millisecond),
- * the camera powered only while /dev/hakios-camera is open, a colour matrix and lens shading of the module's own.
+ * a colour matrix and lens shading of the module's own.
  *
  * Sources: the phone's device tree (exynos9810-starlte_eur_open_26.dts of the BSP: hsi2c@108F0000 and fimc-is-3h1@35,
  * fimc-is_sensor_3h1@6A, s2mpb02_pmic@59 and its regulators (s2mpb02-buck2: VDD_EXT_1P3_PB02), the fimc_is_mclk1 pin states, hsi2c21-bus, usi@1081102C,
@@ -899,6 +902,20 @@ dma_quiet(void)
 		return true;
 	}
 	return wait_for(wdma, DMA_ACT_CTRL, DMA_ON, 0, 100000, false);
+}
+
+/* the WDMA's frame in flight dropped, as the BSP's DMA cancel does it (DMA_ABORT_REQ, then the request taken back) */
+static void
+dma_abort(void)
+{
+	if (!domain_up) {
+		return;
+	}
+	wr(wdma, VCMN + VCMN_INT_SRC, DMA_ABORT_DONE);
+	wr(wdma, VCMN + VCMN_CMN_CTRL, rd(wdma, VCMN + VCMN_CMN_CTRL) | 1u);
+	(void)wait_for(wdma, VCMN + VCMN_INT_SRC, DMA_ABORT_DONE, DMA_ABORT_DONE, 10000, false);
+	wr(wdma, VCMN + VCMN_CMN_CTRL, rd(wdma, VCMN + VCMN_CMN_CTRL) & ~1u);
+	wr(wdma, VCMN + VCMN_INT_SRC, DMA_ABORT_DONE);
 }
 
 static void
@@ -1813,6 +1830,33 @@ stream_start(void)
 	return true;
 }
 
+/* the sensor stopped and seen to be (frame count 0xff), the WDMA's frame dropped, the link down, the WDMA idle */
+static void
+frames_halt(void)
+{
+	uint8_t frames = 0xff;
+	uint64_t until;
+
+	stream_stop();
+	nanoseconds_to_absolutetime(300 * NSEC_PER_MSEC, &until);
+	until += mach_absolute_time();
+	while (mach_absolute_time() < until) {
+		if (sensor_get(0x0005, &frames, 1) == 0 && frames == 0xff) {
+			break;
+		}
+		delay_for_interval(2, NSEC_PER_MSEC);
+	}
+	say("exynos_camera: 5: the sensor's frame count %#x after the stop\n", frames);
+	dma_abort();
+	dma_log("5");
+	link_stop();
+	if (!dma_quiet()) {
+		say("exynos_camera: 5: the WDMA still reads active (ACT_CTRL %#x): no more DMA into the buffer this run\n",
+		    rd(wdma, DMA_ACT_CTRL));
+		buffer_busy = true;
+	}
+}
+
 /*
  * The next frame end of VC0's WDMA, waited for (until `until'): the ring's slot it went to, or -1. Polled every
  * `poll_us' (0: 20 us spinning). The WDMA's active frame pointer (ACT_CTRL [4:2]) is read at the frame's end: a
@@ -1895,7 +1939,6 @@ static bool
 sensor_frame(void)
 {
 	uint32_t ends = 0, last, stride, measure_at = 2, limit = cam_ae ? cam_ae_frames : 2;
-	uint8_t frames = 0xff;
 	uint64_t until, start, per_frame;
 	struct meter m = { { 0, 0, 0 }, 0, 0 };
 	int slot = -1, taken = -1;
@@ -1941,23 +1984,7 @@ sensor_frame(void)
 	    "exposure %u lines (%u us), gain %#x, digital %#x; the WDMA off; streaming off\n", ends,
 	    absolutetime_ms(mach_absolute_time() - start), dma_errors, ends, taken, ae_lines,
 	    ae_lines * 263 / 10, ae_again, ae_dgain);
-	stream_stop();
-	nanoseconds_to_absolutetime(300 * NSEC_PER_MSEC, &until);
-	until += mach_absolute_time();
-	while (mach_absolute_time() < until) {
-		if (sensor_get(0x0005, &frames, 1) == 0 && frames == 0xff) {
-			break;
-		}
-		delay_for_interval(2, NSEC_PER_MSEC);
-	}
-	say("exynos_camera: 5: the sensor's frame count %#x after the stop\n", frames);
-	dma_log("5");
-	link_stop();
-	if (!dma_quiet()) {
-		say("exynos_camera: 5: the WDMA still reads active (ACT_CTRL %#x): no more DMA into the buffer this run\n",
-		    rd(wdma, DMA_ACT_CTRL));
-		buffer_busy = true;
-	}
+	frames_halt();
 	if (taken < 0) {
 		taken = slot;
 	}
@@ -2517,6 +2544,7 @@ hakios_exynos_camera_shot(uint32_t n, int pattern)
  */
 #define RAW10_LINE              (FRAME_W * 5 / 4)       /* 2040 */
 #define LINE_NS                 26283                   /* 10608 clocks of 403.6 MHz */
+#define STREAM_IDLE_MS          2000                    /* a stream goes down this long after the last read */
 
 static LCK_GRP_DECLARE(s9cam_grp, "hakios-exynos-camera");
 static LCK_MTX_DECLARE(s9cam_lock, &s9cam_grp);       /* the ring's frames' numbers and the commands */
@@ -2534,17 +2562,28 @@ static uint32_t manual_lines, manual_again;
 static bool manual, manual_pending;
 static uint64_t manual_until;            /* the reader's exposure holds until then: two seconds after its last */
 static uint32_t stream_readers;
+static uint32_t cam_always;             /* cam_s9_always */
+static volatile bool cam_open;          /* /dev/hakios-camera is open */
+static uint64_t last_read;              /* the time of the last read's start or wake (a reader waiting is a reader) */
 static uint8_t pack_line[LINE_BYTES], packed[RAW10_LINE];
 
 static int
 s9dev_open(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
 {
-	return stream_failed ? EIO : 0;
+	if (shots_closed) {
+		return EIO;
+	}
+	lck_mtx_lock(&s9cam_lock);
+	stream_failed = false;  /* (a stream that failed is tried again by the next open) */
+	cam_open = true;
+	lck_mtx_unlock(&s9cam_lock);
+	return 0;
 }
 
 static int
 s9dev_close(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
 {
+	cam_open = false;       /* (the last close: the stream's thread sees it within a frame) */
 	return 0;
 }
 
@@ -2552,16 +2591,21 @@ static int
 s9dev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 {
 	struct hakios_camera_frame f;
-	uint64_t since = mach_absolute_time(), second;
+	uint64_t since = mach_absolute_time(), up, running;
 	int32_t slot;
 	int error = 0;
 
-	nanoseconds_to_absolutetime(NSEC_PER_SEC, &second);
+	nanoseconds_to_absolutetime(NSEC_PER_SEC, &running);
+	nanoseconds_to_absolutetime(5 * NSEC_PER_SEC, &up);     /* (the camera's power-up, mode and first frames) */
 	lck_mtx_lock(&s9cam_lock);
+	__atomic_store_n(&last_read, since, __ATOMIC_RELEASE);
+	if (!stream_running) {
+		wakeup(&last_read);
+	}
 	while (!stream_failed && (stream_newest_slot < 0 || stream_newest <= stream_given)) {
 		struct timespec ts = { 0, 100 * NSEC_PER_MSEC };
 
-		if (mach_absolute_time() - since > second) {
+		if (mach_absolute_time() - since > (stream_running ? running : up)) {
 			lck_mtx_unlock(&s9cam_lock);
 			return EAGAIN;
 		}
@@ -2570,6 +2614,7 @@ s9dev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 			lck_mtx_unlock(&s9cam_lock);
 			return error;
 		}
+		__atomic_store_n(&last_read, mach_absolute_time(), __ATOMIC_RELEASE);
 	}
 	if (stream_failed) {
 		lck_mtx_unlock(&s9cam_lock);
@@ -2678,24 +2723,38 @@ s9dev_make(void)
 	say("exynos_camera: 7: /dev/hakios-camera made (major %d): the frames as the POCO's driver gives them\n", major);
 }
 
-/* the stream, until the run ends (or it fails) */
-static void
-stream_loop(void)
+/* a stream is wanted: always (cam_s9_always), for a camshot, or by a reader that has read lately */
+static bool
+stream_wanted(void)
+{
+	uint64_t idle;
+
+	nanoseconds_to_absolutetime(STREAM_IDLE_MS * NSEC_PER_MSEC, &idle);
+	return __atomic_load_n(&shot_asked, __ATOMIC_ACQUIRE) || (!stream_failed && (cam_always ||
+	       (cam_open && mach_absolute_time() - __atomic_load_n(&last_read, __ATOMIC_ACQUIRE) < idle)));
+}
+
+/* one stream: the camera up, the frames coming until nobody wants them, everything down again; false if it failed */
+static bool
+stream_session(void)
 {
 	uint64_t start, until, wait, log_at, ten, frm_base, frm_last = 0, frm_now;
 	uint64_t log_frames = 0, seen = 0, lost = 0, next_meter = 4;
 	uint32_t timeouts = 0;
 	struct meter m = { { 0, 0, 0 }, 0, 0 };
+	static uint64_t numbered;       /* the frames of the earlier streams: the numbers go on */
+	bool ok = false;
 	int slot;
 
 	say("exynos_camera: 7: THE STREAM: the front camera up, 1632 x 1224 RAW10 at 30 frames a second into the ring "
 	    "(%u slots of 4 MB at %#llx), the auto-exposure %s\n", RING_SLOTS, MEM_PA, cam_ae ? "on" : "off");
+	dma_errors = 0;
 	if (!sensor_up() || !isp_up() || mmu_translating()) {
-		goto failed;
+		goto down;
 	}
 	phy_on();
 	if (!buffer_get() || !mode_load() || !stream_start()) {
-		goto failed;
+		goto down;
 	}
 	frm_base = rd(csis, CSIS_FRM_CNT_CH0);
 	start = log_at = mach_absolute_time();
@@ -2705,7 +2764,7 @@ stream_loop(void)
 	lck_mtx_lock(&s9cam_lock);
 	stream_running = true;
 	lck_mtx_unlock(&s9cam_lock);
-	while (!shots_closed) {
+	while (!shots_closed && stream_wanted()) {
 		until = mach_absolute_time() + wait;
 		slot = frame_wait(until, 1000);
 		if (slot < 0) {
@@ -2723,12 +2782,12 @@ stream_loop(void)
 		frm_last = frm_now;
 		seen++;
 		lck_mtx_lock(&s9cam_lock);
-		slot_info[slot].sequence = frm_now;
+		slot_info[slot].sequence = numbered + frm_now;
 		slot_info[slot].time = mach_absolute_time();
 		slot_info[slot].lines = ae_lines;
 		slot_info[slot].again = ae_again;
 		slot_info[slot].dgain = ae_dgain;
-		stream_newest = frm_now;
+		stream_newest = numbered + frm_now;
 		stream_newest_slot = slot;
 		if (manual_pending) {
 			uint32_t l = manual_lines, a = manual_again;
@@ -2750,8 +2809,8 @@ stream_loop(void)
 			meter(buffer + (uint64_t)slot * SLOT_BYTES, &m);
 			next_meter = frm_now + (ae_step(&m, true) ? 6 : 3);
 		}
-		if (__atomic_load_n(&shot_asked, __ATOMIC_ACQUIRE)) {
-			/* camshot: the newest frame out of the ring, then the picture from the still */
+		if (__atomic_load_n(&shot_asked, __ATOMIC_ACQUIRE) && (seen >= cam_ae_frames || !cam_ae)) {
+			/* camshot: the newest frame out of the ring (the auto-exposure has had its frames), then the picture */
 			memcpy((void *)(buffer + STILL_OFF), (const void *)(buffer + (uint64_t)slot * SLOT_BYTES), SLOT_BYTES);
 			frame = buffer + STILL_OFF;
 			frame_last = FRAME_H * LINE_BYTES;
@@ -2774,18 +2833,59 @@ stream_loop(void)
 			log_at += ten;
 		}
 	}
-	say("exynos_camera: 7: the stream ends: %llu frames, %llu seen, %llu lost, %u FIFO errors\n", frm_last, seen, lost,
-	    dma_errors);
-failed:
+	ok = timeouts < 5;
+	numbered += frm_last;
+	dma_stop();
+	frames_halt();
+	say("exynos_camera: 7: the stream ends (%s): %llu frames, %llu seen, %llu lost, %u FIFO errors\n",
+	    ok ? "nobody reads" : "no frames", frm_last, seen, lost, dma_errors);
+down:
 	all_down();
 	lck_mtx_lock(&s9cam_lock);
 	stream_running = false;
-	stream_failed = true;
+	stream_newest_slot = -1;        /* (the ring's frames are old by the next stream) */
 	while (stream_readers != 0) {
 		struct timespec ts = { 0, 10 * NSEC_PER_MSEC };
 
 		(void)msleep(&stream_readers, &s9cam_lock, PZERO, "hakios-camera", &ts);
 	}
+	lck_mtx_unlock(&s9cam_lock);
+	return ok;
+}
+
+/* the thread's wait for a stream to be wanted: a read wakes it, a camshot (or the run's end) is seen within 50 ms */
+static void
+stream_wait(void)
+{
+	lck_mtx_lock(&s9cam_lock);
+	while (!shots_closed && !stream_wanted()) {
+		struct timespec ts = { 0, 50 * NSEC_PER_MSEC };
+
+		(void)msleep(&last_read, &s9cam_lock, PZERO, "hakios-camera-idle", &ts);
+	}
+	lck_mtx_unlock(&s9cam_lock);
+}
+
+/* the streams, one after another as they are wanted, until the run ends; readers get EIO from one that failed */
+static void
+stream_loop(void)
+{
+	for (stream_wait(); !shots_closed; stream_wait()) {
+		if (stream_session()) {
+			continue;
+		}
+		lck_mtx_lock(&s9cam_lock);
+		stream_failed = true;
+		lck_mtx_unlock(&s9cam_lock);
+		wakeup(&stream_newest);
+		if (__atomic_load_n(&shot_asked, __ATOMIC_ACQUIRE)) {
+			shot_failed("the stream did not come up (the lines above)");
+			__atomic_store_n(&shot_asked, 0, __ATOMIC_RELEASE);
+			__atomic_store_n(&shot_ready, 1, __ATOMIC_RELEASE);
+		}
+	}
+	lck_mtx_lock(&s9cam_lock);
+	stream_failed = true;
 	lck_mtx_unlock(&s9cam_lock);
 	wakeup(&stream_newest);
 	__atomic_store_n(&stream_done, 1, __ATOMIC_RELEASE);
@@ -2832,6 +2932,8 @@ camera_thread(void *arg, __unused wait_result_t result)
 		if (look_supplies()) {
 			s9dev_make();
 			__atomic_store_n(&shot_ready, 1, __ATOMIC_RELEASE);
+			say("exynos_camera: 7: the camera is powered when /dev/hakios-camera is read or a camshot is asked for%s\n",
+			    cam_always ? " (cam_s9_always=1: from now to the run's end)" : "");
 			stream_live = 1;
 			stream_loop();
 			stream_live = 0;
@@ -2918,6 +3020,7 @@ hakios_exynos_camera_init(void)
 			sensor_addr = sensor_addr_given = (uint8_t)addr;
 		}
 	}
+	PE_parse_boot_argn("cam_s9_always", &cam_always, sizeof(cam_always));
 	PE_parse_boot_argn("cam_s9_ae", &cam_ae, sizeof(cam_ae));
 	PE_parse_boot_argn("cam_s9_ae_frames", &cam_ae_frames, sizeof(cam_ae_frames));
 	if (cam_ae_frames < 2 || cam_ae_frames > 30) {

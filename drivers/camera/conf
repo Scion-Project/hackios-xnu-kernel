@@ -25,9 +25,9 @@ driver EXYNOS_CAMERA
 	help    MCLK, its model ID over I2C; the ISPPRE domain, CSIS1, its D-PHY and VC0's WDMA; one frame of the CSIS's test
 	help    pattern, then one of the sensor's, 1632 x 1224 RAW10, into memory (1 a look, 2 the ID, 3 the domain, 4 the
 	help    pattern, 5 the sensor's frame, auto-exposed, 6 that and then the USB console's camshot: a frame demosaiced
-	help    and sent as a picture, tools/usb-shot.py --cam; 7 the sensor streaming into a ring of four frames for the
-	help    run, /dev/hakios-camera for user space; devices/starlte/CAMERA.md has the plan). Its memory is 32 MB of
-	help    physical memory at 0xD8000000, below 4 GB and outside XNU's RAM, mapped through IOKit
+	help    and sent as a picture, tools/usb-shot.py --cam; 7 the sensor streaming into a ring of four frames while
+	help    something reads /dev/hakios-camera (or a camshot is asked for); devices/starlte/CAMERA.md has the plan). Its
+	help    memory is 32 MB of physical memory at 0xD8000000, below 4 GB and outside XNU's RAM, mapped through IOKit
 
 driver EXYNOS_IRIS
 	file    bsd/dev/hakios.exynos_iris.c
