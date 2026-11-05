@@ -87,6 +87,9 @@
  * is left is the first moments of a gesture and what stock allows above 1794000: 2314000 with at most two M3s running. Here
  * the other two are parked (no longer recommended to the scheduler, in WFI: stock powers them off, which this kernel cannot do
  * yet, so their leakage stays and the temperature has the last word). gov_policy=2 is the same law without parking.
+ * gov_policy=4 is 2 with the frames setting the M3s' touch floor (scion_pace()): the display's presenter is the one place that
+ * sees a frame miss its refresh, and iOS does not report its frames' deadlines here (kernel PR 210). A frame over LATE_MS after the
+ * last is late; content that moves at 30 frames a second under a finger reads as late too and takes the floor to the ceiling, for as long as the finger stays.
  * A finger coming down (hakios_exynos_cpufreq_fingers()) puts the M3s at their ceiling for 120 ms; the touch floor holds while
  * a finger is down, however still, at most 5 s after its last event. The frame floor is for frames under 50 ms apart: an idle
  * screen presents ten a second, and policy 1 held the M3s at 1261000 for them. The window is 20 ms while a boost holds.
@@ -118,7 +121,7 @@
  *   gov_frame_ms=<ms>        a frame this recent keeps the frame boost on (100; 20 to 1000)
  *   gov_target=<percent>     the busiest core's share wanted at the new rate (60; 30 to 95)
  *   gov_down=<windows>       windows in a row that want less before the rate comes down (5; 1 to 50)
- *   gov_policy=<n>           1 the policy above; 3 the scion governor; 2 scion without parking (1 for now)
+ *   gov_policy=<n>           1 the policy above; 3 the scion governor; 2 scion without parking; 4 that with frame pacing (1 for now)
  *   gov_stat=<n>             the line of numbers to compare by (1; 0: none)
  *
  * Sources (Samsung's kernel for the S9, Scion-Project/android_kernel_samsung_exynos9810, lineage-24.0 at e5906667068e,
@@ -177,6 +180,7 @@ extern kern_return_t thread_wakeup_prim(event_t event, boolean_t one_thread, wai
 #define BURST_MS        120     /* the M3s at their ceiling after a finger comes down */
 #define HOLD_MS         5000    /* a finger held still keeps the touch floor this long after its last event */
 #define BOOST_WINDOW_MS 20      /* the load window while a boost holds */
+#define LATE_MS         25      /* one and a half refreshes at 60 Hz */
 #define MOVING_MS       50      /* frames closer than this are moving something */
 
 static int say(const char *format, ...) __printflike(1, 2);
@@ -247,6 +251,8 @@ static uint32_t window_ms = 40, log_seconds = 1, target_load = TARGET_LOAD, down
  */
 static uint32_t boost_ms = 300, frame_ms = 100;
 static uint64_t boost_span, frame_span;         /* the same in mach_absolute_time units */
+static uint32_t frames_late, frames_on_time;    /* scion_pace()'s, since the last window */
+static uint64_t late_span;
 static uint64_t frame_gap, moving_span;         /* the last two frames apart; scion's frame floor is for frames closer than moving_span */
 static uint64_t touch_last, frame_last;         /* the last finger event's and frame's time (0: none yet) */
 static uint32_t touch_count, frame_count;       /* this second's, for the summary */
@@ -260,6 +266,7 @@ static uint32_t gov_stat = 1;
 static uint64_t burst_span, hold_span;
 static uint32_t big_cores = SCION_BIG_CORES;    /* the M3s the scheduler may use */
 static struct scion_park park;
+static struct scion_pace pace;
 static uint64_t few_since, few_time;
 static const struct scion_soc scion_soc = EXYNOS_SCION_GOV;
 static uint32_t fingers;                        /* how many are down (hakios_exynos_cpufreq_fingers()) */
@@ -339,6 +346,9 @@ hakios_exynos_cpufreq_frame(void)
 	now = mach_absolute_time();
 	before = __atomic_exchange_n(&frame_last, now, __ATOMIC_RELEASE);
 	__atomic_store_n(&frame_gap, now - before, __ATOMIC_RELAXED);
+	if (now - before <= moving_span) {
+		__atomic_fetch_add(now - before > late_span ? &frames_late : &frames_on_time, 1, __ATOMIC_RELAXED);
+	}
 	__atomic_fetch_add(&frame_count, 1, __ATOMIC_RELAXED);
 	if (!boost_on(before, frame_span, now)) {
 		(void)thread_wakeup_prim((event_t)&boost_event, FALSE, THREAD_AWAKENED);
@@ -383,7 +393,7 @@ policy_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused in
 	if (error != 0 || req->newptr == 0) {
 		return error;
 	}
-	if (value < 1 || value > 3) {
+	if (value < 1 || value > 4) {
 		return EINVAL;
 	}
 	gov_policy = (uint32_t)value;
@@ -391,7 +401,7 @@ policy_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused in
 	return 0;
 }
 SYSCTL_PROC(_kern_hakios, OID_AUTO, gov_policy, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, NULL, 0,
-    policy_sysctl, "I", "the governor's policy: 1 as first, 3 scion, 2 scion without parking (gov_policy=)");
+    policy_sysctl, "I", "the governor's policy: 1 as first, 3 scion, 2 scion without parking, 4 that with frame pacing (gov_policy=)");
 
 static uint64_t idle_before[MAX_CPUS];
 static bool ever_idle[MAX_CPUS];
@@ -512,7 +522,7 @@ boost_floor(struct cluster *c, uint64_t now)
 			return ceiling_now(c);
 		}
 		if (touch_held(now)) {
-			khz = c->scion_touch;
+			khz = c == &clusters[1] && gov_policy == 4 && pace.floor != 0 ? pace.floor : c->scion_touch;
 		}
 		if (frames_moving(now)) {
 			khz = MAX(khz, c->frame_khz);
@@ -811,6 +821,16 @@ decide_scion(struct cluster *c, uint64_t now, uint32_t window)
 
 		cores_set(gov_policy != 3 || !temp_fresh(c) || !scion_temp_ok(mc, 0) || c->thermal != 0 ? SCION_BIG_CORES :
 		    scion_cores(&park, &scion_soc, big_cores, c->core_load, clusters[0].load, c->cur, mc, window), now);
+		if (gov_policy == 4) {
+			uint32_t late = __atomic_exchange_n(&frames_late, 0, __ATOMIC_RELAXED);
+			uint32_t on_time = __atomic_exchange_n(&frames_on_time, 0, __ATOMIC_RELAXED);
+
+			if (touch_held(now)) {
+				(void)scion_pace(&pace, c->levels, c->n, late, on_time, scion_soc.big_frame, scion_soc.big_touch, window);
+			} else {
+				pace = (struct scion_pace){ 0 };
+			}
+		}
 	}
 	max = ceiling_now(c);
 	target = scion_rate(&c->rate, c->levels, c->n, c->cur, c->load, MAX(c->floor, c->boost_floor), max, window);
@@ -1145,7 +1165,7 @@ hakios_exynos_cpufreq_gov_start(void)
 	if (PE_parse_boot_argn("gov_down", &value, sizeof(value)) && value >= 1 && value <= 50) {
 		down_windows = value;
 	}
-	if (PE_parse_boot_argn("gov_policy", &value, sizeof(value)) && value >= 1 && value <= 3) {
+	if (PE_parse_boot_argn("gov_policy", &value, sizeof(value)) && value >= 1 && value <= 4) {
 		gov_policy = value;
 	}
 	(void)PE_parse_boot_argn("gov_stat", &gov_stat, sizeof(gov_stat));
@@ -1161,6 +1181,7 @@ hakios_exynos_cpufreq_gov_start(void)
 	nanoseconds_to_absolutetime((uint64_t)boost_ms * NSEC_PER_MSEC, &boost_span);
 	nanoseconds_to_absolutetime((uint64_t)frame_ms * NSEC_PER_MSEC, &frame_span);
 	nanoseconds_to_absolutetime((uint64_t)BURST_MS * NSEC_PER_MSEC, &burst_span);
+	nanoseconds_to_absolutetime((uint64_t)LATE_MS * NSEC_PER_MSEC, &late_span);
 	nanoseconds_to_absolutetime((uint64_t)MOVING_MS * NSEC_PER_MSEC, &moving_span);
 	nanoseconds_to_absolutetime((uint64_t)HOLD_MS * NSEC_PER_MSEC, &hold_span);
 	if (!hakios_acpm_init(say)) {

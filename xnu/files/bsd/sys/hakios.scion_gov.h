@@ -28,12 +28,20 @@ struct scion_park {
 	uint32_t asked_ms;
 };
 
+struct scion_pace {
+	uint32_t floor, calm_ms;        /* the floor now (0: start over), how long only on-time frames have come at it */
+};
+
 /* a temperature to trust: read, plausible and recent */
 bool scion_temp_ok(int32_t mc, uint64_t age_ms);
 
 /* the rate for this window: levels fastest first, a rate from them, kHz */
 uint32_t scion_rate(struct scion_rate *s, const uint32_t *levels, uint32_t n, uint32_t cur, uint32_t load, uint32_t floor,
     uint32_t ceiling, uint32_t window_ms);
+
+/* the floor for this window from the frames since the last: levels fastest first, a kHz floor at or above low; a fresh s starts at start */
+uint32_t scion_pace(struct scion_pace *s, const uint32_t *levels, uint32_t n, uint32_t late, uint32_t on_time, uint32_t low,
+    uint32_t start, uint32_t window_ms);
 
 /* how many big cores may run: load[] the big cores' loads, busiest first; mc the big zone now (a temperature scion_temp_ok() took) */
 uint32_t scion_cores(struct scion_park *s, const struct scion_soc *soc, uint32_t cores, const uint32_t *load, uint32_t lit_load,

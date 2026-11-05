@@ -8,6 +8,8 @@
  *           the all-core limit, the rest idle and the little cores not heavy, for change_ms, the others are parked and the
  *           ceiling rises. They come back when the two cannot hold the load, when the rate no longer needs it, or at
  *           unpark_at_mc, read every window: a burst has its heat to spend and sustained load stays out. The caller lowers the rate before it brings a core back and never raises it before one is parked.
+ *   pace    while a finger is down, the frames say whether the floor is enough: one that came late raises the floor two levels at
+ *           once, and a floor that has seen only on-time frames for PACE_CALM_MS falls a level. A late frame is what load cannot see.
  *   heat    a temperature that is not read, not plausible or not recent means the safe rate and every core, at once.
  *
  * It never asks for a rate outside the APM's table or above the SoC's limits, and sends no voltage. The TMU driver's stop and
@@ -17,6 +19,8 @@
 
 #define TARGET_PCT      60
 #define DOWN_MS         300
+#define PACE_UP         2       /* levels, per window with a late frame */
+#define PACE_CALM_MS    400
 #define TEMP_TOO_OLD_MS 3000    /* three of the TMU's 1 s polls missed */
 #define TEMP_LOW_MC     1000
 #define TEMP_HIGH_MC    125000
@@ -59,6 +63,26 @@ scion_rate(struct scion_rate *s, const uint32_t *levels, uint32_t n, uint32_t cu
 	want = s->peak;
 	s->low_ms = s->peak = 0;
 	return want;
+}
+
+uint32_t
+scion_pace(struct scion_pace *s, const uint32_t *levels, uint32_t n, uint32_t late, uint32_t on_time, uint32_t low,
+    uint32_t start, uint32_t window_ms)
+{
+	uint32_t l = 0;
+
+	while (l < n - 1 && levels[l] > (s->floor != 0 ? s->floor : start)) {
+		l++;
+	}
+	if (late != 0) {
+		l = l > PACE_UP ? l - PACE_UP : 0;
+		s->calm_ms = 0;
+	} else if (on_time != 0 && (s->calm_ms += window_ms) >= PACE_CALM_MS) {
+		l = l < n - 1 ? l + 1 : l;
+		s->calm_ms = 0;
+	}
+	s->floor = levels[l] > low ? levels[l] : low;
+	return s->floor;
 }
 
 uint32_t
