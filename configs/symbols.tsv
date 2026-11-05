@@ -338,6 +338,7 @@ PANEL_GAMMA_LOG	arg	panel_gamma_log	GPU and display	k	hakios.s6e3ha8.c	all 74 ro
 PASSCODE_DEBUG	arg	passcode_debug	User space	u	passcoded.m	
 PASSCODE_RESET	arg	passcode_reset	User space	k	MiniAppleKeyStore.cpp	
 PASSCODE_SELFTEST	arg	passcode_selftest	User space	k	MiniAppleKeyStore.cpp	
+PERFCTL	arg	perfctl	User space	k	hakios.perfctl.c	
 PMIC_LIST	arg	pmic_list	Chip, thermal and PMIC	k	hakios.pmic.c	only the clock, not the inventory of every block
 POSTER_RETRY	arg	poster_retry	User space	u	poster_retry.c	
 PRESS_POWER	arg	press_power	Touch and buttons	k	hakios.buttons.c	a short press of the power key that many seconds after boot, and another ten seconds later, given to Darwin as the key's own are (hakios_touch_post):

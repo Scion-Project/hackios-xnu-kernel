@@ -102,6 +102,7 @@ core     iokit/Kernel/hakios.stubs.cpp
 core     iokit/Kernel/hakios.physmap.cpp
 core    bsd/dev/hakios.socinfo.c
 core    bsd/dev/hakios.cryptobench.c
+power   bsd/dev/hakios.perfctl.c
 power   bsd/dev/hakios.thermal.c
 power   bsd/dev/hakios.thermal_provider.c
 power   bsd/dev/hakios.thermal_provider.h
