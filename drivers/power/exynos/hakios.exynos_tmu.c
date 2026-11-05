@@ -83,16 +83,14 @@
 #include "hakios.exynos_tmu.h"
 #include "hakios.thermal_provider.h"
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void loader_return(void);
 extern void hakios_var_save_on_return(void);
 extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_adsp_stop(void);
 extern int hakios_battery_temperature(void);  /* drivers/power/hakios.battery.c; a stand-in says -273 */
 extern bool hakios_exynos_power_off(const char *who, int (*say)(const char *, ...));  /* hakios.exynos_poweroff.c */
-extern void delay(int usec);
 
 SYSCTL_DECL(_kern_hakios);
 

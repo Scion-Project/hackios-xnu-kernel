@@ -23,8 +23,8 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <vm/memory_types.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 
 #define SCCAM_MAGIC     0x4d434353u     /* "SCCM" (patch 1400) */
 #define SCCAM_TORCH     0x68            /* the guest's: the torch's level, 0 to 1000 (reserved[0] there) */

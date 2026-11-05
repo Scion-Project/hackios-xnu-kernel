@@ -15,8 +15,8 @@
 #include <sys/hakios.input.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 #define LOADER_BATTERY_MAGIC            0x2154544142574452ULL
 #define LOADER_BATTERY_VERSION          1

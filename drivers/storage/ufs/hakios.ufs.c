@@ -86,11 +86,8 @@
 #include <stdarg.h>
 #include <vm/memory_types.h>
 #include "hakios.ufshc.h"
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
-extern void IOSleep(unsigned int milliseconds);
-extern void loader_return(void);        /* osfmk/arm64/loader_return.c */
-extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);   /* osfmk/arm64/caches_asm.s */
 extern int sync_internal(void);          /* bsd/vfs/vfs_syscalls.c: a shutdown's sync, bounded */
 
 /* the page the loader publishes: the same layout as struct loader_block in xnuloader/loader.c */
@@ -2434,7 +2431,6 @@ ufs_own_init(uint32_t mode)
  * too: the loader's log only).
  */
 
-extern void loader_log_line(const char *line);
 
 static void
 nufs_say(const char *format, ...) __printflike(1, 2);

@@ -108,9 +108,8 @@
 #include <sys/hakios.exynos_soc.h>
 #include "hakios.drivers.h"      /* HAKIOS_EXYNOS_ABOX: ABOX's driver in this kernel */
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t pe_arm_get_soc_base_phys(void);
-extern kern_return_t thread_terminate(thread_t thread);
 
 /* the registers, in the first revision's numbering (a B's: address()) */
 #define INT_EN1                 0x0A

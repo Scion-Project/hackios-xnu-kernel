@@ -13,6 +13,7 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <pexpert/pexpert.h>
+#include <sys/hakios.xnu.h>
 
 #define TOUCH_QUEUE     512             /* records; a power of two */
 
@@ -25,7 +26,6 @@
  */
 static uint32_t touch_lat = 2;          /* 2: not yet looked up */
 
-extern void loader_log_line(const char *line);
 
 /*
  * A "tl:" line, for the kernel's drivers: into the loader's log as it is written -- the kernel's own
@@ -69,7 +69,6 @@ static uint32_t touch_head, touch_tail;        /* read from head, add at tail */
 #define EXIT_FINGERS    5
 #define EXIT_HOLD_MS    1500
 
-extern void loader_return(void);
 extern void hakios_var_save_on_return(void);    /* drivers/storage/ufs/hakios.ufs.c: the data volume synced into the flash */
 
 static thread_call_t exit_call;
@@ -266,7 +265,6 @@ hakios_input_init(void)
  */
 #include <kern/thread.h>
 
-extern kern_return_t thread_terminate(thread_t thread);
 
 #define CONSOLE_FINGER  9
 

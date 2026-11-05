@@ -53,8 +53,7 @@
 #include <sys/errno.h>
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.exynos_soc.h>
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void delay(int usec);
+#include <sys/hakios.xnu.h>
 
 #define MBOX_PA         EXYNOS_APM_MBOX_PA
 #define MBOX_INTGR0     0x08
@@ -577,7 +576,6 @@ hakios_acpm_stop(void)
  * boot-args cpufreq_lit=kHz, cpufreq_big=kHz; nothing without them. With cpufreq_gov=1 the governor
  * (drivers/power/hakios.exynos_cpufreq.c) sets both clusters' rates instead, and these two are not used.
  */
-extern void loader_log_line(const char *line);
 void hakios_exynos_dvfs_start(void);
 void
 hakios_exynos_dvfs_start(void)

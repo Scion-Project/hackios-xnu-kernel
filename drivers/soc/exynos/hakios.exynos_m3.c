@@ -72,7 +72,7 @@ extern void hakios_esslog_start(void);
 #include <sys/systm.h>
 #include <sys/hakios.exynos_soc.h>
 #include <sys/hakios.log.h>
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+#include <sys/hakios.xnu.h>
 
 int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);
 
@@ -333,9 +333,6 @@ hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr)
  * screen's symptoms without any crash.
  */
 
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
-extern uint64_t kvtophys(vm_offset_t va);
-extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);
 extern kern_return_t kernel_thread_start(thread_continue_t continuation, void *parameter, thread_t *new_thread);
 extern void thread_deallocate(thread_t thread);
 extern void *cpu_to_processor(int cpu);
@@ -343,7 +340,6 @@ extern void *thread_bind(void *processor);
 extern int thread_block(void *continuation);
 extern int cpu_number(void);
 extern unsigned int real_ncpus;
-extern void delay(int usec);
 
 #define COH_PAGES       4
 #define COH_SIZE        (COH_PAGES * 4096)

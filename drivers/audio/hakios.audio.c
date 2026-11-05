@@ -49,8 +49,8 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <vm/vm_kern.h>
+#include <sys/hakios.xnu.h>
 
-extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
 
 #define CHUNK_FRAMES    1024            /* what one pass of write() moves */
 #define QUIET_MS        500             /* no write for this long: the writer has stopped */
