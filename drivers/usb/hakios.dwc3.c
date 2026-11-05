@@ -10,11 +10,11 @@
  * (hakios.exynos_usb.c, the Galaxy S9). Polled from a thread call, no interrupt; one control transfer at a time, one
  * TRB per transfer (LST set), each in its own cache line of memory mapped uncached.
  *
- * The tree had no USB device code of its own: the POCO's loader serves fastboot through Qualcomm's UEFI USB protocol
- * (xnuloader/loader.c, usb_start()), which the S9's Silicium UEFI does not have (no USB driver in its FD), and nothing
- * of it survives ExitBootServices-less hand-over into the kernel. So this is new, not a port of that.
+ * Nothing else in the tree provides USB device mode. The POCO loader's fastboot uses Qualcomm's UEFI USB protocol
+ * (xnuloader/loader.c, usb_start()); the S9's Silicium UEFI has no USB driver in its firmware volume, and nothing of
+ * that survives the hand-over into the kernel. This code is not a port of it.
  *
- * THE STEPS (usb_gadget=N does the first N; each says what it is about to do before it does it):
+ * The steps (usb_gadget=N does the first N; each says what it is about to do before it does it):
  *   1  look: the glue reads the SoC's side (PMU isolation, clocks, the PHY's registers, the supplies through ACPM) and,
  *      when the controller has a clock, the DWC3's: its ID (GSNPSID), GCTL, DCTL (RUN_STOP: did S-Boot leave it running?),
  *      DSTS, the event buffer it was given. Reads only.
@@ -35,8 +35,8 @@
  * always resets it, and step 2 stops it first if it runs; step 1 says what was found. The reset is the one Linux does
  * on every start (dwc3_core_init: dwc3_soft_reset then dwc3_core_soft_reset, both DCTL CSFTRST).
  *
- * THE LINE CONSOLE (step 5). Lines typed on the host, ended by Enter; the device echoes the line ("usb> ...") and
- * answers. The answers and the echo go into the kernel's log (and so to the host); not to the screen.
+ * The line console (step 5). Lines typed on the host, ended by Enter; the device echoes the line ("usb> ...") and
+ * answers. The answers and the echo go into the kernel's log (and so to the host), not to the screen.
  *   help              these
  *   stat              the link's counters
  *   uptime            seconds since boot
@@ -75,7 +75,7 @@
  *                     wifi tcp HOST [PORT [PATH]], wifi stat, wifi names [off] (drivers/wifi/hakios.wifi.c, hakios.sta.c,
  *                     drivers/net/hakios.net.c: what each does is said there)
  *   touch X Y [X2 Y2 [MS]]  a tap, or a swipe over MS milliseconds, given to iOS as the panel's are (X and Y in
- *                     thousandths of the screen's width and height): the phone worked from here, "shot" to see it
+ *                     thousandths of the screen's width and height): "shot" shows the result
  *   button NAME       a press of lock, home, up or down, as its driver would give it
  *   usb               the link as it stands: the controller's registers, endpoint 0's state, the restarts, VBUS, the
  *                     USB-C switch (hakios.max77705.c). usb restart: the link restarted, as after a replug. usb drop MS:
@@ -83,19 +83,18 @@
  *                     switch open and VBUS taken as gone for MS ms (an unplug from this side, the port's). usb muic MS:
  *                     the switch open for MS ms and nothing told to the link. usb vbus MS: VBUS taken as gone for MS ms,
  *                     the switch left alone. usb watch off/on: the check for a link
- *                     that gets bus resets and no SETUP (see THE CABLE COMING AND GOING)
+ *                     that gets bus resets and no SETUP (see The cable)
  *   return            end the run: the data volume saved, the drivers given back, the loader restarts the phone (into
  *                     TWRP on the S9). Done on a thread call of its own; should that not have ended the run after
  *                     RETURN_FORCE_SECONDS (the save or a driver's stop waiting on something under load), the poll goes
  *                     back to the loader without them, as a panic does
  * Not a shell: user space is not reached from here.
  *
- * THE CABLE COMING AND GOING. Nothing in the controller says the cable went: the PHY's VBUS is forced valid (the VBUS
- * pad is not wired to it, dt is_not_vbus_pad: hakios.exynos_usb.c step i), so there is no disconnect event, and on Android
- * it is the MUIC's and the charger's interrupts that make dwc3/otg.c stop the controller and bring it up again from
- * dwc3_core_init on every attach. Left alone, the link stayed "connected" with the old host's transfers on it; after a
- * replug it took the host's resets and chirps but no SETUP ever reached the event buffer, so the host retried for ever
- * while a restart of the phone was the only way out. So, as Android does it, from two sides:
+ * The cable. Nothing in the controller reports the cable going: the PHY's VBUS is forced valid (the VBUS pad is not
+ * wired to it, dt is_not_vbus_pad: hakios.exynos_usb.c step i), so there is no disconnect event. On Android the MUIC
+ * and charger interrupts make dwc3/otg.c stop the controller and bring it up again from dwc3_core_init on every attach.
+ * Without a restart, a link after a replug takes the host's resets but never delivers a SETUP, and the host retries
+ * indefinitely. So the link follows Android's two signals and also watches its own state:
  *   - VBUS: hakios.max77705.c reads it (the MUIC's BC_STATUS) four times a second and tells this file
  *     (hakios_usb_gadget_vbus). When it goes: every transfer ended, the pull-up off, the PHY down, the log kept in the
  *     ring (1 MB). When it comes back: the PHY's sequence again, the core reset and set up, the pull-up on (link_restart),
@@ -188,7 +187,7 @@ extern void hakios_max77705_usb_close(void);                    /* ... the USB-C
 
 SYSCTL_DECL(_kern_hakios);
 
-/* ---- the DWC3's registers (drivers/usb/dwc3/core.h of the BSP, line by line) ---- */
+/* DWC3 registers and fields: drivers/usb/dwc3/core.h of the BSP, line numbers given */
 #define GSBUSCFG0               0xc100u         /* :83 */
 #define  GSBUSCFG0_INCRBRSTEN   (1u << 0)       /* :161 */
 #define  GSBUSCFG0_INCR16BRSTEN (1u << 3)       /* :164 */
@@ -302,7 +301,7 @@ SYSCTL_DECL(_kern_hakios);
 #define PEP_NOTIFY              5
 #define NPEPS                   6
 
-/* memory the controller reaches: one 32 KB block below 4 GB, mapped uncached */
+/* memory the controller reaches: one 32 KB block, mapped uncached (see dma_alloc()) */
 #define DMA_SIZE                (32 * 1024)
 #define EVT_OFF                 0x0000u
 #define EVT_SIZE                4096u
@@ -336,7 +335,7 @@ static thread_call_t return_call;       /* ... which end_the_run() does, on a th
 static uint64_t return_asked_at;        /* when it was started (mach_absolute_time), 0: not yet */
 #define RETURN_FORCE_SECONDS    15      /* then the poll returns to the loader itself, without the save and the stops */
 
-/* the cable (THE CABLE COMING AND GOING above) */
+/* The cable: see "The cable" in the head comment */
 #define VBUS_UNKNOWN            (-1)
 #define VBUS_SILENT_SECONDS     3       /* a stopped link goes back up when VBUS has not been heard of for this long */
 #define STORM_NO_SETUP          4       /* resets with no SETUP after them */
@@ -445,7 +444,7 @@ trb_pa(int p)
 	return dma_pa + TRB_OFF(p == PEP_NOTIFY ? 4 : p);
 }
 
-/* ---- the log's way out: a ring the log fills (under its lock) and the poll empties ---- */
+/* The log's way out: a ring the log fills (under its lock) and the poll empties. */
 
 static void
 tap(char c)
@@ -468,7 +467,7 @@ history(const char *text, uint32_t len)
 	}
 }
 
-/* ---- endpoint commands ---- */
+/* Endpoint commands. */
 
 static int
 depcmd(int p, uint32_t cmd, uint32_t p0, uint32_t p1, uint32_t p2, uint32_t *out)
@@ -549,7 +548,7 @@ ep_config(int p, uint32_t type, uint32_t mps, uint32_t action, uint32_t interval
 	return depcmd(p, CMD_SETEPCONFIG, p0, p1, 0, NULL);
 }
 
-/* ---- endpoint 0 ---- */
+/* Endpoint 0. */
 
 static void
 ep0_setup_start(void)
@@ -726,7 +725,7 @@ ep0_notready(int p, uint32_t status)
 	}
 }
 
-/* ---- the bulk endpoints ---- */
+/* Bulk endpoints. */
 
 static void
 bulk_down(void)
@@ -1014,8 +1013,9 @@ pump_in(void)
 	}
 	if (hold_log_until != 0) {
 		/*
-		 * A host takes what comes before anyone has the port open and drops it: what happened meanwhile would be lost. Open
-		 * for a moment, not just opened: a reader that sets the port up (stty) closes it again before it starts reading.
+		 * A host that opens the port and closes it before reading would lose what was sent meanwhile, so the log waits
+		 * until the port has stayed open for 300 ms, or until the hold runs out. A reader that sets the port up (stty)
+		 * closes it again before it starts reading.
 		 */
 		uint64_t now = mach_absolute_time(), ns = 0;
 
@@ -1086,7 +1086,7 @@ bulk_complete(int p)
 	}
 }
 
-/* ---- device events ---- */
+/* Device events. */
 
 /* the log waits, for a while, for the host to have the port open: see pump_in() */
 static void
@@ -1191,7 +1191,7 @@ events(void)
 	}
 }
 
-/* ---- the line console ---- */
+/* Line console. */
 
 static const char *
 errno_name(int error)
@@ -1267,8 +1267,8 @@ console_sysctl(char *arg)
 /*
  * swipe [l|r|u|d|lr|ud] [N] [MS] [GAP]: a finger drawn across the screen N times (default lr 6 250 1000: left, right,
  * left ..., each stroke 250 ms, a second apart), posted to the touch queue as the touch screen's driver posts its
- * events (hakios_touch_post(), one every 8 ms, the S6SY761's pace, with the governor's touch boost), so that what moves
- * on the screen moves the same way in every run, without a hand. Strokes keep 20% from the edges: from the bottom edge
+ * events (hakios_touch_post(), one every 8 ms, the S6SY761's pace, with the governor's touch boost), so a run can be
+ * repeated without a finger. Strokes keep 20% from the edges: from the bottom edge
  * one would go home. Left and right page the home screen; up and down scroll a list. On a thread of its own.
  */
 #define SWIPE_STEP_MS   8
@@ -1417,7 +1417,7 @@ say_link(int (*out)(const char *, ...), const char *when)
 	    link_stopped, n_restarts);
 }
 
-/* the console's say: (con() has no return value; say_link wants the printf shape) */
+/* A printf-style logger that returns int, for say_link(). */
 static int
 con_say(const char *format, ...)
 {
@@ -1596,7 +1596,7 @@ return_check(void)
 	}
 }
 
-/* ---- bring-up ---- */
+/* Bring-up. */
 
 static void
 say_dwc3(const char *when)
@@ -1633,8 +1633,8 @@ static int
 dma_alloc(void)
 {
 	vm_offset_t va = 0;
-	/* any address: the 9810's DWC3 takes 64-bit TRB and event-buffer pointers, and this kernel's RAM is above 4 GB
-	 * (0x880000000 on, seen 1 November) */
+	/* Any address: the 9810's DWC3 takes 64-bit TRB and event-buffer pointers, and RAM sits above 4 GB
+	 * (0x880000000 seen on the S9). */
 
 	if (kmem_alloc_contig(kernel_map, &va, round_page(DMA_SIZE), PAGE_MASK, 0, 0,
 	    KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
@@ -1822,7 +1822,7 @@ say_nothing(__unused const char *format, ...)
 	return 0;
 }
 
-/* whatever was going on, over: the controller stopped, nothing left of the transfers, a picture on its way dropped */
+/* Take the link down: controller stopped, transfers ended, a picture being sent dropped. */
 static void
 link_down(void)
 {
@@ -1898,7 +1898,7 @@ hakios_usb_gadget_vbus(bool present)
 	os_atomic_store(&vbus_report, present ? 1 : 0, release);
 }
 
-/* what the cable and the link say should happen now; in the poll, the controller ours */
+/* From the cable and the link's state, decide whether to stop or restart the link. Runs in the poll. */
 static void
 link_watch(void)
 {
@@ -2088,11 +2088,11 @@ usb_gadget_init(void)
 		return;
 	}
 	/*
-	 * The kernel-high group, not thread_call_allocate()'s "high" one: that group runs its calls one at a time
-	 * (thread_call.c: TCG_NONE, a second thread only when none is active), and most drivers' periodic calls are in it,
-	 * so a long one there held up the console (and the log) behind it. kernel-high has the IOKit timers that ask for it
-	 * and little else. The end of the run goes into "high", where the timed return (loader_return_after=) runs: should
-	 * it wait there, the poll is free to force the return (return_check).
+	 * The poll uses the kernel-high group, not the group thread_call_allocate() gives ("high"). That group runs its calls
+	 * one at a time (thread_call.c: TCG_NONE), and most drivers' periodic calls are in it, so a long one there would hold
+	 * up the console and the log. kernel-high holds the IOKit timers that ask for it and little else. The end of the run
+	 * goes to the "high" group, where the timed return (loader_return_after=) runs it; if it waits there, the poll can
+	 * force the return (return_check).
 	 */
 	call = thread_call_allocate_with_priority(tick, NULL, THREAD_CALL_PRIORITY_KERNEL_HIGH);
 	return_call = thread_call_allocate(end_the_run, NULL);
