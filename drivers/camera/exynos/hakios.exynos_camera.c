@@ -2536,8 +2536,8 @@ hakios_exynos_camera_shot(uint32_t n, int pattern)
  * /dev/hakios-camera, as the POCO's driver makes it (bsd/sys/hakios.camera.h, the same structure, so that
  * libhakios.media's capture device and camera_test read either): read() waits (a second at the most) for the newest
  * frame not read yet and gives a struct hakios_camera_frame, then the frame as MIPI RAW10 (four pixels in five bytes,
- * 2040 a line: packed here from the WDMA's 16 bits a pixel, line by line), GRBG, black level 64; a buffer of the
- * header's size learns the size. write(): HAKIOS_CAMERA_EXPOSURE (a lines, b analog gain; the auto-exposure off while
+ * 2040 a line: packed here from the WDMA's 16 bits a pixel, line by line, and turned half a turn), GBRG, black level
+ * 64; a buffer of the header's size learns the size. write(): HAKIOS_CAMERA_EXPOSURE (a lines, b analog gain; the auto-exposure off while
  * they come, back on two seconds after the last, or at once with a = 0), HAKIOS_CAMERA_SENSOR (there is one camera here: taken, and the frames carry the
  * number asked for, so that a capture device that asks for its back camera gets these frames), HAKIOS_CAMERA_FOCUS
  * (no lens motor: taken, nothing done). EIO once the stream has failed.
@@ -2629,7 +2629,7 @@ s9dev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 	f.height = FRAME_H;
 	f.stride = RAW10_LINE;
 	f.format = 1;
-	f.bayer = cam_bayer & 3;
+	f.bayer = 3 - (cam_bayer & 3);  /* (turned half a turn below: the pattern's order reversed) */
 	f.black = BLACK_LEVEL;
 	f.sequence = slot_info[slot].sequence;
 	f.time = slot_info[slot].time;
@@ -2648,15 +2648,21 @@ s9dev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 	lck_mtx_unlock(&s9cam_lock);
 
 	error = uiomove((caddr_t)&f, (int)MIN((user_ssize_t)sizeof(f), uio_resid(uio)), uio);
-	/* the frame, packed a line at a time (one reader at a time: the line buffers are shared) */
+	/*
+	 * the frame, packed a line at a time (one reader at a time: the line buffers are shared), turned half a turn: the
+	 * S9's front sensor sits a half turn from the iPhone's, and the Camera app showed its frames upside down
+	 */
 	lck_mtx_lock(&s9read_lock);
 	for (uint32_t y = 0; error == 0 && y < FRAME_H && uio_resid(uio) > 0; y++) {
-		memcpy(pack_line, (const void *)(buffer + (uint64_t)slot * SLOT_BYTES + (uint64_t)y * LINE_BYTES), LINE_BYTES);
+		memcpy(pack_line, (const void *)(buffer + (uint64_t)slot * SLOT_BYTES + (uint64_t)(FRAME_H - 1 - y) * LINE_BYTES),
+		    LINE_BYTES);
 		for (uint32_t x = 0, o = 0; x < FRAME_W; x += 4, o += 5) {
 			uint32_t v[4];
 
 			for (uint32_t k = 0; k < 4; k++) {
-				v[k] = ((uint32_t)pack_line[2 * (x + k)] | ((uint32_t)pack_line[2 * (x + k) + 1] << 8)) & 0x3ff;
+				uint32_t p = FRAME_W - 1 - (x + k);
+
+				v[k] = ((uint32_t)pack_line[2 * p] | ((uint32_t)pack_line[2 * p + 1] << 8)) & 0x3ff;
 				packed[o + k] = (uint8_t)(v[k] >> 2);
 			}
 			packed[o + 4] = (uint8_t)((v[0] & 3) | ((v[1] & 3) << 2) | ((v[2] & 3) << 4) | ((v[3] & 3) << 6));
