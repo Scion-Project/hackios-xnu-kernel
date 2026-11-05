@@ -83,16 +83,14 @@
 #include "hakios.exynos_tmu.h"
 #include "hakios.thermal_provider.h"
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void loader_return(void);
 extern void hakios_var_save_on_return(void);
 extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_adsp_stop(void);
 extern int hakios_battery_temperature(void);  /* drivers/power/hakios.battery.c; a stand-in says -273 */
 extern bool hakios_exynos_power_off(const char *who, int (*say)(const char *, ...));  /* hakios.exynos_poweroff.c */
-extern void delay(int usec);
 
 SYSCTL_DECL(_kern_hakios);
 
@@ -133,7 +131,7 @@ SYSCTL_INT(_kern_hakios_temp, OID_AUTO, battery_c, CTLFLAG_RD | CTLFLAG_LOCKED, 
     "the battery's temperature as the battery driver says it (-273: not known)");
 
 /*
- * Every zone's last reading for other drivers (the CPU governor, drivers/power/hakios.exynos_cpufreq.c), whatever the step:
+ * Every zone's last reading for other drivers (the CPU governor, drivers/power/exynos/hakios.exynos_cpufreq.c), whatever the step:
  * the zones in tmu_zones' order (0 BIG, 1 LITTLE, 2 G3D, 3 ISP), millidegrees, NOT_READ_MC before the first reading.
  * Asked directly: the governor read kern.hakios.temp.* through kernel_sysctlbyname at first, and got nothing on the phone.
  */

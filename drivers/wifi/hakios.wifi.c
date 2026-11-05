@@ -170,14 +170,8 @@
 #include <sys/stat.h>
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
-extern void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
-extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
-extern void loader_return(void);
-extern kern_return_t thread_terminate(thread_t thread);
 
 static LCK_GRP_DECLARE(wifi_lock_group, "hakios-wifi");
 
@@ -194,7 +188,6 @@ static uint32_t new_from;               /* the first of the steps that have not 
 static char last_write[96] = "nothing written";
 
 /* As in hakios.adreno.c: every line goes to the log the loader reads from another core as well. */
-extern void loader_log_line(const char *line);
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -4188,7 +4181,6 @@ hakios_wifi_quiesce(void)
 
 #define HAKIOS_SOC_BASE        0x00400000ul    /* where the loader says the phone's peripherals begin (its "redwood") */
 
-extern vm_offset_t pe_arm_get_soc_base_phys(void);
 
 /* The steps' end: the DSP stopped, or left as asked. */
 static void

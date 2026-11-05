@@ -57,9 +57,8 @@
 #include <sys/hakios.virtio.h>
 #include <sys/hakios.vgpu.h>
 #include <sys/hakios.vgpu3d.h>
+#include <sys/hakios.xnu.h>
 
-extern uint64_t kvtophys(vm_offset_t va);
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 
 struct vgpu3d_ioc_create {
 	uint32_t width, height, format, bind;   /* format: VIRGL_FORMAT_*, 0 = B8G8R8A8 */

@@ -173,10 +173,7 @@
 #include <sys/hakios.physmap.h>
 #include <sys/systm.h>
 #include <sys/hakios.exynos_soc.h>
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern vm_offset_t pe_arm_get_soc_base_phys(void);
-extern kern_return_t thread_terminate(thread_t thread);
-extern void loader_log_line(const char *line);
+#include <sys/hakios.xnu.h>
 
 static bool leaving;
 

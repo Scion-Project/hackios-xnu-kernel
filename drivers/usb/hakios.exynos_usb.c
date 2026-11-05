@@ -66,9 +66,8 @@
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.exynos_soc.h>
 #include "hakios.usb_glue.h"
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void delay(int usec);
 
 #define DWC3_PA                 ((uint32_t)EXYNOS_USB_DWC3_PA)
 #define DWC3_SIZE               0x10000u

@@ -19,8 +19,8 @@
 #include <pexpert/pexpert.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 #define SCFB_MAGIC      0x42464353u     /* "SCFB" (patch 1200) */
 #define SCFB_BATTERY    0x100           /* the battery block in the header page */

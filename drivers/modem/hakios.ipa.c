@@ -43,10 +43,8 @@
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
 #include <sys/hakios.ipa.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern uint64_t kvtophys(vm_offset_t va);
-extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);
 
 static LCK_GRP_DECLARE(ipa_lock_group, "hakios-ipa");
 static LCK_MTX_DECLARE(ipa_lock, &ipa_lock_group);

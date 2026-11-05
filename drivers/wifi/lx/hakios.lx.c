@@ -30,12 +30,8 @@
 #include <sys/systm.h>
 #include <vm/memory_types.h>
 #include <vm/vm_kern.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
-extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
-extern kern_return_t thread_terminate(thread_t thread);
-extern void thread_set_thread_name(thread_t thread, const char *name);
-extern void loader_log_line(const char *line);
 
 #define say hakios_wifi_say
 

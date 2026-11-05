@@ -50,8 +50,8 @@
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 #define TLMM_PHYS               0x0f100000UL
 #define TLMM_SIZE               0x100000UL

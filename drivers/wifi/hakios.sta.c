@@ -34,10 +34,8 @@
 #include <sys/hakios.input.h>
 #include <sys/hakios.sta.h>
 #include <sys/systm.h>
+#include <sys/hakios.xnu.h>
 
-extern void thread_set_thread_name(thread_t thread, const char *name);
-extern void loader_log_line(const char *line);
-extern kern_return_t thread_terminate(thread_t thread);
 
 #define HEARD_MOST      128
 #define CHANNELS_MOST   96

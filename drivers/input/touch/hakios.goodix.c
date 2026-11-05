@@ -36,12 +36,10 @@
 #include <pexpert/pexpert.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
+#include <sys/hakios.xnu.h>
 
 extern void hakios_tl(const char *format, ...) __printflike(1, 2);
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
-extern kern_return_t thread_terminate(thread_t thread);
 
 /* RPMh's sequencer (TCS 0 of the RSC): the audio DSP's and the modem's drivers write the same slots, so every request goes through this lock */
 extern lck_mtx_t hakios_rsc_lock;
