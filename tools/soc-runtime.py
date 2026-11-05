@@ -46,6 +46,8 @@ def used():
     names = set()
     for d, _dirs, files in os.walk(os.path.join(ROOT, "drivers")):
         for name in files:
+            if not name.endswith((".c", ".cpp")):
+                continue
             text = open(os.path.join(d, name), encoding="utf-8", errors="replace").read()
             if "sys/hakios.exynos_soc.h" in text and "HAKIOS_SOC_FIXED" not in text:
                 names |= set(re.findall(r"\bEXYNOS_([A-Z0-9_]+)\b", text))

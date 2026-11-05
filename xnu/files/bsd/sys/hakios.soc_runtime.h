@@ -14,15 +14,9 @@ struct hakios_soc {
 	uint32_t acpm_sram_size;
 	uint32_t apm_mbox_pa;
 	uint32_t apm_sram_pa;
-	uint32_t cmu_peric0_pa;
 	uint32_t decon_pa;
 	uint32_t dpp_pa;
 	uint32_t dpu_dma_pa;
-	uint32_t gpio_peric0_pa;
-	uint32_t peric0_usi03_hsi2c_pa;
-	uint32_t peric0_usi03_mode_pa;
-	uint32_t tmu_sub_pa;
-	uint32_t tmu_top_pa;
 	uint32_t ufs_exy_sysreg_coh_bits;
 	uint32_t ufs_hci_pa;
 	uint32_t ufs_pma_pa;
@@ -51,15 +45,9 @@ hakios_soc(void)
 #define EXYNOS_ACPM_SRAM_SIZE	(hakios_soc()->acpm_sram_size)
 #define EXYNOS_APM_MBOX_PA	(hakios_soc()->apm_mbox_pa)
 #define EXYNOS_APM_SRAM_PA	(hakios_soc()->apm_sram_pa)
-#define EXYNOS_CMU_PERIC0_PA	(hakios_soc()->cmu_peric0_pa)
 #define EXYNOS_DECON_PA	(hakios_soc()->decon_pa)
 #define EXYNOS_DPP_PA	(hakios_soc()->dpp_pa)
 #define EXYNOS_DPU_DMA_PA	(hakios_soc()->dpu_dma_pa)
-#define EXYNOS_GPIO_PERIC0_PA	(hakios_soc()->gpio_peric0_pa)
-#define EXYNOS_PERIC0_USI03_HSI2C_PA	(hakios_soc()->peric0_usi03_hsi2c_pa)
-#define EXYNOS_PERIC0_USI03_MODE_PA	(hakios_soc()->peric0_usi03_mode_pa)
-#define EXYNOS_TMU_SUB_PA	(hakios_soc()->tmu_sub_pa)
-#define EXYNOS_TMU_TOP_PA	(hakios_soc()->tmu_top_pa)
 #define EXYNOS_UFS_EXY_SYSREG_COH_BITS	(hakios_soc()->ufs_exy_sysreg_coh_bits)
 #define EXYNOS_UFS_HCI_PA	(hakios_soc()->ufs_hci_pa)
 #define EXYNOS_UFS_PMA_PA	(hakios_soc()->ufs_pma_pa)
