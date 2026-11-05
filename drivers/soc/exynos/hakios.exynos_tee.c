@@ -1,46 +1,49 @@
 #define HAKIOS_SOC_FIXED
 /*
- * hakios.exynos_tee.c: the Galaxy S9's secure OS (Kinibi) asked whether it is there, and at the next step started and
- * stopped there. Off unless asked, in nobody's default line; without tee_probe= this file does nothing at all.
+ * hakios.exynos_tee.c: probes the Galaxy S9's secure OS (Kinibi) from XNU, one step per boot argument.
  *
- *   tee_probe=1   one read-only question: the info fastcall, MC_FC_INFO (0xFF000002) with extended id 0 (MCI_VERSION)
- *   tee_probe=2   that, and if it answers "not initialised" the start, as far as the secure OS's own state:
- *                 MC_FC_INIT, the init values, one empty N-SIQ, then MC_FC_INFO and N_YIELD in turn until the state is
- *                 no longer 0, for at most TEE_POLL_S. Then nothing more
+ * Depends on the SMC path to EL3, the UFS partition reader (hakios_ufs_read_partition and hakios_partition_file)
+ * for the TA files, and loader_log_line for the log. Nothing runs unless tee_probe is set to 1 through 4:
  *
- *   tee_probe=3   that, and one round of the MCP protocol: ask its version, load the one harmless TA on the list below from
- *                 the phone's own VENDOR partition, open a session, close it. Each return code logged. Then nothing more
- *   tee_probe=4   that, and Samsung's keymaster TA (...3e) for one test: configure, generate an HMAC key (a blob the TA seals,
- *                 kept in /private/var/hakios-tee-km-test.blob, or reuse the blob there), HMAC a fixed test value twice with it.
- *                 Nothing else of that TA: no attestation, nothing of its key installers, nothing that reaches /efs or RPMB
+ *   tee_probe=1   one read-only MC_FC_INFO (0xFF000002), extended id 0 (MCI_VERSION)
+ *   tee_probe=2   that, then the start: MC_FC_INIT, the init values, one empty N-SIQ, then MC_FC_INFO and
+ *                 N_YIELD in turn until the state is no longer 0, for at most TEE_POLL_S
+ *   tee_probe=3   that, then one MCP round: GET_VERSION, then open and close the TA on the list below, loaded
+ *                 from the phone's VENDOR partition
+ *   tee_probe=4   that, then one keymaster test on TA ...3e: configure, generate or reuse an HMAC key (the
+ *                 blob is kept in KM_TEST_BLOB), and HMAC a fixed test value twice
  *
- * tee_probe=3 and 4 have not run on a phone: the code was written from the sources below, and built. The hard rules
- * around them: no RPMB path, nothing written to EFS or any partition but the one test file on /private/var, no TA's
- * attestation, nothing of keymaster's key installers. Without the boot argument none of it runs.
+ * Limits: no RPMB access. The only file written is the test blob at KM_TEST_BLOB under /private/var. Nothing
+ * is written to EFS or any other partition. No TA attestation, and nothing from keymaster's key installers.
+ * No TA other than those on the list is loaded.
  *
- * Every call's four returned registers are logged (after TEE_LOG_CALLS of them, only a call whose answer differs from
- * that call's last). What is NOT here, on purpose: MC_FC_MEM_TRACE (Android's driver makes it first, for its log; nothing
- * in its source makes the init call depend on it), MC_FC_SWAP_CPU, the Rich OS's daemon and anything it serves, the
- * storage proxy, RPMB, EFS, any TA but the list's. The secure interrupt (SPI 233) is not taken: everything is polled.
+ * tee_probe=3 and 4 were written from the sources below and built. They have not been run on a device.
  *
- * Android's driver asks MC_FC_INFO only after its init call, so what it does before is what tee_probe=1 was for: on
- * phone 2 on 4 November the answer was x0=0xff000002 x1=0 x2=0 x3=0x10006 after 28 us. tee_probe=2 then, on the same
- * phone: INIT x1=0 x2=1 (LPAE), N_SIQ x1=0, state 0, ten N_YIELDs x1=0, state 2 with MCI 0x10006; the kernel ran on to
- * its 300 s limit. That is one boot of one phone, and nothing has asked the secure OS for anything since. A hang, an
- * SError or a halted secure OS stay possible, so:
- *   the core       the secure OS's fastcalls belong to the core it runs on, core 0 until it is told otherwise (Android's
- *                  worker is pinned there). On the S9 with cpus=8 that core starts as the boot loader's and is the
- *                  kernel's only after ufs=3's switch (patch 1513). The thread waits for it, moves to each core the
- *                  scheduler has and reads MPIDR_EL1 there, and stays on the one that reads 0x81000000 (the A55s' whole
- *                  MPIDR is what Android's table has). Every call checks it again. No such core within TEE_WAIT_S: no call
+ * Each call's four returned registers are logged. After TEE_LOG_CALLS calls, only a call whose answer differs
+ * from the previous answer of that call is logged.
+ *
+ * Not used: MC_FC_MEM_TRACE (Android's driver makes it first, for its log; the init call does not depend on it),
+ * MC_FC_SWAP_CPU, the Rich OS daemon and its services, the storage proxy, RPMB, EFS, and any TA not on the list.
+ * The secure interrupt (SPI 233) is not taken; everything is polled.
+ *
+ * tee_probe=1 exists because Android's driver calls MC_FC_INFO only after its init call. On one device, observed:
+ * MC_FC_INFO before init returned x0=0xff000002 x1=0 x2=0 x3=0x10006 after 28 us. With tee_probe=2 on the same
+ * device: INIT x1=0 x2=1 (LPAE), N_SIQ x1=0, state 0, ten N_YIELDs x1=0, then state 2 with MCI 0x10006.
+ * A hang, an SError or a halted secure OS are still possible, so:
+ *   the core       the secure OS's fastcalls belong to the core it runs on: core 0, until told otherwise. Android's
+ *                  worker is pinned there. On the S9 with cpus=8, that core starts as the boot loader's and becomes
+ *                  the kernel's after the ufs=3 switch (patch 1513). The thread waits for it, moves to each core the
+ *                  scheduler has, reads MPIDR_EL1 there, and stays on the one that reads 0x81000000 (the A55s' whole
+ *                  MPIDR is what Android's table has). Every call checks it again. Without such a core within
+ *                  TEE_WAIT_S, no call is made.
  *   the memory     the MCI block is a static buffer of this file: not from XNU's allocators, never moved, physically
- *                  contiguous (checked), cacheable like Android's (a mapping of memory outside XNU's RAM here is
- *                  write-combined, hakios_physmap_wc, which the secure OS's side could not be coherent with). It holds
- *                  nothing but this block, and a run's end restarts the SoC, so nothing else ever gets that memory
- *                  while the secure OS knows it
- *   a hang         another thread, bound to another core, panics if a call has not come back after TEE_HANG_S: with core
- *                  0 gone (the loader's core) nothing feeds the Exynos watchdog after that, so it restarts into TWRP.
- *                  The log is then in last_kmsg (esslog=1)
+ *                  contiguous (checked), cacheable like Android's. A mapping of memory outside XNU's RAM is
+ *                  write-combined (hakios_physmap_wc), which the secure OS's side could not be coherent with. The block
+ *                  holds nothing else, and a run's end restarts the SoC, so nothing else gets that memory while the
+ *                  secure OS knows it.
+ *   a hang         a watcher thread on another core panics if a call has not returned after TEE_HANG_S. With core 0
+ *                  gone (the loader's core), nothing feeds the Exynos watchdog, so the device restarts into TWRP.
+ *                  The log is then in last_kmsg (esslog=1).
  *
  * The block (Android's order, offsets from its start; 2 x 16 KB here, 29912 bytes used):
  *   0       the queue to the secure OS: { write count, read count, size = 64 } and 64 notifications of 8 bytes
@@ -54,22 +57,22 @@
  * x3 (the MCP buffer's offset << 16) | its length; back x1 the return code, x2 flags (bit 0 LPAE). The init values
  * follow it, as flags TIME | IWP, irq the S-SIQ's GIC number (SPI 233 + 32).
  *
- * tee_probe=3, what the MCP round is (mci/mcimcp.h for the numbers, mcp.c, nq.c, scheduler.c and mmu.c for how):
- *   a command   written over the init values, 144 bytes at most; then a notification (session 0, payload 0) in the queue to
- *               the secure OS, an N-SIQ, and the secure OS is given time until a notification for session 0 comes back in
- *               the other queue. The answer is in the same place: { command | 1 << 31, result, ... }
- *   its time    while MCP's flags say "not idle": N_YIELD, and every fifth time an N-SIQ, as Android's scheduler. While
- *               "idle": a sleep of 1 ms and an N-SIQ, because the interrupt that would say it wants time is not taken here
+ * The MCP round (tee_probe=3). Numbers from mci/mcimcp.h; behaviour from mcp.c, nq.c, scheduler.c and mmu.c.
+ *   a command   written over the init values, 144 bytes at most. Then a notification (session 0, payload 0) goes
+ *               into the queue to the secure OS, an N-SIQ is sent, and the secure OS gets time until a notification
+ *               for session 0 comes back in the other queue. The answer is in the same place: { command | 1 << 31, result, ... }
+ *   its time    while MCP's flags say "not idle": N_YIELD, and every fifth time an N-SIQ, as Android's scheduler does.
+ *               While "idle": a 1 ms sleep and an N-SIQ, because the interrupt that would say it wants time is not taken here
  *   a buffer    one 4 KB page table of at most 256 64-bit entries (WSM_L2; the init call's x2 bit 0, LPAE, says 64-bit,
  *               and the phone answered 1): 4 KB pages, normal cacheable inner-shareable, non-secure, execute-never,
- *               read-only for the TA's own image. A table is enough for 1 MB; a larger TA is refused here
+ *               read-only for the TA's own image. A table covers 1 MB; a larger TA is refused
  *   open        the TA's file in such a buffer, a TCI in another, the login word "GPA1" with an all-zero (public) identity
- *   not done    any TA's command; MC_FC_SWAP_CPU; the secure OS's halted state is read and logged, never a panic of ours:
- *               the driver simply stops, as a boot with no TEE would
- * The list of what may be loaded is in this file, tee_allowed[]; it is checked against the file's own MCLF header too.
+ *   not done    any TA's command, and MC_FC_SWAP_CPU. The secure OS's halted state is read and logged, and the driver
+ *               stops, as a boot with no TEE would. It does not panic
+ * The list of what may be loaded is tee_allowed[]; each file is also checked against its own MCLF header.
  *
- * tee_probe=4, what keymaster's client side is (facts from disassembling the phone's libkeymaster_helper_vendor.so, for
- * interoperability on the owner's own phone; none of it copied):
+ * tee_probe=4, keymaster's client side (facts from disassembling the phone's libkeymaster_helper_vendor.so, for
+ * interoperating with the owner's own phone; no code copied):
  *   the session  TA opened from its bytes; a 16-byte TCI, two 0x9008-byte buffers mapped into it (MCP's MAP); the TCI is
  *                { in's secure address, out's secure address, 0, 0 }, u32s. A request: notify the session, wait for its notification
  *   a buffer     { length, u64 } then DER. In: KM_INDATA, out: KM_OUTDATA
@@ -79,15 +82,15 @@
  *   cmds         2 generate, 8 begin, 9 update, 10 finish, 15 configure. Tags and values as Android's keymaster
  *   configure    takes the OS version and patch level. The real HAL also sends the file /vendor/tima_measurement_info,
  *                on user builds only. The TA then goes on to an ICCC trustboot initialisation that writes a flag through
- *                Iccc_phys_write; without the file it logs "Cannot get tima measurement file" and goes on (seen in the TA's
- *                code, not on a phone). So it is not sent here
+ *                Iccc_phys_write. Without the file it logs "Cannot get tima measurement file" and goes on (seen in the
+ *                TA's code; not observed on a phone). So this code does not send it
  *
- * Sources for the facts (Samsung's kernel, Scion-Project/android_kernel_samsung_exynos9810 at e5906667068e, GPL, read
- * for these facts, not one line copied): drivers/gud/gud-exynos9810/MobiCoreDriver: mci/mcifc.h, mci/mcinq.h,
- * mci/mcimcp.h, mci/mcitime.h, mci/mciiwp.h, mci/mcloadformat.h (the numbers and the layout), fastcall.c (the registers;
- * the worker on core 0), nq.c (the block's order, the sequence, the poll), main.c (what comes first), platform.h (the
- * core's MPIDR), mcp.c, scheduler.c, mmu.c (see above);
- * arch/arm64/boot/dts/exynos/exynos9810-starlte_eur_open_26.dts (the interrupt).
+ * Sources for the facts: Samsung's kernel, Scion-Project/android_kernel_samsung_exynos9810 at e5906667068e (GPL),
+ * read for these facts; no code copied. drivers/gud/gud-exynos9810/MobiCoreDriver: mci/mcifc.h, mci/mcinq.h,
+ * mci/mcimcp.h, mci/mcitime.h, mci/mciiwp.h, mci/mcloadformat.h (the numbers and the layout); fastcall.c (the
+ * registers; the worker on core 0); nq.c (the block's order, the sequence, the poll); main.c (what comes first);
+ * platform.h (the core's MPIDR); mcp.c, scheduler.c, mmu.c. Interrupt: arch/arm64/boot/dts/exynos/
+ * exynos9810-starlte_eur_open_26.dts.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
@@ -207,7 +210,7 @@ static const struct {
 #define KM_ALGORITHM_HMAC       128
 #define KM_DIGEST_SHA256        4
 #define KM_PURPOSE_SIGN         2
-/* The phone's firmware's values, G960FXXUHFVG4: Android 10, July 2022 (what the TA says of a mismatch is to be seen) */
+/* The phone's firmware values, G960FXXUHFVG4: Android 10, July 2022 */
 #define KM_OS_VERSION           100000
 #define KM_OS_PATCHLEVEL        202207
 
@@ -264,10 +267,10 @@ static void
 bind_to(int cpu)
 {
 	(void)thread_bind(cpu < 0 ? NULL : cpu_to_processor(cpu));
-	(void)thread_block(NULL);             /* over to it now */
+	(void)thread_block(NULL);             /* lets the bind take effect */
 }
 
-/* a core the scheduler has: it has been idle at least once (one not yet the kernel's has not) */
+/* A core the scheduler knows, once it has been idle. A core not yet used by the kernel has not been. */
 static bool
 core_is_ours(int cpu)
 {
@@ -303,7 +306,7 @@ find_core0(int *other)
 	return found;
 }
 
-/* The SMC itself: x0 to x3 go through Carbon (EL2) to EL3 and x0 to x3 come back. */
+/* The SMC itself: x0 to x3 go through Carbon (EL2) to EL3, and x0 to x3 come back. */
 static void
 smc4(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t answer[4])
 {
@@ -385,7 +388,7 @@ halted(void)
 	}
 }
 
-/* tee_probe=2: on core 0, the secure OS said state 0. The block, the init call, the init values, an N-SIQ, the poll. */
+/* Starts the secure OS from state 0, on core 0: the block, INIT, the init values, an N-SIQ, then polls the state. */
 static bool
 start(void)
 {
@@ -489,8 +492,6 @@ out:
 	    get32(MCI_INIT_VALUES + 16), get32(MCI_INIT_VALUES + 20));
 	return initialised;
 }
-
-/* ---- tee_probe=3: one round of MCP ------------------------------------------------------------------------------ */
 
 static void
 time_now(void)
@@ -738,7 +739,7 @@ session_close(uint32_t session, uint8_t *ta, uint32_t ta_length)
 	}
 }
 
-/* tee_probe=3, state 2 on core 0. The version, and a TA that is opened and closed. */
+/* Runs with the secure OS initialised, on core 0: GET_VERSION, then one TA opened and closed. */
 static bool
 mcp_round(void)
 {
@@ -770,8 +771,6 @@ mcp_round(void)
 	session_close(session, ta, ta_length);
 	return true;
 }
-
-/* ---- tee_probe=4: keymaster, one test ---------------------------------------------------------------------------- */
 
 struct der {
 	uint8_t *p;
@@ -920,7 +919,7 @@ struct km_answer {
 	uint32_t bin1_length;
 };
 
-/* The first of [n]'s EXPLICIT contents; a TA's log lines ([5]) go to our log, ICCC's are what is looked for. */
+/* Parses the answer by context tag. Log lines in field [5] are printed. */
 static bool
 km_parse(uint32_t length, struct km_answer *a)
 {
@@ -1131,7 +1130,7 @@ km_hmac(uint32_t session, const uint8_t *blob, uint32_t blob_length, uint8_t mac
 	return true;
 }
 
-/* tee_probe=4, state 2 on core 0. */
+/* Runs with the secure OS initialised, on core 0. */
 static void
 keymaster_test(void)
 {
