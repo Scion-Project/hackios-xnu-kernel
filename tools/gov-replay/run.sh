@@ -22,4 +22,4 @@ case "$input" in
 scen:*) trace=$input ;;
 *) python3 "$here/mktrace.py" "$input" > "$tmp/trace.txt"; trace=$tmp/trace.txt ;;
 esac
-for policy in 1 2 3; do "$tmp/sim" "$policy" "$trace" "$@"; done
+for policy in 1 2 3 4; do "$tmp/sim" "$policy" "$trace" "$@"; done
