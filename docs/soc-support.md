@@ -20,7 +20,7 @@ different one from Tensor G2 on. The verdicts:
 | `gs201` Tensor G2 | Pixel 7 | No | As G1, and a CSF GPU |
 | `zuma` Tensor G3 | Pixel 8 | No | The above; ARMv9 cores never tried under this kernel |
 | `zumapro` Tensor G4 | Pixel 9 | No | The above; fewest numbers: no UFS, GPU or display table read |
-| `lga` Tensor G5 | Pixel 10 | No | `scion-soc-lga` holds its layer. Another UART, UFS host and display, a Volcanic PowerVR. Written, not yet seen on a phone |
+| `lga` Tensor G5 | Pixel 10 | No; [to a framebuffer](pixel10-bringup.md) | `scion-soc-lga` holds its layer. Another UART, UFS host and display, a Volcanic PowerVR. Written, not yet seen on a phone |
 
 No table has been made for the Exynos 2200 (GICv3 and Cortex-X2 in mainline, Xclipse GPU: different IP), the 8855, 7885, 7870 or
 the Auto SoCs: mainline has trees for them, nobody has read further.
