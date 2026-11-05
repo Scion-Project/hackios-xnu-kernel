@@ -1,17 +1,17 @@
 /*
- * en0: a network interface that is Ethernet as far as the rest of the kernel and Darwin can tell.
+ * en0 and en1: network interfaces that look like Ethernet to the rest of the kernel and to Darwin's BSD layer.
  *
- * Darwin expects its interfaces from IONetworkingFamily, which this kernel does not have; the BSD
- * half of the kernel does not need it. The interface is made with the kernel's own interface
- * KPI, the way bsd/net/if_fake.c makes its "feth": family Ethernet, the stock Ethernet framing
- * and demultiplexing, one function that is given a frame to send and one call to hand a frame
- * that has arrived to the stack. What Darwin's user space makes of an interface that has no
- * IOKit object behind it is another matter: see userland/src/net_test.m.
+ * Darwin expects its interfaces from IONetworkingFamily, which this kernel does not have; the BSD side does not need
+ * it. Each interface is created through the kernel's interface KPI, as bsd/net/if_fake.c creates its "feth": family
+ * Ethernet, the stock Ethernet framing and demultiplexing, an output function for frames from the stack, and a call
+ * that passes received frames up. How Darwin's user space treats an interface with no IOKit object behind it is
+ * covered in userland/src/net_test.m.
  *
- * What carries the frames is a link driver's business; sys/hakios.net.h is all that the two
- * know of each other. The first link is QEMU's virtio network device (hakios.virtio_net.c).
- * There can be two interfaces: en0 for the Wi-Fi (or virtio), en1 for the modem's packets
- * through the IPA (hakios.cell.c); each has its link, its state and its thread.
+ * A link driver carries the frames. sys/hakios.net.h is the only interface between the two. The first link is QEMU's
+ * virtio network device (hakios.virtio_net.c). en0 is for Wi-Fi (or virtio) and en1 for the modem's packets through
+ * the IPA (hakios.cell.c). Each interface has its own link, state and thread.
+ *
+ * Boot args net_trace and net_names are read in hakios_net_init().
  */
 #include <stdarg.h>
 #include <kern/clock.h>
@@ -54,7 +54,7 @@ struct net_if {
 	bool            up;             /* the link says frames can pass */
 	ifnet_t         ifp;
 	lck_mtx_t       tx_lock;        /* one frame at a time to the link */
-	/* What has gone through: said once a minute while anything moves. */
+	/* Frame and byte counters. net_thread logs them every 8192 ticks when they change. */
 	struct {
 		uint64_t sent, received, sent_bytes, received_bytes, dropped_out, dropped_in;
 	} count;
@@ -75,10 +75,10 @@ net_if_unit(unsigned unit)
 }
 
 /*
- * Boot-arg net_trace=N: a line in the log for each of the first N frames, either way.
- * Boot-arg net_names=1: a line for every name asked of a DNS server (IPv4 or IPv6, and which server), for every
- * answer that comes back (its code and first addresses) and for every TCP connection begun from here -- which is how
- * to see what a system that has just been given a network does with it (up to NAMES_MAX lines).
+ * Boot-arg net_trace=N: log the first N frames, inbound or outbound, counted together.
+ * Boot-arg net_names=1: log each DNS question with its name and type, each DNS answer with its code and first
+ * addresses, and each TCP connection started (SYN without ACK), up to NAMES_MAX lines. It shows what a system does
+ * once it has been given a network.
  */
 #define NAMES_MAX       3000
 static uint32_t net_trace, net_names;
@@ -92,8 +92,9 @@ ipv4_text(struct in_addr a, char *text, size_t room)
 }
 
 /*
- * A DNS message's name at `p` (labels, or a pointer to some earlier in the message): where it ends in the message, NULL
- * if it is malformed; its text in `name` if one is given (truncated to fit).
+ * Parse the name at `p`, a sequence of labels or a compression pointer to an earlier place in `message`. Returns the
+ * position just after the name, or NULL if it is malformed. Text goes to `name` if given, truncated to fit `room`.
+ * At most 16 pointers are followed, so a loop in the message ends the parse.
  */
 static const uint8_t *
 dns_name(const uint8_t *message, const uint8_t *p, const uint8_t *end, char *name, size_t room)
@@ -135,8 +136,9 @@ dns_name(const uint8_t *message, const uint8_t *p, const uint8_t *end, char *nam
 }
 
 /*
- * A DNS response: its code, how many answers it has, the first `room` IPv4 addresses among them, and the question's
- * name if `name` is given. False if it is not a response.
+ * Parse a DNS response: its code, the answer count, up to `room` IPv4 addresses from the answers, and the question
+ * name if `name` is given. Returns false if the QR bit is clear, meaning the message is not a response. A message
+ * with a malformed question or answer section still returns true, with the addresses found so far.
  */
 static bool
 dns_answer(const uint8_t *m, size_t length, unsigned *rcode, unsigned *answers, struct in_addr *a, unsigned room,
@@ -179,11 +181,11 @@ dns_answer(const uint8_t *m, size_t length, unsigned *rcode, unsigned *answers, 
 	return true;
 }
 
-static uint32_t net_names_said;         /* (net_names: the lines said so far, both ways) */
-static bool net_names_console;          /* ("wifi names": the lines on the USB console too, as they come) */
+static uint32_t net_names_said;         /* net_names lines written so far, both directions. */
+static bool net_names_console;          /* Also write net_names lines to the USB console ("wifi names"). */
 
 
-/* one of net_names's lines: into the kernel's log, and onto the USB console after "wifi names" */
+/* One net_names line: to the kernel log, and to the USB console too when "wifi names" is on. */
 static void __printflike(1, 2)
 names_say(const char *format, ...)
 {
@@ -200,7 +202,7 @@ names_say(const char *format, ...)
 	}
 }
 
-/* an IPv6 address, shortly: its eight groups in hex */
+/* Format an IPv6 address as eight hex groups, without zero compression. */
 static void
 ipv6_text(const uint8_t *a, char *text, size_t room)
 {
@@ -208,7 +210,7 @@ ipv6_text(const uint8_t *a, char *text, size_t room)
 	    a[8] << 8 | a[9], a[10] << 8 | a[11], a[12] << 8 | a[13], a[14] << 8 | a[15]);
 }
 
-/* net_names: a question to a DNS server, or the start of a TCP connection, on its way out (IPv4 or IPv6) */
+/* net_names: a DNS question, or the SYN that starts a TCP connection, leaving the machine (IPv4 or IPv6). */
 static void
 names_out(const uint8_t *ip, const uint8_t *end, bool v6)
 {
@@ -236,7 +238,7 @@ names_out(const uint8_t *ip, const uint8_t *end, bool v6)
 	}
 }
 
-/* net_names: a DNS server's answer, on its way in */
+/* net_names: a DNS answer arriving. */
 static void
 names_in(const uint8_t *dns, const uint8_t *end, const char *from)
 {
@@ -290,7 +292,7 @@ trace_frame(const char *way, const uint8_t *frame, size_t length, size_t whole)
 	}
 }
 
-/* ... of a frame on its way out: the start of it is enough */
+/* Trace an outbound frame. Only its first 192 bytes are copied. */
 static void
 trace_packet(mbuf_t packet, size_t length)
 {
@@ -303,9 +305,9 @@ trace_packet(mbuf_t packet, size_t length)
 }
 
 /*
- * What has come in and gone out on en0, for the USB console's "wifi stat": frames by size (do the big ones of a
- * download arrive at all), the biggest each way, those too big to hand up, by kind; and what DHCP gave as the router
- * and the DNS servers (configd's resolver is given those; "wifi dns" asks the first itself).
+ * Traffic counts on en0, for the USB console's "wifi stat": frames by size (to see whether large frames arrive at
+ * all), the largest in each direction, inbound frames too big to hand up, and inbound frames by kind. Also the router
+ * and DNS servers that DHCP offered. configd's resolver is given the DNS servers; "wifi dns" asks the first one itself.
  */
 #define NET_SIZES       4
 static const uint32_t net_size_top[NET_SIZES] = { 128, 576, 1200, HAKIOS_NET_FRAME_MAX };
@@ -330,7 +332,7 @@ net_size_class(size_t length)
 	return i;
 }
 
-/* DHCP's offer or acknowledgement (UDP 67 to 68): the router and the DNS servers among its options */
+/* A DHCP offer or acknowledgement (UDP 67 to 68). Takes the router (option 3) and the DNS servers (option 6). */
 static void
 net_seen_dhcp(const uint8_t *bootp, const uint8_t *end)
 {
@@ -339,7 +341,7 @@ net_seen_dhcp(const uint8_t *bootp, const uint8_t *end)
 	unsigned count = 0;
 
 	if (o > end || bootp[236] != 99 || bootp[237] != 130 || bootp[238] != 83 || bootp[239] != 99) {
-		return;                 /* (no options: not DHCP's) */
+		return;                 /* No magic cookie: not a DHCP message. */
 	}
 	while (o < end && *o != 255) {
 		if (*o == 0) {
@@ -373,7 +375,7 @@ net_seen_dhcp(const uint8_t *bootp, const uint8_t *end)
 	}
 }
 
-/* a frame that has come in on en0, before it is handed up: counted, and looked at */
+/* Count an inbound en0 frame and look at it before it is handed up. Frames over HAKIOS_NET_FRAME_MAX are dropped. */
 static void
 net_seen_in(const uint8_t *frame, size_t length)
 {
@@ -442,9 +444,10 @@ net_seen_in(const uint8_t *frame, size_t length)
 	}
 }
 
-/* ---- the interface -------------------------------------------------------------------------------- */
-
-/* The stack has a frame to send (a chain of mbufs that starts with the Ethernet header). */
+/*
+ * Output callback: send a frame from the stack. The packet is an mbuf chain that starts with the Ethernet header.
+ * It is freed here whether or not the frame was sent.
+ */
 static errno_t
 net_output(ifnet_t ifp, mbuf_t packet)
 {
@@ -477,7 +480,7 @@ net_output(ifnet_t ifp, mbuf_t packet)
 	return 0;
 }
 
-/* A frame has arrived on unit `unit`. */
+/* Pass a frame received on `unit` up to the stack. The frame is copied into an mbuf. */
 void
 hakios_net_input_unit(unsigned unit, const uint8_t *frame, size_t length)
 {
@@ -503,7 +506,7 @@ hakios_net_input_unit(unsigned unit, const uint8_t *frame, size_t length)
 		n->count.dropped_in++;
 		return;
 	}
-	/* as every Ethernet driver hands a frame up: the header noted and stepped over */
+	/* As Ethernet drivers do before ifnet_input: note the header, then step over it. */
 	header = mbuf_data(packet);
 	mbuf_pkthdr_setrcvif(packet, n->ifp);
 	mbuf_pkthdr_setheader(packet, header);
@@ -527,7 +530,7 @@ static errno_t
 net_ioctl(ifnet_t ifp, u_long command, void *data)
 {
 	struct net_if *n = net_if_of(ifp);
-	/* (a radio says it is one here too: IO80211.framework lists the interfaces whose media is 802.11) */
+	/* A wireless link reports 802.11 media: IO80211.framework lists the interfaces with that media. */
 	const int media[] = { (n->link->wireless ? IFM_IEEE80211 : IFM_ETHER) | IFM_AUTO };
 	struct ifreq *request = data;
 	struct ifmediareq *media_request = data;
@@ -537,7 +540,7 @@ net_ioctl(ifnet_t ifp, u_long command, void *data)
 	if (n->link->wireless && net_ioctls_said < 80) {
 		char who[32] = "?";
 
-		/* (while Darwin's Wi-Fi side is being got to talk to this: who asks the interface what) */
+		/* Log the ioctls a wireless interface gets while the Wi-Fi side is brought up, except configd's. 80 lines at most. */
 		proc_selfname(who, sizeof(who));
 		if (strcmp(who, "configd") != 0) {
 			net_ioctls_said++;
@@ -549,12 +552,12 @@ net_ioctl(ifnet_t ifp, u_long command, void *data)
 		ifnet_set_flags(ifp, IFF_UP, IFF_UP);
 		break;
 	case SIOCSIFFLAGS:
-		/* running whenever it is up: the link is there or it is not, nothing is switched on */
+		/* IFF_RUNNING follows IFF_UP. The link's state is reported through the media status instead. */
 		ifnet_set_flags(ifp, (ifnet_flags(ifp) & IFF_UP) ? IFF_RUNNING : 0, IFF_RUNNING);
 		break;
 	case SIOCGIFMEDIA32:
 	case SIOCGIFMEDIA64:
-		/* what configd asks to learn whether the cable is in */
+		/* Media status for configd. IFM_ACTIVE follows the link state. */
 		list = command == SIOCGIFMEDIA64 ? ((struct ifmediareq64 *)media_request)->ifmu_ulist :
 		    CAST_USER_ADDR_T(((struct ifmediareq32 *)media_request)->ifmu_ulist);
 		media_request->ifm_active = media_request->ifm_current = media[0];
@@ -575,16 +578,16 @@ net_ioctl(ifnet_t ifp, u_long command, void *data)
 		break;
 	case SIOCADDMULTI:
 	case SIOCDELMULTI:
-		break;                          /* the link hands us everything anyway */
+		break;                          /* Nothing to program: the link passes every frame. */
 	default:
-		/* what Darwin's Wi-Fi side asks of a radio's interface: drivers/wifi/hakios.apple80211.c */
+		/* Other ioctls on a wireless interface go to hakios_apple80211_ioctl (drivers/wifi/hakios.apple80211.c). */
 		error = n->link->wireless ? hakios_apple80211_ioctl(command, data) : EOPNOTSUPP;
 		break;
 	}
 	return error;
 }
 
-/* Tell whoever listens for kernel events (configd does) that the link is up, or down. */
+/* Post a kernel network event (link on or off) for this interface. configd listens for these. */
 static void
 net_link_event(ifnet_t ifp, uint32_t code)
 {
@@ -622,7 +625,11 @@ hakios_net_link_state(bool up)
 	hakios_net_link_state_unit(0, up);
 }
 
-/* The interface's own thread: for a link that wants to be asked, and for the minute's line in the log. */
+/*
+ * The interface's thread. It calls the link's poll hook, if there is one, and every 8192 ticks logs the counters if
+ * they have changed. The delay is 2 ms while the link reports activity, and 10 ms after 100 polls without it. A link
+ * with no poll hook never reports activity.
+ */
 static void
 net_thread(void *parameter, __unused wait_result_t result)
 {
@@ -654,8 +661,8 @@ hakios_net_attach(const struct hakios_net_link *link)
 		.ver = IFNET_INIT_CURRENT_VERSION,
 		.len = sizeof(init),
 		/*
-		 * The simple model: every frame straight to net_output(). And no Skywalk "nexus" made for
-		 * the interface by itself: sockets are all that is asked of it so far.
+		 * Legacy model: every frame goes straight to net_output(). No Skywalk nexus is made for the interface;
+		 * only sockets use it.
 		 */
 		.flags = IFNET_INIT_LEGACY | IFNET_INIT_NX_NOAUTO,
 		.uniqueid = uniqueid,
@@ -721,7 +728,7 @@ hakios_net_attach(const struct hakios_net_link *link)
 		net_link_event(ifp, KEV_DL_LINK_ON);
 	}
 	if (link->wireless) {
-		/* (a radio's address is the phone's own: not for the log; and Darwin's Wi-Fi side finds the interface by a service) */
+		/* The address of a wireless interface is not logged. HakiosWLANStart is given the BSD name (enN) and the address. */
 		printf("net: en%u attached on %s (a radio), link %s\n", unit, link->name, n->up ? "up" : "down");
 		HakiosWLANStart(uniqueid + 7, address);
 	} else {
@@ -743,13 +750,14 @@ hakios_net_init(void)
 }
 
 /*
- * ---- the USB console's "wifi ip", "wifi ping", "wifi dns", "wifi tcp" and "wifi stat" (drivers/usb/hakios.dwc3.c) ----
- * What en0 was given (configd's DHCP, once the radio has joined and said its link is up), and whether the network
- * answers: four ICMP echo requests from an ICMP datagram socket of the kernel's own (the kind ping uses without root),
- * a second for each answer, of any size up to 8000 bytes (more than a frame: fragments both ways); with no address, the
- * default route's gateway. A DNS question of the kernel's own (UDP, to the server DHCP gave); a TCP connection and an
- * HTTP GET, and how many bytes came back and how fast (the data path's big frames, in); and what en0 has counted:
- * frames by size and kind, and the IP, UDP and TCP layers' own counts (bad checksums among them).
+ * USB console commands "wifi ip", "wifi ping", "wifi dns", "wifi tcp" and "wifi stat" (from drivers/usb/hakios.dwc3.c).
+ *
+ * "wifi ip" shows en0's address and mask and the default route's gateway, as configd's DHCP gave them. "wifi ping"
+ * sends four ICMP echo requests on the kernel's own ICMP datagram socket (the kind ping uses without root), to the
+ * gateway by default. Sizes run from 28 to 8000 bytes, more than one frame, so packets are fragmented both ways.
+ * "wifi dns" asks the DHCP DNS server, or the gateway, for a name's IPv4 addresses over UDP. "wifi tcp" connects,
+ * sends an HTTP GET and reports the bytes returned and the rate. "wifi stat" shows frames by size and kind, and the
+ * IP, UDP and TCP counts, including bad checksums.
  */
 #include <net/route.h>
 #include <netinet/ip_icmp.h>
@@ -760,7 +768,7 @@ hakios_net_init(void)
 static void
 console_say(const char *format, ...)
 {
-	char line[400];         /* ("wifi stat"'s lines are long) */
+	char line[400];         /* The wifi stat lines are the longest. */
 	va_list ap;
 
 	va_start(ap, format);
@@ -769,7 +777,7 @@ console_say(const char *format, ...)
 	loader_log_line(line);
 }
 
-/* en0's first IPv4 address and mask; false without */
+/* First IPv4 address and netmask of en0. False if en0 has none. */
 static bool
 en0_ipv4(struct in_addr *address, struct in_addr *mask)
 {
@@ -796,7 +804,7 @@ en0_ipv4(struct in_addr *address, struct in_addr *mask)
 	return found;
 }
 
-/* the default route's gateway, if there is one */
+/* The gateway of the IPv4 default route, and the interface it uses. False if there is no default route. */
 static bool
 default_gateway(struct in_addr *gateway, char *interface, size_t room)
 {
@@ -867,13 +875,11 @@ icmp_sum(const uint8_t *p, size_t length)
 	return htons((uint16_t)~sum);
 }
 
-/*
- * The console's jobs that take time -- ping, dns, tcp -- run on a thread of their own, one at a time; what each is to
- * do is here while it runs.
- */
+/* ping, dns and tcp each run on a thread of their own, one at a time. The running job's
+ * parameters are in `job`. */
 static volatile bool console_busy;
 static struct {
-	struct in_addr to;              /* (0: look the name up first) */
+	struct in_addr to;              /* 0: look the name up first. */
 	uint32_t size;
 	uint16_t port;
 	char name[96];
@@ -907,7 +913,10 @@ console_job_end(void)
 	thread_terminate(current_thread());
 }
 
-/* the next word of *line (up to a space or the end): its start and length; *line moved past it and the spaces after */
+/*
+ * Split off the next space-separated word of *line. Returns its length and sets *start. *line moves past the word
+ * and the spaces after it.
+ */
 static size_t
 next_word(const char **line, const char **start)
 {
@@ -989,9 +998,7 @@ ms_since(uint64_t start)
 	return ns / NSEC_PER_MSEC;
 }
 
-/* ---- wifi ping [A.B.C.D] [SIZE] -------------------------------------------------------------------------------- */
-
-#define PING_MOST       8000            /* (more than one frame takes: the stack cuts it into fragments, and puts the answer together) */
+#define PING_MOST       8000            /* Larger than one frame: the stack fragments the request and reassembles the reply. */
 
 static void
 ping_runs(__unused void *parameter, __unused wait_result_t result)
@@ -1044,7 +1051,7 @@ ping_runs(__unused void *parameter, __unused wait_result_t result)
 
 			done = 0;
 			if (sock_receive(so, &m, 0, &done) != 0) {
-				break;  /* the second is up */
+				break;  /* One second with no reply. */
 			}
 			hl = done > 0 && (reply[0] >> 4) == 4 ? (size_t)(reply[0] & 15) * 4 : 0;
 			if (done >= hl + 8) {
@@ -1109,9 +1116,7 @@ hakios_net_console_ping(const char *arg)
 	(void)console_job_start(ping_runs, "ping");
 }
 
-/* ---- wifi dns NAME [A.B.C.D] ----------------------------------------------------------------------------------- */
-
-/* the DNS server DHCP gave, else the default route's gateway; false without either */
+/* The DNS server DHCP gave, or else the default gateway. False if neither is known. */
 static bool
 dns_server(struct in_addr *server)
 {
@@ -1125,8 +1130,9 @@ dns_server(struct in_addr *server)
 }
 
 /*
- * One question, for the IPv4 addresses of `name`, to `server` on UDP port 53 (three tries, 2 s each): 0 and the
- * answer's code, its number of answers and up to `room` addresses; or an errno (ETIMEDOUT: no answer).
+ * Ask `server` (UDP port 53) for the IPv4 addresses of `name`. The question is sent up to three times, waiting 2 s
+ * for a reply with the same id each time. Returns 0 with the response code, the answer count and up to `room`
+ * addresses; otherwise an errno, ETIMEDOUT if no reply came.
  */
 static errno_t
 dns_ask(const char *name, struct in_addr server, struct in_addr *a, unsigned room, unsigned *count, unsigned *rcode,
@@ -1193,7 +1199,7 @@ dns_ask(const char *name, struct in_addr server, struct in_addr *a, unsigned roo
 
 			done = 0;
 			if (sock_receive(so, &m, 0, &done) != 0) {
-				break;          /* two seconds: ask again */
+				break;          /* No reply within 2 s: send the question again. */
 			}
 			if (done >= 12 && answer[0] == question[0] && answer[1] == question[1] &&
 			    dns_answer(answer, done, rcode, answers, a, room, count, NULL, 0)) {
@@ -1259,8 +1265,6 @@ hakios_net_console_dns(const char *arg)
 	}
 	(void)console_job_start(dns_runs, "dns");
 }
-
-/* ---- wifi tcp HOST [PORT [PATH]] -------------------------------------------------------------------------------- */
 
 #define TCP_MOST_MS     60000
 
@@ -1393,7 +1397,7 @@ hakios_net_console_tcp(const char *arg)
 	memcpy(job.name, word, length);
 	job.name[length] = 0;
 	if (!ipv4_parse(word, length, &job.to)) {
-		job.to.s_addr = 0;      /* a name: DNS first */
+		job.to.s_addr = 0;      /* A name: look it up first. */
 	}
 	length = next_word(&arg, &word);
 	if (length != 0 && !number_parse(word, length, 1, 65535, &port)) {
@@ -1413,12 +1417,11 @@ usage:
 	    "default, an HTTP GET of PATH (/), and the bytes that come back\n");
 }
 
-/* ---- wifi names [off] ------------------------------------------------------------------------------------------- */
-
 /*
- * What boot-arg net_names=1 says -- every name asked of a DNS server and its answer, every TCP connection begun --
- * on the USB console as well as in the kernel's log, from now on (and the count of NAMES_MAX lines begun again): to
- * watch what Safari or any other program does with the network while one uses it. "off" stops it.
+ * Turns net_names output on the USB console, as well as in the kernel log. "wifi names off" stops the console
+ * output only.
+ * Turning it on also sets net_names=1 and starts the NAMES_MAX count again. The kernel log keeps its lines while
+ * boot-arg net_names=1 is set.
  */
 void
 hakios_net_console_names(const char *arg)
@@ -1434,8 +1437,6 @@ hakios_net_console_names(const char *arg)
 	console_say("usb: wifi names: every DNS question and answer and every TCP connection begun, here as they come "
 	    "(wifi names off to stop)\n");
 }
-
-/* ---- wifi stat ---------------------------------------------------------------------------------------------------- */
 
 void
 hakios_net_console_stat(void)
