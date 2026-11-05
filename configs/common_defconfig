@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 621 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 622 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -1549,8 +1549,11 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_UFS_PROBE is not set
 
 #
-# User space (107)
+# User space (108)
 #
+
+# arguments only the kernel reads built into the kernel (HAKIOS_BUILTIN_ARGS); given on the line, an argument goes ...
+# CONFIG_BUILTIN_ARGS is not set
 
 # read by inject_sb.c (user space)
 # CONFIG_AUTOUNLOCK is not set
