@@ -89,7 +89,7 @@
  *   - a finger held still sends no events, and its boost ends 300 ms after the last;
  *   - the A55s are not where the interface runs (the busiest of them 2% busy at the median second of touching, 24% at the
  *     90th; the scheduler uses them after the M3s, ml_pair_slow_processors()), yet a touch lifted them to 1690000;
- *   - a rate comes down to what the last of its low windows wanted, however much the four before wanted: over half of the
+ *   - a rate comes down to what the last of its low windows wanted, however much the four before wanted: 26 of the 55
  *     logged falls from 1794000 went straight to 650000 (the first changes of each run: boot's, mostly).
  * So, with gov_policy=2:
  *   touch  a finger coming down (hakios_exynos_cpufreq_fingers()) puts the M3s at their ceiling now, for gov_burst_ms (120);
