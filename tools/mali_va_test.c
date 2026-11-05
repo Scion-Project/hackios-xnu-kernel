@@ -1,5 +1,5 @@
 /*
- * The Galaxy S9 Mali's GPU addresses (drivers/gpu/hakios.mali_va.h, what drivers/gpu/hakios.mali.c gives programs'
+ * The Galaxy S9 Mali's GPU addresses (drivers/gpu/mali/hakios.mali_va.h, what drivers/gpu/mali/hakios.mali.c gives programs'
  * buffers) checked on this machine:
  *
  *   cc -O1 -Wall -Wextra tools/mali_va_test.c -o mali_va_test && ./mali_va_test
@@ -22,7 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../drivers/gpu/hakios.mali_va.h"
+#include "../drivers/gpu/mali/hakios.mali_va.h"
 
 static int failures, checks;
 

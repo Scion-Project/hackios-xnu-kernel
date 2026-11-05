@@ -293,7 +293,7 @@ for label in labels:
             job.setdefault('EnvironmentVariables', {})[name] = os.environ[name]
     # bluetoothd's transport, where build.sh BT=1 gives one: its "H4" over its "POSIX" driver, which opens a kernel
     # control by the name after the second colon (H4:POSIX:com.apple.uart.bluetooth,4000000 for the Galaxy S9's,
-    # drivers/bluetooth/hakios.bcm4361_bt.c); "H4" alone looks for a driver called H4, finds none, and bluetoothd
+    # drivers/bluetooth/bcm4361/hakios.bcm4361_bt.c); "H4" alone looks for a driver called H4, finds none, and bluetoothd
     # stops ("FATAL ERROR - HCI Driver H4 could not be matched"), and with no variable at all it asks for Apple's
     # com.apple.uart.sk.bluetooth, which is not here
     if label == 'com.apple.bluetoothd' and os.environ.get('BT_HCI_TRANSPORT'):

@@ -37,9 +37,6 @@ CONFIG_HAKIOS_SOUND=y
 # the microphones, through the audio DSP (mic=N) [hakios.mic.c; requires CONFIG_HAKIOS_ADSP, CONFIG_HAKIOS_SOUND]
 CONFIG_HAKIOS_MIC=y
 
-# QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only [hakios.virtio_sound.c]
-CONFIG_HAKIOS_VIRTIO_SOUND=y
-
 # the Galaxy S9's two speaker amplifiers (MAX98512s on PERIC1's HSI2C), handed to ABOX's UAIF1 (max98512=N: 1 a look, ... [hakios.max98512.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C]
 CONFIG_HAKIOS_MAX98512=y
 
@@ -73,26 +70,11 @@ CONFIG_HAKIOS_S2MPB02_TORCH=y
 # the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps ... [hakios.socinfo.c]
 CONFIG_HAKIOS_SOCINFO=y
 
-# an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery ... [hakios.exynos_hsi2c.c]
-CONFIG_HAKIOS_EXYNOS_HSI2C=y
+# the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's refresh, ... [hakios.exynos_dpu.c]
+CONFIG_HAKIOS_EXYNOS_DPU=y
 
-# an Exynos 9810 SPI master (the SPI of a USI block), polled, the chip select by hand, for the Galaxy S9's audio codec ... [hakios.exynos_spi.c]
-CONFIG_HAKIOS_EXYNOS_SPI=y
-
-# the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the clocks' DVFS ... [hakios.exynos_acpm.c]
-CONFIG_HAKIOS_EXYNOS_ACPM=y
-
-# the Galaxy S9's secure OS asked whether it is there (tee_probe=1: the info fastcall on core 0, read only) and ... [hakios.exynos_tee.c]
-# CONFIG_HAKIOS_EXYNOS_TEE is not set
-
-# the Galaxy S9's big cores (four Exynos M3s): the six CLUSTER1 fields of the PMU that Samsung's kernel writes before ... [hakios.exynos_m3.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
-# CONFIG_HAKIOS_EXYNOS_M3 is not set
-
-# a USB device link for phones with a DesignWare DWC3: the kernel's log streamed to a host over a CDC-ACM serial port ... [hakios.dwc3.c]
-# CONFIG_HAKIOS_USB_GADGET is not set
-
-# the Galaxy S9's USB port, the SoC's half for USB_GADGET: the Exynos 9810's PMU isolation, clocks and USB 2.0 PHY ... [hakios.exynos_usb.c; requires CONFIG_HAKIOS_USB_GADGET, CONFIG_HAKIOS_EXYNOS_ACPM]
-# CONFIG_HAKIOS_EXYNOS_USB is not set
+# the Galaxy S9's panel brightness through DSIM0's command FIFO: the gamma worked out from the panel's MTP as ... [hakios.s6e3ha8.c]
+CONFIG_HAKIOS_S6E3HA8=y
 
 # the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and the window ... [hakios.adreno.c, hakios.gpu.cpp]
 CONFIG_HAKIOS_ADRENO=y
@@ -100,20 +82,8 @@ CONFIG_HAKIOS_ADRENO=y
 # the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the IOKit ... [hakios.mali.c, hakios.mali.cpp; requires CONFIG_HAKIOS_EXYNOS_ACPM]
 CONFIG_HAKIOS_MALI=y
 
-# the Exynos 9810's hardware video decoder, MFC v10 (mfc=N: 1 a look, 2 the block, 3 the firmware from the phone's ... [hakios.exynos_mfc.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
-# CONFIG_HAKIOS_EXYNOS_MFC is not set
-
-# the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's refresh, ... [hakios.exynos_dpu.c]
-CONFIG_HAKIOS_EXYNOS_DPU=y
-
-# the Galaxy S9's panel brightness through DSIM0's command FIFO: the gamma worked out from the panel's MTP as ... [hakios.s6e3ha8.c]
-CONFIG_HAKIOS_S6E3HA8=y
-
 # the vibration motor: an Awinic AW86927 driving a linear resonant actuator (haptic=N), its waveforms from fw-haptic/ [hakios.haptic.c]
 CONFIG_HAKIOS_HAPTIC=y
-
-# QEMU's virtio tablet and keyboard as the touch screen and the buttons (virtio_input=1). QEMU only [hakios.virtio_input.c]
-CONFIG_HAKIOS_VIRTIO_INPUT=y
 
 # the touch screen: a Goodix GT9916 ("Berlin-D") or a FocalTech FT3680 on SPI (touchscreen=1). The bus, pins and ... [hakios.goodix.c]
 CONFIG_HAKIOS_GOODIX=y
@@ -130,14 +100,14 @@ CONFIG_HAKIOS_S6SY761=y
 # the Galaxy S9's sensors behind its sensor hub, the MCU of the BCM4775 GNSS chip on USI_CHUB00's SPI: powered, its ... [hakios.ssp.c; requires CONFIG_HAKIOS_EXYNOS_SPI, CONFIG_HAKIOS_EXYNOS_ACPM]
 # CONFIG_HAKIOS_SSP is not set
 
+# the Exynos 9810's hardware video decoder, MFC v10 (mfc=N: 1 a look, 2 the block, 3 the firmware from the phone's ... [hakios.exynos_mfc.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_EXYNOS_MFC is not set
+
 # QMI messages over the IPC router: how the Wi-Fi firmware's service and the modem's are spoken to [hakios.qmi.c]
 CONFIG_HAKIOS_QMI=y
 
 # the modem (modem=1): started, its file systems served from the flash, the IPA's data path as en1, the SIM and the ... [hakios.mpss.c, hakios.cell.c, hakios.nas.c, hakios.ipa.c; requires CONFIG_HAKIOS_QMI, CONFIG_HAKIOS_UFS]
 CONFIG_HAKIOS_MODEM=y
-
-# QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only [hakios.virtio_net.c; requires CONFIG_HAKIOS_WIFI_STA]
-CONFIG_HAKIOS_VIRTIO_NET=y
 
 # the battery: kern.hakios.battery_*, and HakiosBattery, the IOPMPowerSource Darwin reads the charge from (the state ... [hakios.battery.c, hakios.battery.cpp]
 CONFIG_HAKIOS_BATTERY=y
@@ -169,8 +139,38 @@ CONFIG_HAKIOS_EXYNOS_TMU=y
 # the Galaxy S9 powered off: PS_HOLD let go in the Exynos 9810's PMU, for the TMU's tmu_off=1 and for a halt ... [hakios.exynos_poweroff.c]
 CONFIG_HAKIOS_EXYNOS_POWEROFF=y
 
+# an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery ... [hakios.exynos_hsi2c.c]
+CONFIG_HAKIOS_EXYNOS_HSI2C=y
+
+# an Exynos 9810 SPI master (the SPI of a USI block), polled, the chip select by hand, for the Galaxy S9's audio codec ... [hakios.exynos_spi.c]
+CONFIG_HAKIOS_EXYNOS_SPI=y
+
+# the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the clocks' DVFS ... [hakios.exynos_acpm.c]
+CONFIG_HAKIOS_EXYNOS_ACPM=y
+
+# the Galaxy S9's secure OS asked whether it is there (tee_probe=1: the info fastcall on core 0, read only) and ... [hakios.exynos_tee.c]
+# CONFIG_HAKIOS_EXYNOS_TEE is not set
+
+# the Galaxy S9's big cores (four Exynos M3s): the six CLUSTER1 fields of the PMU that Samsung's kernel writes before ... [hakios.exynos_m3.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_EXYNOS_M3 is not set
+
 # the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from ... [hakios.ufs.c, hakios.ufshc.c, hakios.ext4.c]
 CONFIG_HAKIOS_UFS=y
+
+# a USB device link for phones with a DesignWare DWC3: the kernel's log streamed to a host over a CDC-ACM serial port ... [hakios.dwc3.c]
+# CONFIG_HAKIOS_USB_GADGET is not set
+
+# the Galaxy S9's USB port, the SoC's half for USB_GADGET: the Exynos 9810's PMU isolation, clocks and USB 2.0 PHY ... [hakios.exynos_usb.c; requires CONFIG_HAKIOS_USB_GADGET, CONFIG_HAKIOS_EXYNOS_ACPM]
+# CONFIG_HAKIOS_EXYNOS_USB is not set
+
+# QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only [hakios.virtio_sound.c]
+CONFIG_HAKIOS_VIRTIO_SOUND=y
+
+# QEMU's virtio tablet and keyboard as the touch screen and the buttons (virtio_input=1). QEMU only [hakios.virtio_input.c]
+CONFIG_HAKIOS_VIRTIO_INPUT=y
+
+# QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only [hakios.virtio_net.c; requires CONFIG_HAKIOS_WIFI_STA]
+CONFIG_HAKIOS_VIRTIO_NET=y
 
 # a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only [hakios.virtio_blk.c]
 CONFIG_HAKIOS_VIRTIO_BLK=y
@@ -1418,7 +1418,7 @@ CONFIG_MODEM_AGAIN=y
 # list every block of the power-management chips the SPMI arbiter shows, and read the PMIC's clock; read only
 # CONFIG_PMIC is not set
 
-# what a halt does: 0 the loader's way (the default), 1 panel off and PS_HOLD, 2 also the APM stopped first
+# read by hakios.exynos_poweroff.c (kernel)
 # CONFIG_HALT_OFF is not set
 
 # only the clock, not the inventory of every block

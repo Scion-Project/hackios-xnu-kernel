@@ -31,7 +31,7 @@
  *   BT_EN        pin 7 (port 0, bit 7) of the PCAL6524 GPIO expander at 0x22 on hsi2c@10930000 (the bluetooth node's first
  *                            gpio, <76 7 0>, dts 13866-13872; pcal6524@22, dts 6767-6786; bcm43xx.c:272 takes it as bt_en).
  *                            This is BT_REG_ON. It is NOT shared with Wi-Fi: WLAN_REG_ON is gpg0-5 of the SoC (bcmdhd's
- *                            dhd_custom_exynos.c:222-236, "cfg_wlanen", dts 2670), driven by drivers/wifi/hakios.exynos_pcie.c
+ *                            dhd_custom_exynos.c:222-236, "cfg_wlanen", dts 2670), driven by drivers/wifi/brcmfmac/hakios.exynos_pcie.c
  *                            (wifi_pcie=2); the BCM4361 has the two lines apart, and bcmdhd's one BT/WLAN REG_ON workaround,
  *                            si_pmu_wlan_bt_reg_on_war() (hndpmu.c:680-710), is for the 4389 alone (PMU rev 40)
  *   the expander's registers  INPUT 0x00, DAT_OUT 0x04, CONFIG 0x0C (+ port; a CONFIG bit 1 is an input), one byte each

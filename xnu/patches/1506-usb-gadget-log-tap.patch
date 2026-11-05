@@ -5,8 +5,8 @@ diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
  extern void hakios_s2mpb02_torch_quiesce(void);
  extern void hakios_exynos_pcie_quiesce(void);
  extern void hakios_ufs_quiesce(void);
-+extern void hakios_usb_gadget_quiesce(void);  /* drivers/core/hakios.dwc3.c: the rest of the log out over USB, then the controller stopped */
- extern void hakios_var_save_on_return(void);   /* drivers/storage/hakios.ufs.c: the data volume into the flash */
++extern void hakios_usb_gadget_quiesce(void);  /* drivers/usb/hakios.dwc3.c: the rest of the log out over USB, then the controller stopped */
+ extern void hakios_var_save_on_return(void);   /* drivers/storage/ufs/hakios.ufs.c: the data volume into the flash */
  void loader_checkpoint(uint64_t n);
  
 @@ -92,6 +93,43 @@
@@ -15,7 +15,7 @@ diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
  static void loader_log_put_locked(char c);
 +
 +/*
-+ * A second reader of every character the log gets, as it gets it: the USB gadget driver's (drivers/core/hakios.dwc3.c),
++ * A second reader of every character the log gets, as it gets it: the USB gadget driver's (drivers/usb/hakios.dwc3.c),
 + * which streams the log to a host. Called under the lock, interrupts off: it only copies the character.
 + */
 +static void (*volatile loader_log_tap)(char c);

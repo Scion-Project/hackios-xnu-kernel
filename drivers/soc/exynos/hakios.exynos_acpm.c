@@ -1,7 +1,7 @@
 /*
  * The Exynos 9810's always-on power processor (APM), asked through its ACPM firmware: the S2MPS18 PMIC's registers
  * (over SPEEDY, which the APM owns) and the clocks' DVFS rates. For the Galaxy S9's drivers (the GPU's supply:
- * drivers/gpu/hakios.mali.c; the touch screen's: hakios.s6sy761.c; ABOX's rate); sys/hakios.exynos_acpm.h says how to
+ * drivers/gpu/mali/hakios.mali.c; the touch screen's: hakios.s6sy761.c; ABOX's rate); sys/hakios.exynos_acpm.h says how to
  * call it.
  *
  * The boot loader has started the APM with its firmware; nothing is to be done first (Linux's driver maps the two

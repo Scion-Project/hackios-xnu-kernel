@@ -1,6 +1,6 @@
 /*
  * The GPU of the Galaxy S9 (starlte, Exynos 9810), a Mali-G72 MP18, brought up from the kernel step by step and then
- * handed to HakiosMali (drivers/gpu/hakios.mali.cpp), the IOKit service Mesa's panfrost draws through. Only with
+ * handed to HakiosMali (drivers/gpu/mali/hakios.mali.cpp), the IOKit service Mesa's panfrost draws through. Only with
  * boot-arg mali=N: every address below belongs to this phone, and nothing is touched without it.
  *
  * WHERE IT COMES FROM. This is HakiOS's Mali driver for the Infinix Hot 20 (X6826B: MediaTek MT6768, a Mali-G52 MC2),
@@ -23,7 +23,7 @@
  *   supply        the S2MPS18's BUCK6, vdd_g3d: B6CTRL (0x2A) [7:6] its on mode -- 10 on this phone, the G3D power
  *                 pin's (the device tree's g3d_en): the PMU's power-on of the domain turns it on -- and B6OUT (0x2B)
  *                 its voltage, 300 mV + 6.25 mV a step, 950 mV (0x68) the regulator's most. Reached only through ACPM
- *                 (drivers/core/hakios.exynos_acpm.c). S-BOOT LEAVES IT AT 644 mV WITH THE GPU AT 260 MHz, and on the
+ *                 (drivers/soc/exynos/hakios.exynos_acpm.c). S-BOOT LEAVES IT AT 644 mV WITH THE GPU AT 260 MHz, and on the
  *                 S9+ that is a combination the GPU does not work on: panfrost had DATA_INVALID_FAULTs every few seconds,
  *                 and two kernels whose panfrost reset and read the GPU before the rail was raised never came back (the
  *                 SoC hung). So step 2 writes B6OUT = 0x68 (950 mV, that port's value at every rate) and reads it back
@@ -174,7 +174,7 @@ extern boolean_t pmap_valid_address(uint64_t addr);             /* memory the ke
 extern int hakios_mfc_carved(uint64_t phys);                    /* the video decoder's (hakios.exynos_mfc.c, mfc_zc; stubs.c) */
 extern int hakios_scanout_carved(uint64_t phys);                /* the DPU's pool (hakios.exynos_dpu.c; stubs.c) */
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
-extern void HakiosMaliStart(void);                              /* drivers/gpu/hakios.mali.cpp */
+extern void HakiosMaliStart(void);                              /* drivers/gpu/mali/hakios.mali.cpp */
 extern uint32_t gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShown;   /* hakios.mali.cpp */
 extern struct mali_made { uint64_t address, size; uint32_t asked, flags; } gMaliMade[32];
 
@@ -247,7 +247,7 @@ static uint32_t reached, gpu_id, shader_mask, l2_mask, last_step, step;
 static bool powered_here;               /* step 2 switched the domain on: off again if the steps end short */
 static bool gpu_answered;               /* step 4 read a G72: a soft reset before the power goes */
 /*
- * The supply, through ACPM (drivers/core/hakios.exynos_acpm.c): the S2MPS18's BUCK6 (vdd_g3d). Only B6OUT is ever
+ * The supply, through ACPM (drivers/soc/exynos/hakios.exynos_acpm.c): the S2MPS18's BUCK6 (vdd_g3d). Only B6OUT is ever
  * written, never above 0x68 (950 mV, the regulator's most in the phone's device tree), and read back; B6CTRL is read,
  * for the log. Put back as found when this driver switches the domain off again. Boot-arg mali_acpm=0: none of it.
  */
@@ -262,7 +262,7 @@ static bool acpm_ok, rail_changed, b6out_known;  /* b6out_known: B6OUT was read 
 static uint8_t b6out_found;
 
 SYSCTL_UINT(_kern_hakios, OID_AUTO, mali, CTLFLAG_RD | CTLFLAG_LOCKED, &reached, 0,
-    "how far the Mali came up: 9 is the GPU there for programs (drivers/gpu/hakios.mali.c)");
+    "how far the Mali came up: 9 is the GPU there for programs (drivers/gpu/mali/hakios.mali.c)");
 /*
  * What a program said about the GPU (the original's userland/src/mali_test.c writes it): repeated in the log once a
  * minute, so that it lands in the end of a run's log, which is the part that is kept.
@@ -1271,7 +1271,7 @@ step_job_tables(void)
 static bool
 step_serve(void)
 {
-	say("mali: 9: HakiosMali started: programs can draw with the GPU (Mesa's panfrost; drivers/gpu/hakios.mali.cpp)\n");
+	say("mali: 9: HakiosMali started: programs can draw with the GPU (Mesa's panfrost; drivers/gpu/mali/hakios.mali.cpp)\n");
 	reached = 9;                            /* (the user client asks hakios_mali_ready()) */
 	HakiosMaliStart();
 	return true;
@@ -1293,7 +1293,7 @@ static const struct {
 };
 #define STEPS ((uint32_t)(sizeof(steps) / sizeof(steps[0])))
 
-/* ---- what the service that programs talk to uses (drivers/gpu/hakios.mali.cpp) ---- */
+/* ---- what the service that programs talk to uses (drivers/gpu/mali/hakios.mali.cpp) ---- */
 
 /*
  * Linux's panfrost interface, as far as Mesa's panfrost needs it to draw, is answered by the IOKit service HakiosMali;

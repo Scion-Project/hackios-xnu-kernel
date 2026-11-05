@@ -6,7 +6,7 @@
  *
  * Why it is here. The POCO's hakios.thermal.c (THERMAL) and the S9's hakios.exynos_tmu.c (EXYNOS_TMU) each defined these
  * names and the function themselves, so a kernel could not have both drivers in; the panel's brightness was untangled
- * the same way (drivers/gpu/hakios.backlight.cpp, hakios_panel_register()). Nothing is said in the log here, so that a
+ * the same way (drivers/display/panel/hakios.backlight.cpp, hakios_panel_register()). Nothing is said in the log here, so that a
  * phone's log is what it was.
  */
 #include <stdint.h>

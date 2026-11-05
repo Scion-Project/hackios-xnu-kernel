@@ -70,7 +70,7 @@ static uint32_t touch_head, touch_tail;        /* read from head, add at tail */
 #define EXIT_HOLD_MS    1500
 
 extern void loader_return(void);
-extern void hakios_var_save_on_return(void);    /* drivers/storage/hakios.ufs.c: the data volume synced into the flash */
+extern void hakios_var_save_on_return(void);    /* drivers/storage/ufs/hakios.ufs.c: the data volume synced into the flash */
 
 static thread_call_t exit_call;
 static uint32_t fingers_down;           /* one bit for each finger a driver says is down */
@@ -219,7 +219,7 @@ static const struct cdevsw touch_cdevsw = {
 };
 
 extern void hakios_esslog_start(void);
-extern void hakios_exynos_dvfs_start(void);   /* drivers/core/hakios.exynos_acpm.c */
+extern void hakios_exynos_dvfs_start(void);   /* drivers/soc/exynos/hakios.exynos_acpm.c */
 void
 hakios_input_init(void)
 {
@@ -258,7 +258,7 @@ hakios_input_init(void)
 }
 
 /*
- * The USB console's "touch X Y" and "touch X1 Y1 X2 Y2 [MS]" (drivers/core/hakios.dwc3.c): a tap, or a swipe over MS
+ * The USB console's "touch X Y" and "touch X1 Y1 X2 Y2 [MS]" (drivers/usb/hakios.dwc3.c): a tap, or a swipe over MS
  * milliseconds (300 if not given), put into the queue as the panel's driver would, so that the phone can be worked
  * from the console with nobody at it (with "shot" to see what it did); and "button lock|home|up|down", a press of
  * that button as its driver would give it (the side button wakes a screen that has gone dark). X and Y are thousandths of the screen's width

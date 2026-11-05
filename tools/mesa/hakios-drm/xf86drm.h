@@ -3,7 +3,7 @@
  * DRM: the declarations here, the functions in hakios.drm.c, which carry the requests to the
  * kernel's GPU driver as calls of its user client -- the service HakiosGPU (the POCO's Adreno, as
  * Linux's msm; drivers/gpu/hakios.gpu.cpp) or HakiosMali (the Galaxy S9's Mali, as Linux's
- * panfrost; drivers/gpu/hakios.mali.cpp). tools/mk-mesa.sh puts both into Mesa's tree, where
+ * panfrost; drivers/gpu/mali/hakios.mali.cpp). tools/mk-mesa.sh puts both into Mesa's tree, where
  * they are the "libdrm" the two drivers are built against. The request numbers and their
  * structures are Linux's (Mesa's include/drm-uapi).
  */
@@ -78,7 +78,7 @@ void hakios_drm_unmap(int fd, uint32_t handle, void *address);
 /*
  * Not libdrm's either: what the memory of an IOSurface would be like as a buffer (the kernel's
  * request and its answer: struct hakios_surface in drivers/gpu/hakios.gpu.cpp, the same as struct
- * mali_surface in drivers/gpu/hakios.mali.cpp); 0, or -1 with errno. The buffer itself is made by
+ * mali_surface in drivers/gpu/mali/hakios.mali.cpp); 0, or -1 with errno. The buffer itself is made by
  * drmPrimeFDToHandle(), which the driver calls with its table of buffers locked, so that a buffer
  * on its way out and the same surface on its way in cannot pass each other.
  */

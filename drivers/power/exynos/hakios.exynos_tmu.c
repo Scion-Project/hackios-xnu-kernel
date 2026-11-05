@@ -119,7 +119,7 @@ static int temp_zone_mc[TMU_NZONES] = { NOT_READ_MC, NOT_READ_MC, NOT_READ_MC, N
 static int temp_max_mc = NOT_READ_MC, temp_reads, temp_battery_c = -273;
 static char temp_hottest[16] = "", temp_sensors[400] = "";
 
-SYSCTL_NODE(_kern_hakios, OID_AUTO, temp, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "the Exynos 9810's TMU (drivers/power/hakios.exynos_tmu.c, tmu=2)");
+SYSCTL_NODE(_kern_hakios, OID_AUTO, temp, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "the Exynos 9810's TMU (drivers/power/exynos/hakios.exynos_tmu.c, tmu=2)");
 SYSCTL_INT(_kern_hakios_temp, OID_AUTO, big_mc, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_zone_mc[0], 0, "the big cores' hottest sensor, millidegrees");
 SYSCTL_INT(_kern_hakios_temp, OID_AUTO, little_mc, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_zone_mc[1], 0, "the little cores' sensor, millidegrees");
 SYSCTL_INT(_kern_hakios_temp, OID_AUTO, g3d_mc, CTLFLAG_RD | CTLFLAG_LOCKED, &temp_zone_mc[2], 0, "the GPU's sensor, millidegrees");

@@ -1346,7 +1346,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		gamut_p3 |= starts_with(c, "gamut=p3") && (c == pi.cmdline || c[-1] == ' ');
 		/*
 		 * ufs=3: served as ufs=2. The kernel reads its references through this service, then its own driver takes
-		 * the controller (drivers/storage/hakios.ufs.c, ufs_nufs_start); while the page says its list is in, nothing
+		 * the controller (drivers/storage/ufs/hakios.ufs.c, ufs_nufs_start); while the page says its list is in, nothing
 		 * is asked of UEFI's driver here (block_poll).
 		 */
 		if (starts_with(c, "ufs=") && (c == pi.cmdline || c[-1] == ' ') && c[4] >= '1' && c[4] <= '3' &&
@@ -1360,7 +1360,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		block_write_requested |= starts_with(c, "ufs_write=1") && (c == pi.cmdline || c[-1] == ' ') &&
 		    (c[11] == 0 || c[11] == ' ');
 		/* 1-3: the kernel's list beside UEFI's, in this loader's area; 4 and 5 are the kernel's alone (it has the
-		 * controller for the run, and this loader serves no storage then: drivers/storage/hakios.ufshc.c, own mode) */
+		 * controller for the run, and this loader serves no storage then: drivers/storage/ufs/hakios.ufshc.c, own mode) */
 		hc_requested |= starts_with(c, "ufs_native=") && (c == pi.cmdline || c[-1] == ' ') && c[11] >= '1' &&
 		    c[11] <= '3';
 	}

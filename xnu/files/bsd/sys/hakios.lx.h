@@ -1,7 +1,7 @@
 /*
  * The whole of what the Wi-Fi driver's object asks of the kernel it is linked into. That object
  * (tools/mk-ath11k.sh in the repository: Linux's ath11k on FreeBSD's LinuxKPI headers and our
- * wifi/lx) is compiled as FreeBSD kernel code, drivers/wifi/hakios.lx.c on this side as XNU's;
+ * wifi/lx) is compiled as FreeBSD kernel code, drivers/wifi/lx/hakios.lx.c on this side as XNU's;
  * neither sees the other's headers, so nothing but C's own types crosses (and the station
  * boundary's, hakios.sta.h, which is written for both). Everything the
  * driver's side knows of locks, timers, work queues and buffers is built in wifi/lx/src on the
@@ -105,7 +105,7 @@ void	 lx_os_irq_line_detach(void);				/* returns when function is not running (u
 unsigned long long lx_os_irq_line_count(void);			/* how many have arrived */
 
 /*
- * ---- a radio on PCIe (the Galaxy S9's BCM4361, for brcmfmac: drivers/wifi/hakios.brcmfmac.c; the WCN6750's kernel has
+ * ---- a radio on PCIe (the Galaxy S9's BCM4361, for brcmfmac: drivers/wifi/brcmfmac/hakios.brcmfmac.c; the WCN6750's kernel has
  * none of these, and ath11k's object does not ask for them). One device, already enumerated and decoding.
  */
 int	 lx_os_pci_device(unsigned *vendor, unsigned *device);	/* 1 if there is one, with its IDs; 0 */

@@ -118,7 +118,7 @@ fill(int width, int height)
 	/*
 	 * And one gl_test does not draw: a blend the Mali has no fixed function for (GL_MIN), which
 	 * panfrost draws with a blend shader -- whose address a Bifrost blend descriptor holds in 32
-	 * bits, the reason HakiosMali keeps every address under 4 GB (drivers/gpu/hakios.mali_va.h).
+	 * bits, the reason HakiosMali keeps every address under 4 GB (drivers/gpu/mali/hakios.mali_va.h).
 	 */
 	glEnable(GL_BLEND);
 	glBlendEquation(GL_MIN);

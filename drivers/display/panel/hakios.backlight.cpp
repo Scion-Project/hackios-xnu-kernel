@@ -1,7 +1,7 @@
 /*
  * The panel's brightness, whichever phone: a panel driver that can set it registers here
  * (hakios_panel_register()), and what iOS asks for reaches it through hakios_panel_brightness(), 0-255. Today the
- * Galaxy S9's S6E3HA8 (drivers/gpu/hakios.s6e3ha8.c, panel=1) registers; no other phone's driver does, and there
+ * Galaxy S9's S6E3HA8 (drivers/display/panel/hakios.s6e3ha8.c, panel=1) registers; no other phone's driver does, and there
  * hakios_panel_brightness() says ENODEV, as the stub it replaces did. Two ways in:
  *
  *   the display service (MiniIOMobileFramebuffer.cpp, patch 1500): a key named "brightness" set on IOMobileFramebuffer,

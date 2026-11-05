@@ -1,6 +1,6 @@
 /*
- * The Galaxy S9's Bluetooth bring-up, its byte formats and arithmetic (drivers/bluetooth/hakios.bcm_hci.h, what
- * drivers/bluetooth/hakios.bcm4361_bt.c talks to the BCM4361 with) checked on this machine:
+ * The Galaxy S9's Bluetooth bring-up, its byte formats and arithmetic (drivers/bluetooth/bcm4361/hakios.bcm_hci.h, what
+ * drivers/bluetooth/bcm4361/hakios.bcm4361_bt.c talks to the BCM4361 with) checked on this machine:
  *
  *   cc -O1 -Wall -Wextra tools/bcm_hci_test.c -o bcm_hci_test && ./bcm_hci_test
  * (tools/bcm-hci-test.sh does that under the address and undefined-behaviour sanitizers.)
@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../drivers/bluetooth/hakios.bcm_hci.h"
+#include "../drivers/bluetooth/bcm4361/hakios.bcm_hci.h"
 
 static int failures, checks;
 

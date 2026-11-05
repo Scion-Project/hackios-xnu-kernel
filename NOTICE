@@ -25,7 +25,7 @@ In the repository:
   AOSP's (Apache 2.0). firmware/audio/ holds Samsung's audio firmware binaries, unchanged from the
   LineageOS vendor trees: the vendor's, redistribution terms "to verify" (THIRD_PARTY_LICENSES.md).
 
-- the FocalTech touch firmware, drivers/input/hakios.focaltech_fw.h: the touch vendor's;
+- the FocalTech touch firmware, drivers/input/touch/hakios.focaltech_fw.h: the touch vendor's;
   generated from a device blob, redistribution terms "to verify" (THIRD_PARTY_LICENSES.md).
 
 - the Wi-Fi driver: Linux's ath11k (BSD-3-Clause-Clear) and FreeBSD's LinuxKPI headers (BSD-2-Clause) are

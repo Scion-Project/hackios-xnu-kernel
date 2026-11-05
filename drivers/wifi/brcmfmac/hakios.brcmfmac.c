@@ -148,7 +148,7 @@ hakios_wifi_dsp_is_up(void)
  * Which module this phone's chip is: brcmfmac's probe reads the CIS the module's maker wrote into the chip's OTP, the way
  * bcmdhd does (wifi/lx/brcmfmac/lx_brcmf.c, lx_brcmf_identify()), and gives it here before it asks for any file. What it
  * says (xnu/files/bsd/sys/hakios.bcm4361_cis.h: Murata or SEMCO, and the NVRAM bcmdhd would take) chooses the NVRAM
- * below, and Bluetooth's patch (hakios_bcm4361_module(), for drivers/bluetooth/hakios.bcm4361_bt.c).
+ * below, and Bluetooth's patch (hakios_bcm4361_module(), for drivers/bluetooth/bcm4361/hakios.bcm4361_bt.c).
  */
 static struct bcm4361_module module;
 static bool module_read;

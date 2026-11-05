@@ -44,7 +44,7 @@
  * and its drivers):
  *   SPI          spi@13AC0000 = USI_CHUB00, "samsung,exynos-spi", 64-byte FIFO, mode 3 (spi-cpol, spi-cpha), at most
  *                25 MHz, one chip select (gph0-3, the controller's own nSS in function 2). Its USI mode word usi@13A13000
- *                (usi_00_chub): 2 = SPI. Driven by drivers/core/hakios.exynos_spi.c
+ *                (usi_00_chub): 2 = SPI. Driven by drivers/soc/exynos/hakios.exynos_spi.c
  *   pins         gph0 of CHUB's GPIO (pinctrl@13A80000, bank +0x00): -0 SCLK, -1 MOSI, -3 nSS function 2, -2 MISO
  *                function 2 pull-down ("sensorhub_mosi_sck_ssn", "sensorhub_miso"); -4 MCU_RESP input (the chip's
  *                "awake"), -5 MCU_REQ output (the AP's "wake up"). -7 is the MST driver's: its bits are never written
@@ -62,7 +62,7 @@
  *   CHUB domain  PMU 0x14060000: CHUB_CONFIGURATION +0x4080, CHUB_STATUS +0x4084 ([3:0] 0xF = on); Samsung's S9 never
  *                switches it (no power domain in its tree for it), so it is on as the boot left it, or this stops
  *
- * The protocol, layer by layer, is drivers/input/hakios.bcm_shub.h (checked on a computer by tools/bcm_shub_test.c);
+ * The protocol, layer by layer, is drivers/input/ssp/hakios.bcm_shub.h (checked on a computer by tools/bcm_shub_test.c);
  * how the chip is driven:
  *   SSI      every exchange: MCU_REQ high, MCU_RESP waited for (up to 100 ms, MCU_REQ pulsed every 20 polls), then while
  *            HOST_REQ is high one read frame each ([0x50][0 0] -> [status][len], then len + 3 bytes), and the bytes to

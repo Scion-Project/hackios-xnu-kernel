@@ -5,8 +5,8 @@
 # release, every patch of tools/mesa applied, the AIR frontend and libhakiosair in it -- with
 # panfrost, softpipe and Mesa's drm-shim added. Then panfrost is run under drm-shim with
 # tools/mali-drmshim/hakios_mali_shim.c in place of a GPU: a shim that answers as HakiosMali does
-# (drivers/gpu/hakios.mali.c, hakios.mali.cpp): a Mali-G72 (GPU_ID 0x6221) MP18, interface 1.2,
-# and GPU addresses from the kernel's own allocator, drivers/gpu/hakios.mali_va.h. Nothing
+# (drivers/gpu/mali/hakios.mali.c, hakios.mali.cpp): a Mali-G72 (GPU_ID 0x6221) MP18, interface 1.2,
+# and GPU addresses from the kernel's own allocator, drivers/gpu/mali/hakios.mali_va.h. Nothing
 # executes the jobs; what is checked is everything up to the GPU:
 #
 #   1. OpenGL ES: userland/src/gl_test.c's triangle (tools/mali-drmshim/gl_drmshim.c) through
@@ -30,7 +30,7 @@
 # "reads back" are not results, which is why only softpipe's picture is kept), that the feature
 # registers the shim reports are this phone's (the phone has never been read: the values and why
 # each was chosen are in hakios_mali_shim.c, and HAKIOS_MALI_REGS takes the ones step 4 of mali=N
-# logs), or anything of the kernel's half (drivers/gpu/hakios.mali.c, the IOKit service, the MMU).
+# logs), or anything of the kernel's half (drivers/gpu/mali/hakios.mali.c, the IOKit service, the MMU).
 #
 #   tools/mali-drmshim-check.sh                  build what is missing, run everything
 #   COMPARE=phone.rgba tools/mali-drmshim-check.sh
@@ -104,7 +104,7 @@ if [ ! -d "$SRC" ] || [ "$(cat "$SRC/.drmshim-patches" 2>/dev/null)" != "$PATCHE
 	ln -s "$ROOT/tools/mesa/air" "$SRC/src/compiler/air"
 	mkdir -p "$SRC/src/panfrost/drm-shim/hakios"
 	ln -s "$ROOT/tools/mali-drmshim/hakios_mali_shim.c" "$SRC/src/panfrost/drm-shim/hakios/hakios_mali_shim.c"
-	ln -s "$ROOT/drivers/gpu/hakios.mali_va.h" "$SRC/src/panfrost/drm-shim/hakios/hakios.mali_va.h"
+	ln -s "$ROOT/drivers/gpu/mali/hakios.mali_va.h" "$SRC/src/panfrost/drm-shim/hakios/hakios.mali_va.h"
 	echo "$PATCHES" > "$SRC/.drmshim-patches"
 fi
 

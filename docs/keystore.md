@@ -177,7 +177,7 @@ Possible, large, and not started.
 - HFS's side exists: `bsd/hfs/hfs_cprotect.c` is compiled but disabled by `CONFIG_PROTECT 0`. XNU's `bsd/vfs/vfs_cprotect.c` gives `cp_register_wraps` (new key, unwrap, rewrap, invalidate,
   backup) and `cp_key_store_action` (lock events), which the key store must drive.
 - **The storage driver does the encryption**: HFS hands it the file's key and offset on each buffer (`bufattr_cpx`, `cpx_iv_aes_ctx`) and an iPhone's hardware does the AES. Here
-  `drivers/storage/hakios.ufshc.c` would need a software AES path with bounce buffers, or Samsung's inline FMP engine in the UFS host, which nothing here drives. Bitsliced AES is far too slow
+  `drivers/storage/ufs/hakios.ufshc.c` would need a software AES path with bounce buffers, or Samsung's inline FMP engine in the UFS host, which nothing here drives. Bitsliced AES is far too slow
   for a data path (order of 100 MB/s per core, measured on nothing yet); the CPU's AES instructions would be the way, which needs the kernel to save vector registers around them.
 - **The volume must be formatted for it**: `kHFSContentProtectionMask` in the volume header. `/private/var` as it exists would be copied out and back, or reset.
 - **Boot order**: with file class C as the default, nothing written that way is readable before the first unlock. iOS's restore marks what boot needs as class D. This userland's
@@ -188,7 +188,7 @@ Possible, large, and not started.
 
 Nothing in the key store depends on the TEE yet: `hwTangle()` in `MiniAppleKeyStore.cpp` is still a copy, and it is the one place this would go in. Changing it makes existing bags unreadable. No keys are extracted from firmware, and EL3 and the TEE are not patched.
 
-Kinibi starts under HakiOS on a Galaxy S9 (`tee_probe=2`: state 2, one boot on one phone). Beyond that, `drivers/core/hakios.exynos_tee.c` has two test modes, off unless asked. **Neither has run on a phone:**
+Kinibi starts under HakiOS on a Galaxy S9 (`tee_probe=2`: state 2, one boot on one phone). Beyond that, `drivers/soc/exynos/hakios.exynos_tee.c` has two test modes, off unless asked. **Neither has run on a phone:**
 
 - `tee_probe=3`: asks Kinibi its version over MCP, then opens and closes a session on a harmless TA read from the phone's own VENDOR partition.
 - `tee_probe=4`: also runs Samsung's keymaster TA (`ffffffff00000000000000000000003e`): configure, generate an HMAC key, HMAC a fixed test value twice. The TA seals the key into a blob, kept in `/private/var/hakios-tee-km-test.blob`; a later boot reuses that file.

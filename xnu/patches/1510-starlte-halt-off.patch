@@ -6,7 +6,7 @@ index 8cbef0d..9033812 100644
  extern void loader_return(void);
  extern void loader_exit_wanted(bool reset);    /* osfmk/arm64/loader_return.c */
  extern void hakios_adreno_stop(void);
-+extern void hakios_exynos_halt_off(boolean_t reboot);  /* drivers/power/hakios.exynos_poweroff.c (halt_off=N, the Galaxy S9) */
++extern void hakios_exynos_halt_off(boolean_t reboot);  /* drivers/power/exynos/hakios.exynos_poweroff.c (halt_off=N, the Galaxy S9) */
  
  __attribute__((noreturn))
  void

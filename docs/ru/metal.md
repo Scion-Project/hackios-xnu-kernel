@@ -86,7 +86,7 @@ Adreno же отдаётся userland'у отдельно и под своим �
 (строки 289–307) регистрирует `HakiosGPU : IOService`, `setName("HakiosGPU")`,
 `kIOUserClientClassKey = "HakiosGPUUserClient"` — это то, с чем говорит freedreno из Mesa, и к
 `IOAcceleratorES` оно отношения не имеет. Причём `HakiosGPUStart()` зовётся из
-`drivers/gpu/hakios.adreno.c` (строка 3858) только когда GPU действительно поднялся, так что в QEMU
+`drivers/gpu/adreno/hakios.adreno.c` (строка 3858) только когда GPU действительно поднялся, так что в QEMU
 `metal_test` и не нашёл ничего (`what the registry has that is a GPU: none`).
 
 **Что из этого следует для раздела 4.** Границу стерегут не IOKit и не ядро: класс нужной службы в
@@ -310,7 +310,7 @@ XL_CMDLINE="... gpu=1" RC_JOBS=rc.jobs.metal ./xl run        # на телефо
 ```
 
 **Разница между QEMU и телефоном ровно одна**, и её стоит знать, читая вывод: пункт 2 показывает
-`HakiosGPU` только на телефоне. `HakiosGPUStart()` зовётся из `drivers/gpu/hakios.adreno.c` (строка
+`HakiosGPU` только на телефоне. `HakiosGPUStart()` зовётся из `drivers/gpu/adreno/hakios.adreno.c` (строка
 3858) лишь тогда, когда GPU действительно поднялся (`done >= 21 && core_runs`, то есть `gpu=1` и
 прошивки из `fw-gpu/`); в QEMU GPU нет вовсе, и служб не будет никаких. Про само Metal ответ
 одинаков: устройства нет ни там, ни там.

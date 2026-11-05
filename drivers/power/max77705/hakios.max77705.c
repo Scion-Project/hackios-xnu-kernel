@@ -7,7 +7,7 @@
  * THIS DRIVER ONLY READS THE CHIP. The MAX77705 is the phone's charger: a wrong write there changes how the battery is
  * charged. Nothing is written to it, not even the latches its interrupt handler would clear on Android (the interrupt
  * registers are not read at all: reading them clears them). What is written is the bus's own: the clock gates of
- * CMGP's USI03, its mode word, the controller (drivers/core/hakios.exynos_hsi2c.c).
+ * CMGP's USI03, its mode word, the controller (drivers/soc/exynos/hakios.exynos_hsi2c.c).
  *
  *   the fuel gauge, 0x36: 16-bit registers, little-endian
  *     0x00 status (bit 3: no battery), 0x05 RepCap and 0x35 FullCapRep (1 mAh), 0x06 RepSOC (1/256 %),

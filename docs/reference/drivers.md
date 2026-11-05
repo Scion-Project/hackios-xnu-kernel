@@ -18,13 +18,10 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | `hakios.stubs.c` | what the rest of the kernel calls in a driver that is left out: nothing, and "not there" |
 | `hakios.stubs.cpp` | the same, for the calls that are C++ (the display asking whether the GPU is done with a surface) (with XNU's `iokitcpp`) |
 | `hakios.physmap.cpp` | physical memory XNU does not manage, mapped write-combined through IOKit (sys/hakios.physmap.h): the S9's DMA buffers below 4 GB (the camera's, UFS's own mode; sys/hakios.exynos9810_mem.h has where each is) (with XNU's `iokitcpp`) |
-| `hakios.pci.c` | the AVF guest's PCI bus: crosvm's virtio devices are found on it (patch 1100) |
-| `hakios.virtio.c` | the virtio transport (PCI and MMIO) every virtio driver goes through: queues, interrupts, configuration |
-| `hakios.virtio_console.c` | the virtio console, the AVF guest's boot log to the host |
+| `hakios.backlight.cpp` | the panel's brightness, whichever phone: panel drivers register (hakios_panel_register), the display service's "brightness" reaches them; boot-arg backlight=1 publishes AppleARMBacklight and says what iOS sets on it, backlight=2 also takes its brightness (with XNU's `iokitcpp`) |
 | `hakios.vgpu.c` | the virtio GPU (AVF): the 2D display path, the cursor queue and the device's interrupts (patches 1202, 1300-1305) |
 | `hakios.vgpu3d.c` | SCGPU: /dev/vgpu3d, OpenGL ES through the Scion app's own gfxstream (its stream ring and doorbell) |
 | `hakios.vgpu3d_xnu.c` | SCGPU's glue to XNU: memory, mapping and waiting |
-| `hakios.backlight.cpp` | the panel's brightness, whichever phone: panel drivers register (hakios_panel_register), the display service's "brightness" reaches them; boot-arg backlight=1 publishes AppleARMBacklight and says what iOS sets on it, backlight=2 also takes its brightness (with XNU's `iokitcpp`) |
 | `hakios.input.c` | /dev/hakios-touch, the queue of touches and buttons, and where the phone's drivers are started from |
 | `hakios.net.c` | en0, an interface that is Ethernet to the rest of the kernel, for whatever link carries its frames |
 | `hakios.thermal_provider.c` | the SoC's temperature, whichever phone: the driver that reads the sensors registers (hakios_thermal_register), and kern.hakios.thermal_* and hakios_thermal_max_mc() read it; THERMAL and EXYNOS_TMU both register |
@@ -32,6 +29,9 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | `hakios.image.c` | a file of one of the RAM disks by path, for the drivers that load firmware before there is a root |
 | `hakios.sparse.c` | /dev/rsp0, a block device over an image that holds only some of its blocks (apfs_sparse=) |
 | `hakios.apfs_check.c` | a walk of the APFS volume on /dev/rvblk0 through VFS, to compare with tools/apfs/apfs.py (with XNU's `apfs`) |
+| `hakios.pci.c` | the AVF guest's PCI bus: crosvm's virtio devices are found on it (patch 1100) |
+| `hakios.virtio.c` | the virtio transport (PCI and MMIO) every virtio driver goes through: queues, interrupts, configuration |
+| `hakios.virtio_console.c` | the virtio console, the AVF guest's boot log to the host |
 | `hakios.lx.c` | the kernel's side of a Linux Wi-Fi driver's object (sys/hakios.lx.h): memory, time, threads, the station. What it asks of the radio (hakios_wifi_*() of sys/hakios.input.h) is the radio driver's: WIFI's (the WCN6750) or BRCMFMAC's (the BCM4361); hakios.stubs.c answers for a kernel with neither, and for the station without WIFI_STA. The object itself is linked in only with one of those two |
 
 ## audio
@@ -43,7 +43,6 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | **`HAKIOS_GUARD`**<br>the speakers' guard: what the samples go through on their way to the amplifiers where no DSP protects the speakers (a high-pass, three power averages, a peak limiter); for SOUND and EXYNOS_ABOX, nothing of its own | `hakios.guard.c` |  |  | built |  |  | built | built | built | |
 | **`HAKIOS_SOUND`**<br>the speakers playing (sound=N): what the DSP's services are told, and the feeder, through the speakers' guard that limits what the amplifiers get | `hakios.sound.c` | `HAKIOS_ADSP`, `HAKIOS_SPEAKER`, `HAKIOS_GUARD` | `sound=`, `sound_below=`, `sound_gain=`, `sound_guard_as=`, `sound_pause=`, `sound_secs=` |  |  |  | built |  |  | |
 | **`HAKIOS_MIC`**<br>the microphones, through the audio DSP (mic=N) | `hakios.mic.c` | `HAKIOS_ADSP`, `HAKIOS_SOUND` | `mic=`, `mic_adc=`, `mic_input=`, `mic_main=`, `mic_secs=`, `mic_tap=`, `mic_test=` |  |  |  | built |  |  | |
-| **`HAKIOS_VIRTIO_SOUND`**<br>QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only | `hakios.virtio_sound.c` |  | `virtio_sound=` |  |  | built | built |  |  | |
 | **`HAKIOS_MAX98512`**<br>the Galaxy S9's two speaker amplifiers (MAX98512s on PERIC1's HSI2C), handed to ABOX's UAIF1 (max98512=N: 1 a look, 2 set up and muted, 3 turned on and off by UAIF1's start and stop) | `hakios.max98512.c` | `HAKIOS_EXYNOS_HSI2C` | `max98512=`, `max98512_gain=` | built |  |  | built | built | built | |
 | **`HAKIOS_EXYNOS_ABOX`**<br>the Galaxy S9's speaker path through ABOX, Samsung's audio block, with its CPU off (abox=N, the first N of 8 steps: power, clocks, pins, UAIF1, the route, RDMA0 with a tone, then /dev/hakios-audio's sink); the MAX98512s through their driver's hook (sys/hakios.exynos_abox.h); with abox_mic=1 the codec's microphone into /dev/hakios-mic through UAIF0 and WDMA1 while iOS listens | `hakios.exynos_abox.c` | `HAKIOS_GUARD`, `HAKIOS_EXYNOS_ACPM` | `abox=`, `abox_bclk_on=`, `abox_burst=`, `abox_dvfs=`, `abox_gain=`, `abox_mic=`, `abox_mmu_off=`, `abox_rdma_ctrl0=` and 9 more | built |  |  | built | built | built | |
 | **`HAKIOS_CS47L93`**<br>the Galaxy S9's audio codec, a Cirrus CS47L93 on PERIC0's SPI (cs47l93=N of 6 steps: 1 a look, 2 powered and its ID read, 3 the jack, 4 its clocks, 5 the main microphone, 6 AIF1 to ABOX's UAIF0, recorded by "abox rec"); the headphones (OUT2, the jack watched) only with cs47l93_hp=1 | `hakios.cs47l93.c` | `HAKIOS_EXYNOS_SPI`, `HAKIOS_EXYNOS_ACPM` | `cs47l93=`, `cs47l93_div=`, `cs47l93_hp=`, `cs47l93_hp_vol=`, `cs47l93_mic_vol=` |  |  |  |  |  | built | |
@@ -70,13 +69,13 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | Driver | Files | Requires | Boot arguments | crownlte | frankel | qemu | redwood | star2lte | starlte | |
 |---|---|---|---|---|---|---|---|---|---|
 | **`HAKIOS_SOCINFO`**<br>the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps SMEM item 137; where the shared memory is comes from soc_smem= | `hakios.socinfo.c` |  | `soc_smem=`, `soc_smem_size=`, `socinfo=` |  |  |  | built |  |  | |
-| **`HAKIOS_EXYNOS_HSI2C`**<br>an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery (sys/hakios.exynos_hsi2c.h); nothing of its own on the command line | `hakios.exynos_hsi2c.c` |  |  | built |  |  | built | built | built | |
-| **`HAKIOS_EXYNOS_SPI`**<br>an Exynos 9810 SPI master (the SPI of a USI block), polled, the chip select by hand, for the Galaxy S9's audio codec (sys/hakios.exynos_spi.h); nothing of its own on the command line | `hakios.exynos_spi.c` |  |  | built | built | built | built | built | built | |
-| **`HAKIOS_EXYNOS_ACPM`**<br>the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the clocks' DVFS rates (sys/hakios.exynos_acpm.h), for the Galaxy S9's GPU; nothing of its own on the command line | `hakios.exynos_acpm.c` |  |  | built |  |  | built | built | built | |
-| **`HAKIOS_EXYNOS_TEE`**<br>the Galaxy S9's secure OS asked whether it is there (tee_probe=1: the info fastcall on core 0, read only) and started as far as its own state (tee_probe=2: the init call on a static block, the init values, an N-SIQ, the state polled with yields, 30 s at most). tee_probe=3: one MCP round, a harmless TA from the phone's own VENDOR opened and closed. tee_probe=4: Samsung's keymaster TA for one test, an HMAC key's blob in /private/var and an HMAC of a test value; neither has run on a phone. Every answer logged; no daemon, no RPMB, no EFS. Off unless asked, in nobody's default line | `hakios.exynos_tee.c` |  | `tee_probe=` |  |  |  |  |  | built | |
-| **`HAKIOS_EXYNOS_M3`**<br>the Galaxy S9's big cores (four Exynos M3s): the six CLUSTER1 fields of the PMU that Samsung's kernel writes before it starts any other core, and the cluster's state logged before CPU_ON (m3_prep=N, the first N of 3 steps: read, write, start the M3s; patch 1508 asks it before every CPU_ON) and cohtest=N, a check that the big cluster is coherent with the A55s once started (cached ping-pong, cache maintenance by VA across the clusters, read back through an uncached alias), off by default | `hakios.exynos_m3.c` | `HAKIOS_EXYNOS_ACPM` | `cohtest=`, `cohtest_delay=`, `m3_prep=` | built |  |  |  | built | built | |
-| **`HAKIOS_USB_GADGET`**<br>a USB device link for phones with a DesignWare DWC3: the kernel's log streamed to a host over a CDC-ACM serial port (/dev/ttyACM0) and a line console back, in steps (usb_gadget=N, 5 for all); the SoC's half is a glue driver (EXYNOS_USB). Device-neutral; descriptors and requests in hakios.usb_acm.h | `hakios.dwc3.c` |  | `usb_gadget=`, `usb_gadget_clk=`, `usb_gadget_crlf=`, `usb_gadget_drain=`, `usb_gadget_fs=`, `usb_gadget_ldo=`, `usb_gadget_poll=`, `usb_gadget_soc=` and 1 more | built |  |  |  | built | built | |
-| **`HAKIOS_EXYNOS_USB`**<br>the Galaxy S9's USB port, the SoC's half for USB_GADGET: the Exynos 9810's PMU isolation, clocks and USB 2.0 PHY (the BSP's USB 3.1 CAL sequence), the SuperSpeed side held idle; usb_gadget_clk=1, usb_gadget_ldo=1 | `hakios.exynos_usb.c` | `HAKIOS_USB_GADGET`, `HAKIOS_EXYNOS_ACPM` |  | built |  |  |  | built | built | |
+
+## display
+
+| Driver | Files | Requires | Boot arguments | crownlte | frankel | qemu | redwood | star2lte | starlte | |
+|---|---|---|---|---|---|---|---|---|---|
+| **`HAKIOS_EXYNOS_DPU`**<br>the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's refresh, no tearing (fb_flip=1), and the iPhone's picture enlarged to the panel by the DPP's VGF0 scaler instead of the processor (fb_dpp=1); with fb_zc=1 the window server's display surfaces are made of its pool and scanned out as they are, nothing copied; fps_log=1 reads its refresh count. Off unless asked for | `hakios.exynos_dpu.c` |  |  | built | built |  | built | built | built | |
+| **`HAKIOS_S6E3HA8`**<br>the Galaxy S9's panel brightness through DSIM0's command FIFO: the gamma worked out from the panel's MTP as Samsung's kernel does (hakios.s6e3ha8_gamma.h) and the AOR, Samsung's tables for each level (panel=1; kern.hakios.brightness 0-255, panel_brightness=N at start; panel_gamma=0 the AOR alone) | `hakios.s6e3ha8.c` |  | `panel=`, `panel_brightness=`, `panel_gamma=`, `panel_gamma_log=` |  |  |  | built |  | built | |
 
 ## gpu
 
@@ -84,9 +83,6 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 |---|---|---|---|---|---|---|---|---|---|
 | **`HAKIOS_ADRENO`**<br>the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and the window server draw through (gpu=1, adreno_keep=1). Needs the GPU's firmware from the phone (fw-gpu/) | `hakios.adreno.c`<br>`hakios.gpu.cpp` |  | `adreno=`, `adreno_blind=`, `adreno_dirty=`, `adreno_fine=`, `adreno_keep=`, `adreno_only=`, `adreno_pause=`, `adreno_return=` and 12 more |  |  |  | built |  |  | |
 | **`HAKIOS_MALI`**<br>the Galaxy S9's Mali-G72 MP18 (Exynos 9810) brought up step by step (mali=N, 9 for all), and HakiosMali, the IOKit service Mesa's panfrost draws through; mali_gov=1 sets its clock (260, 455, 572 MHz) after its load and the G3D's temperature. HakiOS's Mali-G52 driver of the Infinix Hot 20, ported | `hakios.mali.c`<br>`hakios.mali.cpp` | `HAKIOS_EXYNOS_ACPM` | `mali=`, `mali_acpm=`, `mali_fastmap=`, `mali_flush=`, `mali_gov=`, `mali_gov_frame=`, `mali_mhz=`, `mali_nap_us=` and 2 more | built |  |  | built | built | built | |
-| **`HAKIOS_EXYNOS_MFC`**<br>the Exynos 9810's hardware video decoder, MFC v10 (mfc=N: 1 a look, 2 the block, 3 the firmware from the phone's VENDOR partition, 4 a test stream decoded at boot and checked against ffmpeg's CRCs, 5 /dev/hakios-mfc). Off by default | `hakios.exynos_mfc.c` | `HAKIOS_EXYNOS_ACPM` | `mfc_fw_part=`, `mfc_int_khz=`, `mfc_irq=`, `mfc_mif_khz=`, `mfc_zc=` |  |  |  |  |  | built | |
-| **`HAKIOS_EXYNOS_DPU`**<br>the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's refresh, no tearing (fb_flip=1), and the iPhone's picture enlarged to the panel by the DPP's VGF0 scaler instead of the processor (fb_dpp=1); with fb_zc=1 the window server's display surfaces are made of its pool and scanned out as they are, nothing copied; fps_log=1 reads its refresh count. Off unless asked for | `hakios.exynos_dpu.c` |  |  | built | built |  | built | built | built | |
-| **`HAKIOS_S6E3HA8`**<br>the Galaxy S9's panel brightness through DSIM0's command FIFO: the gamma worked out from the panel's MTP as Samsung's kernel does (hakios.s6e3ha8_gamma.h) and the AOR, Samsung's tables for each level (panel=1; kern.hakios.brightness 0-255, panel_brightness=N at start; panel_gamma=0 the AOR alone) | `hakios.s6e3ha8.c` |  | `panel=`, `panel_brightness=`, `panel_gamma=`, `panel_gamma_log=` |  |  |  | built |  | built | |
 
 ## haptic
 
@@ -98,12 +94,17 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 
 | Driver | Files | Requires | Boot arguments | crownlte | frankel | qemu | redwood | star2lte | starlte | |
 |---|---|---|---|---|---|---|---|---|---|
-| **`HAKIOS_VIRTIO_INPUT`**<br>QEMU's virtio tablet and keyboard as the touch screen and the buttons (virtio_input=1). QEMU only | `hakios.virtio_input.c` |  | `virtio_input=` |  |  | built | built |  |  | |
 | **`HAKIOS_GOODIX`**<br>the touch screen: a Goodix GT9916 ("Berlin-D") or a FocalTech FT3680 on SPI (touchscreen=1). The bus, pins and supplies are the POCO X5 Pro's; another phone with one of these controllers changes those | `hakios.goodix.c` |  | `touch_flip=`, `touch_poll_us=`, `touch_rate=`, `touch_spi_hz=`, `touchscreen=` |  |  |  | built |  |  | |
 | **`HAKIOS_BUTTONS`**<br>the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1) | `hakios.buttons.c` |  | `buttons=`, `buttons_steps=`, `press_power=`, `press_power_ms=`, `touchscreen=` |  |  |  | built |  |  | |
 | **`HAKIOS_EXYNOS_KEYS`**<br>the Galaxy S9's power, volume and Bixby keys, pins of the Exynos 9810's ALIVE GPIO block (exynos_keys=1). Bixby is the home button | `hakios.exynos_keys.c` |  | `exynos_keys=` | built |  |  | built | built | built | |
 | **`HAKIOS_S6SY761`**<br>the Galaxy S9's touch screen: a Samsung S6SY761 on the Exynos 9810's HSI2C of USI03, the bus driven by this file (s6sy761=1; s6sy761_steps=N, s6sy761_ipclk=MHz) | `hakios.s6sy761.c` | `HAKIOS_EXYNOS_HSI2C`, `HAKIOS_EXYNOS_ACPM` | `s6sy761=`, `s6sy761_ipclk=`, `s6sy761_ldo=`, `s6sy761_pri=`, `s6sy761_steps=`, `s6sy761_trace=` | built |  |  | built | built | built | |
 | **`HAKIOS_SSP`**<br>the Galaxy S9's sensors behind its sensor hub, the MCU of the BCM4775 GNSS chip on USI_CHUB00's SPI: powered, its firmware loaded through the chip's ROM, Samsung's sensor protocol (SSP), the accelerometer, gyroscope, magnetometer, barometer, light and proximity sensors read into /dev/hakios-sensors (shub=N, 6 steps: 1 a look, 2 powered, 3 the ROM's version, 4 the firmware, 5 SSP, 6 the sensors on). Needs fw/bcm_sensorhub_a1.bin (devices/starlte/firmware/sensorhub/) for step 4 | `hakios.ssp.c` | `HAKIOS_EXYNOS_SPI`, `HAKIOS_EXYNOS_ACPM` | `shub=`, `shub_chub_on=`, `shub_div=`, `shub_hello=`, `shub_keep=`, `shub_log=`, `shub_ms=`, `shub_req_len=` and 2 more |  |  |  |  |  | built | |
+
+## media
+
+| Driver | Files | Requires | Boot arguments | crownlte | frankel | qemu | redwood | star2lte | starlte | |
+|---|---|---|---|---|---|---|---|---|---|
+| **`HAKIOS_EXYNOS_MFC`**<br>the Exynos 9810's hardware video decoder, MFC v10 (mfc=N: 1 a look, 2 the block, 3 the firmware from the phone's VENDOR partition, 4 a test stream decoded at boot and checked against ffmpeg's CRCs, 5 /dev/hakios-mfc). Off by default | `hakios.exynos_mfc.c` | `HAKIOS_EXYNOS_ACPM` | `mfc_fw_part=`, `mfc_int_khz=`, `mfc_irq=`, `mfc_mif_khz=`, `mfc_zc=` |  |  |  |  |  | built | |
 
 ## modem
 
@@ -111,12 +112,6 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 |---|---|---|---|---|---|---|---|---|---|
 | **`HAKIOS_QMI`**<br>QMI messages over the IPC router: how the Wi-Fi firmware's service and the modem's are spoken to | `hakios.qmi.c` |  |  |  |  |  | built |  |  | |
 | **`HAKIOS_MODEM`**<br>the modem (modem=1): started, its file systems served from the flash, the IPA's data path as en1, the SIM and the network registration. Research; needs fw-modem/ from the phone | `hakios.mpss.c`<br>`hakios.cell.c`<br>`hakios.nas.c`<br>`hakios.ipa.c` | `HAKIOS_QMI`, `HAKIOS_UFS` | `modem=`, `modem_again=`, `modem_apn=`, `modem_buffer=`, `modem_data_nobind=`, `modem_data_off=`, `modem_data_wait=`, `modem_dpm_off=` and 45 more |  |  |  | built |  |  | |
-
-## net
-
-| Driver | Files | Requires | Boot arguments | crownlte | frankel | qemu | redwood | star2lte | starlte | |
-|---|---|---|---|---|---|---|---|---|---|
-| **`HAKIOS_VIRTIO_NET`**<br>QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only | `hakios.virtio_net.c` | `HAKIOS_WIFI_STA` | `virtio_net=`, `virtio_net_ssid=`, `virtio_net_wifi=` |  |  | built | built |  |  | |
 
 ## power
 
@@ -133,11 +128,36 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
 | **`HAKIOS_EXYNOS_TMU`**<br>the Galaxy S9's temperatures: the Exynos 9810's TMU (BIG, LITTLE, G3D, ISP), read with each sensor's fuses (tmu=1), published as kern.hakios.temp.* and the POCO's kern.hakios.thermal_* (tmu=2), and the run ended or the phone powered off when a zone or the battery is too hot (tmu=3; tmu_stop=, tmu_batt_stop=, tmu_off=1) | `hakios.exynos_tmu.c` | `HAKIOS_EXYNOS_POWEROFF` | `tmu=`, `tmu_batt_stop=`, `tmu_enable=`, `tmu_log=`, `tmu_off=`, `tmu_poll=`, `tmu_stop=`, `tmu_ungate=` | built | built |  | built | built | built | |
 | **`HAKIOS_EXYNOS_POWEROFF`**<br>the Galaxy S9 powered off: PS_HOLD let go in the Exynos 9810's PMU, for the TMU's tmu_off=1 and for a halt (halt_off=1: the panel blanked first, DCS display-off and sleep-in through DSIM0; halt_off=2: the APM stopped too) | `hakios.exynos_poweroff.c` |  | `halt_off=` | built | built | built | built | built | built | |
 
+## soc
+
+| Driver | Files | Requires | Boot arguments | crownlte | frankel | qemu | redwood | star2lte | starlte | |
+|---|---|---|---|---|---|---|---|---|---|
+| **`HAKIOS_EXYNOS_HSI2C`**<br>an Exynos 9810 HSI2C (the I2C master of a USI block), for the Galaxy S9's touch screen and battery (sys/hakios.exynos_hsi2c.h); nothing of its own on the command line | `hakios.exynos_hsi2c.c` |  |  | built |  |  | built | built | built | |
+| **`HAKIOS_EXYNOS_SPI`**<br>an Exynos 9810 SPI master (the SPI of a USI block), polled, the chip select by hand, for the Galaxy S9's audio codec (sys/hakios.exynos_spi.h); nothing of its own on the command line | `hakios.exynos_spi.c` |  |  | built | built | built | built | built | built | |
+| **`HAKIOS_EXYNOS_ACPM`**<br>the Exynos 9810's power processor asked through its ACPM firmware: the S2MPS18 PMIC's registers and the clocks' DVFS rates (sys/hakios.exynos_acpm.h), for the Galaxy S9's GPU; nothing of its own on the command line | `hakios.exynos_acpm.c` |  |  | built |  |  | built | built | built | |
+| **`HAKIOS_EXYNOS_TEE`**<br>the Galaxy S9's secure OS asked whether it is there (tee_probe=1: the info fastcall on core 0, read only) and started as far as its own state (tee_probe=2: the init call on a static block, the init values, an N-SIQ, the state polled with yields, 30 s at most). tee_probe=3: one MCP round, a harmless TA from the phone's own VENDOR opened and closed. tee_probe=4: Samsung's keymaster TA for one test, an HMAC key's blob in /private/var and an HMAC of a test value; neither has run on a phone. Every answer logged; no daemon, no RPMB, no EFS. Off unless asked, in nobody's default line | `hakios.exynos_tee.c` |  | `tee_probe=` |  |  |  |  |  | built | |
+| **`HAKIOS_EXYNOS_M3`**<br>the Galaxy S9's big cores (four Exynos M3s): the six CLUSTER1 fields of the PMU that Samsung's kernel writes before it starts any other core, and the cluster's state logged before CPU_ON (m3_prep=N, the first N of 3 steps: read, write, start the M3s; patch 1508 asks it before every CPU_ON) and cohtest=N, a check that the big cluster is coherent with the A55s once started (cached ping-pong, cache maintenance by VA across the clusters, read back through an uncached alias), off by default | `hakios.exynos_m3.c` | `HAKIOS_EXYNOS_ACPM` | `cohtest=`, `cohtest_delay=`, `m3_prep=` | built |  |  |  | built | built | |
+
 ## storage
 
 | Driver | Files | Requires | Boot arguments | crownlte | frankel | qemu | redwood | star2lte | starlte | |
 |---|---|---|---|---|---|---|---|---|---|
 | **`HAKIOS_UFS`**<br>the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from the kernel (ufs_native=): beside UEFI's (1, the POCO), or its own for the run (4; QEMU's -device ufs, the S9's with ufs_native_soc=exynos9810 as UEFI left it, never reset: on the phone through ufs=3), in steps (ufs_native_step=1 look, 2 the link, 3 NOP OUT, 4 READ CAPACITY, 5 the GPTs; the S9's default 1). THE ONLY CODE OF THE KERNEL THAT MAY WRITE TO THE PHONE (ufs_write=1, the partition `darwin` only; ufs_native_write=, one partition, never EFS, BOOT, PARAM ...): see tools/provenance.allow. ufs=3 (the S9's default, seen working on the phone): the loader serves as with ufs=2, and the kernel's own driver takes the controller after a self-test against the loader's reads (LBA 0, the GPTs, three blocks of every partition), falling back to ufs=2 on any difference; every write fenced in the whitelist itself (USERDATA only, with ufs_write=1; never EFS, RADIO, BOOT, the GPTs, LBA 0-5, a boot unit); ufs_native_ro=1 all read only. And a file of one of its ext4 partitions, read only (hakios.ext4.c: the S9's VENDOR, where its Wi-Fi and Bluetooth firmware is, read at run time; tools/ext4-test.py) | `hakios.ufs.c`<br>`hakios.ufshc.c`<br>`hakios.ext4.c` |  | `fps_log=`, `ufs_bench=`, `ufs_check=`, `ufs_native_bench=`, `ufs_native_buffer=`, `ufs_native_check=`, `ufs_native_hang=`, `ufs_native_leave=` and 12 more | built |  | built | built | built | built | |
+
+## usb
+
+| Driver | Files | Requires | Boot arguments | crownlte | frankel | qemu | redwood | star2lte | starlte | |
+|---|---|---|---|---|---|---|---|---|---|
+| **`HAKIOS_USB_GADGET`**<br>a USB device link for phones with a DesignWare DWC3: the kernel's log streamed to a host over a CDC-ACM serial port (/dev/ttyACM0) and a line console back, in steps (usb_gadget=N, 5 for all); the SoC's half is a glue driver (EXYNOS_USB). Device-neutral; descriptors and requests in hakios.usb_acm.h | `hakios.dwc3.c` |  | `usb_gadget=`, `usb_gadget_clk=`, `usb_gadget_crlf=`, `usb_gadget_drain=`, `usb_gadget_fs=`, `usb_gadget_ldo=`, `usb_gadget_poll=`, `usb_gadget_soc=` and 1 more | built |  |  |  | built | built | |
+| **`HAKIOS_EXYNOS_USB`**<br>the Galaxy S9's USB port, the SoC's half for USB_GADGET: the Exynos 9810's PMU isolation, clocks and USB 2.0 PHY (the BSP's USB 3.1 CAL sequence), the SuperSpeed side held idle; usb_gadget_clk=1, usb_gadget_ldo=1 | `hakios.exynos_usb.c` | `HAKIOS_USB_GADGET`, `HAKIOS_EXYNOS_ACPM` |  | built |  |  |  | built | built | |
+
+## virtio
+
+| Driver | Files | Requires | Boot arguments | crownlte | frankel | qemu | redwood | star2lte | starlte | |
+|---|---|---|---|---|---|---|---|---|---|
+| **`HAKIOS_VIRTIO_SOUND`**<br>QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only | `hakios.virtio_sound.c` |  | `virtio_sound=` |  |  | built | built |  |  | |
+| **`HAKIOS_VIRTIO_INPUT`**<br>QEMU's virtio tablet and keyboard as the touch screen and the buttons (virtio_input=1). QEMU only | `hakios.virtio_input.c` |  | `virtio_input=` |  |  | built | built |  |  | |
+| **`HAKIOS_VIRTIO_NET`**<br>QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only | `hakios.virtio_net.c` | `HAKIOS_WIFI_STA` | `virtio_net=`, `virtio_net_ssid=`, `virtio_net_wifi=` |  |  | built | built |  |  | |
 | **`HAKIOS_VIRTIO_BLK`**<br>a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only | `hakios.virtio_blk.c` |  | `virtio_blk=`, `virtio_blk_rw=` |  |  | built | built |  |  | |
 
 ## wifi

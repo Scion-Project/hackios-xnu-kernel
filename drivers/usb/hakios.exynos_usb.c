@@ -1,6 +1,6 @@
 /*
  * The Galaxy S9's USB port, the SoC's half: the Exynos 9810's clocks, power isolation and USB PHY, brought up for the
- * device-neutral gadget driver (drivers/core/hakios.dwc3.c, which owns the boot-args: usb_gadget=N). This file is the
+ * device-neutral gadget driver (drivers/usb/hakios.dwc3.c, which owns the boot-args: usb_gadget=N). This file is the
  * glue (sys: hakios.usb_glue.h); the DWC3 controller itself is the gadget driver's.
  *
  * The hardware. The DWC3 (DesignWare USB 3.0 DRD) at 0x10C00000, interrupt SPI 244 (the gadget driver polls). Its

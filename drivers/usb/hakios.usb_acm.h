@@ -1,6 +1,6 @@
 /*
  * A USB CDC-ACM function's descriptors and its control requests, as plain C: what the USB gadget driver
- * (drivers/core/hakios.dwc3.c) answers a host with, and what tools/usb_acm_test.c checks on the build machine
+ * (drivers/usb/hakios.dwc3.c) answers a host with, and what tools/usb_acm_test.c checks on the build machine
  * (tools/usb-acm-test.sh) by playing the requests Linux, macOS and Windows make when a device is plugged in.
  *
  * Nothing here touches hardware or the kernel: a setup packet goes in, an answer comes out (data to send, data

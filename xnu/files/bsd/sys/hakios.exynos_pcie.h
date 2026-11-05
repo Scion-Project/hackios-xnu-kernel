@@ -1,6 +1,6 @@
 /*
- * Darwin-on-hakios: the Galaxy S9's PCIe root complex of channel 0 (drivers/wifi/hakios.exynos_pcie.c), as the radio's
- * driver behind it sees it (drivers/wifi/hakios.brcmfmac.c, which gives it to Linux's brcmfmac as a struct pci_dev).
+ * Darwin-on-hakios: the Galaxy S9's PCIe root complex of channel 0 (drivers/wifi/brcmfmac/hakios.exynos_pcie.c), as the radio's
+ * driver behind it sees it (drivers/wifi/brcmfmac/hakios.brcmfmac.c, which gives it to Linux's brcmfmac as a struct pci_dev).
  *
  * There is one endpoint, 1:00.0, the BCM4361. Stage 1 (wifi_pcie=1..5) brings the link up and places the endpoint's
  * BARs; wifi_pcie=6 then turns its memory decoding on and hands it over: hakios_brcmfmac_start() is called on the

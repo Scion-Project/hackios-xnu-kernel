@@ -1,5 +1,5 @@
 /*
- * The Galaxy S9 panel's gamma (drivers/gpu/hakios.s6e3ha8_gamma.h) on this machine: its tables checked against what
+ * The Galaxy S9 panel's gamma (drivers/display/panel/hakios.s6e3ha8_gamma.h) on this machine: its tables checked against what
  * they must be, and the gamma worked out for made-up MTPs (the panel's calibration, register C8) and checked for sense.
  *
  *   cc -O2 -Wall -Wextra tools/s6e3ha8_gamma_test.c -lm -o s6e3ha8_gamma_test && ./s6e3ha8_gamma_test
@@ -37,7 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../drivers/gpu/hakios.s6e3ha8_gamma.h"
+#include "../drivers/display/panel/hakios.s6e3ha8_gamma.h"
 
 #define VTOTAL  2984
 

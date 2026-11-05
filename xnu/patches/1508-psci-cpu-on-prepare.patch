@@ -7,7 +7,7 @@ diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
  extern unsigned long gVirtBase, gPhysBase;
 +/*
 + * HakiOS (patch 1508): asked before every CPU_ON; anything but 0 and that core is not started. The Galaxy S9's big
-+ * cores need six PMU fields set first (drivers/core/hakios.exynos_m3.c, m3_prep=); elsewhere, and with that driver
++ * cores need six PMU fields set first (drivers/soc/exynos/hakios.exynos_m3.c, m3_prep=); elsewhere, and with that driver
 + * left out, it is a stub that says go ahead (hakios.stubs.c).
 + */
 +extern int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);

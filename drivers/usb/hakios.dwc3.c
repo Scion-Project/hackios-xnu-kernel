@@ -396,7 +396,7 @@ static struct {
 } shot;
 static uint64_t n_shots;
 
-SYSCTL_NODE(_kern_hakios, OID_AUTO, usb, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "the USB gadget link (drivers/core/hakios.dwc3.c, usb_gadget=N)");
+SYSCTL_NODE(_kern_hakios, OID_AUTO, usb, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "the USB gadget link (drivers/usb/hakios.dwc3.c, usb_gadget=N)");
 SYSCTL_STRING(_kern_hakios_usb, OID_AUTO, state, CTLFLAG_RD | CTLFLAG_LOCKED, usb_state, 0, "off, phy, core, waiting, default, address, configured");
 SYSCTL_QUAD(_kern_hakios_usb, OID_AUTO, bytes_in, CTLFLAG_RD | CTLFLAG_LOCKED, &n_in, "log bytes the host has taken");
 SYSCTL_QUAD(_kern_hakios_usb, OID_AUTO, bytes_out, CTLFLAG_RD | CTLFLAG_LOCKED, &n_out, "bytes the host has sent");

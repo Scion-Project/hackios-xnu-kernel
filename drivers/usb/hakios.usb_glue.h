@@ -1,7 +1,7 @@
 /*
- * What the USB gadget driver (drivers/core/hakios.dwc3.c, device-neutral: a DesignWare DWC3 in device mode with a
+ * What the USB gadget driver (drivers/usb/hakios.dwc3.c, device-neutral: a DesignWare DWC3 in device mode with a
  * CDC-ACM function) needs from the SoC it runs on: where the controller is, and how its clocks, power and PHY are
- * brought up. One of these per SoC; the Exynos 9810's is drivers/core/hakios.exynos_usb.c.
+ * brought up. One of these per SoC; the Exynos 9810's is drivers/usb/hakios.exynos_usb.c.
  */
 #ifndef _HAKIOS_USB_GLUE_H_
 #define _HAKIOS_USB_GLUE_H_
@@ -28,7 +28,7 @@ struct hakios_usb_glue {
 	void            (*phy_off)(void);
 };
 
-/* drivers/core/hakios.exynos_usb.c; NULL from hakios.stubs.c when that driver is left out */
+/* drivers/usb/hakios.exynos_usb.c; NULL from hakios.stubs.c when that driver is left out */
 const struct hakios_usb_glue *hakios_usb_glue_exynos9810(void);
 
 #endif /* _HAKIOS_USB_GLUE_H_ */

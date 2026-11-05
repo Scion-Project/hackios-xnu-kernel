@@ -1,5 +1,5 @@
 /*
- * The GPU addresses the Galaxy S9's Mali gives programs' buffers (drivers/gpu/hakios.mali.c, hakios_mali_address() and
+ * The GPU addresses the Galaxy S9's Mali gives programs' buffers (drivers/gpu/mali/hakios.mali.c, hakios_mali_address() and
  * hakios_mali_unmap()): plain C with no kernel in it, so that tools/mali_va_test.c checks it on a build machine.
  *
  * The range is Linux panfrost's, 32 MB up to 4 GB, which is what Mesa's panfrost assumes and leans on (Mesa 25.0.7,

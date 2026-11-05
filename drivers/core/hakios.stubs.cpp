@@ -16,7 +16,7 @@ HakiosMaliDrawn(__unused MiniIOSurface * surface, __unused uint64_t milliseconds
 #ifndef HAKIOS_ADRENO
 /*
  * the display's driver asks whether the GPU is done with a surface before it shows it: with no Adreno, the Mali's
- * answer (drivers/gpu/hakios.mali.cpp, or "done" above when it is left out too)
+ * answer (drivers/gpu/mali/hakios.mali.cpp, or "done" above when it is left out too)
  */
 bool
 MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds)

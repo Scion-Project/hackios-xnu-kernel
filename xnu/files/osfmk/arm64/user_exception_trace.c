@@ -438,7 +438,7 @@ again:
 	}
 }
 
-/* The same at once, for whoever asks (a debugging key sequence, see drivers/input/hakios.virtio_input.c). */
+/* The same at once, for whoever asks (a debugging key sequence, see drivers/virtio/hakios.virtio_input.c). */
 void ustacks_now(const char *name);
 
 void

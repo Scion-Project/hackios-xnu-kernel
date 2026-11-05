@@ -383,7 +383,7 @@ hakios_scanout_uncarve(uint64_t phys)
 	}
 }
 
-/* Is `phys` in the pool? (The Mali's tables take it, though the kernel does not manage it: drivers/gpu/hakios.mali.c.) */
+/* Is `phys` in the pool? (The Mali's tables take it, though the kernel does not manage it: drivers/gpu/mali/hakios.mali.c.) */
 int
 hakios_scanout_carved(uint64_t phys)
 {

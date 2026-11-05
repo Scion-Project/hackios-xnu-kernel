@@ -1,5 +1,5 @@
 /*
- * tools/bcm_shub_test.c: drivers/input/hakios.bcm_shub.h on a computer, under the sanitizers (tools/bcm-shub-test.sh).
+ * tools/bcm_shub_test.c: drivers/input/ssp/hakios.bcm_shub.h on a computer, under the sanitizers (tools/bcm-shub-test.sh).
  * What it checks:
  *   - the CRC-8 and the framing against the three sample frames in Samsung's S9 driver (bbdpl/bcm_gps_regs.c's "get
  *     version" request and its answer, bbd_rpc_lh.c's sensor packet), byte for byte;
@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "../drivers/input/hakios.bcm_shub.h"
+#include "../drivers/input/ssp/hakios.bcm_shub.h"
 
 static unsigned checks, failures;
 

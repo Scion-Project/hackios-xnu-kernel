@@ -1,5 +1,5 @@
 /*
- * ABOX, the Exynos 9810's audio block, as the Galaxy S9's speaker path (drivers/audio/hakios.exynos_abox.c, boot-arg
+ * ABOX, the Exynos 9810's audio block, as the Galaxy S9's speaker path (drivers/audio/abox/hakios.exynos_abox.c, boot-arg
  * abox=N): memory -> RDMA0 -> SPUS (ABOX's stream bus) -> SIFS0 -> UAIF1 (I2S, ABOX the master) -> the two MAX98512
  * amplifiers. ABOX's own CPU stays off ("bypass"): the AP programs what Samsung's ABOX firmware (calliope) would.
  *

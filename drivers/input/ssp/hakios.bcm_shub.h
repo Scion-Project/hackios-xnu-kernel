@@ -1,7 +1,7 @@
 /*
  * The Galaxy S9's sensor hub (a Broadcom BCM4775 B0, GNSS and sensor-hub MCU in one, on SPI): what travels between the
  * AP and the hub, in plain C with no kernel in it, so that tools/bcm_shub_test.c can check it on a computer. The driver
- * is drivers/input/hakios.ssp.c; devices/starlte/SENSORS.md has the whole picture.
+ * is drivers/input/ssp/hakios.ssp.c; devices/starlte/SENSORS.md has the whole picture.
  *
  * Four layers, the lowest first (facts read in Samsung's GPL driver for the S9, drivers/sensorhub/brcm/ and its bbdpl/,
  * Scion-Project/android_kernel_samsung_exynos9810 at e5906667068e, and in the Galaxy Tab Active3's sensor-hub notes,

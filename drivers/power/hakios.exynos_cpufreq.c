@@ -1,7 +1,7 @@
 /*
  * The Galaxy S9's CPU frequency governor: the A55s' (cpucl0) and the M3s' (cpucl1) rates moved with the load, inside
  * the limits Samsung's own kernel keeps, and lowered when the TMU says the cores are hot. Only with cpufreq_gov=1; without
- * it the fixed rates of cpufreq_lit= and cpufreq_big= stay (drivers/core/hakios.exynos_acpm.c), as before.
+ * it the fixed rates of cpufreq_lit= and cpufreq_big= stay (drivers/soc/exynos/hakios.exynos_acpm.c), as before.
  *
  * How a rate is set. A DVFS request to the APM's ACPM firmware names a domain (2 cpucl0, 3 cpucl1) and a rate in kHz,
  * nothing else (hakios_acpm_dvfs_set; Samsung's cal_dfs_set_rate -> exynos_acpm_set_rate sends the same three words).

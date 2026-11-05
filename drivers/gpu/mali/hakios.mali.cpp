@@ -6,9 +6,9 @@
  * License 2.0, as every file of that repository's kernel/ is), renamed: RedwoodMali to HakiosMali, its user client
  * HakiosMaliUserClient, redwood_mali_* to hakios_mali_*, its own requests' names kRedwood* to kHakiosMali* (their numbers
  * and structures are the same: a program built for RedwoodMali needs only the service's new name). Nothing in it is
- * the X6826B's: it changes with the GPU only in what drivers/gpu/hakios.mali.c answers it.
+ * the X6826B's: it changes with the GPU only in what drivers/gpu/mali/hakios.mali.c answers it.
  *
- * drivers/gpu/hakios.mali.c brings the GPU up (boot-arg mali=N) and, at its last step, once a job has run through the
+ * drivers/gpu/mali/hakios.mali.c brings the GPU up (boot-arg mali=N) and, at its last step, once a job has run through the
  * GPU's page tables, starts this service. A program that opens it speaks the interface of Linux's panfrost DRM driver,
  * the one Mesa's panfrost knows: every request is a call of the user client with the request's number as the selector
  * and its structure passed in and back -- as HakiosGPU (hakios.gpu.cpp) does it for the POCO's Adreno and freedreno.
@@ -51,7 +51,7 @@
 extern "C" void hakios_keep(const char * format, ...) __printflike(1, 2);
 
 extern "C" {
-/* drivers/gpu/hakios.mali.c (declared in bsd/sys/hakios.input.h, which is not seen from here) */
+/* drivers/gpu/mali/hakios.mali.c (declared in bsd/sys/hakios.input.h, which is not seen from here) */
 bool hakios_mali_ready(void);
 bool hakios_mali_parameter(uint32_t which, uint64_t * value);
 uint64_t hakios_mali_address(uint64_t size, bool executable);
@@ -68,7 +68,7 @@ void HakiosMaliStart(void);
 void MiniIOMobileFramebufferShow(const uint8_t * pixels, uint32_t width, uint32_t height, uint32_t rowBytes);
 void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);      /* osfmk/arm64/caches_asm.s */
 
-/* what programs have done with the GPU so far, for drivers/gpu/hakios.mali.c to repeat in the log */
+/* what programs have done with the GPU so far, for drivers/gpu/mali/hakios.mali.c to repeat in the log */
 uint32_t gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShown;
 /* the first buffers ever made, for matching a GPU fault's address to one of them */
 struct mali_made { uint64_t address, size; uint32_t asked, flags; };
@@ -191,7 +191,7 @@ static IOLock * gMaliLock;
 #define MALI_ASK_AGAIN_US       200
 
 /*
- * The GPU here is not coherent with the processors (COHERENCY_ENABLE = 31, drivers/gpu/hakios.mali.c): it reads and
+ * The GPU here is not coherent with the processors (COHERENCY_ENABLE = 31, drivers/gpu/mali/hakios.mali.c): it reads and
  * writes memory, never the processors' caches. The buffers this client makes are mapped write-combining and need
  * nothing; an IOSurface's pixels are ordinary cached memory, written by programs (CoreAnimation's layers drawn by the
  * processor, uploads) and read by the processor (the display, which copies them to the panel; a program reading back).

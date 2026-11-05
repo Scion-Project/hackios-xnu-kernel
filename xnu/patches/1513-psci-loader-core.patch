@@ -16,7 +16,7 @@ diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
 +extern unsigned int processor_avail_count;      /* (kern/processor.h) */
  /*
   * HakiOS (patch 1508): asked before every CPU_ON; anything but 0 and that core is not started. The Galaxy S9's big
-  * cores need six PMU fields set first (drivers/core/hakios.exynos_m3.c, m3_prep=); elsewhere, and with that driver
+  * cores need six PMU fields set first (drivers/soc/exynos/hakios.exynos_m3.c, m3_prep=); elsewhere, and with that driver
 @@ -106,6 +108,56 @@
  static bool     psci_smp_boot_busy;             /* ... and has begun to */
  static bool     psci_smp_stopping;              /* every other core switches itself off */

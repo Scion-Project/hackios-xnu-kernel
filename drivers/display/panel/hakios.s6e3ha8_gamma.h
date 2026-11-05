@@ -1,5 +1,5 @@
 /*
- * The Galaxy S9's panel (Samsung S6E3HA8, drivers/gpu/hakios.s6e3ha8.c): the gamma it is sent at each of its 74
+ * The Galaxy S9's panel (Samsung S6E3HA8, drivers/display/panel/hakios.s6e3ha8.c): the gamma it is sent at each of its 74
  * luminances, worked out from the panel's own factory calibration the way the S9's kernel does it ("AID dimming"),
  * and the AOR that goes with each brightness. Plain C, no kernel call: the driver includes it, and
  * tools/s6e3ha8-gamma-test.sh builds it on the host to check the arithmetic.

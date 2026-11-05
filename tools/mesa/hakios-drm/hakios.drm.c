@@ -8,7 +8,7 @@
  *   HakiosGPU    the POCO X5 Pro's Adreno, as Linux's msm driver, for Mesa's freedreno
  *                (drivers/gpu/hakios.gpu.cpp)
  *   HakiosMali   the Galaxy S9's Mali-G72, as Linux's panfrost driver, for Mesa's panfrost
- *                (drivers/gpu/hakios.mali.cpp)
+ *                (drivers/gpu/mali/hakios.mali.cpp)
  * drmOpenWithType() opens the one asked for by the name of its Linux driver, and drmGetVersion()
  * answers with that name: it is what Mesa's panfrost picks its backend by (pan_kmod.c). Every
  * request of freedreno's goes to the kernel as it is. Of panfrost's, two are seen to here first,

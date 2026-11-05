@@ -32,7 +32,7 @@
  *     is hot for minutes after.
  *
  * Status (what has and has not been seen): RUN ON THE PHONE (POCO X5 Pro, 2026-10-27, four runs): the status-word layout
- * (from Linux's tsens-v2.c as remembered, the same as drivers/gpu/hakios.adreno.c reads for the GPU's two sensors) is right:
+ * (from Linux's tsens-v2.c as remembered, the same as drivers/gpu/adreno/hakios.adreno.c reads for the GPU's two sensors) is right:
  * 27 of 27 sensors have a reading, 33.3 to 39.5 degrees on a phone at rest, the CPU cores a degree or two above the rest, the
  * values move between runs; kern.hakios.thermal_* are read from user space (userland/src/hello.c with hello_wait=). NOT yet
  * seen: the stop (thermal_stop) firing, a phone under load, a reading above 40 degrees. The sensors are the device tree's; whether

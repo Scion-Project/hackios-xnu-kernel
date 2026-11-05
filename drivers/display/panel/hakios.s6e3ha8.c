@@ -22,7 +22,7 @@
  *   F0           the level-2 key: opens Samsung's registers and closes them again. Samsung sends it around every change
  *                of brightness, and this driver did already.
  *   28, 10       display off and sleep-in, only for a halt that powers the phone off (halt_off=N: hakios_s6e3ha8_blank(),
- *                drivers/power/hakios.exynos_poweroff.c), each between the level-1 key as Samsung sends them; the
+ *                drivers/power/exynos/hakios.exynos_poweroff.c), each between the level-1 key as Samsung sends them; the
  *                panel's supplies then go with PS_HOLD.
  *   9F, FC       the level-1 and level-3 keys, only around the reads at start (and 9F around the halt's 28 and 10):
  *                Samsung's resource-init sequence opens all three for the same reads at every start of the panel
@@ -532,7 +532,7 @@ SYSCTL_PROC(_kern_hakios, OID_AUTO, brightness, CTLTYPE_INT | CTLFLAG_RW | CTLFL
 
 
 /*
- * The panel dark, for a halt that powers the phone off (drivers/power/hakios.exynos_poweroff.c, halt_off=N): Samsung's
+ * The panel dark, for a halt that powers the phone off (drivers/power/exynos/hakios.exynos_poweroff.c, halt_off=N): Samsung's
  * display-off sequence (9F A5 A5, 28, 9F 5A 5A: star_a3_s0_display_off_cmdtbl) and then its exit sequence's sleep-in
  * (9F A5 A5, 10, 9F 5A 5A, and its 100 ms: star_a3_s0_exit_cmdtbl, star_a3_s0_wait_sleep_in), with a frame's time between
  * the two, as when Android turns the screen off. Without panel=1 too: the DSIM is mapped here if the driver never started.

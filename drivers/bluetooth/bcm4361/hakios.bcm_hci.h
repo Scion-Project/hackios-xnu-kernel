@@ -1,5 +1,5 @@
 /*
- * The arithmetic and the byte formats of the Galaxy S9's Bluetooth bring-up (drivers/bluetooth/hakios.bcm4361_bt.c), in
+ * The arithmetic and the byte formats of the Galaxy S9's Bluetooth bring-up (drivers/bluetooth/bcm4361/hakios.bcm4361_bt.c), in
  * plain C with no kernel headers, so that tools/bcm_hci_test.c checks every one of them on a computer
  * (tools/bcm-hci-test.sh). Nothing in here touches hardware.
  *

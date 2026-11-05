@@ -1,5 +1,5 @@
 /*
- * The USB gadget's CDC-ACM function (drivers/core/hakios.usb_acm.h, what drivers/core/hakios.dwc3.c answers a host
+ * The USB gadget's CDC-ACM function (drivers/usb/hakios.usb_acm.h, what drivers/usb/hakios.dwc3.c answers a host
  * with) checked on this machine: tools/usb-acm-test.sh builds it under the address and undefined-behaviour sanitizers.
  *
  *   - the descriptors: every length, the configuration's total length at both speeds, its interfaces and endpoints,
@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../drivers/core/hakios.usb_acm.h"
+#include "../drivers/usb/hakios.usb_acm.h"
 
 static int checks, failures;
 

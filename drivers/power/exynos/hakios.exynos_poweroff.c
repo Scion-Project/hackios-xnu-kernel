@@ -30,7 +30,7 @@
 #include <sys/hakios.log.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void hakios_var_save_on_return(void);
-extern bool hakios_s6e3ha8_blank(int (*say)(const char *, ...));   /* drivers/gpu/hakios.s6e3ha8.c; a stand-in says no */
+extern bool hakios_s6e3ha8_blank(int (*say)(const char *, ...));   /* drivers/display/panel/hakios.s6e3ha8.c; a stand-in says no */
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 extern void delay(int usec);
 
