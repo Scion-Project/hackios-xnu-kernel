@@ -344,6 +344,9 @@ static uint32_t gRenderRT = 0, gRenderRTMicros = 8000;
  */
 static uint32_t gSwapWait = 0;
 SYSCTL_DECL(_kern_hakios);
+/* kern.hakios.fb_surface: the IOSurface last shown, for a picture of what is on the panel (SpringBoard's wallpaper_freeze=1) */
+static uint32_t gShownSurface;
+SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_surface, CTLFLAG_RD | CTLFLAG_LOCKED, &gShownSurface, 0, "the IOSurface last put on the panel");
 SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_zc_hold, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gZcHold, 0,
     "fb_zc: 1 surfaces in use from SwapEnd on, 2 let go at the refresh and not copied when drawn into again (3: both)");
 SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_swapwait, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gSwapWait, 0,
@@ -2359,6 +2362,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	if (swapWord(swap, SWAP_SURFACE(0)) != 0) {
 		fFpsSameSurface += swapWord(swap, SWAP_SURFACE(0)) == fLastSurface;
 		fLastSurface = swapWord(swap, SWAP_SURFACE(0));
+		gShownSurface = fLastSurface;
 	}
 	/* (fb_flip/fb_dpp: into a buffer of its own, from the second picture on: the first is the console's end) */
 	inPlace = fGraphics && zcShow(swap, surfaces);
