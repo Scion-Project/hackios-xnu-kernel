@@ -182,6 +182,7 @@ fb_zc	k
 fb_zc_hold	k
 fbheight	k
 fbscale	k
+fbsubtype	k
 fbtrace	k
 fbwidth	k
 fp_s9	k
