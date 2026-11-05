@@ -1,73 +1,68 @@
 /*
- * The phone's sound, step 3: what the audio DSP's services are told so that the speakers play.
- * Every address and number below belongs to the POCO X5 Pro (redwood), and nothing here happens
- * unless boot-arg sound=N asks for it, with adsp=1 (hakios.adsp.c), which starts the DSP and
- * calls hakios_sound_dsp_up() once its audio services are up.
+ * Audio output through the Qualcomm audio DSP's APR services (ASM, ADM, AFE) on the POCO X5 Pro
+ * (redwood): the TDM port the two speaker amplifiers sit on, a stream carrying the samples, and
+ * the amplifiers (hakios.speaker.c). Nothing runs unless boot-arg sound=N is set, and only once
+ * the DSP is up; hakios_sound_dsp_up() is called from hakios.adsp.c (adsp=1) at that point.
  *
- * Under Android the speakers' sound goes from the audio server through three of the DSP's
- * services: ASM, a stream the samples are written into; ADM, the matrix that routes a stream to
- * a device path ("COPP"); and AFE, the port at the SoC's interface. The two amplifiers
- * (hakios.speaker.c) sit on the primary TDM interface, which the DSP runs: Android's
- * PRI_TDM_RX_0, AFE port 0x9000 in group 0x9100 (with 0x9002, unused). The samples themselves
- * lie in memory of ours that the DSP reads through the application processors' SMMU, as
- * stream 0x1801 (Android: qcom,msm-audio-ion, iommus <&apps_smmu 0x1801 0>, its addresses from
- * 0x10000000, and the stream's low four bits in bits 32 to 35 of every address the DSP is given:
+ * Samples are read by the DSP from our memory through the application processors' SMMU, as
+ * stream 0x1801 at addresses from 0x10000000, with the stream's low four bits in bits 32 to 35
+ * of each address (Android: qcom,msm-audio-ion, iommus <&apps_smmu 0x1801 0>,
  * qcom,smmu-sid-mask 0xf, msm_audio_ion.c).
  *
- *   sound=1  the port: the TDM pins to the interface, the interface's bit clock, the group, the
- *            port, started; whether the bit clock and the frame sync then toggle at the pins is
- *            looked at; held for sound_secs (default 3), then everything stopped and put back
- *   sound=2  ... and a stream: our memory shown to the DSP through the SMMU, a device path
- *            (ADM) to the port, an ASM stream routed to it, and a test tone -- 1 kHz at -20 dBFS,
- *            both channels -- written into it for sound_secs (at most 3); the DSP's "written"
- *            events say whether it takes the samples at 48 kHz. The amplifiers stay off.
- *   sound=3  ... and the amplifiers, with the tone playing: set up as Android's driver sets them
- *            up, started once the clock runs, faded in to sound_below eighths of a dB under
- *            Android's own level (default 160: 20 dB under, the least it may be is 0), faded
- *            out and powered down at the end. Audible.
- *   sound=4  what Darwin plays (/dev/hakios-audio, hakios.audio.c), until the run ends: the port
- *            and the stream as above, kept running (silence when Darwin writes nothing); the
- *            amplifiers set up once and powered down, started and faded in (the driver's quick
- *            fade) whenever a write is not silence, stopped after three seconds of silence; their
- *            level is what is set on the plug-in's volume control (ioctl HAKIOS_AUDIO_SET_VOLUME):
- *            so far under sound_below, which stays the loudest, and at 0 they stay off. (Darwin sets
- *            that control only once, to the top, and applies its volume to the samples itself --
- *            see userland/src/audio_plugin.c --; at its volume 0 it writes silence, and the
- *            amplifiers stay off for that too.) On their way the samples go through the speakers'
- *            guard (hakios.guard.c), in place of the DSP's speaker protection that Android has:
- *            sound_gain eighths of a dB of gain (default and most 96, 12 dB: Darwin's own processing
- *            keeps its top that far under full scale), a high-pass filter, three averages of the
- *            power at the speakers and a peak limiter. sound_guard_as=N, for a test: the guard
- *            reckons the amplifiers N eighths of a dB under Android's level (louder than they are)
- *            and holds back as it would there -- with sound_below=720 (the amplifiers at -90 dB)
- *            what it does at the loudest can be seen in the log and the recording without a sound.
+ * Boot arguments:
+ *   sound=1  the TDM pins and interface clock, the group and the port are started; the pins are
+ *            checked for a running bit clock and frame sync. Held for sound_secs (default 3),
+ *            then stopped and restored.
+ *   sound=2  as 1, plus a stream: our memory mapped to the DSP, an ADM device path to the port,
+ *            an ASM stream routed to it, and a 1 kHz test tone at -20 dBFS on both channels for
+ *            sound_secs (at most 3). The amplifiers stay off.
+ *   sound=3  as 2, plus the amplifiers, set up as Android's driver sets them up. Faded in to
+ *            sound_below eighths of a dB under Android's level (default 240, 30 dB under; the
+ *            least it may be is 0) and powered down at the end.
+ *   sound=4  what Darwin plays (/dev/hakios-audio, hakios.audio.c) until the run ends. The port
+ *            and stream keep running, with silence when Darwin writes nothing. The amplifiers
+ *            are powered down while there is silence and started with a quick fade when a write
+ *            is not silence; they are stopped after three seconds of silence. Their level is the
+ *            plug-in's volume control (HAKIOS_AUDIO_SET_VOLUME), measured in eighths of a dB
+ *            under sound_below. At volume 0 they stay off.
  *
- * The numbers are Android's own, from the phone's live device tree (qcom,msm-dai-tdm-pri-rx and
- * its port, the pins pri_tdm_*_active), its mixer paths (the speaker: PRI_TDM_RX_0 at 48 kHz,
- * two channels, S32_LE) and its kernel (Xiaomi's hakios-s-oss, techpack/audio: asoc/lahaina.c,
- * asoc/msm-dai-q6-v2.c, dsp/q6afe.c, dsp/q6adm.c, dsp/q6asm.c):
- *   - the bit clock: the interface's internal one (clock 0x200, "PRI_TDM_IBIT"), attribute 4
- *     ("invert, couple no", msm-dai-q6-v2.c's default; the tree names none), at 48000 x 32 bits x
- *     2 slots = 3.072 MHz -- the machine driver sets that rate itself (lahaina.c, which on redwood
- *     halves its four slots to two: "Using default tdm max slot: 4" in Android's log), not the
- *     tree's 1.536 MHz
- *   - the group: ports 0x9000 and 0x9002, two 32-bit slots, mask 3, 48 kHz
- *   - the port: two channels of 32 bits at 48 kHz, linear PCM; sync mode 0, sync source 1, data
- *     out 0, inverted sync 1, data delay 1; slot mapping: channels at byte offsets 0 and 4 (slot
- *     0, the amplifier at 0x35; slot 1, the one at 0x34), MSB-aligned
- *   - the pins: GPIO 97 (bit clock) and 100 (frame sync) function mi2s0, 8 mA, no pull, output
- *     high; 98 and 99 (data in and out) function mi2s0, 8 mA, no pull (pinctrl-yupik.c: function
- *     1 for all four)
- *   - the path: ADM's device open (version 5) for playback to port 0x9000 with no processing
- *     (topology 0x10312), two channels, 24 bits, 48 kHz; the stream: ASM session 1, stream 1,
- *     opened for writing linear PCM of 16 bits, no processing (0x10c68), routed to that path
+ *            Darwin sets its volume once, to the top, and applies it to the samples itself
+ *            (userland/src/audio_plugin.c). The samples pass through the speaker guard
+ *            (hakios.guard.c) in place of the DSP's own speaker protection, which Android has:
+ *            sound_gain eighths of a dB of gain (default and maximum 96, 12 dB), a high-pass
+ *            filter, three power averages at the speakers and a peak limiter.
  *
- * What is started is stopped, and what is written is put back, when the time is over -- or, if
- * the DSP is to be shut down earlier (the run's end), before that (hakios_sound_dsp_down()).
- * The amplifiers are powered down on a panic's way out (hakios_sound_quiesce()).
+ *            sound_guard_as=N is a test setting. The guard then assumes the amplifiers are N
+ *            eighths of a dB under Android's level, which is louder than they are, and limits
+ *            as it would at that level. With sound_below=720 (the amplifiers at -90 dB) the
+ *            guard's behaviour at full level can be checked without audible output.
  *
- * Message layouts: the files above, and Linux's sound/soc/qcom/qdsp6/ (q6afe.c, q6adm.c,
- * q6asm.c); the SMMU: hakios.wifi.c, which does the same for the Wi-Fi's stream.
+ * Values come from Android's device tree (qcom,msm-dai-tdm-pri-rx and its port, the pri_tdm_*
+ * pinctrl states), its mixer paths (PRI_TDM_RX_0, 48 kHz, two channels, S32_LE) and its kernel
+ * (Xiaomi's hakios-s-oss, techpack/audio: asoc/lahaina.c, asoc/msm-dai-q6-v2.c, dsp/q6afe.c,
+ * dsp/q6adm.c, dsp/q6asm.c):
+ *   - bit clock: the interface's internal clock 0x200 ("PRI_TDM_IBIT") with attribute 4
+ *     (invert, couple no; the default in msm-dai-q6-v2.c, the tree names none), at 48000 x 32
+ *     bits x 2 slots = 3.072 MHz. The machine driver sets this rate itself (lahaina.c halves the
+ *     four slots to two on redwood, per "Using default tdm max slot: 4" in Android's log), so
+ *     the device tree's 1.536 MHz is not used.
+ *   - group: ports 0x9000 and 0x9002, two 32-bit slots, mask 3, 48 kHz.
+ *   - port: two 32-bit channels at 48 kHz, linear PCM; sync mode 0, sync source 1, data out 0,
+ *     inverted sync 1, data delay 1. Slot mapping puts the channels at byte offsets 0 and 4
+ *     (slot 0 is the amplifier at 0x35, slot 1 the one at 0x34), MSB-aligned.
+ *   - pins: GPIO 97 (bit clock) and 100 (frame sync) are output, function mi2s0, 8 mA, no pull,
+ *     driven high. GPIO 98 (data in) and 99 (data out) are function mi2s0, 8 mA, no pull
+ *     (pinctrl-yupik.c: function 1 for all four).
+ *   - ADM device open (version 5) for playback to port 0x9000, no processing (topology 0x10312),
+ *     two channels, 24 bits, 48 kHz. ASM session 1, stream 1, opened for linear PCM with 16 bits
+ *     and no processing (topology 0x10c68), routed to that device path.
+ *
+ * Everything started is stopped, and everything written is restored, when the timed run ends.
+ * On an earlier shutdown (hakios_sound_dsp_down()) that happens then. The amplifiers are powered
+ * down on the way out of a panic (hakios_sound_quiesce()).
+ *
+ * Message layouts follow Linux's sound/soc/qcom/qdsp6/ (q6afe.c, q6adm.c, q6asm.c). The SMMU
+ * setup is shared with hakios.wifi.c, which does the same for the Wi-Fi's stream.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -83,17 +78,18 @@
 #include <sys/hakios.xnu.h>
 
 
-/* The SMMU's match registers and contexts are found free and taken by the Wi-Fi's start as well (hakios.wifi.c). */
+/* The SMMU's match registers and contexts are also claimed by the Wi-Fi start (hakios.wifi.c). */
 extern lck_mtx_t hakios_smmu_lock;
 
 static LCK_GRP_DECLARE(sound_lock_group, "hakios-sound");
-static LCK_MTX_DECLARE(sound_lock, &sound_lock_group);  /* the path being set up or taken down */
+static LCK_MTX_DECLARE(sound_lock, &sound_lock_group);  /* held while the path is set up or taken down */
 
+/* Settings from boot args; see hakios_sound_dsp_up(). below is in eighths of a dB under Android's level. */
 static uint32_t level, seconds = 3, below = 240, pause_ms = 1000, gain = HAKIOS_GUARD_MAX_GAIN;
-static uint32_t guard_as = UINT32_MAX;  /* boot-arg sound_guard_as=N: the guard reckons the amplifiers at most N under (a test) */
+static uint32_t guard_as = UINT32_MAX;  /* sound_guard_as: the level the guard assumes, at most (a test) */
 static char last_write[96] = "nothing written";
 
-/* ---- what is said: to the loader's log as well, as it happens ---------------------------------------- */
+/* Output is written to the loader's log as well as the console. */
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -127,7 +123,7 @@ now_us(void)
 	return nanoseconds / 1000;
 }
 
-/* The time of day (UTC, as the host gave it: boot-arg epoch) and since the kernel began, for whoever listens. */
+/* Logs the wall-clock time (UTC, from the boot-arg epoch) and the time since the kernel started. */
 static void
 say_when(const char *what)
 {
@@ -140,7 +136,7 @@ say_when(const char *what)
 	    (unsigned long)(secs / 60 % 60), (unsigned long)(secs % 60), (unsigned)(usecs / 100000), up / 1000000, up / 100000 % 10);
 }
 
-/* Time for the loader to note what has just been said, before something not yet seen to be harmless. */
+/* Gives the loader time to record the message before a step whose effect is not yet known. */
 static void
 announce(const char *what)
 {
@@ -195,7 +191,7 @@ put(struct block *b, const char *name, uint32_t offset, uint32_t value)
 	wr(b->base + offset, value);
 }
 
-/* ---- the TDM pins ------------------------------------------------------------------------------------- */
+/* TDM pins: the pin controller's registers for the four TDM GPIOs. */
 
 static struct block tlmm = { "pin controller", 0x0f100000, 0x100000 };
 #define GPIO_CFG(n)             (0x1000u * (n))         /* [1:0] pull, [5:2] function, [8:6] drive (mA / 2 - 1), [9] output */
@@ -246,7 +242,7 @@ pins_off(void)
 	pins_taken = false;
 }
 
-/* Whether a pin toggles: read many times as fast as it goes. */
+/* Counts level changes and high samples on a pin over a burst of back-to-back reads. */
 static void
 pin_activity(unsigned pin, const char *name, uint32_t *changes, uint32_t *ones)
 {
@@ -264,7 +260,7 @@ pin_activity(unsigned pin, const char *name, uint32_t *changes, uint32_t *ones)
 	say("sound: %s: %u changes and %u ones in %u reads (%llu us)\n", name, *changes, *ones, reads, now_us() - began);
 }
 
-/* ---- APR ------------------------------------------------------------------------------------------- */
+/* APR: the message protocol to the DSP. Services are AFE (ports), ADM (device paths), ASM (streams). */
 
 #define APR_SVC_AFE             4
 #define APR_SVC_ASM             7
@@ -284,8 +280,8 @@ dsp_error(uint32_t status)
 }
 
 /*
- * One command, its answer waited for: true if the answer is the basic one with status 0, or the
- * opcode `wanted' (then in *answer).
+ * Sends one command and waits for its answer. Returns true if the answer is the basic result
+ * with status 0, or if its opcode is `wanted' (then the answer is copied to *answer).
  */
 static bool
 command(const char *what, uint8_t service, uint16_t port, uint32_t opcode, const void *payload, uint32_t length, uint32_t wanted,
@@ -314,7 +310,7 @@ command(const char *what, uint8_t service, uint16_t port, uint32_t opcode, const
 	return false;
 }
 
-/* ---- AFE: the port ---------------------------------------------------------------------------------- */
+/* AFE: the TDM port, its group and the interface clock. */
 
 #define AFE_PORT_CMD_DEVICE_START               0x000100e5u
 #define AFE_PORT_CMD_DEVICE_STOP                0x000100e6u
@@ -332,14 +328,14 @@ command(const char *what, uint8_t service, uint16_t port, uint32_t opcode, const
 
 #define PORT                    0x9000          /* PRI_TDM_RX_0 */
 #define GROUP                   0x9100          /* PRI_TDM_RX */
-#define GROUP_OTHER_PORT        0x9002
-#define PORT_INVALID            0xffff
+#define GROUP_OTHER_PORT        0x9002          /* unused here; listed in the group */
+#define PORT_INVALID            0xffff          /* an empty entry in the group's port list */
 #define CLOCK_PRI_TDM_IBIT      0x200
 #define CLOCK_INVERT_COUPLE_NO  4
 #define RATE                    48000
 #define SLOTS                   2
 #define SLOT_BITS               32
-#define PORT_BITS               32              /* the mixer path's S32_LE */
+#define PORT_BITS               32              /* S32_LE in the mixer path */
 
 struct afe_param {
 	uint32_t module, param;
@@ -378,7 +374,7 @@ struct afe_slot_mapping {
 	uint16_t offsets[8];
 } __attribute__((packed));
 
-/* A parameter for the AFE as a whole (its clocks, its groups): in the packet, not in shared memory. */
+/* Sends an AFE service parameter (clocks, groups). The data is carried inline in the packet. */
 static bool
 afe_service_param(const char *what, uint32_t module, uint32_t param, const void *data, uint16_t size)
 {
@@ -387,7 +383,7 @@ afe_service_param(const char *what, uint32_t module, uint32_t param, const void 
 	struct afe_param *p = (struct afe_param *)(packet + 16);
 
 	bzero(packet, sizeof(packet));
-	head[0] = (uint32_t)sizeof(*p) + size;          /* payload size; address 0 and handle 0: in band */
+	head[0] = (uint32_t)sizeof(*p) + size;          /* payload size; address and handle 0 mean in-band */
 	p->module = module;
 	p->param = param;
 	p->size = size;
@@ -395,7 +391,7 @@ afe_service_param(const char *what, uint32_t module, uint32_t param, const void 
 	return command(what, APR_SVC_AFE, 0, AFE_SVC_CMD_SET_PARAM, packet, 16 + (uint32_t)sizeof(*p) + size, 0, NULL);
 }
 
-/* A parameter of the port. */
+/* Sends a parameter to the port PORT. */
 static bool
 afe_port_param(const char *what, uint32_t module, uint32_t param, const void *data, uint16_t size)
 {
@@ -483,10 +479,12 @@ afe_off(void)
 	}
 }
 
-/* ---- the DSP's view of our memory: stream 0x1801 of the SMMU ------------------------------------------- */
+/*
+ * The DSP's view of our memory: the application processors' SMMU, stream 0x1801.
+ */
 
 static struct block apps_smmu = { "apps smmu", 0x15000000, 0x2000 };
-static struct block apps_smmu_second = { "apps smmu", 0, 0x1000 };              /* the second page: a word per context */
+static struct block apps_smmu_second = { "apps smmu", 0, 0x1000 };              /* the second page holds the per-context registers */
 static struct block apps_smmu_context = { "apps smmu, the audio context", 0, 0x1000 };
 #define SMMU_SCR0               0x000
 #define SMMU_IDR0               0x020
@@ -518,26 +516,26 @@ static struct block apps_smmu_context = { "apps smmu, the audio context", 0, 0x1
 #define SMMU_MAIR0              0xf404ff44
 #define SMMU_FSR_ALL            0xc00001fe
 #define PTE_ADDRESS             0x0000fffffffff000ull
-#define AUDIO_PTE               (3ull | 1ull << 6 | 2ull << 8 | 1ull << 10 | 1ull << 11)       /* as hakios.wifi.c's */
+#define AUDIO_PTE               (3ull | 1ull << 6 | 2ull << 8 | 1ull << 10 | 1ull << 11)       /* same as hakios.wifi.c */
 
 #define AUDIO_STREAM            0x1801
 #define AUDIO_ADDRESSES         0x10000000ull   /* dt: qcom,iommu-dma-addr-pool of qcom,msm-audio-ion */
-#define AUDIO_STREAM_BITS       (1ull << 32)    /* the stream's low bits (0x1801 & 0xf), where the DSP takes them from */
+#define AUDIO_STREAM_BITS       (1ull << 32)    /* the stream's low bits (0x1801 & 0xf), which the DSP reads from the address */
 
 #define PERIODS                 8
-#define PERIOD_FRAMES           960             /* 20 ms */
+#define PERIOD_FRAMES           960             /* 20 ms at 48 kHz */
 #define PERIOD_BYTES            (PERIOD_FRAMES * 4)
-#define BUFFER_BYTES            (PERIODS * 4096)        /* a page each */
-#define MIC_BYTES               (16 * 4096)             /* the microphones' (hakios.mic.c), behind the periods */
+#define BUFFER_BYTES            (PERIODS * 4096)        /* one page per period */
+#define MIC_BYTES               (16 * 4096)             /* microphone buffers (hakios.mic.c), after the periods */
 #define SHARED_BYTES            (BUFFER_BYTES + MIC_BYTES)
 
 static struct {
-	bool found, on, passed;         /* passed: the boot chain lets the stream through untranslated */
+	bool found, on, passed;         /* passed: the boot chain already lets the stream through untranslated */
 	uint32_t page, pages, match, context, old_smr, old_s2cr, old_sctlr;
-	vm_offset_t tables;             /* three of 4K: the root, one of the second level, one of the third */
+	vm_offset_t tables;             /* three 4 KB pages: root, second level, third level */
 } space;
-static vm_offset_t buffer;              /* BUFFER_BYTES of ours, the periods (and MIC_BYTES behind them: the microphones') */
-static uint64_t buffer_address;         /* as the DSP is to know it */
+static vm_offset_t buffer;              /* BUFFER_BYTES for the periods, then MIC_BYTES for the microphones */
+static uint64_t buffer_address;         /* the address the DSP is given */
 
 static bool
 space_find(void)
@@ -620,7 +618,7 @@ space_faults(void)
 	    rd(apps_smmu.base + SMMU_SGFSYNR1));
 }
 
-/* Our buffer behind the DSP's addresses from AUDIO_ADDRESSES on, through a context of ours. */
+/* Maps our buffer at AUDIO_ADDRESSES, through a free SMMU context, and routes the stream to it. */
 static bool
 space_on(void)
 {
@@ -628,8 +626,8 @@ space_on(void)
 	uint32_t smr = SMMU_SMR(space.match), s2cr = SMMU_S2CR(space.match), sees = 1u << 31 | AUDIO_STREAM;
 
 	/*
-	 * (the page tables are allocated once and reused: this runs at every first user of the DSP's buffers, and nothing frees
-	 * the tables, so a new allocation each time would lose 12 KB of wired memory per recording or run)
+	 * The page tables are allocated once and reused. Nothing frees them, so allocating again on
+	 * each run would leak 12 KB of wired memory every time.
 	 */
 	if (space.tables != 0) {
 		bzero((void *)space.tables, 3 * 4096);
@@ -709,9 +707,9 @@ space_off(void)
 }
 
 /*
- * The DSP's view of our memory is one: the sound's periods and the microphones' buffers behind them
- * (hakios.mic.c), through the same stream and context. Whoever comes first sets it up, whoever
- * leaves last takes it down. user: 0 the sound, 1 the microphones. With hakios_smmu_lock held.
+ * One SMMU mapping serves both the sound periods and the microphone buffers (hakios.mic.c). The
+ * first user sets it up and the last one tears it down. user: 0 is sound, 1 is microphones.
+ * Called with hakios_smmu_lock held.
  */
 static uint32_t space_users;
 
@@ -781,7 +779,7 @@ hakios_audio_dsp_memory_put(void)
 	lck_mtx_unlock(&hakios_smmu_lock);
 }
 
-/* ---- ADM and ASM: the path and the stream --------------------------------------------------------------- */
+/* ADM (device path) and ASM (stream) commands. */
 
 #define ADM_CMD_DEVICE_OPEN_V5                  0x00010326u
 #define ADM_CMDRSP_DEVICE_OPEN_V5               0x00010329u
@@ -807,17 +805,17 @@ hakios_audio_dsp_memory_put(void)
 #define ASM_SHMEM_4K_POOL                       3
 #define SESSION                                 1
 #define STREAM_PORT                             (SESSION << 8 | 1)
-#define WRITE_TOKEN                             0x80000000u     /* | the period: what a write's "done" carries back */
+#define WRITE_TOKEN                             0x80000000u     /* ORed with the period number; echoed back in the write's answer */
 #define PCM_CHANNEL_FL                          1
 #define PCM_CHANNEL_FR                          2
 
-static volatile bool stopping;          /* the run is ending: whatever plays stops */
+static volatile bool stopping;          /* set when the run ends; playback stops */
 static bool mapped, copp_open, stream_open;
 static uint32_t map_handle, copp;
-static volatile uint32_t returned;      /* the periods the DSP has said it is done with (a bit each) */
+static volatile uint32_t returned;      /* one bit per period the DSP has finished with */
 static volatile uint32_t written_done, underflows, write_errors;
 
-/* The DSP's events: the "done" of every write, and underflows. On the link's thread. */
+/* Handles the DSP's events: write completions and underflows. Runs on the APR link's thread. */
 static bool
 events(uint8_t service, __unused uint16_t port, uint32_t opcode, uint32_t token, const uint32_t *payload, uint32_t length)
 {
@@ -833,7 +831,7 @@ events(uint8_t service, __unused uint16_t port, uint32_t opcode, uint32_t token,
 		return true;
 	}
 	if (opcode == APR_BASIC_RSP_RESULT && (token & WRITE_TOKEN)) {
-		/* (a write the DSP refused outright: it answers it as a command) */
+		/* A write the DSP refused is answered as a command result, not as a write event. */
 		OSIncrementAtomic((volatile SInt32 *)&write_errors);
 		OSIncrementAtomic((volatile SInt32 *)&written_done);
 		OSBitOrAtomic(1u << (token & 31), &returned);
@@ -900,7 +898,7 @@ stream_on(void)
 		return false;
 	}
 	copp_open = true;
-	copp = answer.words[1] & 0xffff;        /* (the upper half is reserved) */
+	copp = answer.words[1] & 0xffff;        /* the upper half is reserved */
 	route.copp[0] = (uint16_t)copp;
 	say("sound: the device path is open: COPP %u\n", copp);
 	if (!command("the stream, opened for writing: 16-bit linear PCM, no processing", APR_SVC_ASM, STREAM_PORT,
@@ -934,9 +932,7 @@ stream_off(void)
 	}
 }
 
-/* ---- the test tone ----------------------------------------------------------------------------------- */
-
-/* 1 kHz at 48 kHz, -20 dBFS (a peak of 3277): one cycle */
+/* Test tone: one cycle of a 1 kHz sine at 48 kHz, -20 dBFS (peak 3277). */
 static const int16_t tone[48] = {
 	0, 428, 848, 1254, 1638, 1995, 2317, 2600, 2838, 3028, 3165, 3249,
 	3277, 3249, 3165, 3028, 2838, 2600, 2317, 1995, 1638, 1254, 848, 428,
@@ -957,7 +953,7 @@ period_fill(unsigned period, bool silent)
 		samples[2 * frame + 1] = sample;
 	}
 	for (vm_offset_t line = (vm_offset_t)samples; line < (vm_offset_t)samples + PERIOD_BYTES; line += 64) {
-		__asm__ volatile ("dc cvac, %0" : : "r" (line));        /* the DSP reads memory, not our caches */
+		__asm__ volatile ("dc cvac, %0" : : "r" (line));        /* clean to memory: the DSP does not snoop the CPU caches */
 	}
 	__asm__ volatile ("dsb sy");
 }
@@ -972,8 +968,8 @@ period_write(unsigned period)
 }
 
 /*
- * The tone, written period after period as the DSP gives them back, for `ms'; then silence until
- * the DSP has given every period back. What came back and how fast is said.
+ * Writes the tone period by period as the DSP returns them, for `ms'. Then writes silence until
+ * the DSP has returned every period. Logs the periods returned and the rate the DSP consumed them at.
  */
 static bool
 play(uint32_t ms, bool amplifiers)
@@ -1057,28 +1053,25 @@ play(uint32_t ms, bool amplifiers)
 	return ok;
 }
 
-/* ---- sound=4: what Darwin plays ------------------------------------------------------------------------------ */
-
 /*
- * /dev/hakios-audio's writer (the audio server's real-time thread, hakios.audio.c) puts frames
- * into a ring and does not wait; the feeder, a thread of ours, takes them from there into each
- * period the DSP gives back (and silence when there is nothing), so the stream never stops
- * while the run lasts. The amplifiers are only on while there is sound: the watcher starts them
- * (and fades them in to sound_below) when a write is not silence, and stops them after three
- * seconds of silence or no writes.
+ * sound=4: Darwin's output. The writer (the audio server's real-time thread, hakios.audio.c)
+ * puts frames into a ring and never waits. The feeder thread moves them from the ring into each
+ * period the DSP returns, filling with silence when the ring is empty, so the stream runs for
+ * the whole run. The watcher thread switches the amplifiers on when a write is not silence, and
+ * off after three seconds of silence or no writes.
  */
-#define RING_FRAMES             32768           /* 0.68 s; a power of two, the indices run on and wrap */
-#define SILENCE                 8               /* samples no larger than this are silence (as hakios.audio.c's) */
-#define QUIET_BEFORE_OFF_US     3000000ull
+#define RING_FRAMES             32768           /* about 0.68 s at 48 kHz; the head and tail counters run on and wrap */
+#define SILENCE                 8               /* samples no larger than this count as silence (same threshold as hakios.audio.c) */
+#define QUIET_BEFORE_OFF_US     3000000ull      /* silence for this long stops the amplifiers */
 
 static int16_t ring[RING_FRAMES * 2];
-static volatile uint32_t ring_head, ring_tail;  /* frames: written by the sink, taken by the feeder */
-static volatile uint64_t last_sound_us;         /* when the latest write that was not silence came */
+static volatile uint32_t ring_head, ring_tail;  /* frame counts: head advanced by the writer, tail by the feeder */
+static volatile uint64_t last_sound_us;         /* time of the latest write that was not silence */
 static volatile bool feeder_runs, watcher_runs;
 static uint64_t fed_frames, silent_frames, darwin_frames;
-static volatile uint32_t darwin_peak;              /* the largest sample since the amplifiers last started */
+static volatile uint32_t darwin_peak;           /* largest sample since the amplifiers were last started */
 
-/* From the writer's thread, under hakios.audio.c's lock: never waits. */
+/* Called on the writer's thread with hakios.audio.c's lock held. Never blocks. */
 static uint32_t
 darwin_sink(const int16_t *frames, uint32_t count)
 {
@@ -1105,10 +1098,10 @@ darwin_sink(const int16_t *frames, uint32_t count)
 	return taken;
 }
 
-static uint32_t guard_periods;                  /* periods through the guard */
-static volatile bool guard_on;                  /* the amplifiers are on: what the guard lets through is heard */
+static uint32_t guard_periods;                  /* periods processed since the last report */
+static volatile bool guard_on;                  /* amplifiers on: what the guard passes is audible */
 
-/* tenths of a dB as text: "-5.7" */
+/* Formats tenths of a dB as text, e.g. "-5.7". */
 static const char *
 db_text(char *text, int tenths)
 {
@@ -1116,7 +1109,7 @@ db_text(char *text, int tenths)
 	return text;
 }
 
-/* What the guard has done since it was last said (hakios.guard.c), as one line; nothing if `quiet'. */
+/* Logs what the guard (hakios.guard.c) has done since the last report, as one line. Silent if `quiet'. */
 static void
 guard_say(const char *when, bool quiet)
 {
@@ -1127,7 +1120,7 @@ guard_say(const char *when, bool quiet)
 	if (r.blocks == 0 || quiet) {
 		return;
 	}
-	/* (levels at the speakers: dB under a full-scale square wave at Android's level; gains in dB) */
+	/* Levels are dB under a full-scale square wave at Android's level. Gains are in dB. */
 	say("sound: the guard%s: peaks in %u, out %u (of 32768); gain now %s dB, least %s dB, held down by the 0.2 s/3 s/60 s "
 	    "averages in %u/%u/%u of %u periods; peaks limited in %u frames (by %s dB at most); averages %s/%s/%s dB\n",
 	    when, r.peak_in, r.peak_out, db_text(t[0], hakios_guard_decibels(r.gain * r.gain >> 30)),
@@ -1137,7 +1130,7 @@ guard_say(const char *when, bool quiet)
 	    db_text(t[5], hakios_guard_decibels(r.slow)));
 }
 
-/* A period from the ring, the rest of it silence. */
+/* Fills one period from the ring, padding the rest with silence, and runs it through the guard. */
 static void
 period_fill_darwin(unsigned period)
 {
@@ -1154,7 +1147,7 @@ period_fill_darwin(unsigned period)
 	ring_tail = tail + n;
 	fed_frames += n;
 	silent_frames += PERIOD_FRAMES - n;
-	/* the guard, on every period, silence too: its filter and its averages go on (hakios.guard.c) */
+	/* The guard runs on every period, silence included, so its filter and averages keep updating. */
 	hakios_guard_process(samples, PERIOD_FRAMES);
 	if (n != 0 && hakios_audio_recording_fed()) {
 		hakios_audio_record_fed(samples, n);
@@ -1181,7 +1174,7 @@ feeder_thread(__unused void *parameter, __unused wait_result_t result)
 		static bool was_on;
 
 		if (guard_on && !was_on) {
-			guard_say("", true);    /* (what it did to the silence meanwhile is of no interest) */
+			guard_say("", true);    /* discard what the guard did to silence in the meantime */
 			guard_periods = 0;
 		} else if (was_on && !guard_on) {
 			guard_say(" until the amplifiers stopped", false);
@@ -1212,19 +1205,19 @@ feeder_thread(__unused void *parameter, __unused wait_result_t result)
 	thread_terminate(current_thread());
 }
 
-/* The amplifiers' level as the guard is to reckon with it (sound_guard_as: louder than it is, for a test). */
+/* Gives the guard the amplifiers' level. sound_guard_as can make it assume a louder level, for testing. */
 static void
 guard_level(uint32_t level_below)
 {
 	uint32_t as = level_below < guard_as ? level_below : guard_as;
 
-	/* (HAKIOS_GUARD_SILENT means "the amplifiers are off": a level must never be taken for it, it would turn the power limits off) */
+	/* HAKIOS_GUARD_SILENT means "amplifiers off". A real level must never equal it, or the guard would drop its power limits. */
 	hakios_guard_attenuation(as >= HAKIOS_GUARD_SILENT ? HAKIOS_GUARD_SILENT - 1 : as);
 }
 
 /*
- * sound_below and the volume Darwin has set (`extra', eighths of a dB under it), added up: saturating, so that a
- * huge sound_below or `extra' cannot wrap the sum round to a small number, that is to a loud level.
+ * Adds sound_below and Darwin's volume (`extra', eighths of a dB). The sum saturates, so a large
+ * value cannot wrap around to a small number, which would mean a loud level.
  */
 static uint32_t
 below_with(uint32_t extra)
@@ -1235,10 +1228,12 @@ below_with(uint32_t extra)
 }
 
 /*
- * The amplifiers are off. The guard goes on at their level all the same: what it lets through now reaches them
- * 160 ms later, behind the periods queued at the DSP, and if that is sound, they will have been started by then
- * (70 ms after it comes). While they are off nothing but silence comes, and the averages fall as a speaker cools.
- * Only when nothing can be heard at all -- Darwin's volume at 0, the amplifiers given up on -- is the guard told so.
+ * Marks the amplifiers as off. The guard keeps running at their level: what it passes now
+ * reaches the amplifiers about 160 ms later, behind the periods queued at the DSP. The
+ * amplifiers start about 70 ms after sound arrives, so they are on by the time that sound gets
+ * there. While they are off only silence arrives and the averages fall. The guard is told the
+ * level is silent only when nothing can be heard at all: Darwin's volume is 0, or the
+ * amplifiers have been given up on.
  */
 static void
 guard_off(bool unheard)
@@ -1250,9 +1245,9 @@ guard_off(bool unheard)
 }
 
 /*
- * The amplifiers on while there is sound, at the volume Darwin has set (hakios_audio_volume(): how
- * far under the loudest, sound_below under Android's level), and off while Darwin's volume is 0;
- * their status looked at every 200 ms while they are on. On the sound's thread.
+ * Keeps the amplifiers on while there is sound, at the level Darwin has set (hakios_audio_volume():
+ * how far under the loudest, plus sound_below), and off while Darwin's volume is 0. While they
+ * are on, their status is checked every 200 ms. Runs on the sound thread.
  */
 static void
 watch(void)
@@ -1261,7 +1256,7 @@ watch(void)
 	uint64_t last_look = 0, last_monitor = 0;
 	uint32_t starts = 0, changes = 0, generation = 0, extra = 0, monitor = 0, monitor_looks = 0;
 
-	guard_level(below);                     /* (from the first sample on: see guard_off()) */
+	guard_level(below);                     /* from the first sample on; see guard_off() */
 
 	while (!stopping) {
 		uint64_t now = now_us(), sounded = last_sound_us;
@@ -1304,7 +1299,7 @@ watch(void)
 				last_look = now_us();
 				last_monitor = 0;
 				monitor_looks = 0;
-				/* (what is written now is heard after the periods already queued at the DSP: PERIODS x 20 ms) */
+				/* Writes made now are heard after the periods already queued at the DSP: PERIODS x 20 ms. */
 				say("sound: the amplifiers are up %llu ms after the first write that was not silence; that write reaches "
 				    "them %u ms after it was made, behind the periods queued at the DSP\n", (last_look - sounded) / 1000,
 				    PERIODS * PERIOD_FRAMES / 48);
@@ -1323,7 +1318,7 @@ watch(void)
 				on = false;
 				given_up = true;
 			} else if (now - last_monitor >= 1000000) {
-				/* the amplifiers' temperature and the battery as they see it, every second: a reduction if Android's table asks for one */
+				/* Once a second, read the amplifiers' temperature and the battery level; apply the reduction Android's table asks for. */
 				uint32_t wanted;
 
 				last_monitor = now;
@@ -1344,7 +1339,7 @@ watch(void)
 	watcher_runs = false;
 }
 
-/* ---- the whole ---------------------------------------------------------------------------------------- */
+/* The whole run: setup, the timed sequence, and teardown. */
 
 static bool running, taken_down;
 
@@ -1433,6 +1428,7 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 	if (level == 4) {
 		thread_t feeder;
 
+		/* Level 4 does not stop after sound_secs: the feeder and watcher run until the run ends. */
 		announce("the amplifiers, set up from Android's Music profile, powered down until Darwin plays");
 		if (!hakios_speaker_prepare(acf, acf_size)) {
 			goto out;
@@ -1461,13 +1457,13 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 		thread_terminate(current_thread());
 	}
 	if (level >= 3) {
-		/* the clock runs (the port is started, the stream as well): the amplifiers can lock to it */
+		/* The port and stream are running, so the clock is present for the amplifiers to lock to. */
 		announce("the amplifiers, set up from Android's Music profile, then started at the lowest volume");
 		if (!hakios_speaker_prepare(acf, acf_size) || !hakios_speaker_start()) {
 			goto out;
 		}
 	}
-	/* (the amplifiers are faded in before the tone begins: they fade in on silence, and the tone starts at that level) */
+	/* Fade the amplifiers in before the tone starts, so the tone begins at the final level. */
 	if (level >= 3 && !hakios_speaker_volume(below, 50)) {
 		goto out;
 	}
@@ -1510,7 +1506,7 @@ hakios_sound_dsp_up(void)
 	}
 	hakios_guard_configure(true, gain);
 	if (level >= 2 && level <= 3 && seconds > 3) {
-		seconds = 3;            /* the test tone: three seconds at most */
+		seconds = 3;            /* the test tone runs for three seconds at most */
 	}
 	running = true;
 	if (kernel_thread_start(sound_thread, NULL, &thread) != KERN_SUCCESS) {
