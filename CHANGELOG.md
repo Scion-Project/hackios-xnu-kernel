@@ -16,6 +16,11 @@ changes to it; the scripts named fetch the release and put the changes on.
 - the build tools: Apple's [libdispatch](https://github.com/apple-oss-distributions/libdispatch), [libpthread](https://github.com/apple-oss-distributions/libpthread) and [AvailabilityVersions](https://github.com/apple-oss-distributions/AvailabilityVersions), [bootstrap_cmds](https://github.com/markmentovai/bootstrap_cmds), [unifdef](https://github.com/fanf2/unifdef), the [macOS 13.3 SDK](https://github.com/joseluisq/macosx-sdks) and the [iPhoneOS 16.5 SDK](https://github.com/theos/sdks) -- `xnu-deps/setup.sh`
 - not fetched by anything here: the Darwin 16.5 user space, which you lay out from your own IPSW (`sysimage/`), and the phone's own firmware, pulled from its Android (`fw-*`)
 
+## 2026-11-05
+
+- repositories: renamed, and the old URLs redirect: `scion-kernel` (this one), `scion-starlte`, `scion-star2lte`, `scion-crownlte`, `scion-installer`; names in the code stay HakiOS's
+- README: starts with what a phone's owner needs; issue templates for a bug and a tester's report
+
 ## 2026-11-04
 
 - S9 defaults: hardware video on (`mfc=5 mfc_irq=1`, 128 MB of RAM kept for it): Safari's video seen smooth on the phone; zero copy stays off. The real key bag stays off: on a real /var a passcode set from Settings didn't take (`keystore_real=1`, 4 November).

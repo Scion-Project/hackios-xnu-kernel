@@ -1,6 +1,64 @@
-# HakiOS
+# Scion
 
 English · [中文](README.zh.md) · [Українська](README.uk.md)
+
+**Scion runs iOS 16.5 on Android phones, on Apple's open-source XNU kernel and our own drivers, with no emulator on the Galaxy S9.**
+This is an experiment, not a finished ROM: you build it yourself from your own copy of iOS, and nothing of Apple's is in these repositories.
+Website: **[scion-project.github.io](https://scion-project.github.io)**.
+
+Scion is built on [HakiOS](https://github.com/oosexgang/hakios-xnu-kernel), and this repository is a fork of it.
+
+## Phones
+
+| Phone | State | What to expect |
+|---|---|---|
+| **Galaxy S9** (SM-G960F, Exynos) | **Works** | iOS on all eight cores: touch, GPU, Wi-Fi, speakers, microphone, front camera, Bluetooth, sensors, vibration, battery. Tested on only a few phones so far |
+| **Galaxy S9+** (SM-G965F, Exynos) | **Unproven** | Nobody has run it. The installer does a 2-minute first run that only collects a log, then returns to TWRP. The screen may stay black |
+| **Galaxy Note9** (SM-N960F, Exynos) | **Unproven** | The same first run as the S9+ |
+| **Pixel 10** | **Virtual machine, in progress** | iOS 16.5 in a VM on the phone's own hypervisor, through the [Scion app](https://github.com/Scion-Project/scion). It reaches the home screen; touch was still being fixed at its last status. It has no ready-made install for other owners yet |
+
+Snapdragon and Korean (`N`) models are not supported, and the installer refuses them.
+
+## Install on a Galaxy S9
+
+You need an unlocked bootloader, TWRP, a computer with about 20 GB free, and your own `iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw`. No ready-made download exists, because the installer contains iOS's own files and is yours alone.
+
+1. **Back up.** In TWRP, back up Boot, System and EFS, and copy the backup to a computer. EFS holds your IMEI.
+2. **Build the installer** with [scion-installer](https://github.com/Scion-Project/scion-installer):
+   ```sh
+   git clone https://github.com/Scion-Project/scion-installer && cd scion-installer
+   ./build-installer.sh --ipsw /path/to/iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw
+   ```
+3. **Flash it.** Copy `out/scion-exynos9810-installer.zip` to the phone, install it in TWRP, and reboot to System. Don't use `adb sideload`, which can't send a file over 2 GB.
+
+To leave iOS, hold five fingers on the screen for 1.5 seconds; the phone restarts into TWRP and keeps the log. Restore your Boot and System backups to go back to Android.
+The installer's [README](https://github.com/Scion-Project/scion-installer#readme) and [step-by-step notes](https://github.com/Scion-Project/scion-installer/blob/main/universal/TESTING.txt) have the detail.
+
+## Known issues
+
+- **Unexpected restarts:** one tester has reported the phone rebooting by itself. The cause isn't known yet, so please send a log if it happens to you.
+- **No mobile network:** no cellular data, calls or SMS. Use Wi-Fi.
+- **No rear cameras:** only the front camera works. Headphones don't work either.
+- **No App Store or Apple services:** no Apple ID, iCloud, App Store or iMessage, and that won't change. Sileo is included, but refreshing sources and installing packages haven't been tested.
+- **Settings may not survive a restart:** if USERDATA still holds Android's data, `/private/var` lives in memory and is emptied at every boot. Keeping it needs a separate installer that formats USERDATA, which erases Android's data.
+- **The passcode doesn't protect your files:** there is no Secure Enclave and files aren't encrypted. The passcode protects keychain items only, a 6-digit code can be guessed offline by anyone who reads the flash, and forgetting it loses the keychain ([details](docs/keystore.md)). Don't enable Erase Data.
+- **The clock may be wrong at first:** the installer leaves the hardware clock out.
+
+## Send logs
+
+Save the logs in TWRP right after the problem, before anything else, because a full power-off loses them:
+
+```sh
+cp /sys/fs/pstore/* /sdcard/ 2>/dev/null; cat /proc/last_kmsg > /sdcard/last_kmsg.txt
+```
+
+If `/sdcard` isn't there, use `/external_sd`, or `/tmp` and `adb pull`. Then [report a bug](https://github.com/Scion-Project/scion-kernel/issues/new?template=bug.yml) with `last_kmsg.txt` and your phone's model, or [send a tester report](https://github.com/Scion-Project/scion-kernel/issues/new?template=tester-report.yml) if it worked. Never attach the installer, the system image or your IPSW: they contain Apple's files.
+
+---
+
+# For developers
+
+Everything below is about the kernel itself. Scion's code still uses HakiOS's names (`hakios_*`, `/dev/hakios-*`, `kern.hakios.*`) so that it keeps merging with upstream, so "HakiOS" below means this kernel.
 
 **Apple's open-source Darwin kernel (XNU, xnu-8796.121.2) on Android phones (Qualcomm, Samsung Exynos)**, the way Android is Linux on
 phones: a boot loader of its own, drivers of its own, a configuration system and a version of its own. The same kernel runs in
@@ -30,27 +88,11 @@ apps describe what happens when you add layer 2 below yourself.
 ### Galaxy S9 (`starlte`, SM-G960F, Exynos 9810)
 
 This repository is Scion-Project's fork of HakiOS. Its main addition is the Galaxy S9 port, which boots the iOS 16.5 user space
-you build from your own IPSW. The device repository is [hakios-starlte](https://github.com/Scion-Project/hakios-starlte), and the
-TWRP installer comes from [scion-packaging](https://github.com/Scion-Project/scion-packaging). The table below shows what has been
-seen on the phone. [docs/devices/starlte.md](docs/devices/starlte.md) is generated from the device's own `device.conf` at the
-revision `devices/manifest.conf` pins, so it can lag behind this table.
-
-| | Galaxy S9 | Boot-arguments |
-|---|---|---|
-| All eight cores: the four A55s and the four Exynos M3s | yes | `cpus=8 bootcpu=2 m3_prep=3 pan=0`; `isa_floor` comes on with `m3_prep=3`. Core 0 comes from the loader after `ufs=3`'s switch (`devices/starlte/README.md`, The cores). The installer's default is `cpus=2 bootcpu=2` (the two A55s) |
-| Touch (Samsung S6SY761) | yes | `s6sy761=1` |
-| Battery level and charger state (MAX77705, read only) | yes | `max77705=1` |
-| Vibration | yes | `max77705_haptic=1` |
-| The kernel's live log and a line console over USB (CDC-ACM) | yes | `usb_gadget=5 max77705_usbsw=1` |
-| GPU: OpenGL ES through Mesa's Panfrost on the Mali-G72 | yes | `mali=9`, root built with `GL=1` |
-| CPU clocks (ACPM DVFS) | yes | `cpufreq_lit=1794000` (A55s), `cpufreq_big=` (M3s) |
-| Widgets and lock-screen posters | yes | `poster_retry`, on by default in the job list |
-| Brightness from iOS's slider | written, not yet confirmed | `panel=1 backlight=2` |
-| Cameras | written, not yet tested on the phone | `cam_s9=N` |
-| Speakers, Wi-Fi, Bluetooth, temperatures, the flashlight, the kernel's own UFS driver | written, not yet seen | see the device repository's README |
-| Cellular | no | |
-
-[`hakios-starlte`'s README](https://github.com/Scion-Project/hakios-starlte#readme) explains how to build and install for this device.
+you build from your own IPSW. The device repository is [scion-starlte](https://github.com/Scion-Project/scion-starlte), and the
+TWRP installer comes from [scion-installer](https://github.com/Scion-Project/scion-installer).
+[scion-starlte's README](https://github.com/Scion-Project/scion-starlte#readme) says what has been seen on the phone and how to
+build and install by hand, with each part's boot-arguments. [docs/devices/starlte.md](docs/devices/starlte.md) is generated from
+the device's own `device.conf` at the revision `devices/manifest.conf` pins.
 
 ### Galaxy S9+ (`star2lte`, SM-G965F) and Galaxy Note9 (`crownlte`, SM-N960F): written, never run
 
@@ -58,8 +100,8 @@ The same SoC and, by Samsung's device trees, the same board as the S9's for ever
 S9's drivers and the loader's S9 platform under their own names (`loader_platform=`, written by their image scripts).
 **Nobody has run any of it on either phone.** There is no UEFI of their own (Silicium has no target for them): their images
 borrow the S9's, only when asked (`mkimage.sh -U`). Their device repositories,
-[hakios-star2lte](https://github.com/Scion-Project/hakios-star2lte) and [hakios-crownlte](https://github.com/Scion-Project/hakios-crownlte),
-say what differs from the S9, where each fact comes from, and what to try first; scion-packaging's `universal/` installer
+[scion-star2lte](https://github.com/Scion-Project/scion-star2lte) and [scion-crownlte](https://github.com/Scion-Project/scion-crownlte),
+say what differs from the S9, where each fact comes from, and what to try first; scion-installer's `universal/` installer
 takes all three phones.
 
 ## The three layers
@@ -77,8 +119,8 @@ back to its own Android. The one thing written by default is the loader's own lo
 ## Quick start
 
 ```sh
-git clone https://github.com/Scion-Project/hackios-xnu-kernel.git hakios   # this fork; upstream is oosexgang/hakios-xnu-kernel
-cd hakios
+git clone https://github.com/Scion-Project/scion-kernel.git   # this fork; upstream is oosexgang/hakios-xnu-kernel
+cd scion-kernel
 make doctor           # what this machine lacks, and what to do
 make qemu-open        # the open kernel in QEMU: nothing of Apple's, nothing of a phone's
 ```
@@ -96,19 +138,19 @@ make phone SECS=600      # a 10-minute session on the phone, in RAM
 
 | Repository | What |
 |---|---|
-| [hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel/tree/main) | **common**: the kernel port, every common driver, the loader, user space, the tools, this documentation, and `devices/qemu` |
+| [scion-kernel](https://github.com/Scion-Project/scion-kernel) (upstream: [hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel/tree/main)) | **common**: the kernel port, every common driver, the loader, user space, the tools, this documentation, and `devices/qemu` |
 | [hakios-sm7325](https://github.com/oosexgang/hakios-sm7325) | POCO X5 Pro 5G: its defconfig, status, UEFI platform, firmware script, and its SoC's layer (`soc/`: the Qualcomm SC7280 family) |
 | [hakios-uefi](https://github.com/oosexgang/hakios-uefi) | the firmware that starts the loader: Mu-Silicium with HakiOS's boot path, banner and name, and HakiOS's U-Boot (`u-boot/`) |
 | [hakios-metal](https://github.com/oosexgang/hakios-metal) | Metal's command model on the Adreno, through the kernel's GPU driver |
-| [hakios-starlte](https://github.com/Scion-Project/hakios-starlte) | Galaxy S9 (Scion fork): its defconfig, status, UEFI platform and prebuilt UEFI, image script, and its SoC's layer (`soc/`: the Exynos 9810) |
-| [hakios-star2lte](https://github.com/Scion-Project/hakios-star2lte), [hakios-crownlte](https://github.com/Scion-Project/hakios-crownlte) | Galaxy S9+ and Note9: their defconfigs, status (nothing seen), image script, and the same `soc/` as the S9's; no UEFI yet |
-| [scion-packaging](https://github.com/Scion-Project/scion-packaging) | Scion fork: the S9's TWRP installer (boot image to `BOOT`, the system image you build to `SYSTEM`) |
+| [scion-starlte](https://github.com/Scion-Project/scion-starlte) | Galaxy S9 (Scion fork): its defconfig, status, UEFI platform and prebuilt UEFI, image script, and its SoC's layer (`soc/`: the Exynos 9810) |
+| [scion-star2lte](https://github.com/Scion-Project/scion-star2lte), [scion-crownlte](https://github.com/Scion-Project/scion-crownlte) | Galaxy S9+ and Note9: their defconfigs, status (nothing seen), image script, and the same `soc/` as the S9's; no UEFI yet |
+| [scion-installer](https://github.com/Scion-Project/scion-installer) | Scion fork: the S9's TWRP installer (boot image to `BOOT`, the system image you build to `SYSTEM`) |
 
 `devices/manifest.conf` in the common repository names each one and the revision it is at (in this fork, the Scion-Project forks of them); `tools/hakios-device.py sync` clones them
 into `devices/` and `uefi/`. One repository per device: it carries its SoC's layer, and `tools/hakios-device.py new` makes one. [How the repositories fit](docs/porting/repositories.md).
 
 ```sh
-git clone https://github.com/Scion-Project/hackios-xnu-kernel.git hakios && cd hakios
+git clone https://github.com/Scion-Project/scion-kernel.git && cd scion-kernel
 tools/hakios-device.py sync      # the SoC, device and UEFI repositories, at the revisions the manifest names
 ```
 

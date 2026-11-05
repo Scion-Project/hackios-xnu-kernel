@@ -1,0 +1,47 @@
+name: Bug report
+description: Something went wrong on your phone, such as a crash, a restart or a part that stopped working.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never attach the installer, the system image or your IPSW.** They contain Apple's files.
+        Read your logs before posting: they can show names such as your Wi-Fi network's.
+  - type: dropdown
+    id: model
+    attributes:
+      label: Phone model
+      options:
+        - Galaxy S9 (SM-G960F)
+        - Galaxy S9+ (SM-G965F)
+        - Galaxy Note9 (SM-N960F)
+        - Pixel 10 (VM)
+        - Other (say below)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you were doing, what you expected, and what happened instead. How often does it happen?
+    validations:
+      required: true
+  - type: textarea
+    id: last_kmsg
+    attributes:
+      label: last_kmsg and logs
+      description: |
+        In TWRP, right after the problem and before anything else (a full power-off loses them):
+        `cp /sys/fs/pstore/* /sdcard/ 2>/dev/null; cat /proc/last_kmsg > /sdcard/last_kmsg.txt`
+        Drag `last_kmsg.txt` and the `*-ramoops*` files here. Rename them to end in `.txt` if GitHub refuses them.
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The two commit lines build-installer.sh prints at the end (scion-kernel and scion-installer), or the date you built it.
+  - type: input
+    id: twrp
+    attributes:
+      label: TWRP version
