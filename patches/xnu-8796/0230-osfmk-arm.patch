@@ -1,0 +1,735 @@
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index e26a1d70f4709c52e6b4043e19cbf8b6bb23e0bc..7c04da8b767ec5c00e7b87619415b8a613daf29f 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -73,6 +73,9 @@
+ #include <sys/kdebug.h>
+ 
+ #include <pexpert/pexpert.h>
++#if defined(__arm64__)
++#include <arm64/psci_smp.h>
++#endif
+ 
+ #include <console/serial_protos.h>
+ 
+@@ -335,7 +338,109 @@ arm_setup_pre_sign(void)
+  */
+ 
+ __startup_func
++/* Bring-up checkpoints, see osfmk/arm64/loader_return.c */
++extern void loader_checkpoint(uint64_t n);
++extern void loader_early_log_init(void);
++
++/*
++ * HakiOS (patch 1509): PAN (ARMv8.1) on or off for the whole system. The Galaxy S9's Exynos M3s implement ARMv8.0: they
++ * have no PAN, and every MSR/MRS of PSTATE.PAN is UNDEFINED on them -- arm_init_cpu()'s first instruction, and every
++ * copyin/copyout and context switch after it. Off when the boot processor has no PAN, or with boot-arg pan=0. Off
++ * means: SCTLR_EL1.SPAN set on every core that has PAN (so that taking an exception does not set PSTATE.PAN), PAN
++ * cleared, and no PAN instruction executed anywhere (copyio.c, pcb.c, pmap.c, platform_tests.c). Decided once, on the
++ * boot processor, before any other core starts: a thread that moves between an A55 and an M3 sees the same rule.
++ */
++uint32_t hakios_pan_off;
++
++static bool
++hakios_cpu_has_pan(void)
++{
++	return ((__builtin_arm_rsr64("S3_0_C0_C7_1") >> 20) & 0xf) != 0;      /* ID_AA64MMFR1_EL1.PAN */
++}
++
++static void
++hakios_pan_apply(void)
++{
++	if (!hakios_pan_off) {
++		__builtin_arm_wsr("pan", 1);
++		return;
++	}
++	if (hakios_cpu_has_pan()) {
++		__builtin_arm_wsr64("SCTLR_EL1", __builtin_arm_rsr64("SCTLR_EL1") | (1ULL << 23));    /* SPAN */
++		__builtin_arm_isb(15);          /* ISB SY */
++		__builtin_arm_wsr("pan", 0);
++	}
++}
++/*
++ * HakiOS (Galaxy S9, patch 1511): code that user space writes and then runs (JavaScriptCore's JIT, WebCore's CSS
++ * selector compiler, any other JIT) made visible to the Exynos M3s' instruction fetch.
++ *
++ * iOS makes new code executable with sys_icache_invalidate() (libsystem_platform), which on 16.5 is DSB ISH, IC IVAU
++ * for every 64-byte line, DSB ISH and ISB -- no DC CVAU -- and sys_dcache_flush() is a DSB alone. Apple's cores, like
++ * the S9's Cortex-A55s (CLIDR_EL1 0x82000023: LoUU 0), unify instructions and data at their L1, so nothing has to be
++ * cleaned for instruction fetch to see a store. The M3s do not (CLIDR_EL1 0x0b200123: LoUU 1): a line of new code
++ * still dirty in an M3's L1 data cache is not what that M3 fetches, and it runs the stale bytes under it. On the
++ * phone (3 November, cpus=6) every WebContent process died this way at its first style resolution: SIGSEGV, pc 0,
++ * lr in the code the CSS selector compiler had just written (WebCore::Document::resolveStyle), hundreds in a row, and
++ * Safari loaded no page. With the two A55s alone (cpus=2) it did not happen; CTR_EL0 is the same on both (0x84448004).
++ *
++ * So with an M3 running, SCTLR_EL1.UCI is cleared on every core: EL0's cache maintenance by VA (IC IVAU, DC CVAU,
++ * DC CVAC, DC CIVAC, DC CVAP, DC CVADP) traps (ESR EC 0x18), and hakios_user_cache_op() in sleh.c does it for the
++ * process with the clean the M3 needs: DC CVAC of the line (to the point of coherency, broadcast, which the clusters
++ * honour: cohtest's steps 4 and 5), then the IC IVAU, through the kernel's alias of the page. (Linux does the same for
++ * the Cortex-A53's errata 819472 and others: ARM64_WORKAROUND_CLEAN_CACHE.) A JIT pays one trap for each 64-byte line
++ * it makes executable. Every core, not only the M3s: a thread may write code on an M3 and make it executable on an A55.
++ *
++ * Boot-arg ucache_trap: 0 never, 1 always; unset, when m3_prep is 3 or more (the M3s are started, so every core traps
++ * from the first) or when a core itself needs the clean (hakios_core_needs_pou_clean(); then from that core on).
++ * Applied on every core as it starts and as it wakes (start.s writes SCTLR_EL1_DEFAULT, UCI set, each time).
++ */
++uint32_t hakios_ucache_trap;
++static int hakios_ucache_mode = -1;     /* 0 never, 1 always, 2 decided by m3_prep and the core's own registers */
++
++/* Must this core's data cache be cleaned for its instruction fetch to see a store? Not with CTR_EL0.IDC, nor when
++ * CLIDR_EL1's LoUU and LoUIS are 0 (as Linux reads them): the A55s, QEMU's Cortex-A76, Apple's cores. The M3s: yes. */
++static bool
++hakios_core_needs_pou_clean(void)
++{
++	uint64_t ctr = __builtin_arm_rsr64("CTR_EL0"), clidr = __builtin_arm_rsr64("CLIDR_EL1");
++
++	if ((ctr >> 28) & 0x1) {
++		return false;
++	}
++	return ((clidr >> 27) & 0x7) != 0 || ((clidr >> 21) & 0x7) != 0;
++}
++
++static void
++hakios_ucache_apply(void)
++{
++	if (hakios_ucache_mode < 0) {
++		uint32_t on = 0, m3 = 0;
++
++		if (PE_parse_boot_argn("ucache_trap", &on, sizeof(on))) {
++			hakios_ucache_mode = on ? 1 : 0;
++		} else {
++			hakios_ucache_mode = 2;
++			if (PE_parse_boot_argn("m3_prep", &m3, sizeof(m3)) && m3 >= 3) {
++				hakios_ucache_trap = 1;
++			}
++		}
++		if (hakios_ucache_mode == 1) {
++			hakios_ucache_trap = 1;
++		}
++	}
++	if (hakios_ucache_mode == 2 && hakios_core_needs_pou_clean()) {
++		hakios_ucache_trap = 1;
++	}
++	if (hakios_ucache_trap) {
++		__builtin_arm_wsr64("SCTLR_EL1", __builtin_arm_rsr64("SCTLR_EL1") & ~(1ULL << 26));   /* UCI */
++		__builtin_arm_isb(15);          /* ISB SY */
++	}
++}
++extern void loader_log_cpu_facts(void);
++
+ void
++
+ arm_init(
+ 	boot_args       *args)
+ {
+@@ -354,6 +459,7 @@ arm_init(
+ 	const_boot_args = *args;
+ 	BootArgs = args = &const_boot_args;
+ 
++	loader_checkpoint(10);
+ 	cpu_data_init(&BootCpuData);
+ #if defined(HAS_APPLE_PAC)
+ 	/* bootstrap cpu process dependent key for kernel has been loaded by start.s */
+@@ -362,14 +468,20 @@ arm_init(
+ #endif /* defined(HAS_APPLE_PAC) */
+ 
+ 	PE_init_platform(FALSE, args); /* Get platform expert set up */
++	loader_checkpoint(11);
++	loader_early_log_init();
+ 
+ #if __arm64__
+ 	configure_timer_apple_regs();
++	loader_checkpoint(30);
+ 	wfe_timeout_configure();
++	loader_checkpoint(31);
+ 	wfe_timeout_init();
++	loader_checkpoint(32);
+ 
+ 	configure_misc_apple_boot_args();
+ 	configure_misc_apple_regs();
++	loader_checkpoint(33);
+ 
+ #if (DEVELOPMENT || DEBUG)
+ 	unsigned long const *platform_stall_ptr = NULL;
+@@ -385,6 +497,7 @@ arm_init(
+ 	}
+ 
+ 	platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_ARM_INIT);
++	loader_checkpoint(34);
+ 
+ 	chosen = NULL; // Force a re-lookup later on since VM addresses are not final at this point
+ 	dt_entry_size = 0;
+@@ -422,10 +535,14 @@ arm_init(
+ 	}
+ #endif
+ 
++	loader_checkpoint(35);
+ 	ml_parse_cpu_topology();
++	loader_checkpoint(12);
++	loader_log_cpu_facts();
+ 
+ 
+ 	master_cpu = ml_get_boot_cpu_number();
++	loader_checkpoint(40);
+ 	assert(master_cpu >= 0 && master_cpu <= ml_get_max_cpu_number());
+ 
+ 	BootCpuData.cpu_number = (unsigned short)master_cpu;
+@@ -439,11 +556,14 @@ arm_init(
+ 	CpuDataEntries[master_cpu].cpu_data_paddr = (void *)((uintptr_t)(args->physBase)
+ 	    + ((uintptr_t)&BootCpuData
+ 	    - (uintptr_t)(args->virtBase)));
++	loader_checkpoint(41);
+ 
+ 	thread = thread_bootstrap();
++	loader_checkpoint(42);
+ 	thread->machine.CpuDatap = &BootCpuData;
+ 	thread->machine.pcpu_data_base = (vm_offset_t)0;
+ 	machine_set_current_thread(thread);
++	loader_checkpoint(43);
+ 
+ 	/*
+ 	 * Preemption is enabled for this thread so that it can lock mutexes without
+@@ -452,19 +572,25 @@ arm_init(
+ 	 * preemption level is not really meaningful for the bootstrap thread.
+ 	 */
+ 	thread->machine.preemption_count = 0;
++	loader_checkpoint(44);
+ 	cpu_bootstrap();
++	loader_checkpoint(13);
+ 
+ 	rtclock_early_init();
++	loader_checkpoint(14);
+ 
+ 	kernel_debug_string_early("kernel_startup_bootstrap");
+ 	kernel_startup_bootstrap();
++	loader_checkpoint(15);
+ 
+ 	/*
+ 	 * Initialize the timer callout world
+ 	 */
+ 	timer_call_init();
++	loader_checkpoint(50);
+ 
+ 	cpu_init();
++	loader_checkpoint(16);
+ 
+ 	processor_bootstrap();
+ 
+@@ -510,10 +636,19 @@ arm_init(
+ 	PE_parse_boot_argn("immediate_NMI", &force_immediate_debug_halt, sizeof(force_immediate_debug_halt));
+ 
+ #if __ARM_PAN_AVAILABLE__
+-	__builtin_arm_wsr("pan", 1);
++	{
++		uint32_t pan = 1;
++
++		if (!hakios_cpu_has_pan() || (PE_parse_boot_argn("pan", &pan, sizeof(pan)) && pan == 0)) {
++			hakios_pan_off = 1;
++		}
++	}
++	hakios_pan_apply();
+ #endif  /* __ARM_PAN_AVAILABLE__ */
++	hakios_ucache_apply();          /* patch 1511 */
+ 
+ 	arm_vm_init(xmaxmem, args);
++	loader_checkpoint(17);
+ 
+ 	if (debug_boot_arg) {
+ 		patch_low_glo();
+@@ -527,7 +662,9 @@ arm_init(
+ 
+ 	/* Setup debugging output. */
+ 	const unsigned int serial_exists = serial_init();
++	loader_checkpoint(18);
+ 	kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF);
++	loader_checkpoint(19);
+ 	kprintf("kprintf initialized\n");
+ 
+ 	serialmode = 0;
+@@ -569,6 +706,7 @@ arm_init(
+ 		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
+ 	}
+ 	PE_create_console();
++	loader_checkpoint(20);
+ 
+ 	/* setup console output */
+ 	PE_init_printf(FALSE);
+@@ -647,6 +785,7 @@ arm_init(
+ 	 * against string vulnerabilities
+ 	 */
+ 	__stack_chk_guard &= ~(0xFFULL << 8);
++	loader_checkpoint(21);
+ 	machine_startup(args);
+ }
+ 
+@@ -661,8 +800,9 @@ arm_init_cpu(
+ 	cpu_data_t      *cpu_data_ptr)
+ {
+ #if __ARM_PAN_AVAILABLE__
+-	__builtin_arm_wsr("pan", 1);
++	hakios_pan_apply();
+ #endif
++	hakios_ucache_apply();          /* patch 1511 */
+ 
+ #ifdef __arm64__
+ 	configure_timer_apple_regs();
+@@ -673,6 +813,10 @@ arm_init_cpu(
+ 
+ 
+ 	machine_set_current_thread(cpu_data_ptr->cpu_active_thread);
++#if defined(GENERIC_PSCI_SMP)
++	psci_smp_diag_vectors();        /* m3_diag=1: the kernel's vectors only now that it has its thread (patch 1509) */
++	psci_smp_cpu_reached(PSCI_SMP_CPU_IN_KERNEL);
++#endif
+ 
+ #if APPLE_ARM64_ARCH_FAMILY
+ 	configure_late_apple_regs();
+@@ -793,8 +937,9 @@ arm_init_idle_cpu(
+ 	cpu_data_t      *cpu_data_ptr)
+ {
+ #if __ARM_PAN_AVAILABLE__
+-	__builtin_arm_wsr("pan", 1);
++	hakios_pan_apply();
+ #endif
++	hakios_ucache_apply();          /* patch 1511 */
+ 
+ 	machine_set_current_thread(cpu_data_ptr->cpu_active_thread);
+ 
+diff --git a/osfmk/arm/caches.c b/osfmk/arm/caches.c
+index b5b3ba9356e6d3b5361100a0c1724a8c5a77c65b..fd335b6e41b086d6dd30ec7309a850ee39dc8ab6 100644
+--- a/osfmk/arm/caches.c
++++ b/osfmk/arm/caches.c
+@@ -47,6 +47,26 @@
+ 
+ #include <arm/misc_protos.h>
+ 
++/*
++ * HakiOS (patch 1512): the boot loader's extra RAM beside the window (arm/pmap/pmap.h) is in the physical aperture too,
++ * and is RAM: not a page to map through a copy window, nor (cache_sync_page) a reason to clean the whole data cache.
++ */
++static inline bool
++hakios_isphysmem(pmap_paddr_t pa)
++{
++	if (((vm_address_t)pa - gPhysBase) < gPhysSize) {
++		return true;
++	}
++	for (unsigned int i = 0; i < hakios_extra_ram_count; i++) {
++		if ((pa >= hakios_extra_ram[i].pa) && (pa < hakios_extra_ram[i].end)) {
++			return true;
++		}
++	}
++	return false;
++}
++#undef isphysmem
++#define isphysmem(a) hakios_isphysmem((pmap_paddr_t)(a))
++
+ /*
+  * dcache_incoherent_io_flush64() dcache_incoherent_io_store64() result info
+  */
+diff --git a/osfmk/arm/commpage/commpage.c b/osfmk/arm/commpage/commpage.c
+index ee9f8de75a645dc65afab521bc05b27b46b05885..dde43b297a90e450a9deb7ed556f1b00106ada23 100644
+--- a/osfmk/arm/commpage/commpage.c
++++ b/osfmk/arm/commpage/commpage.c
+@@ -36,6 +36,7 @@
+  *	File:		arm/commpage/commpage.c
+  *	Purpose:	Set up and export a RO/RW page
+  */
++#include <pexpert/pexpert.h>
+ #include <libkern/section_keywords.h>
+ #include <mach/mach_types.h>
+ #include <mach/machine.h>
+@@ -363,6 +364,38 @@ _get_commpage_text_priv_address(void)
+ }
+ 
+ #if defined(__arm64__)
++/*
++ * HakiOS (Galaxy S9, patch 1510): with the Exynos M3s started next to the Cortex-A55s, user space must be told only what every core
++ * has: the M3 is ARMv8.0 (seen on the phone, 2 November: launchd killed with SIGILL on an M3 when it was told the A55's
++ * ARMv8.2 set). Boot-arg isa_floor=1 (also set by m3_prep=3): every 4-bit field of the ID registers below is lowered to
++ * the M3's -- ISAR0 AES+PMULL, SHA1, SHA2 (not 512), CRC32; nothing of ISAR1, MMFR2 or PFR1; PFR0's FP and AdvSIMD
++ * without half precision. (The S9's Linux /proc/cpuinfo: fp asimd evtstrm aes pmull sha1 sha2 crc32.)
++ */
++static int hakios_isa_floor = -1;
++static uint64_t
++hakios_id_floor(uint64_t value, uint64_t floor)
++{
++	if (hakios_isa_floor < 0) {
++		uint32_t on = 0, m3 = 0;
++
++		PE_parse_boot_argn("isa_floor", &on, sizeof(on));
++		PE_parse_boot_argn("m3_prep", &m3, sizeof(m3));
++		hakios_isa_floor = (on != 0 || m3 >= 3) ? 1 : 0;
++		if (hakios_isa_floor) {
++			printf("commpage: isa_floor: user space told the ARMv8.0 set the Exynos M3 has\n");
++		}
++	}
++	if (!hakios_isa_floor) {
++		return value;
++	}
++	uint64_t out = 0;
++	for (int shift = 0; shift < 64; shift += 4) {
++		uint64_t a = (value >> shift) & 0xf, b = (floor >> shift) & 0xf;
++		out |= (a < b ? a : b) << shift;
++	}
++	return out;
++}
++
+ /**
+  * Initializes all commpage entries and sysctls for EL0 visible features in ID_AA64ISAR0_EL1
+  */
+@@ -370,7 +403,7 @@ static void
+ commpage_init_arm_optional_features_isar0(uint64_t *commpage_bits)
+ {
+ 	uint64_t bits = 0;
+-	uint64_t isar0 = __builtin_arm_rsr64("ID_AA64ISAR0_EL1");
++	uint64_t isar0 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64ISAR0_EL1"), 0x0000000000011120ULL);
+ 
+ 	if ((isar0 & ID_AA64ISAR0_EL1_TS_MASK) >= ID_AA64ISAR0_EL1_TS_FLAGM_EN) {
+ 		gARM_FEAT_FlagM = 1;
+@@ -433,7 +466,7 @@ static void
+ commpage_init_arm_optional_features_isar1(uint64_t *commpage_bits)
+ {
+ 	uint64_t bits = 0;
+-	uint64_t isar1 = __builtin_arm_rsr64("ID_AA64ISAR1_EL1");
++	uint64_t isar1 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64ISAR1_EL1"), 0ULL);
+ 	uint64_t sctlr = __builtin_arm_rsr64("SCTLR_EL1");
+ 
+ 	if ((isar1 & ID_AA64ISAR1_EL1_SPECRES_MASK) >= ID_AA64ISAR1_EL1_SPECRES_EN &&
+@@ -520,7 +553,7 @@ static void
+ commpage_init_arm_optional_features_mmfr2(uint64_t *commpage_bits)
+ {
+ 	uint64_t bits = 0;
+-	uint64_t mmfr2 = __builtin_arm_rsr64("ID_AA64MMFR2_EL1");
++	uint64_t mmfr2 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64MMFR2_EL1"), 0ULL);
+ 
+ 	if ((mmfr2 & ID_AA64MMFR2_EL1_AT_MASK) >= ID_AA64MMFR2_EL1_AT_LSE2_EN) {
+ 		gARM_FEAT_LSE2 = 1;
+@@ -537,7 +570,7 @@ static void
+ commpage_init_arm_optional_features_pfr0(uint64_t *commpage_bits)
+ {
+ 	uint64_t bits = 0;
+-	uint64_t pfr0 = __builtin_arm_rsr64("ID_AA64PFR0_EL1");
++	uint64_t pfr0 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64PFR0_EL1"), 0x000000000000ffffULL);
+ 
+ 	if ((pfr0 & ID_AA64PFR0_EL1_CSV3_MASK) >= ID_AA64PFR0_EL1_CSV3_EN) {
+ 		gARM_FEAT_CSV3 = 1;
+@@ -573,7 +606,7 @@ commpage_init_arm_optional_features_pfr0(uint64_t *commpage_bits)
+ static void
+ commpage_init_arm_optional_features_pfr1(uint64_t *commpage_bits __unused)
+ {
+-	uint64_t pfr1 = __builtin_arm_rsr64("ID_AA64PFR1_EL1");
++	uint64_t pfr1 = hakios_id_floor(__builtin_arm_rsr64("ID_AA64PFR1_EL1"), 0ULL);
+ 
+ 	if ((pfr1 & ID_AA64PFR1_EL1_SSBS_MASK) >= ID_AA64PFR1_EL1_SSBS_EN) {
+ 		gARM_FEAT_SSBS = 1;
+diff --git a/osfmk/arm/machine_routines.h b/osfmk/arm/machine_routines.h
+index d04ecfa99982b1096935cf42b315aa81ab9cf485..bb324bf4d7f4e9c8d7e7c5e0c3cd67fd0357afe6 100644
+--- a/osfmk/arm/machine_routines.h
++++ b/osfmk/arm/machine_routines.h
+@@ -289,6 +289,8 @@ unsigned int ml_get_cluster_count(void);
+ int ml_get_boot_cpu_number(void);
+ 
+ int ml_get_cpu_number(uint32_t phys_id);
++/* the device tree's number for the core with this MPIDR (HakiOS, patch 1504: ml_mpidr_mt_aff1) */
++uint32_t ml_phys_id_from_mpidr(uint64_t mpidr);
+ 
+ unsigned int ml_get_cpu_number_local(void);
+ 
+diff --git a/osfmk/arm/model_dep.c b/osfmk/arm/model_dep.c
+index 39daaf8db949159a7b3a9f068434667822d51a96..64ceb1a5f201b200f163668c46e08dde037694f0 100644
+--- a/osfmk/arm/model_dep.c
++++ b/osfmk/arm/model_dep.c
+@@ -79,6 +79,9 @@
+ #include <arm/cpu_data_internal.h>
+ #include <arm/cpu_internal.h>
+ #include <arm/misc_protos.h>
++#if defined(__arm64__)
++#include <arm64/psci_smp.h>
++#endif
+ #include <libkern/OSKextLibPrivate.h>
+ #include <vm/vm_kern.h>
+ #include <kern/kern_cdata.h>
+@@ -1156,6 +1159,13 @@ wait_while_mp_kdp_trap(bool check_SIGPdebug)
+ 			found_SIGPdebug = true;
+ 			break;
+ 		}
++#if defined(GENERIC_PSCI_SMP)
++		/*
++		 * The panic this processor is waiting out ends in a return to the boot loader:
++		 * its interrupts are off here, so this is where it is told (psci_smp.c).
++		 */
++		psci_smp_stop_here();
++#endif
+ 		__builtin_arm_wfe();
+ 	}
+ 	os_atomic_clear_exclusive();
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+index fc2096fa001069479bd04006ebc8a22e6abfbe99..5f0612b9b4f95a141b97beaa4d113e0d11a56f5d 100644
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -93,6 +93,8 @@
+ 
+ #include <pexpert/device_tree.h>
+ 
++MARK_AS_PMAP_TEXT static void pmap_phys_write_disable(vm_address_t va);
++
+ #include <san/kasan.h>
+ #include <sys/cdefs.h>
+ 
+@@ -1467,7 +1469,7 @@ pmap_set_xprr_perm(
+ {
+ 	pvh_assert_locked(pai);
+ 
+-	const vm_offset_t kva = phystokv(vm_first_phys + (pmap_paddr_t)ptoa(pai));
++	const vm_offset_t kva = phystokv(pai_to_pa(pai));
+ 	pt_entry_t * const ptep = pmap_pte(kernel_pmap, kva);
+ 
+ 	pmap_set_pte_xprr_perm(ptep, expected_perm, new_perm);
+@@ -2685,7 +2687,8 @@ pmap_init(
+ 	 *	structures for pages we allocate to be page tables in
+ 	 *	pmap_expand().
+ 	 */
+-	_vm_object_allocate(mem_size, pmap_object);
++	/* (HakiOS, patch 1512: page-table pages are kept at ptoa(pa_index(pa)), the extra RAM's after the window's) */
++	_vm_object_allocate(mem_size + ptoa((vm_object_size_t)hakios_extra_ram_pages), pmap_object);
+ 	pmap_object->copy_strategy = MEMORY_OBJECT_COPY_NONE;
+ 
+ 	/*
+@@ -3927,7 +3930,7 @@ pmap_set_ptov_ap(unsigned int pai __unused, unsigned int ap __unused, boolean_t
+ {
+ #if __ARM_PTE_PHYSMAP__
+ 	pvh_assert_locked(pai);
+-	vm_offset_t kva = phystokv(vm_first_phys + (pmap_paddr_t)ptoa(pai));
++	vm_offset_t kva = phystokv(pai_to_pa(pai));
+ 	pt_entry_t *pte_p = pmap_pte(kernel_pmap, kva);
+ 
+ 	pt_entry_t tmplate = *pte_p;
+@@ -4676,8 +4679,8 @@ pmap_page_protect_options_with_flush_range(
+ 			}
+ #endif
+ 			if (remove && (options & PMAP_OPTIONS_COMPRESSOR)) {
+-				panic("pmap_page_protect: attempt to compress ppnum 0x%x owned by iommu %p, pve_p=%p",
+-				    ppnum, ptep_get_iommu(pte_p), pve_p);
++				panic("pmap_page_protect: attempt to compress ppnum 0x%x owned by iommu, pte_p=%p, pve_p=%p",
++				    ppnum, pte_p, pve_p);
+ 			}
+ 			goto protect_skip_pve_pass1;
+ 		}
+@@ -6877,7 +6880,8 @@ void
+ pmap_sync_page_attributes_phys(
+ 	ppnum_t pp)
+ {
+-	flush_dcache((vm_offset_t) (pp << PAGE_SHIFT), PAGE_SIZE, TRUE);
++	/* (hakios: the page number is 32 bits wide and memory goes on above 4 GB: widen before shifting) */
++	flush_dcache((vm_offset_t) pp << PAGE_SHIFT, PAGE_SIZE, TRUE);
+ }
+ 
+ #if CONFIG_COREDUMP
+@@ -7436,6 +7440,12 @@ pmap_disconnect(
+ boolean_t
+ pmap_has_managed_page(ppnum_t first, ppnum_t last)
+ {
++	/* HakiOS (patch 1512): the boot loader's extra RAM, below or above the window, is managed too */
++	for (unsigned int i = 0; i < hakios_extra_ram_count; i++) {
++		if ((ptoa(first) < hakios_extra_ram[i].end) && (ptoa(last) >= hakios_extra_ram[i].pa)) {
++			return TRUE;
++		}
++	}
+ 	if (ptoa(first) >= vm_last_phys) {
+ 		return FALSE;
+ 	}
+@@ -11623,7 +11633,8 @@ pmap_cs_lockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
+ #if XNU_MONITOR
+ 	pmap_ppl_lockdown_pages(kva, size, PVH_FLAG_LOCKDOWN_CS, ppl_writable);
+ #else
+-	pmap_ppl_lockdown_pages(kva, size, 0, ppl_writable);
++	/* No PPL on this platform: nothing to lock down. */
++	(void)kva; (void)size; (void)ppl_writable;
+ #endif
+ }
+ 
+@@ -11633,7 +11644,8 @@ pmap_cs_unlockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
+ #if XNU_MONITOR
+ 	pmap_ppl_unlockdown_pages(kva, size, PVH_FLAG_LOCKDOWN_CS, ppl_writable);
+ #else
+-	pmap_ppl_unlockdown_pages(kva, size, 0, ppl_writable);
++	/* No PPL on this platform: nothing to lock down. */
++	(void)kva; (void)size; (void)ppl_writable;
+ #endif
+ }
+ 
+@@ -13847,7 +13859,10 @@ pmap_test_access(pmap_t pmap, vm_map_address_t va, bool should_fault, bool is_wr
+ 
+ 		/* Disable PAN; pmap shouldn't be the kernel pmap. */
+ #if __ARM_PAN_AVAILABLE__
+-		__builtin_arm_wsr("pan", 0);
++		extern uint32_t hakios_pan_off;
++		if (!hakios_pan_off) {
++			__builtin_arm_wsr("pan", 0);
++		}
+ #endif /* __ARM_PAN_AVAILABLE__ */
+ 	}
+ 
+@@ -13866,7 +13881,10 @@ pmap_test_access(pmap_t pmap, vm_map_address_t va, bool should_fault, bool is_wr
+ 
+ 	if (pmap != NULL) {
+ #if __ARM_PAN_AVAILABLE__
+-		__builtin_arm_wsr("pan", 1);
++		extern uint32_t hakios_pan_off;
++		if (!hakios_pan_off) {
++			__builtin_arm_wsr("pan", 1);
++		}
+ #endif /* __ARM_PAN_AVAILABLE__ */
+ 
+ 		pmap_switch(old_pmap);
+diff --git a/osfmk/arm/pmap/pmap.h b/osfmk/arm/pmap/pmap.h
+index df672c65b144757e6cf0b349fc2650703b5d52d0..68533c73c9b1a5a12d94fcca522c491d5a2ddff5 100644
+--- a/osfmk/arm/pmap/pmap.h
++++ b/osfmk/arm/pmap/pmap.h
+@@ -112,7 +112,13 @@
+  */
+ #define BOOTSTRAP_TABLE_SIZE (ARM_PGBYTES * 34)
+ #else /* defined(ARM_LARGE_MEMORY) */
+-#define BOOTSTRAP_TABLE_SIZE (ARM_PGBYTES * 8)
++/*
++ * With 4K pages every GB of DRAM costs one L2 page in each of the two
++ * bootstrap mappings (start.s maps all of memSize). Apple sized this for a
++ * 2 GB device (8 pages); 20 pages cover 8 GB, enough for a boot image of
++ * several GB next to the kernel.
++ */
++#define BOOTSTRAP_TABLE_SIZE (ARM_PGBYTES * 20)
+ #endif /* defined(ARM_LARGE_MEMORY) */
+ 
+ typedef uint64_t tt_entry_t; /* translation table entry type */
+@@ -442,7 +448,7 @@ struct pmap {
+ #if HAS_APPLE_PAC
+ 	bool disable_jop;
+ #else
+-	bool reserved10;
++	bool reserved12;
+ #endif /* HAS_APPLE_PAC */
+ 
+ 	bool reserved11;
+@@ -527,6 +533,24 @@ extern pmap_paddr_t kvtophys_nofail(vm_offset_t va);
+ extern vm_map_address_t phystokv(pmap_paddr_t pa);
+ extern vm_map_address_t phystokv_range(pmap_paddr_t pa, vm_size_t *max_len);
+ 
++/*
++ * HakiOS (patch 1512): RAM the boot loader gives the kernel beside its window [gPhysBase, gPhysBase + memSize), in the
++ * device tree's /chosen "hakios-extra-ram" (pairs of 64-bit base and size). A phone whose RAM is in two banks (the
++ * Galaxy S9: 2 GB from 0x80000000 with the firmware's and the drivers' ranges in it, 2 GB from 0x880000000) has only
++ * one of them as the window; the free pieces of the other come here. arm_vm_init() reads them, maps them in the
++ * physical aperture (phystokv), and gives each page an index after the window's in the pmap's tables (pa_index); the
++ * pages go to the VM in arm_vm_prot_finalize(), as vm_page_create() pages (ml_static_mfree's way).
++ */
++#define HAKIOS_EXTRA_RAM_MAX 12
++typedef struct {
++	pmap_paddr_t pa;        /* the first byte, PAGE_SIZE aligned */
++	pmap_paddr_t end;       /* past the last byte, PAGE_SIZE aligned */
++	unsigned int pai;       /* the pmap's index (pa_index) of its first page */
++} hakios_extra_ram_t;
++extern hakios_extra_ram_t hakios_extra_ram[HAKIOS_EXTRA_RAM_MAX];
++extern unsigned int hakios_extra_ram_count;     /* ranges in use */
++extern unsigned int hakios_extra_ram_pages;     /* PAGE_SIZE pages in them all */
++
+ extern vm_map_address_t pmap_map(vm_map_address_t va, vm_offset_t sa, vm_offset_t ea, vm_prot_t prot, unsigned int flags);
+ extern vm_map_address_t pmap_map_high_window_bd( vm_offset_t pa, vm_size_t len, vm_prot_t prot);
+ extern kern_return_t pmap_map_block(pmap_t pmap, addr64_t va, ppnum_t pa, uint32_t size, vm_prot_t prot, int attr, unsigned int flags);
+diff --git a/osfmk/arm/pmap/pmap_data.c b/osfmk/arm/pmap/pmap_data.c
+index d8592c4a2e5831fa91c2817d357153fa7ff388da..801c0ea53502ea3e1f668482c856e7f6825ad4c5 100644
+--- a/osfmk/arm/pmap/pmap_data.c
++++ b/osfmk/arm/pmap/pmap_data.c
+@@ -616,7 +616,7 @@ pmap_data_bootstrap(void)
+ 	 * needed to cover all of kernel-managed physical memory.
+ 	 */
+ 	const uint32_t num_leaf_page_tables =
+-	    (uint32_t)(mem_size / ((PAGE_SIZE / sizeof(pt_entry_t)) * ARM_PGBYTES));
++	    (uint32_t)((mem_size + ptoa(hakios_extra_ram_pages)) / ((PAGE_SIZE / sizeof(pt_entry_t)) * ARM_PGBYTES));
+ 
+ 	/**
+ 	 * There should be one PTD per page table (times 2 since we want twice the
+@@ -631,7 +631,7 @@ pmap_data_bootstrap(void)
+ 	vm_size_t ptd_root_table_size = num_ptd_pages * PAGE_SIZE;
+ 
+ 	/* Number of VM pages that span all of kernel-managed memory. */
+-	const unsigned int npages = (unsigned int)atop(mem_size);
++	const unsigned int npages = (unsigned int)atop(mem_size) + hakios_extra_ram_pages;   /* (HakiOS, patch 1512: and the extra RAM's) */
+ 
+ 	/* The pv_head_table and pp_attr_table both have one entry per VM page. */
+ 	const vm_size_t pp_attr_table_size = npages * sizeof(pp_attr_t);
+@@ -1221,8 +1221,9 @@ pmap_enqueue_pages(vm_page_t mem)
+ 	vm_page_t m_prev;
+ 	vm_object_lock(pmap_object);
+ 	while (mem != VM_PAGE_NULL) {
++		/* (HakiOS, patch 1512: pa - gPhysBase, and for the extra RAM beside the window an offset after it) */
+ 		const vm_object_offset_t offset =
+-		    (vm_object_offset_t) ((ptoa(VM_PAGE_GET_PHYS_PAGE(mem))) - gPhysBase);
++		    (vm_object_offset_t) ptoa(pa_index(ptoa(VM_PAGE_GET_PHYS_PAGE(mem))));
+ 
+ 		vm_page_insert_wired(mem, pmap_object, offset, VM_KERN_MEMORY_PTE);
+ 		m_prev = mem;
+@@ -1545,7 +1546,7 @@ pmap_pages_free(pmap_paddr_t pa, __assert_only unsigned size)
+ 		 * Remove the page from the pmap's VM object and return it back to the
+ 		 * VM's global free list of pages.
+ 		 */
+-		mem = vm_page_lookup(pmap_object, (pa - gPhysBase));
++		mem = vm_page_lookup(pmap_object, ptoa(pa_index(pa)));
+ 		assert(mem != VM_PAGE_NULL);
+ 		assert(VM_PAGE_WIRED(mem));
+ 		vm_page_lock_queues();
+diff --git a/osfmk/arm/pmap/pmap_data.h b/osfmk/arm/pmap/pmap_data.h
+index 2883f636f5608b9ec8fd2ea8909a85b8faefa1ba..7218e6f22161ecb6e712b59b433a7e80c5c2c767 100644
+--- a/osfmk/arm/pmap/pmap_data.h
++++ b/osfmk/arm/pmap/pmap_data.h
+@@ -74,7 +74,16 @@ extern pmap_paddr_t vm_first_phys, vm_last_phys;
+ static inline bool
+ pa_valid(pmap_paddr_t pa)
+ {
+-	return (pa >= vm_first_phys) && (pa < vm_last_phys);
++	if (__probable((pa >= vm_first_phys) && (pa < vm_last_phys))) {
++		return true;
++	}
++	/* HakiOS (patch 1512): the boot loader's extra RAM beside the window (arm/pmap/pmap.h) is kernel-managed too */
++	for (unsigned int i = 0; i < hakios_extra_ram_count; i++) {
++		if ((pa >= hakios_extra_ram[i].pa) && (pa < hakios_extra_ram[i].end)) {
++			return true;
++		}
++	}
++	return false;
+ }
+ 
+ /**
+@@ -97,9 +106,33 @@ pa_valid(pmap_paddr_t pa)
+ static inline unsigned int
+ pa_index(pmap_paddr_t pa)
+ {
++	if (__probable((pa >= vm_first_phys) && (pa < vm_last_phys))) {
++		return (unsigned int)atop(pa - vm_first_phys);
++	}
++	/* HakiOS (patch 1512): an extra range's pages come after the window's, in the order of the ranges */
++	for (unsigned int i = 0; i < hakios_extra_ram_count; i++) {
++		if ((pa >= hakios_extra_ram[i].pa) && (pa < hakios_extra_ram[i].end)) {
++			return hakios_extra_ram[i].pai + (unsigned int)atop(pa - hakios_extra_ram[i].pa);
++		}
++	}
+ 	return (unsigned int)atop(pa - vm_first_phys);
+ }
+ 
++/**
++ * The physical address of a physical address index (the reverse of pa_index()).
++ */
++static inline pmap_paddr_t
++pai_to_pa(unsigned int pai)
++{
++	for (unsigned int i = 0; i < hakios_extra_ram_count; i++) {
++		if ((pai >= hakios_extra_ram[i].pai) &&
++		    (pai - hakios_extra_ram[i].pai < atop(hakios_extra_ram[i].end - hakios_extra_ram[i].pa))) {
++			return hakios_extra_ram[i].pa + ptoa((pmap_paddr_t)(pai - hakios_extra_ram[i].pai));
++		}
++	}
++	return vm_first_phys + ptoa((pmap_paddr_t)pai);
++}
++
+ /* See the definition of pv_head_table for more information. */
+ extern pv_entry_t **pv_head_table;
+ 

@@ -1,0 +1,4877 @@
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index d89b0f19cff72967d8f83d22c75ebd916c14f00a..f7ace3ec3a685a9b897ef485ea65a8d817133d9f 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -361,10 +361,82 @@ typedef struct {
+ 	vm_size_t len;
+ } ptov_table_entry;
+ 
+-#define PTOV_TABLE_SIZE 8
++/* (HakiOS, patch 1512: and one for each range of the boot loader's extra RAM) */
++#define PTOV_TABLE_SIZE (8 + HAKIOS_EXTRA_RAM_MAX)
+ SECURITY_READ_ONLY_LATE(static ptov_table_entry)        ptov_table[PTOV_TABLE_SIZE];
+ SECURITY_READ_ONLY_LATE(static boolean_t)               kva_active = FALSE;
+ 
++/*
++ * HakiOS (patch 1512): the boot loader's extra RAM beside the window (arm/pmap/pmap.h). Read once from the device tree in
++ * arm_vm_init(), before anything is sized from the memory there is; boot-arg extra_ram=0 leaves it out.
++ */
++SECURITY_READ_ONLY_LATE(hakios_extra_ram_t) hakios_extra_ram[HAKIOS_EXTRA_RAM_MAX];
++SECURITY_READ_ONLY_LATE(unsigned int) hakios_extra_ram_count = 0;
++SECURITY_READ_ONLY_LATE(unsigned int) hakios_extra_ram_pages = 0;
++SECURITY_READ_ONLY_LATE(static unsigned int) hakios_extra_ram_refused = 0;
++
++static void
++hakios_extra_ram_init(void)
++{
++	DTEntry chosen;
++	const uint64_t *ranges;
++	unsigned int size = 0, first_pai = (unsigned int)atop(mem_size);
++	uint32_t on = 1;
++
++	if (PE_parse_boot_argn("extra_ram", &on, sizeof(on)) && on == 0) {
++		return;
++	}
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "hakios-extra-ram", (void const **)&ranges, &size) != kSuccess) {
++		return;
++	}
++	for (unsigned int i = 0; i + 1 < size / sizeof(uint64_t) && hakios_extra_ram_count < HAKIOS_EXTRA_RAM_MAX; i += 2) {
++		pmap_paddr_t pa = round_page(ranges[i]), end = trunc_page(ranges[i] + ranges[i + 1]);
++		bool ok = end > pa && ranges[i] + ranges[i + 1] > ranges[i];
++
++		/* never the window, nor another range */
++		if (ok && pa < gPhysBase + real_phys_size && end > gPhysBase) {
++			ok = false;
++		}
++		for (unsigned int j = 0; ok && j < hakios_extra_ram_count; j++) {
++			ok = !(pa < hakios_extra_ram[j].end && end > hakios_extra_ram[j].pa);
++		}
++		if (!ok) {
++			hakios_extra_ram_refused++;     /* (said in arm_vm_prot_finalize(): too early for printf here) */
++			continue;
++		}
++		hakios_extra_ram[hakios_extra_ram_count].pa = pa;
++		hakios_extra_ram[hakios_extra_ram_count].end = end;
++		hakios_extra_ram[hakios_extra_ram_count].pai = first_pai + hakios_extra_ram_pages;
++		hakios_extra_ram_pages += (unsigned int)atop(end - pa);
++		hakios_extra_ram_count++;
++	}
++}
++
++/* [pa, pa + len) is all in one of the extra ranges */
++static bool
++hakios_extra_ram_covers(pmap_paddr_t pa, pmap_paddr_t len)
++{
++	for (unsigned int i = 0; i < hakios_extra_ram_count; i++) {
++		if (pa >= hakios_extra_ram[i].pa && pa + len <= hakios_extra_ram[i].end) {
++			return true;
++		}
++	}
++	return false;
++}
++
++/* [pa, pa + len) meets one of the extra ranges */
++static bool
++hakios_extra_ram_meets(pmap_paddr_t pa, pmap_paddr_t len)
++{
++	for (unsigned int i = 0; i < hakios_extra_ram_count; i++) {
++		if (pa < hakios_extra_ram[i].end && pa + len > hakios_extra_ram[i].pa) {
++			return true;
++		}
++	}
++	return false;
++}
++
+ 
+ vm_map_address_t
+ phystokv(pmap_paddr_t pa)
+@@ -995,7 +1067,9 @@ arm_vm_page_granular_helper(vm_offset_t start, vm_offset_t _end, vm_offset_t va,
+ 		va &= ~ARM_TT_L2_OFFMASK;
+ 		pa = va - gVirtBase + gPhysBase - pa_offset;
+ 
+-		if (pa >= real_avail_end) {
++		/* (HakiOS, patch 1512: an extra range may be anywhere, below the window too) */
++		bool extra = hakios_extra_ram_meets(pa, ARM_TT_L2_SIZE);
++		if (pa >= real_avail_end && !extra) {
+ 			return;
+ 		}
+ 
+@@ -1022,10 +1096,10 @@ arm_vm_page_granular_helper(vm_offset_t start, vm_offset_t _end, vm_offset_t va,
+ 		}
+ 
+ 		vm_offset_t len = _end - va;
+-		if ((pa + len) > real_avail_end) {
++		if (!extra && (pa + len) > real_avail_end) {
+ 			_end -= (pa + len - real_avail_end);
+ 		}
+-		assert((start - gVirtBase + gPhysBase - pa_offset) >= gPhysBase);
++		assert(extra || (start - gVirtBase + gPhysBase - pa_offset) >= gPhysBase);
+ 
+ 		/* Round up to the nearest PAGE_SIZE boundary when creating mappings:
+ 		 * PAGE_SIZE may be a multiple of ARM_PGBYTES, and we don't want to leave
+@@ -1116,7 +1190,7 @@ arm_vm_page_granular_prot(vm_offset_t start, unsigned long size, pmap_paddr_t pa
+ 
+ 			tte2 = arm_kva_to_tte(align_start);
+ 
+-			if ((pa >= gPhysBase) && (pa < real_avail_end)) {
++			if (((pa >= gPhysBase) && (pa < real_avail_end)) || hakios_extra_ram_covers(pa, ARM_TT_L2_SIZE)) {
+ 				tmplate = (pa & ARM_TTE_BLOCK_L2_MASK) | ARM_TTE_TYPE_BLOCK
+ 				    | ARM_TTE_VALID | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_NX
+ 				    | ARM_TTE_BLOCK_AP(pte_prot_APX) | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY)
+@@ -1602,6 +1676,16 @@ arm_vm_physmap_init(boot_args *args)
+ 	arm_vm_physmap_slide(temp_ptov_table, (args->topOfKernelData - gPhysBase + gVirtBase),
+ 	    real_avail_end - args->topOfKernelData, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT); // rest of physmem
+ 
++	/*
++	 * HakiOS (patch 1512): the boot loader's extra RAM, each range after the last in the aperture. Its "va" for
++	 * arm_vm_physmap_slide() is where the static formula (pa - gPhysBase + gVirtBase) would put it, which for a range
++	 * below the window is no address at all: it is only ever turned back into the physical address.
++	 */
++	for (unsigned int i = 0; i < hakios_extra_ram_count; i++) {
++		arm_vm_physmap_slide(temp_ptov_table, hakios_extra_ram[i].pa - gPhysBase + gVirtBase,
++		    hakios_extra_ram[i].end - hakios_extra_ram[i].pa, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT);
++	}
++
+ 	assert((temp_ptov_table[ptov_index - 1].va + temp_ptov_table[ptov_index - 1].len) <= physmap_end);
+ 
+ 	// Sort in descending order of segment length.  LUT traversal is linear, so largest (most likely used)
+@@ -1651,6 +1735,35 @@ arm_vm_prot_finalize(boot_args * args __unused)
+ 	arm64_replace_bootstack(&BootCpuData);
+ 	ml_static_mfree(phystokv(segBOOTDATAB - gVirtBase + gPhysBase), segSizeBOOTDATA);
+ 
++	/*
++	 * HakiOS (patch 1512): the boot loader's extra RAM to the VM, its pages made as vm_page_create() makes those of
++	 * ml_static_mfree(), now that the zone they come from is up. (Before bsd_init() and vm_pageout(), so that jetsam's
++	 * and the pageout daemon's levels count it.)
++	 */
++	for (unsigned int i = 0; i < hakios_extra_ram_count; i++) {
++		vm_page_create((ppnum_t)atop(hakios_extra_ram[i].pa), (ppnum_t)atop(hakios_extra_ram[i].end));
++		/*
++		 * vm_page_bootstrap() counted every page of max_mem that was not free then as wired, these with them: they are
++		 * not (seen on the phone, 3 November: "wired" 1.1 GB up with them). As ml_static_mfree() says of its pages.
++		 */
++		vm_page_lockspin_queues();
++		vm_page_wire_count -= (unsigned int)atop(hakios_extra_ram[i].end - hakios_extra_ram[i].pa);
++		vm_page_wire_count_initial -= (unsigned int)atop(hakios_extra_ram[i].end - hakios_extra_ram[i].pa);
++		vm_page_unlock_queues();
++		printf("hakios: extra RAM 0x%llx..0x%llx (%llu MB) given to the VM\n", (unsigned long long)hakios_extra_ram[i].pa,
++		    (unsigned long long)hakios_extra_ram[i].end - 1,
++		    (unsigned long long)(hakios_extra_ram[i].end - hakios_extra_ram[i].pa) >> 20);
++	}
++	if (hakios_extra_ram_refused != 0) {
++		printf("hakios: extra RAM: %u of the boot loader's ranges refused (the window's, or each other's)\n",
++		    hakios_extra_ram_refused);
++	}
++	if (hakios_extra_ram_count != 0) {
++		printf("hakios: extra RAM: %u pages (%llu MB) in %u ranges beside the window 0x%llx + 0x%llx; max_mem 0x%llx\n",
++		    hakios_extra_ram_pages, (unsigned long long)ptoa((uint64_t)hakios_extra_ram_pages) >> 20, hakios_extra_ram_count,
++		    (unsigned long long)gPhysBase, (unsigned long long)mem_size, (unsigned long long)max_mem);
++	}
++
+ #if __ARM_KERNEL_PROTECT__
+ 	arm_vm_populate_kernel_el0_mappings();
+ #endif /* __ARM_KERNEL_PROTECT__ */
+@@ -1853,6 +1966,10 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 		max_mem_actual = memory_size;
+ 	} else {
+ 		max_mem_actual = mem_actual;
++		/* HakiOS (patch 1512): the boot loader's extra RAM beside the window (none with maxmem=) */
++		hakios_extra_ram_init();
++		mem_actual += ptoa((uint64_t)hakios_extra_ram_pages);
++		max_mem_actual += ptoa((uint64_t)hakios_extra_ram_pages);
+ 	}
+ 	if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2)) {
+ 		panic("Unsupported memory configuration %lx", mem_size);
+@@ -1887,6 +2004,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ #else
+ 	static_memory_end = physmap_base + mem_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE); // worst possible case for block alignment
+ 	physmap_end = physmap_base + real_phys_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
++	/* (HakiOS, patch 1512: the extra RAM is in the aperture too) */
++	static_memory_end += ptoa((vm_map_address_t)hakios_extra_ram_pages);
++	physmap_end += ptoa((vm_map_address_t)hakios_extra_ram_pages);
+ #endif // ARM_LARGE_MEMORY
+ #endif
+ 
+@@ -2202,6 +2322,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 
+ 	sane_size = mem_size - (avail_start - gPhysBase);
+ 	max_mem = mem_size;
++	/* (HakiOS, patch 1512: the extra RAM counts as the VM's: it is given to it in arm_vm_prot_finalize()) */
++	sane_size += ptoa((uint64_t)hakios_extra_ram_pages);
++	max_mem += ptoa((uint64_t)hakios_extra_ram_pages);
+ 	vm_kernel_slid_base = segLOWESTTEXT;
+ 	// vm_kernel_slide is set by arm_init()->arm_slide_rebase_and_sign_image()
+ 	vm_kernel_stext = segTEXTB;
+diff --git a/osfmk/arm64/copyio.c b/osfmk/arm64/copyio.c
+index 15b949c659adf31f01a833bd7b549d5ce3f0dab8..d659aae37c84c696e9e1b40741aa8f1751a31016 100644
+--- a/osfmk/arm64/copyio.c
++++ b/osfmk/arm64/copyio.c
+@@ -82,12 +82,18 @@ __options_decl(copyio_flags_t, uint32_t, {
+ 	COPYIO_ATOMIC                   = 0x0010,
+ });
+ 
++#if __ARM_PAN_AVAILABLE__
++extern uint32_t hakios_pan_off;         /* osfmk/arm/arm_init.c (patch 1509): no PAN instruction at all */
++#endif
++
+ static inline void
+ user_access_enable(void)
+ {
+ #if __ARM_PAN_AVAILABLE__
+-	assert(__builtin_arm_rsr("pan") != 0);
+-	__builtin_arm_wsr("pan", 0);
++	if (!hakios_pan_off) {
++		assert(__builtin_arm_rsr("pan") != 0);
++		__builtin_arm_wsr("pan", 0);
++	}
+ #endif  /* __ARM_PAN_AVAILABLE__ */
+ 
+ }
+@@ -96,7 +102,9 @@ static inline void
+ user_access_disable(void)
+ {
+ #if __ARM_PAN_AVAILABLE__
+-	__builtin_arm_wsr("pan", 1);
++	if (!hakios_pan_off) {
++		__builtin_arm_wsr("pan", 1);
++	}
+ #endif  /* __ARM_PAN_AVAILABLE__ */
+ 
+ }
+diff --git a/osfmk/arm64/corecrypto/arm64_isa_compatibility.h b/osfmk/arm64/corecrypto/arm64_isa_compatibility.h
+index b9549da357b4f67517d94b3cb0ea00085ee6e509..cca31ea32502d834c69ab3322d451a4d7fc03070 100644
+--- a/osfmk/arm64/corecrypto/arm64_isa_compatibility.h
++++ b/osfmk/arm64/corecrypto/arm64_isa_compatibility.h
+@@ -28,7 +28,7 @@
+ // #include <Availability.h>
+ #include <sys/cdefs.h>
+ 
+-#if defined(__clang__) && ((defined(__apple_build_version__) && __apple_build_version__ > 5010000))
++#if defined(__clang__) && (!defined(__apple_build_version__) || __apple_build_version__ > 5010000)
+ #define __USES_V_CRYPTO_INTRINSICS 1
+ #else
+ #define __USES_V_CRYPTO_INTRINSICS 0
+diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
+index 94e91306b14364f720ea80e46d853035aabd78e6..a81111c70dc801675dfb729b7df664e3c3081002 100644
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -568,7 +568,12 @@ cpu_idle(void)
+ #endif /* MONOTONIC */
+ 
+ 	if (wfi) {
+-#if !defined(APPLE_ARM64_ARCH_FAMILY)
++#if !defined(APPLE_ARM64_ARCH_FAMILY) && !defined(GENERIC_PSCI_SMP)
++		/*
++		 * (Not on the generic boards either. There a core keeps its cache while it waits,
++		 * and this would empty it by set and way every time: slow, wrong among several
++		 * processors, and under a hypervisor every one of those instructions is a trap.)
++		 */
+ 		platform_cache_idle_enter();
+ #endif
+ 
+@@ -673,6 +678,10 @@ cpu_idle_exit(boolean_t from_reset)
+ 	Idle_load_context();
+ }
+ 
++/* HakiOS (patch 1503): the boot processor's way through cpu_init() in the loader's log, as "[c51]"... */
++extern void loader_checkpoint(uint64_t n);
++#define BOOT_CPU_CHECKPOINT(n) do { if (cdp == &BootCpuData) { loader_checkpoint(n); } } while (0)
++
+ void
+ cpu_init(void)
+ {
+@@ -686,10 +695,13 @@ cpu_init(void)
+ 
+ 		timer_call_queue_init(&cdp->rtclock_timer.queue);
+ 		cdp->rtclock_timer.deadline = EndOfAllTime;
++		BOOT_CPU_CHECKPOINT(51);
+ 
+ 		if (cdp == &BootCpuData) {
+ 			do_cpuid();
++			loader_checkpoint(52);
+ 			do_mvfpid();
++			loader_checkpoint(53);
+ 		} else {
+ 			/*
+ 			 * We initialize non-boot CPUs here; the boot CPU is
+@@ -699,9 +711,11 @@ cpu_init(void)
+ 		}
+ 
+ 		do_cacheid();
++		BOOT_CPU_CHECKPOINT(54);
+ 
+ 		/* ARM_SMP: Assuming identical cpu */
+ 		do_debugid();
++		BOOT_CPU_CHECKPOINT(55);
+ 
+ 		cpu_info_p = cpuid_info();
+ 
+@@ -721,6 +735,7 @@ cpu_init(void)
+ 		}
+ 
+ 		cdp->cpu_threadtype = CPU_THREADTYPE_NONE;
++		BOOT_CPU_CHECKPOINT(56);
+ 	}
+ 	cdp->cpu_stat.irq_ex_cnt_wake = 0;
+ 	cdp->cpu_stat.ipi_cnt_wake = 0;
+@@ -736,6 +751,7 @@ cpu_init(void)
+ #if MONOTONIC
+ 	mt_cpu_up(cdp);
+ #endif /* MONOTONIC */
++	BOOT_CPU_CHECKPOINT(57);
+ }
+ 
+ void
+diff --git a/osfmk/arm64/generic_arm64_support.c b/osfmk/arm64/generic_arm64_support.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..49de008208cb1a35336ba6fa7d96b6a1dcb79c5b
+--- /dev/null
++++ b/osfmk/arm64/generic_arm64_support.c
+@@ -0,0 +1,57 @@
++/*
++ * Routines the open-source tree references but only defines for Apple SoCs.
++ * Needed when building for a generic ARMv8 board without a monitor (PPL).
++ */
++#include <mach/mach_types.h>
++#include <arm/machine_routines.h>
++#include <arm/caches_internal.h>
++#include <arm/pmap.h>
++
++/* No PPL / secure monitor to switch on. */
++void
++ml_enable_monitor(void)
++{
++}
++
++/*
++ * On Apple cores the "_nohid" variant skips toggling a HID chicken bit;
++ * elsewhere it is simply a forced clean to the point of coherency.
++ */
++void
++CleanPoC_DcacheRegion_Force_nopreempt_nohid(vm_offset_t va, size_t length)
++{
++	CleanPoC_DcacheRegion_Force(va, length);
++}
++
++/*
++ * Stock LLVM lowers Mach-O static destructors to __cxa_atexit registrations
++ * (Apple's clang emits __mod_term_func entries in kernel mode instead).
++ * The kernel never exits, so registration is a no-op.
++ */
++int __cxa_atexit(void (*func)(void *), void *arg, void *dso);
++int
++__cxa_atexit(void (*func)(void *) __unused, void *arg __unused, void *dso __unused)
++{
++	return 0;
++}
++
++/*
++ * Profile-guided-optimisation runtime hooks, normally supplied by Apple's
++ * compiler-rt build for the kernel. Report "no profile data".
++ */
++uint64_t __llvm_profile_get_size_for_buffer_internal(const void *, const void *, const void *, const void *, const void *, const void *);
++int __llvm_profile_write_buffer_internal(char *, const void *, const void *, const void *, const void *, const void *, const void *);
++
++uint64_t
++__llvm_profile_get_size_for_buffer_internal(const void *a __unused, const void *b __unused,
++    const void *c __unused, const void *d __unused, const void *e __unused, const void *f __unused)
++{
++	return 0;
++}
++
++int
++__llvm_profile_write_buffer_internal(char *buf __unused, const void *a __unused, const void *b __unused,
++    const void *c __unused, const void *d __unused, const void *e __unused, const void *f __unused)
++{
++	return -1;
++}
+diff --git a/osfmk/arm64/gic_v3_irq.c b/osfmk/arm64/gic_v3_irq.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..90e9c8e25fecbbe83d53e13b43fabd8bcf66b6e7
+--- /dev/null
++++ b/osfmk/arm64/gic_v3_irq.c
+@@ -0,0 +1,681 @@
++/*
++ * Minimal GICv3 support for generic (non-Apple) ARMv8 boards.
++ *
++ * Open-source XNU has no interrupt controller driver: on Apple hardware that
++ * is a kext (AppleInterruptController), and the timer arrives as FIQ. Here
++ * everything is a Group 1 IRQ, which is what an EL1 guest gets from a stock
++ * hypervisor or from QEMU's virt machine:
++ *
++ *   - the CPU interface is driven through the ICC_*_EL1 system registers
++ *   - the EL1 virtual timer PPI is routed to the kernel's rtclock
++ *   - with more than one processor (psci_smp.c), two software-generated
++ *     interrupts carry the kernel's signals between them: cpu_signal() and
++ *     the order to stop when the system goes back to the boot loader
++ *   - a shared peripheral interrupt (SPI, numbers 32 to 1019) is a driver's once it
++ *     is attached (gic_v3_spi_attach()): configured, routed to the processor that
++ *     attaches it, enabled, and its handler called in interrupt context for each
++ *     one that arrives, before it is ended
++ *   - any other interrupt that fires is masked and counted, until a real
++ *     driver registers a handler for it
++ *
++ * Every processor has its own CPU interface, redistributor frame and timer,
++ * and sets them up for itself (gic_v3_irq_cpu_init(), from PE_init_cpu()).
++ *
++ * Registers come from the device tree node /arm-io/gic:
++ *   reg = <distributor offset, size, redistributor offset, size>
++ *
++ * A GICv2 (GIC-400: the Exynos 9810 of the Galaxy S9) is the same controller as far as the kernel
++ * is concerned, reached another way: its node's compatible is "arm,gic-400" and its reg the
++ * distributor and the CPU interface, which is memory (GICC_*) instead of ICC_* registers -- a core
++ * whose GIC is a GICv2 may not have those registers at all. There are no redistributors: the
++ * distributor's registers for interrupts 0-31 are each processor's own, an SPI is sent to a
++ * processor by a bit for its CPU interface (GICD_ITARGETSR) and not by its MPIDR, and so is a
++ * software-generated interrupt (GICD_SGIR). Seen from the normal world, the interrupts are those of
++ * Group 1 and bit 0 of the control registers turns them on.
++ */
++#include <mach/mach_types.h>
++#include <kern/debug.h>
++#include <kern/simple_lock.h>
++#include <os/atomic_private.h>
++#include <arm/cpu_data_internal.h>
++#include <arm/cpu_internal.h>
++#include <arm/machine_cpu.h>
++#include <arm/machine_routines.h>
++#include <arm/rtclock.h>
++#include <arm64/psci_smp.h>
++#include <arm64/proc_reg.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <pexpert/arm64/board_config.h>
++#include <string.h>
++
++#if defined(GENERIC_GIC_V3_IRQ)
++
++#define GICD_CTLR               0x0000
++#define GICD_CTLR_ENABLE_G1NS   (1u << 1)
++#define GICD_CTLR_ARE_NS        (1u << 4)
++#define GICD_CTLR_RWP           (1u << 31)
++#define GICD_IGROUPR(n)         (0x0080 + 4 * (n))
++#define GICD_ISENABLER(n)       (0x0100 + 4 * (n))
++#define GICD_ICENABLER(n)       (0x0180 + 4 * (n))
++#define GICD_ICPENDR(n)         (0x0280 + 4 * (n))
++#define GICD_ICACTIVER(n)       (0x0380 + 4 * (n))
++#define GICD_IPRIORITYR(n)      (0x0400 + (n))
++#define GICD_ICFGR(n)           (0x0c00 + 4 * (n))
++#define GICD_IGRPMODR(n)        (0x0d00 + 4 * (n))
++#define GICD_IROUTER(n)         (0x6000 + 8 * (n))
++
++#define GICR_FRAME_SIZE         0x20000     /* RD_base + SGI_base per CPU */
++#define GICR_FRAME_SIZE_V4      0x40000     /* ... and VLPI_base and a reserved 64 KB, where GICR_TYPER.VLPIS says so */
++#define GICR_TYPER              0x0008
++#define GICR_TYPER_VLPIS        (1u << 1)
++#define GICR_TYPER_LAST         (1u << 4)
++#define GICR_WAKER              0x0014
++#define GICR_WAKER_PROCSLEEP    (1u << 1)
++#define GICR_WAKER_CHILDASLEEP  (1u << 2)
++#define GICR_SGI_BASE           0x10000
++#define GICR_IGROUPR0           (GICR_SGI_BASE + 0x0080)
++#define GICR_ISENABLER0         (GICR_SGI_BASE + 0x0100)
++#define GICR_ICENABLER0         (GICR_SGI_BASE + 0x0180)
++#define GICR_ICPENDR0           (GICR_SGI_BASE + 0x0280)
++#define GICR_ICACTIVER0         (GICR_SGI_BASE + 0x0380)
++#define GICR_IPRIORITYR(n)      (GICR_SGI_BASE + 0x0400 + (n))
++#define GICR_IGRPMODR0          (GICR_SGI_BASE + 0x0d00)
++
++/* GICv2 only */
++#define GICD_ITARGETSR(n)       (0x0800 + (n))
++#define GICD_SGIR               0x0f00
++#define GICD_CPENDSGIR(n)       (0x0f10 + 4 * (n))  /* a byte per SGI, a bit per sender: this processor's */
++#define GICD_CTLR_ENABLE        (1u << 0)   /* as the normal world sees it: Group 1 */
++#define GICC_CTLR               0x0000
++#define GICC_CTLR_ENABLE        (1u << 0)
++#define GICC_PMR                0x0004
++#define GICC_BPR                0x0008
++#define GICC_IAR                0x000c
++#define GICC_EOIR               0x0010
++#define GICC_APR0               0x00d0
++
++#define GIC_SGI_SIGNAL          0           /* cpu_signal(): another processor wants this one's attention */
++#define GIC_SGI_STOP            1           /* psci_smp_stop_here(): the system is going back to the boot loader */
++#define GIC_INTID_VTIMER        27          /* EL1 virtual timer PPI */
++#define GIC_INTID_SPI_MIN       32
++#define GIC_INTID_SPURIOUS_MIN  1020
++#define GIC_SPI_MOST            48          /* attached at a time */
++#define GIC_PRIORITY_DEFAULT    0xa0
++
++static vm_offset_t gicd_base, gicr_base;
++static vm_size_t   gicr_size;
++static vm_offset_t gicr_cpu_base[MAX_CPUS]; /* each processor's redistributor frame */
++
++/* a GICv2: its CPU interface, and each processor's bit in the distributor's target lists and its MPIDR */
++static bool        gic_v2;
++static vm_offset_t gicc_base;
++static uint8_t     gic_v2_target[MAX_CPUS];
++static uint32_t    gic_v2_phys[MAX_CPUS];
++
++/*
++ * Acknowledged, not yet EOI'd; 0: none. The signal between processors is interrupt 0 and reads
++ * as 0 from ICC_IAR1_EL1, hence the mark: without it a core switched off in the middle of that
++ * signal (which is where every core but one is during a panic) kept it active, and with the
++ * active priority still set in its CPU interface the next kernel on that core saw no interrupt
++ * at all.
++ */
++#define GIC_IAR_TAKEN           (1ULL << 63)
++static uint64_t gic_active_iar[MAX_CPUS];
++uint64_t        gic_unhandled_count;
++uint32_t        gic_last_unhandled;
++
++/*
++ * The attached SPIs. A slot is filled before its interrupt is enabled and emptied after it has
++ * been disabled and no handler of it runs any more (busy), so the handler path reads the table
++ * without a lock.
++ */
++struct gic_spi {
++	uint32_t intid;                     /* 0: a free slot */
++	void   (*handler)(void *context, uint32_t intid);
++	void    *context;
++	uint32_t busy;                      /* handlers of it running now */
++	uint64_t count;
++};
++static struct gic_spi gic_spi[GIC_SPI_MOST];
++static decl_simple_lock_data(, gic_spi_lock);
++
++void gic_v3_irq_cpu_init(void);
++void gic_v3_irq_quiesce(void);
++kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid), void *context);
++void gic_v3_spi_mask(uint32_t intid);
++void gic_v3_spi_unmask(uint32_t intid);
++void gic_v3_spi_detach(uint32_t intid);
++uint64_t gic_v3_spi_count(uint32_t intid);
++void gic_v3_irq_cpu_shutdown(void);
++void gic_v3_irq_signal(uint32_t phys_id);
++void gic_v3_irq_signal_stop(uint32_t phys_id);
++
++static inline uint32_t
++gic_read32(vm_offset_t addr)
++{
++	return *(volatile uint32_t *)addr;
++}
++
++static inline void
++gic_write32(vm_offset_t addr, uint32_t value)
++{
++	*(volatile uint32_t *)addr = value;
++}
++
++/*
++ * A GICv2 keeps a software-generated interrupt pending for each processor that sent it, and only
++ * GICD_CPENDSGIR takes that back (GICD_ICPENDR0 does nothing to one); on a GIC-400 they cannot even
++ * be disabled. One left pending when the kernel goes back to the loader is UEFI's to take, and
++ * UEFI's GIC driver does not survive it.
++ */
++static void
++gic_v2_sgis_clear(void)
++{
++	for (int n = 0; n < 4; n++) {
++		gic_write32(gicd_base + GICD_CPENDSGIR(n), 0xffffffffu);
++	}
++}
++
++static void
++gic_mask(uint32_t intid)
++{
++	if (intid < 32 && gic_v2) {
++		gic_write32(gicd_base + GICD_ICENABLER(0), 1u << intid);    /* this processor's own */
++	} else if (intid < 32) {
++		gic_write32(gicr_cpu_base[cpu_number()] + GICR_ICENABLER0, 1u << intid);
++	} else {
++		gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
++	}
++}
++
++/*
++ * A software-generated interrupt for the processor with that MPIDR (its two
++ * low affinity fields, as in the device tree's "reg").
++ * ICC_SGI1R_EL1: Aff1 in [23:16], the interrupt in [27:24], and in [15:0] a
++ * bit for every Aff0 addressed -- which is why Aff0 has to be below 16.
++ */
++static void
++gic_send_sgi(uint32_t phys_id, uint32_t sgi)
++{
++	uint64_t aff0 = phys_id & 0xff, aff1 = (phys_id >> 8) & 0xff;
++
++	if (gic_v2) {
++		/* GICD_SGIR: the CPU interfaces addressed in [23:16], the interrupt in [3:0] */
++		for (int cpu = 0; cpu < MAX_CPUS; cpu++) {
++			uint8_t target = os_atomic_load(&gic_v2_target[cpu], acquire);
++
++			if (target != 0 && gic_v2_phys[cpu] == (phys_id & 0xffff)) {
++				__builtin_arm_dsb(DSB_ISHST);   /* what the signal is about, seen before it */
++				gic_write32(gicd_base + GICD_SGIR, (uint32_t)target << 16 | sgi);
++				return;
++			}
++		}
++		return;         /* a processor that has not set up its interface yet: nothing to interrupt */
++	}
++
++	__builtin_arm_wsr64("ICC_SGI1R_EL1", ((uint64_t)sgi << 24) | (aff1 << 16) | (1ULL << (aff0 & 15)));
++	__builtin_arm_isb(ISB_SY);
++}
++
++/* The platform's half of cpu_signal(): interrupt that processor (GenericARMCPU::signalCPU()). */
++void
++gic_v3_irq_signal(uint32_t phys_id)
++{
++	gic_send_sgi(phys_id, GIC_SGI_SIGNAL);
++}
++
++void
++gic_v3_irq_signal_stop(uint32_t phys_id)
++{
++	gic_send_sgi(phys_id, GIC_SGI_STOP);
++}
++
++/* An SPI that a driver has attached: its handler called. false: nobody has it. */
++static bool
++gic_spi_handle(uint32_t intid)
++{
++	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
++		struct gic_spi *spi = &gic_spi[i];
++
++		if (os_atomic_load(&spi->intid, acquire) == intid) {
++			os_atomic_inc(&spi->busy, acquire);
++			if (os_atomic_load(&spi->intid, relaxed) == intid) {
++				spi->count++;
++				spi->handler(spi->context, intid);
++			}
++			os_atomic_dec(&spi->busy, release);
++			return true;
++		}
++	}
++	return false;
++}
++
++static void
++gic_distributor_settle(void)
++{
++	while (gic_read32(gicd_base + GICD_CTLR) & GICD_CTLR_RWP) {
++		/* wait for the change to take effect */
++	}
++}
++
++void
++gic_v3_spi_mask(uint32_t intid)
++{
++	if (gicd_base != 0 && intid >= GIC_INTID_SPI_MIN && intid < GIC_INTID_SPURIOUS_MIN) {
++		gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
++		gic_distributor_settle();
++	}
++}
++
++void
++gic_v3_spi_unmask(uint32_t intid)
++{
++	if (gicd_base != 0 && intid >= GIC_INTID_SPI_MIN && intid < GIC_INTID_SPURIOUS_MIN) {
++		gic_write32(gicd_base + GICD_ISENABLER(intid / 32), 1u << (intid % 32));
++	}
++}
++
++/*
++ * A driver takes an SPI: edge- or level-triggered, Group 1, the default priority, routed to the
++ * processor this runs on, and enabled. The handler runs in interrupt context, with interrupts off,
++ * before the interrupt is ended; for a level-triggered one it has to quiet the source or mask the
++ * interrupt (gic_v3_spi_mask()). Thread context.
++ */
++kern_return_t
++gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid), void *context)
++{
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++	struct gic_spi *slot = NULL;
++	uint32_t config;
++
++	if (gicd_base == 0 || intid < GIC_INTID_SPI_MIN || intid >= GIC_INTID_SPURIOUS_MIN || handler == NULL) {
++		return KERN_INVALID_ARGUMENT;
++	}
++	simple_lock(&gic_spi_lock, LCK_GRP_NULL);
++	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
++		if (gic_spi[i].intid == intid) {
++			simple_unlock(&gic_spi_lock);
++			return KERN_NAME_EXISTS;
++		}
++		if (slot == NULL && gic_spi[i].intid == 0 && gic_spi[i].busy == 0) {
++			slot = &gic_spi[i];
++		}
++	}
++	if (slot == NULL) {
++		simple_unlock(&gic_spi_lock);
++		return KERN_RESOURCE_SHORTAGE;
++	}
++	slot->handler = handler;
++	slot->context = context;
++	slot->count = 0;
++	os_atomic_store(&slot->intid, intid, release);
++	simple_unlock(&gic_spi_lock);
++
++	gic_v3_spi_mask(intid);
++	gic_write32(gicd_base + GICD_ICPENDR(intid / 32), 1u << (intid % 32));
++	gic_write32(gicd_base + GICD_ICACTIVER(intid / 32), 1u << (intid % 32));
++	if (!gic_v2) {
++		/* (a GICv2's groups are the secure world's to set: the normal world's view of them is read-as-zero) */
++		gic_write32(gicd_base + GICD_IGROUPR(intid / 32), gic_read32(gicd_base + GICD_IGROUPR(intid / 32)) | 1u << (intid % 32));
++		gic_write32(gicd_base + GICD_IGRPMODR(intid / 32), gic_read32(gicd_base + GICD_IGRPMODR(intid / 32)) & ~(1u << (intid % 32)));
++	}
++	*(volatile uint8_t *)(gicd_base + GICD_IPRIORITYR(intid)) = GIC_PRIORITY_DEFAULT;
++	config = gic_read32(gicd_base + GICD_ICFGR(intid / 16)) & ~(3u << (intid % 16 * 2));
++	gic_write32(gicd_base + GICD_ICFGR(intid / 16), config | (edge ? 2u : 0u) << (intid % 16 * 2));
++	if (gic_v2) {
++		/* GICD_ITARGETSR: a byte per interrupt, a bit per CPU interface */
++		*(volatile uint8_t *)(gicd_base + GICD_ITARGETSR(intid)) = gic_v2_target[cpu_number()];
++	} else {
++		/* GICD_IROUTER: Aff3 in [39:32], Aff2.Aff1.Aff0 in [23:0]; bit 31 (any processor) clear */
++		*(volatile uint64_t *)(gicd_base + GICD_IROUTER(intid)) = (mpidr & 0xff00000000ull) | (mpidr & 0xffffff);
++	}
++	gic_distributor_settle();
++	gic_v3_spi_unmask(intid);
++	return KERN_SUCCESS;
++}
++
++/* ... and gives it back: disabled, nothing pending, and no handler of it running when this returns. */
++void
++gic_v3_spi_detach(uint32_t intid)
++{
++	gic_v3_spi_mask(intid);
++	if (gicd_base != 0 && intid >= GIC_INTID_SPI_MIN && intid < GIC_INTID_SPURIOUS_MIN) {
++		gic_write32(gicd_base + GICD_ICPENDR(intid / 32), 1u << (intid % 32));
++	}
++	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
++		if (gic_spi[i].intid == intid) {
++			os_atomic_store(&gic_spi[i].intid, 0, release);
++			while (os_atomic_load(&gic_spi[i].busy, acquire) != 0) {
++				/* a handler of it on another processor is finishing */
++			}
++		}
++	}
++}
++
++/* How many have arrived since it was attached. */
++uint64_t
++gic_v3_spi_count(uint32_t intid)
++{
++	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
++		if (gic_spi[i].intid == intid) {
++			return gic_spi[i].count;
++		}
++	}
++	return 0;
++}
++
++static void
++gic_irq_handler(__unused void *target, __unused void *refCon, __unused void *nub, __unused int source)
++{
++	int cpu = cpu_number();
++
++	for (;;) {
++		/* (a GICv2's says in [12:10] which processor sent a software-generated one: the end must say so too) */
++		uint64_t iar = gic_v2 ? gic_read32(gicc_base + GICC_IAR) : __builtin_arm_rsr64("ICC_IAR1_EL1");
++		uint32_t intid = (uint32_t)(iar & (gic_v2 ? 0x3ff : 0xffffff));
++
++		if (gic_v2 && intid < 16) {
++			/* what the sender wrote before its signal, seen after we took it (Linux's smp_rmb() in arm-gic.c) */
++			__builtin_arm_dmb(DMB_ISHLD);
++		}
++
++		if (intid >= GIC_INTID_SPURIOUS_MIN) {
++			break;
++		}
++		gic_active_iar[cpu] = iar | GIC_IAR_TAKEN;
++
++		if (intid == GIC_INTID_VTIMER) {
++			/* same sequence as the FIQ path in sleh_fiq() */
++			getCpuDatap()->cpu_decrementer = -1; /* Large */
++			rtclock_intr(TRUE);
++		} else if (intid == GIC_SGI_SIGNAL) {
++			cpu_signal_handler();
++		} else if (intid == GIC_SGI_STOP) {
++			/* comes back only if nobody has in fact asked for that */
++			psci_smp_stop_here();
++		} else if (intid >= GIC_INTID_SPI_MIN && gic_spi_handle(intid)) {
++			/* a driver's */
++		} else {
++			/* nobody owns this interrupt yet: keep it from storming */
++			gic_mask(intid);
++			gic_unhandled_count++;
++			gic_last_unhandled = intid;
++		}
++
++		if (gic_v2) {
++			gic_write32(gicc_base + GICC_EOIR, (uint32_t)iar);
++		} else {
++			__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++			__builtin_arm_isb(ISB_SY);
++		}
++		gic_active_iar[cpu] = 0;
++	}
++}
++
++/*
++ * Leave the controller in a state another environment can take over from:
++ * finish any interrupt that this processor acknowledged but did not complete.
++ * Used when control goes back to the boot loader (see loader_return.c), and
++ * by a processor that is about to be switched off for that (psci_smp.c).
++ */
++void
++gic_v3_irq_quiesce(void)
++{
++	int cpu;
++
++	if (gicd_base == 0) {
++		return;         /* as early as this there is no interrupt, nor a cpu number to ask for */
++	}
++	cpu = cpu_number();
++	/* (what drivers had of the shared interrupts goes with this kernel: none of them may fire under the loader) */
++	for (unsigned i = 0; i < GIC_SPI_MOST; i++) {
++		uint32_t intid = gic_spi[i].intid;
++
++		if (intid != 0) {
++			gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
++		}
++	}
++	if (gic_v2) {
++		gic_v2_sgis_clear();
++	}
++	if (gic_active_iar[cpu] != 0) {
++		if (gic_v2) {
++			gic_write32(gicc_base + GICC_EOIR, (uint32_t)gic_active_iar[cpu]);
++		} else {
++			__builtin_arm_wsr64("ICC_EOIR1_EL1", gic_active_iar[cpu] & ~GIC_IAR_TAKEN);
++			__builtin_arm_isb(ISB_SY);
++		}
++		gic_active_iar[cpu] = 0;
++	}
++}
++
++/*
++ * This processor is leaving for good: the firmware is about to be asked to switch it off
++ * (psci_smp_cpu_off(), and the boot processor in the loader's stub when the kernel has a core of
++ * its own). Nothing may be left that could interrupt it. The redistributor outlives the core, and
++ * so does what is pending in it: the "stop" signal that reached a core whose interrupts were off
++ * (every core is in that state while another one panics), or its timer. A core asked to go with
++ * an interrupt pending and the CPU interface still passing it on does not go cleanly, and the
++ * next kernel that is started on it hangs.
++ */
++void
++gic_v3_irq_cpu_shutdown(void)
++{
++	vm_offset_t gicr;
++
++	if (gicd_base == 0) {
++		return;
++	}
++	gic_v3_irq_quiesce();
++	if (gic_v2) {
++		/* interrupts 0-31 in the distributor are this processor's own */
++		gic_write32(gicd_base + GICD_ICENABLER(0), 0xffffffffu);
++		gic_write32(gicd_base + GICD_ICPENDR(0), 0xffffffffu);
++		gic_write32(gicd_base + GICD_ICACTIVER(0), 0xffffffffu);
++		gic_write32(gicc_base + GICC_CTLR, gic_read32(gicc_base + GICC_CTLR) & ~GICC_CTLR_ENABLE);
++		return;
++	}
++	gicr = gicr_cpu_base[cpu_number()];
++	if (gicr != 0) {
++		gic_write32(gicr + GICR_ICENABLER0, 0xffffffffu);
++		gic_write32(gicr + GICR_ICPENDR0, 0xffffffffu);
++		gic_write32(gicr + GICR_ICACTIVER0, 0xffffffffu);
++	}
++	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 0);
++	__builtin_arm_isb(ISB_SY);
++}
++
++static vm_offset_t
++gic_find_redistributor(void)
++{
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++	/* GICR_TYPER[63:32] packs Aff3.Aff2.Aff1.Aff0 */
++	uint32_t affinity = (uint32_t)(((mpidr >> 32) & 0xff) << 24 | (mpidr & 0xffffff));
++
++	/*
++	 * A redistributor that can take virtual LPIs (GICv4: GICR_TYPER.VLPIS) is four 64 KB frames, not two
++	 * (Arm's GIC architecture specification, IHI 0069, "Redistributor memory map"): the Google Tensor G5's
++	 * GIC is laid out so, 2 MB of redistributors for 8 cores (devices/frankel/README.md).
++	 */
++	vm_offset_t step = GICR_FRAME_SIZE;
++	for (vm_offset_t frame = gicr_base; frame + GICR_FRAME_SIZE <= gicr_base + gicr_size; frame += step) {
++		uint64_t typer = *(volatile uint64_t *)(frame + GICR_TYPER);
++
++		if ((uint32_t)(typer >> 32) == affinity) {
++			return frame;
++		}
++		if (typer & GICR_TYPER_LAST) {
++			break;
++		}
++		step = (typer & GICR_TYPER_VLPIS) ? GICR_FRAME_SIZE_V4 : GICR_FRAME_SIZE;
++	}
++	panic("gic: no redistributor for MPIDR 0x%llx", mpidr);
++}
++
++/*
++ * The same for a GICv2, whose CPU interface is memory and whose distributor holds each processor's
++ * own interrupts 0-31: which bit is this processor's in the distributor's target lists is what that
++ * register says when this processor reads it (GICD_ITARGETSR0 to 7, read-only, each processor's own).
++ */
++static void
++gic_v2_cpu_init(int cpu)
++{
++	uint32_t mine = 1u << GIC_INTID_VTIMER;
++	uint8_t target = *(volatile uint8_t *)(gicd_base + GICD_ITARGETSR(0));
++
++	if (target == 0) {
++		/* (a GIC with a single CPU interface may say nothing: it is the only one) */
++		target = 1;
++	}
++	gic_v2_phys[cpu] = ml_phys_id_from_mpidr(__builtin_arm_rsr64("MPIDR_EL1"));    /* as phys_id has it (patch 1504) */
++
++	if (ml_get_cpu_count() > 1) {
++		uint32_t sgis = (1u << GIC_SGI_SIGNAL) | (1u << GIC_SGI_STOP);
++
++		gic_write32(gicd_base + GICD_ICACTIVER(0), sgis);
++		gic_v2_sgis_clear();
++		*(volatile uint8_t *)(gicd_base + GICD_IPRIORITYR(GIC_SGI_SIGNAL)) = GIC_PRIORITY_DEFAULT;
++		*(volatile uint8_t *)(gicd_base + GICD_IPRIORITYR(GIC_SGI_STOP)) = GIC_PRIORITY_DEFAULT;
++		mine |= sgis;
++	}
++	*(volatile uint8_t *)(gicd_base + GICD_IPRIORITYR(GIC_INTID_VTIMER)) = GIC_PRIORITY_DEFAULT;
++	gic_write32(gicd_base + GICD_ISENABLER(0), mine);
++
++	uint32_t ctlr = gic_read32(gicd_base + GICD_CTLR);
++	if (!(ctlr & GICD_CTLR_ENABLE)) {
++		gic_write32(gicd_base + GICD_CTLR, ctlr | GICD_CTLR_ENABLE);
++	}
++
++	/* the CPU interface: as for a GICv3 (see below), through its registers in memory */
++	gic_write32(gicc_base + GICC_APR0, 0);
++	gic_write32(gicc_base + GICC_PMR, 0xff);
++	gic_write32(gicc_base + GICC_BPR, 0);
++	/*
++	 * Written whole, not added to: an EOImodeNS (bit 9) the firmware left set would make an end of interrupt drop its
++	 * priority only, every interrupt then staying active (the timer's would fire once). The bypass-disable bits (5, 6)
++	 * are the firmware's and kept, as Linux keeps them.
++	 */
++	gic_write32(gicc_base + GICC_CTLR, (gic_read32(gicc_base + GICC_CTLR) & ((1u << 5) | (1u << 6))) | GICC_CTLR_ENABLE);
++	__builtin_arm_dsb(DSB_SY);
++
++	ml_install_interrupt_handler(NULL, 0, NULL, gic_irq_handler, NULL);
++	/* last: from here on another processor may signal this one */
++	os_atomic_store(&gic_v2_target[cpu], target, release);
++	kprintf("gic: v2, distributor %p, CPU interface %p, cpu %d is interface %d, virtual timer on PPI %d\n",
++	    (void *)gicd_base, (void *)gicc_base, cpu, __builtin_ctz(target), GIC_INTID_VTIMER);
++	/*
++	 * Two things only the hardware can say: whether the timer's PPI really is enabled (one the secure world left in
++	 * Group 0 reads as 0 from here and never arrives), and how far this core's virtual counter is from the physical one
++	 * (CNTVOFF_EL2 is EL2's to set: under a hypervisor that leaves it, cores could disagree on the time).
++	 */
++	kprintf("gic: v2, cpu %d: ISENABLER0 %#x (the timer's PPI %s), CTLR %#x; CNTPCT - CNTVCT = %lld\n", cpu,
++	    gic_read32(gicd_base + GICD_ISENABLER(0)),
++	    (gic_read32(gicd_base + GICD_ISENABLER(0)) & (1u << GIC_INTID_VTIMER)) ? "on" : "NOT ON", gic_read32(gicc_base + GICC_CTLR),
++	    (long long)(__builtin_arm_rsr64("CNTPCT_EL0") - __builtin_arm_rsr64("CNTVCT_EL0")));
++}
++
++/* Per-CPU bring-up: every processor calls this for itself, the boot processor first. */
++void
++gic_v3_irq_cpu_init(void)
++{
++	int cpu = cpu_number();
++	vm_offset_t gicr;
++	uint32_t mine = 1u << GIC_INTID_VTIMER;
++
++	if (gicd_base == 0) {
++		DTEntry entry;
++		void const *prop;
++		unsigned int prop_size;
++
++		if (SecureDTLookupEntry(NULL, "/arm-io/gic", &entry) != kSuccess ||
++		    SecureDTGetProperty(entry, "reg", &prop, &prop_size) != kSuccess ||
++		    prop_size < 4 * sizeof(uint64_t)) {
++			panic("gic: no usable /arm-io/gic node in the device tree");
++		}
++		uint64_t const *reg = prop;
++		vm_offset_t soc_base = pe_arm_get_soc_base_phys();
++
++		simple_lock_init(&gic_spi_lock, 0);
++		gic_v2 = SecureDTGetProperty(entry, "compatible", &prop, &prop_size) == kSuccess &&
++		    strncmp(prop, "arm,gic-400", prop_size) == 0;
++		gicd_base = ml_io_map(soc_base + reg[0], reg[1]);
++		if (gic_v2) {
++			gicc_base = ml_io_map(soc_base + reg[2], reg[3]);
++		} else {
++			gicr_base = ml_io_map(soc_base + reg[2], reg[3]);
++			gicr_size = reg[3];
++		}
++		if (gicd_base == 0 || (gic_v2 ? gicc_base : gicr_base) == 0) {
++			panic("gic: cannot map the distributor/%s", gic_v2 ? "CPU interface" : "redistributor");
++		}
++	} else if (gic_v2 ? gic_v2_target[cpu] != 0 : gicr_cpu_base[cpu] != 0) {
++		return;
++	}
++	if (gic_v2) {
++		gic_v2_cpu_init(cpu);
++		return;
++	}
++
++	/* System-register CPU interface */
++	__builtin_arm_wsr64("ICC_SRE_EL1", __builtin_arm_rsr64("ICC_SRE_EL1") | 1);
++	__builtin_arm_isb(ISB_SY);
++
++	gicr = gicr_cpu_base[cpu] = gic_find_redistributor();
++
++	uint32_t waker = gic_read32(gicr + GICR_WAKER);
++	if (waker & (GICR_WAKER_PROCSLEEP | GICR_WAKER_CHILDASLEEP)) {
++		gic_write32(gicr + GICR_WAKER, waker & ~GICR_WAKER_PROCSLEEP);
++		while (gic_read32(gicr + GICR_WAKER) & GICR_WAKER_CHILDASLEEP) {
++			/* spin until the redistributor is awake */
++		}
++	}
++
++	/*
++	 * The interrupts between processors, where there is more than one. A core that an earlier
++	 * kernel switched off in the middle of one (a return to the boot loader, started again
++	 * since) may still have it marked active, and would then never see another.
++	 */
++	if (ml_get_cpu_count() > 1) {
++		uint32_t sgis = (1u << GIC_SGI_SIGNAL) | (1u << GIC_SGI_STOP);
++
++		gic_write32(gicr + GICR_ICACTIVER0, sgis);
++		gic_write32(gicr + GICR_ICPENDR0, sgis);        /* ... or one that it never took */
++		*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_SGI_SIGNAL)) = GIC_PRIORITY_DEFAULT;
++		*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_SGI_STOP)) = GIC_PRIORITY_DEFAULT;
++		mine |= sgis;
++	}
++
++	/* Virtual timer PPI (and those): Group 1 (IRQ), default priority, enabled */
++	gic_write32(gicr + GICR_IGROUPR0, gic_read32(gicr + GICR_IGROUPR0) | mine);
++	gic_write32(gicr + GICR_IGRPMODR0, gic_read32(gicr + GICR_IGRPMODR0) & ~mine);
++	*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_INTID_VTIMER)) = GIC_PRIORITY_DEFAULT;
++	gic_write32(gicr + GICR_ISENABLER0, mine);
++
++	/* Distributor: affinity routing, Group 1 enabled (normally already so) */
++	uint32_t ctlr = gic_read32(gicd_base + GICD_CTLR);
++	if ((ctlr & (GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS)) != (GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS)) {
++		gic_write32(gicd_base + GICD_CTLR, ctlr | GICD_CTLR_ENABLE_G1NS | GICD_CTLR_ARE_NS);
++		while (gic_read32(gicd_base + GICD_CTLR) & GICD_CTLR_RWP) {
++			/* wait for the write to take effect */
++		}
++	}
++
++	/*
++	 * CPU interface: accept all priorities, no preemption grouping, Group 1 on. And no priority
++	 * active: a core that the firmware switches off and on again need not lose that, and a
++	 * kernel that left in the middle of an interrupt without ending it would leave this one
++	 * waiting for an end that never comes.
++	 */
++	__builtin_arm_wsr64("ICC_AP1R0_EL1", 0);
++	__builtin_arm_wsr64("ICC_PMR_EL1", 0xff);
++	__builtin_arm_wsr64("ICC_BPR1_EL1", 0);
++	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1);
++	__builtin_arm_isb(ISB_SY);
++
++	ml_install_interrupt_handler(NULL, 0, NULL, gic_irq_handler, NULL);
++	kprintf("gic: v3, distributor %p, cpu %d's redistributor %p, virtual timer on PPI %d\n",
++	    (void *)gicd_base, cpu, (void *)gicr, GIC_INTID_VTIMER);
++}
++
++#endif /* GENERIC_GIC_V3_IRQ */
+diff --git a/osfmk/arm64/kpc.c b/osfmk/arm64/kpc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..76ab6c8000646f2ad372f9995a209c067ff94ae9
+--- /dev/null
++++ b/osfmk/arm64/kpc.c
+@@ -0,0 +1,152 @@
++/*
++ * Machine-dependent kpc (kernel performance counters) for non-Apple ARMv8
++ * cores. Apple does not publish its arm64 kpc.c. This version reports a PMU
++ * with no counters, so the kpc/kperf machinery stays linked but inert.
++ */
++#include <kern/kpc.h>
++#include <kern/kern_types.h>
++#include <mach/kern_return.h>
++#include <sys/errno.h>
++
++int kpc_pc_capture = 0;
++
++void
++kpc_arch_init(void)
++{
++}
++
++uint32_t
++kpc_get_classes(void)
++{
++	return 0;
++}
++
++int
++kpc_get_pmu_version(void)
++{
++	return KPC_PMU_ERROR;
++}
++
++int
++kpc_set_sw_inc(uint32_t mask __unused)
++{
++	return ENOTSUP;
++}
++
++void
++kpc_idle(void)
++{
++}
++
++void
++kpc_idle_exit(void)
++{
++}
++
++int
++kpc_get_all_cpus_counters(uint32_t classes __unused, int *curcpu __unused, uint64_t *buf __unused)
++{
++	return 0;
++}
++
++int
++kpc_get_fixed_counters(uint64_t *counterv __unused)
++{
++	return 0;
++}
++
++int
++kpc_get_configurable_counters(uint64_t *counterv __unused, uint64_t pmc_mask __unused)
++{
++	return 0;
++}
++
++boolean_t
++kpc_is_running_fixed(void)
++{
++	return FALSE;
++}
++
++boolean_t
++kpc_is_running_configurable(uint64_t pmc_mask __unused)
++{
++	return FALSE;
++}
++
++uint32_t
++kpc_fixed_count(void)
++{
++	return 0;
++}
++
++uint32_t
++kpc_configurable_count(void)
++{
++	return 0;
++}
++
++uint32_t
++kpc_fixed_config_count(void)
++{
++	return 0;
++}
++
++uint32_t
++kpc_configurable_config_count(uint64_t pmc_mask __unused)
++{
++	return 0;
++}
++
++uint32_t
++kpc_rawpmu_config_count(void)
++{
++	return 0;
++}
++
++int
++kpc_get_fixed_config(kpc_config_t *configv __unused)
++{
++	return 0;
++}
++
++int
++kpc_get_configurable_config(kpc_config_t *configv __unused, uint64_t pmc_mask __unused)
++{
++	return 0;
++}
++
++int
++kpc_get_rawpmu_config(kpc_config_t *configv __unused)
++{
++	return 0;
++}
++
++uint64_t
++kpc_fixed_max(void)
++{
++	return 0;
++}
++
++uint64_t
++kpc_configurable_max(void)
++{
++	return 0;
++}
++
++int
++kpc_set_config_arch(struct kpc_config_remote *mp_config __unused)
++{
++	return ENOTSUP;
++}
++
++int
++kpc_set_period_arch(struct kpc_config_remote *mp_config __unused)
++{
++	return ENOTSUP;
++}
++
++int
++kpc_set_running_arch(struct kpc_running_remote *mp_config __unused)
++{
++	return ENOTSUP;
++}
+diff --git a/osfmk/arm64/loader_return.c b/osfmk/arm64/loader_return.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..b2411e73242de8235b22d04b20e140b6e8818331
+--- /dev/null
++++ b/osfmk/arm64/loader_return.c
+@@ -0,0 +1,964 @@
++/*
++ * Return-to-loader debug channel.
++ *
++ * On hardware without a serial port there is no way to get the kernel log
++ * out. The XNU loader therefore leaves UEFI intact (no ExitBootServices) and
++ * publishes the physical address of a return stub in /chosen/loader-return.
++ * When the kernel has nothing more to do (panic, halt, timer) it collects its
++ * message buffer, the panic buffer and any kprintf output, maps the stub 1:1
++ * through TTBR0 and jumps to it with that log. The loader then restores the UEFI environment and writes
++ * the log to storage.
++ *
++ * Only valid while the kernel does not drive hardware that UEFI also uses.
++ */
++#include <stdarg.h>
++#include <mach/mach_types.h>
++#include <machine/atomic.h>
++#include <kern/cpu_number.h>
++#include <kern/debug.h>
++#include <kern/misc_protos.h>
++#include <kern/startup.h>
++#include <kern/thread_call.h>
++#include <kern/clock.h>
++#include <arm/cpu_internal.h>
++#include <arm/machine_routines.h>
++#include <arm/machine_routines.h>
++#include <arm64/psci_smp.h>
++#include <arm64/proc_reg.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/arm64/board_config.h>
++#include <pexpert/arm/protos.h>
++#include <vm/vm_page.h>
++#include <vm/vm_compressor.h>
++
++/*
++ * The console log handed back to the loader. A long session writes more than fits, and both
++ * ends matter: the start of the boot is kept as it is, and of everything after it the most
++ * recent part (a ring); room is left for what is appended on the way out (the kernel message
++ * buffer, a panic's text). loader_log_linearize() puts the pieces in order before returning.
++ */
++#define LOADER_LOG_SIZE (1536 * 1024)
++#define LOADER_LOG_HEAD (256 * 1024)
++#define LOADER_LOG_RING (1024 * 1024)
++
++#if defined(GENERIC_GIC_V3_IRQ)
++extern void gic_v3_irq_quiesce(void);
++extern void gic_v3_irq_cpu_shutdown(void);
++#endif
++
++void loader_log_putc(char c);
++void loader_return(void);
++extern void hakios_adreno_quiesce(void);
++extern void hakios_adreno_stop(void);
++extern void hakios_adreno_minute(void);
++extern void hakios_wifi_stop(void);
++extern void hakios_wifi_quiesce(void);
++extern void hakios_adsp_stop(void);
++extern void hakios_adsp_quiesce(void);
++extern void hakios_mpss_stop(void);
++extern void hakios_mpss_quiesce(void);
++extern void hakios_ddr_quiesce(void);
++extern void hakios_haptic_quiesce(void);
++extern void hakios_torch_quiesce(void);
++extern void hakios_camera_quiesce(void);
++extern void hakios_mic_quiesce(void);
++extern void hakios_max98512_quiesce(void);
++extern void hakios_exynos_abox_quiesce(void);
++extern void hakios_cs47l93_quiesce(void);
++extern void hakios_exynos_camera_quiesce(void);
++extern void hakios_exynos_iris_quiesce(void);
++extern void hakios_s2mpb02_torch_quiesce(void);
++extern void hakios_exynos_pcie_quiesce(void);
++extern void hakios_ufs_quiesce(void);
++extern void hakios_usb_gadget_quiesce(void);  /* drivers/usb/hakios.dwc3.c: the rest of the log out over USB, then the controller stopped */
++extern void hakios_var_save_on_return(void);   /* drivers/storage/ufs/hakios.ufs.c: the data volume into the flash */
++void loader_checkpoint(uint64_t n);
++
++/* Also referenced from the early exception vector in start.s. */
++char     loader_log[LOADER_LOG_SIZE];
++uint32_t loader_log_len;
++static bool     loader_return_entered;
++
++/* One L1 table and one L2 table are enough to map a single 2 MB block. */
++static uint64_t loader_l1[512] __attribute__((aligned(4096)));
++static uint64_t loader_l2[512] __attribute__((aligned(4096)));
++
++static uint32_t loader_log_ring_at;      /* where the next character goes in the ring */
++static bool     loader_log_wrapped;
++static bool     loader_log_linear;       /* the pieces have been put in order: only appending from now on */
++static char     loader_log_scratch[LOADER_LOG_RING];
++
++/*
++ * Characters come from every processor, and from interrupt handlers on top of whatever was
++ * writing one. The lock is of the simplest kind, good from the first line of C code to the
++ * last of a panic; whoever cannot have it for a long while (its holder is gone: a panic
++ * inside this very function) goes ahead without it.
++ */
++static uint32_t loader_log_lock;
++
++static void loader_log_put_locked(char c);
++
++/*
++ * A second reader of every character the log gets, as it gets it: the USB gadget driver's (drivers/usb/hakios.dwc3.c),
++ * which streams the log to a host. Called under the lock, interrupts off: it only copies the character.
++ */
++static void (*volatile loader_log_tap)(char c);
++
++uint32_t loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len));
++
++/*
++ * Install (or with NULL remove) the tap. history, if given, first gets what the log has so far from its start (the part
++ * kept as it was, the first LOADER_LOG_HEAD bytes), under the same lock, so that nothing is missed or sent twice.
++ * Returns the log's length at that moment.
++ */
++uint32_t
++loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len))
++{
++	uint64_t daif;
++	bool locked = false;
++	uint32_t len;
++
++	daif = __builtin_arm_rsr64("DAIF");
++	__builtin_arm_wsr("DAIFSet", DAIFSC_IRQF | DAIFSC_FIQF);
++	for (uint32_t tries = 0; !locked && tries < 10000000; tries++) {
++		locked = os_atomic_cmpxchg(&loader_log_lock, 0, 1, acquire);
++	}
++	len = loader_log_len;
++	if (history != NULL) {
++		history(loader_log, len < LOADER_LOG_HEAD || loader_log_linear || !loader_log_wrapped ? len : LOADER_LOG_HEAD);
++	}
++	loader_log_tap = tap;
++	if (locked) {
++		os_atomic_store(&loader_log_lock, 0, release);
++	}
++	__builtin_arm_wsr64("DAIF", daif);
++	return len;
++}
++
++void
++loader_log_putc(char c)
++{
++	uint64_t daif;
++	bool locked = false;
++
++	if (c == '\r') {
++		return;
++	}
++	daif = __builtin_arm_rsr64("DAIF");
++	__builtin_arm_wsr("DAIFSet", DAIFSC_IRQF | DAIFSC_FIQF);
++	for (uint32_t tries = 0; !locked && tries < 10000000; tries++) {
++		locked = os_atomic_cmpxchg(&loader_log_lock, 0, 1, acquire);
++	}
++	loader_log_put_locked(c);
++	if (locked) {
++		os_atomic_store(&loader_log_lock, 0, release);
++	}
++	__builtin_arm_wsr64("DAIF", daif);
++}
++
++/*
++ * A whole line at once, under the lock: lines written from several processors at the same time
++ * (tools/latency.py's "tl:" lines, a frame's on one and a touch's on another) are not mixed up.
++ */
++void loader_log_line(const char *line);
++
++void
++loader_log_line(const char *line)
++{
++	uint64_t daif;
++	bool locked = false;
++
++	daif = __builtin_arm_rsr64("DAIF");
++	__builtin_arm_wsr("DAIFSet", DAIFSC_IRQF | DAIFSC_FIQF);
++	for (uint32_t tries = 0; !locked && tries < 10000000; tries++) {
++		locked = os_atomic_cmpxchg(&loader_log_lock, 0, 1, acquire);
++	}
++	for (; *line != 0; line++) {
++		if (*line != '\r') {
++			loader_log_put_locked(*line);
++		}
++	}
++	if (locked) {
++		os_atomic_store(&loader_log_lock, 0, release);
++	}
++	__builtin_arm_wsr64("DAIF", daif);
++}
++
++/*
++ * esslog (Galaxy S9): every character of the log also into Samsung's exynos-snapshot kernel log buffer
++ * (log_kernel, PA 0xFDA10000, 2 MB; header at ess_setup 0xFDA00000, last write position at +0x200), so that
++ * after a restart TWRP's kernel offers this run's whole log as /proc/last_kmsg (drivers/trace/exynos-ss.c,
++ * drivers/staging/samsung/sec_debug_last_kmsg.c). boot-arg esslog=1.
++ */
++#define ESSLOG_HDR_PA   0xFDA00000ULL
++#define ESSLOG_BUF_PA   0xFDA10000ULL
++#define ESSLOG_SIZE     (2u * 1024 * 1024)
++#define ESSLOG_MAGIC    0x0000000a6c6c7546ULL
++static volatile uint8_t *esslog_hdr, *esslog_buf;
++static uint32_t esslog_at;
++static void
++esslog_put(char c)
++{
++	esslog_buf[esslog_at++] = (uint8_t)c;
++	if (esslog_at >= ESSLOG_SIZE - 8) {
++		*(volatile uint64_t *)(esslog_buf + ESSLOG_SIZE - 8) = ESSLOG_MAGIC;
++		esslog_at = 0;
++	}
++	if (c == '\n') {
++		*(volatile uint32_t *)(esslog_hdr + 0x200) = (uint32_t)(ESSLOG_BUF_PA + esslog_at);
++	}
++}
++static void
++loader_log_put_locked(char c)
++{
++	void (*tap)(char) = loader_log_tap;
++
++	if (tap != NULL) {
++		tap(c);
++	}
++	if (esslog_buf != NULL) {
++		esslog_put(c);
++	}
++	if (loader_log_linear || loader_log_len < LOADER_LOG_HEAD) {
++		if (loader_log_len < LOADER_LOG_SIZE) {
++			loader_log[loader_log_len++] = c;
++		}
++	} else {
++		loader_log[LOADER_LOG_HEAD + loader_log_ring_at] = c;
++		if (++loader_log_ring_at == LOADER_LOG_RING) {
++			loader_log_ring_at = 0;
++			loader_log_wrapped = true;
++		}
++		if (!loader_log_wrapped) {
++			loader_log_len = LOADER_LOG_HEAD + loader_log_ring_at;
++		}
++	}
++}
++
++/* Oldest first: the head, a note about what was dropped, then the ring from its oldest character. */
++static void
++loader_log_linearize(void)
++{
++	static const char note[] = "\n\n[... the log between the first 256 KB and the last 1 MB was dropped ...]\n\n";
++	uint32_t older = LOADER_LOG_RING - loader_log_ring_at, n = LOADER_LOG_HEAD;
++
++	if (loader_log_linear) {
++		return;
++	}
++	loader_log_linear = true;
++	if (!loader_log_wrapped) {
++		return;
++	}
++	__builtin_memcpy(loader_log_scratch, loader_log + LOADER_LOG_HEAD + loader_log_ring_at, older);
++	__builtin_memcpy(loader_log_scratch + older, loader_log + LOADER_LOG_HEAD, loader_log_ring_at);
++	/* the note takes the place of the oldest characters of the ring */
++	__builtin_memcpy(loader_log + n, note, sizeof(note) - 1);
++	n += sizeof(note) - 1;
++	__builtin_memcpy(loader_log + n, loader_log_scratch + sizeof(note) - 1, LOADER_LOG_RING - (sizeof(note) - 1));
++	loader_log_len = LOADER_LOG_HEAD + LOADER_LOG_RING;
++}
++
++/* Patched by the loader: { magic, PA of its return stub, checkpoint to stop at, PA - VA }. See start.s. */
++extern uint64_t loader_stub_slot[4];
++
++/*
++ * For a loader that watches from another processor core while the kernel runs (it starts the
++ * kernel on a core of its choice and stays on the first one): a sign of life, and where the log
++ * is, so that the log of a kernel that hangs -- or dies before it has said a word through any
++ * other channel -- is not lost with it. The loader finds this by its first word in the kernel
++ * it has loaded. The addresses are the kernel's virtual ones, filled in by the linker and so
++ * valid from the first instruction; the loader knows the distance to the physical ones.
++ */
++struct loader_live {
++	uint64_t magic;                 /* "XNULIVE!" */
++	uint64_t heartbeat;             /* goes up every HV_WDT_PET_SECONDS while the kernel is alive */
++	const char *log;                /* loader_log */
++	const uint32_t *log_len;        /* how much of it is in use */
++	const uint32_t *log_ring_at;    /* where the ring part is being written */
++	const bool *log_wrapped;        /* the ring has gone round */
++	uint64_t log_head, log_ring;    /* sizes of the two parts */
++	const uint64_t *recording;      /* loader_recording: { physical address, length } of a screen recording */
++	volatile uint64_t stop;         /* the loader's to write: the host has asked for the run to end */
++	uint64_t magic2;                /* "XNULIVE2": what follows is there (a loader may meet an older kernel) */
++	const uint64_t *sound;          /* loader_sound: the same for a recording of the sound */
++};
++
++/*
++ * A screen recording (the display driver makes one with boot-arg rec_secs): where it is, for the
++ * loader to hand to the host once the kernel is back. { physical address, bytes, kernel address }.
++ */
++uint64_t loader_recording[3];
++/* ... and of the sound (/dev/hakios-audio makes one with boot-arg rec_sound). */
++uint64_t loader_sound[3];
++
++struct loader_live loader_live = {
++	.magic = 0x214556494c554e58ULL, .log = loader_log, .log_len = &loader_log_len, .log_ring_at = &loader_log_ring_at,
++	.log_wrapped = &loader_log_wrapped, .log_head = LOADER_LOG_HEAD, .log_ring = LOADER_LOG_RING,
++	.recording = loader_recording,
++	.magic2 = 0x324556494c554e58ULL, .sound = loader_sound,
++};
++
++/* Valid from the first instruction of C code: does not depend on gVirtBase/gPhysBase being set up. */
++static inline uint64_t
++static_kvtophys(const void *va)
++{
++	return (uint64_t)va + loader_stub_slot[3];
++}
++
++/*
++ * Jump to the loader's return stub. reason: 0 = orderly end, 2 = checkpoint.
++ * Returns only if no loader is listening.
++ */
++static void
++loader_jump(uint64_t reason, uint64_t code)
++{
++#if ARM_PGSHIFT == 12
++	uint64_t stub = loader_stub_slot[1];
++	uint64_t tcr, t0sz;
++	uint32_t own_core = 0;
++
++	if (stub == 0 || loader_return_entered) {
++		return;
++	}
++
++	tcr = __builtin_arm_rsr64("TCR_EL1");
++	t0sz = tcr & 0x3f;
++	/* The TTBR0 walk must start at L1 (1 GB per entry) and reach the stub. */
++	if (t0sz < 25 || t0sz > 33 || (stub >> (64 - t0sz)) != 0) {
++		return;
++	}
++	loader_return_entered = true;
++#if defined(GENERIC_GIC_V3_IRQ)
++	gic_v3_irq_quiesce();
++	/*
++	 * With a core of its own (bootcpu=) the kernel does not go back into the loader's code on
++	 * this processor: the stub leaves the log where the loader's core finds it and has the
++	 * firmware switch this one off. It must go as the other cores do (psci_smp_cpu_off()), with
++	 * nothing pending: after a panic the "stop" signal and the timer are.
++	 */
++	if (PE_parse_boot_argn("bootcpu", &own_core, sizeof(own_core))) {
++		__builtin_arm_wsr64("CNTV_CTL_EL0", CNTV_CTL_EL0_IMASKED);
++		gic_v3_irq_cpu_shutdown();
++	}
++#endif
++
++	loader_l1[stub >> 30] = static_kvtophys(loader_l2) | ARM_TTE_TYPE_TABLE | ARM_TTE_VALID;
++	loader_l2[(stub >> 21) & 0x1ff] = (stub & ~0x1fffffULL) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_AP(AP_RWNA) |
++	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITEBACK);
++
++	/*
++	 * The stub turns the MMU off, and on real hardware dirty cache lines do
++	 * not survive that: write the log back to RAM first.
++	 */
++	for (uintptr_t p = (uintptr_t)loader_log & ~63UL; p < (uintptr_t)loader_log + loader_log_len; p += 64) {
++		__asm__ volatile ("dc cvac, %0" : : "r" (p));
++	}
++	/* ... and a screen recording, and the note of where it is */
++	for (uintptr_t p = loader_recording[2] & ~63UL; p < loader_recording[2] + loader_recording[1]; p += 64) {
++		__asm__ volatile ("dc cvac, %0" : : "r" (p));
++	}
++	__asm__ volatile ("dc cvac, %0" : : "r" ((uintptr_t)loader_recording));
++	__asm__ volatile ("dc cvac, %0" : : "r" ((uintptr_t)loader_recording + 16));
++	for (uintptr_t p = loader_sound[2] & ~63UL; p < loader_sound[2] + loader_sound[1]; p += 64) {
++		__asm__ volatile ("dc cvac, %0" : : "r" (p));
++	}
++	__asm__ volatile ("dc cvac, %0" : : "r" ((uintptr_t)loader_sound));
++	__asm__ volatile ("dc cvac, %0" : : "r" ((uintptr_t)loader_sound + 16));
++	__asm__ volatile ("dsb sy");
++
++	register uint64_t r_ttbr0 __asm__("x0") = static_kvtophys(loader_l1);
++	register uint64_t r_log __asm__("x2") = static_kvtophys(loader_log);
++	register uint64_t r_len __asm__("x3") = loader_log_len;
++	register uint64_t r_tcr __asm__("x4") = tcr;
++	register uint64_t r_stub __asm__("x5") = stub;
++	register uint64_t r_reason __asm__("x6") = reason;
++	register uint64_t r_code __asm__("x7") = code;
++
++	__asm__ volatile (
++                "msr DAIFSet, #0xf\n"
++                "bic x4, x4, #0x80\n"           /* TCR_EL1.EPD0: allow TTBR0 walks */
++                "msr TCR_EL1, x4\n"
++                "msr TTBR0_EL1, x0\n"
++                "isb\n"
++                "tlbi vmalle1\n"
++                "dsb sy\n"
++                "isb\n"
++                "mov x0, x2\n"
++                "mov x1, x3\n"
++                "mov x2, x6\n"
++                "mov x3, x7\n"
++                "br x5\n"
++                : : "r" (r_ttbr0), "r" (r_log), "r" (r_len), "r" (r_tcr), "r" (r_stub), "r" (r_reason), "r" (r_code));
++	__builtin_unreachable();
++#else
++	(void)reason; (void)code;
++#endif /* ARM_PGSHIFT == 12 */
++}
++
++extern char *debug_buf_base, *debug_buf_ptr;
++
++/* bsd/sys/msgbuf.h (not includable from osfmk) */
++struct msgbuf {
++	int   msg_magic;
++	int   msg_size;
++	int   msg_bufx;         /* write pointer */
++	int   msg_bufr;         /* read pointer */
++	char *msg_bufc;         /* buffer */
++};
++extern struct msgbuf *msgbufp;
++
++static void
++loader_log_hex(uint64_t v)
++{
++	loader_log_putc('0');
++	loader_log_putc('x');
++	for (int shift = 60; shift >= 0; shift -= 4) {
++		loader_log_putc("0123456789abcdef"[(v >> shift) & 0xf]);
++	}
++}
++
++static void
++loader_log_puts(const char *s)
++{
++	for (; *s; s++) {
++		loader_log_putc(*s);
++	}
++}
++
++/*
++ * A new phone's first runs, said in full in the log the loader gets back. A panic's own text, the registers of the
++ * last exception and the calls that led to it are always written here: before arm_vm_init there is no panic buffer,
++ * and on a phone without a serial port such a panic otherwise comes back as nothing but loader_return()'s caller.
++ * Boot-arg early_log=1 adds every kprintf from PE_init_platform on (the drivers' and the VM's bring-up lines, which
++ * no console shows that early) and what the kernel takes the processors to be.
++ */
++bool loader_early_log;
++
++void loader_early_log_init(void);
++void loader_log_vprintf(const char *fmt, va_list *ap);
++void loader_log_panic(const char *fmt, va_list *ap, unsigned long caller);
++void loader_log_cpu_facts(void);
++extern uint32_t ml_mpidr_mt_aff1;
++
++void
++loader_early_log_init(void)
++{
++	uint32_t on = 0;
++
++	if (PE_parse_boot_argn("early_log", &on, sizeof(on)) && on != 0) {
++		loader_early_log = true;
++	}
++}
++
++void
++loader_log_vprintf(const char *fmt, va_list *ap)
++{
++	va_list copy;
++
++	va_copy(copy, *ap);
++	_doprnt(fmt, &copy, loader_log_putc, 16);
++	va_end(copy);
++}
++
++static void
++loader_log_printf(const char *fmt, ...)
++{
++	va_list ap;
++
++	va_start(ap, fmt);
++	_doprnt(fmt, &ap, loader_log_putc, 16);
++	va_end(ap);
++}
++
++static void
++loader_log_frame(uint64_t pc)
++{
++	loader_log_puts("  ");
++	loader_log_hex(pc);
++	if (vm_kernel_slide != 0) {
++		loader_log_puts(" unslid ");
++		loader_log_hex(pc - vm_kernel_slide);
++	}
++	loader_log_putc('\n');
++}
++
++/* Called first thing by panic_trap_to_debugger() (patch 1503), on whichever processor panicked */
++void
++loader_log_panic(const char *fmt, va_list *ap, unsigned long caller)
++{
++	static uint32_t panics;
++	uint64_t *fp = __builtin_frame_address(0);
++
++	if (os_atomic_inc(&panics, relaxed) > 2) {
++		return;                 /* a panic inside the panic, over and over: the first two say enough */
++	}
++	loader_log_puts("\n--- panic on MPIDR ");
++	loader_log_hex(__builtin_arm_rsr64("MPIDR_EL1") & 0xffffff);
++	loader_log_puts(": ");
++	if (fmt != NULL && ap != NULL) {
++		loader_log_vprintf(fmt, ap);
++	} else if (fmt != NULL) {
++		loader_log_puts(fmt);
++	}
++	loader_log_puts("\n--- the last exception: ESR_EL1 ");
++	loader_log_hex(__builtin_arm_rsr64("ESR_EL1"));
++	loader_log_puts(" FAR_EL1 ");
++	loader_log_hex(__builtin_arm_rsr64("FAR_EL1"));
++	loader_log_puts(" ELR_EL1 ");
++	loader_log_hex(__builtin_arm_rsr64("ELR_EL1"));
++	loader_log_puts("\n--- panic() called from\n");
++	loader_log_frame(caller);
++	loader_log_puts("--- frames (nm on the unstripped kernel names them)\n");
++	/* the frame records: [fp] the caller's fp, [fp + 8] the return address; on the stack, each above the last */
++	for (int i = 0; i < 32; i++) {
++		uint64_t *next;
++
++		if (fp == NULL || ((uintptr_t)fp & 0xf) != 0 || (uintptr_t)fp < VM_MIN_KERNEL_AND_KEXT_ADDRESS) {
++			break;
++		}
++		loader_log_frame(fp[1]);
++		next = (uint64_t *)fp[0];
++		if (next <= fp || (uintptr_t)next - (uintptr_t)fp > 64 * 1024) {
++			break;
++		}
++		fp = next;
++	}
++	loader_log_puts("---\n");
++}
++
++/* early_log: right after ml_parse_cpu_topology(), what the kernel will match each processor's MPIDR against */
++void
++loader_log_cpu_facts(void)
++{
++	const ml_topology_info_t *t = ml_get_topology_info();
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++
++	if (!loader_early_log) {
++		return;
++	}
++	loader_log_printf("\nearly_log: MPIDR %llx MIDR %llx CurrentEL %llu CLIDR %llx CTR %llx ID_AA64PFR0 %llx "
++	    "ID_AA64MMFR0 %llx ID_AA64ISAR0 %llx\n", mpidr, __builtin_arm_rsr64("MIDR_EL1"),
++	    (__builtin_arm_rsr64("CurrentEL") >> 2) & 3, __builtin_arm_rsr64("CLIDR_EL1"), __builtin_arm_rsr64("CTR_EL0"),
++	    __builtin_arm_rsr64("ID_AA64PFR0_EL1"), __builtin_arm_rsr64("ID_AA64MMFR0_EL1"),
++	    __builtin_arm_rsr64("ID_AA64ISAR0_EL1"));
++	if (t == NULL || t->cpus == NULL) {
++		loader_log_puts("early_log: no topology\n");
++		return;
++	}
++	loader_log_printf("early_log: topology: %u cpus (max id %u), %u clusters; boot cpu id %d phys %x; "
++	    "this processor by its MPIDR: phys %x, cpu %d%s\n", t->num_cpus, t->max_cpu_id, t->num_clusters,
++	    t->boot_cpu != NULL ? (int)t->boot_cpu->cpu_id : -1, t->boot_cpu != NULL ? t->boot_cpu->phys_id : 0,
++	    ml_phys_id_from_mpidr(mpidr), ml_get_cpu_number(ml_phys_id_from_mpidr(mpidr)),
++	    ml_mpidr_mt_aff1 ? " (MT: the device tree numbers the cores one affinity field lower)" : "");
++	for (unsigned i = 0; i < t->num_cpus; i++) {
++		loader_log_printf("early_log:   cpu %u phys %x cluster %u type %d\n", t->cpus[i].cpu_id,
++		    t->cpus[i].phys_id, t->cpus[i].cluster_id, (int)t->cpus[i].cluster_type);
++	}
++}
++
++/*
++ * Everything printf()/IOLog()/os_log wrote ends up in the kernel message
++ * buffer (what dmesg shows), whether or not a console displayed it.
++ */
++static void
++loader_log_append_msgbuf(void)
++{
++	struct msgbuf *mb = msgbufp;
++
++	if (mb == NULL || mb->msg_bufc == NULL || mb->msg_size <= 0 || mb->msg_bufx < 0 || mb->msg_bufx > mb->msg_size) {
++		return;
++	}
++	loader_log_puts("\n--- kernel message buffer ---\n");
++	/* oldest data first: [bufx, size) is only meaningful once the buffer has wrapped */
++	for (int pass = 0; pass < 2; pass++) {
++		int from = pass == 0 ? mb->msg_bufx : 0;
++		int to = pass == 0 ? mb->msg_size : mb->msg_bufx;
++		for (int i = from; i < to; i++) {
++			if (mb->msg_bufc[i] != 0) {
++				loader_log_putc(mb->msg_bufc[i]);
++			}
++		}
++	}
++}
++
++/*
++ * No loader to return to (avfboot under crosvm/AVF leaves the return slot 0): end the machine
++ * through PSCI instead, so that the VM stops and its owner sees it stop. A reboot asks for
++ * SYSTEM_RESET, a halt or a panic for SYSTEM_OFF; a panic's first line is said once more on the
++ * console just before, so that it is the last thing there. boot-arg avf_exit=0: stay, as before.
++ */
++static bool loader_exit_reset;
++
++void
++loader_exit_wanted(bool reset)
++{
++	loader_exit_reset = reset;
++}
++
++static void
++avf_console_puts(const char *s, const char *end)
++{
++	for (; *s && (end == NULL || s < end); s++) {
++		if (*s == '\n') {
++			uart_putc('\r');
++		}
++		uart_putc(*s);
++	}
++}
++
++static void
++loader_exit_without_loader(void)
++{
++	uint32_t stay_on = 1;
++	const char *panic_line = NULL, *line_end = NULL;
++
++	if (loader_stub_slot[1] != 0) {
++		return;                         /* a loader is there; it just would not have us back */
++	}
++	if (PE_parse_boot_argn("avf_exit", &stay_on, sizeof(stay_on)) && stay_on == 0) {
++		return;
++	}
++	/* the panic's own first line, from the panic buffer */
++	if (debug_buf_base != NULL && debug_buf_ptr > debug_buf_base &&
++	    (size_t)(debug_buf_ptr - debug_buf_base) < 256 * 1024) {
++		for (const char *c = debug_buf_base; c + 6 <= debug_buf_ptr; c++) {
++			if (__builtin_memcmp(c, "panic(", 6) == 0) {
++				panic_line = c;
++				for (line_end = c; line_end < debug_buf_ptr && *line_end != '\n' && *line_end; line_end++) {
++				}
++				break;
++			}
++		}
++	}
++	if (panic_line != NULL) {
++		avf_console_puts("\navf: kernel panic: ", NULL);
++		avf_console_puts(panic_line, line_end);
++		avf_console_puts("\navf: powering off (PSCI SYSTEM_OFF)\n", NULL);
++		(void)psci_system_off(false);
++	} else if (loader_exit_reset) {
++		avf_console_puts("\navf: reboot (PSCI SYSTEM_RESET)\n", NULL);
++		(void)psci_system_off(true);
++	} else {
++		avf_console_puts("\navf: halt (PSCI SYSTEM_OFF)\n", NULL);
++		(void)psci_system_off(false);
++	}
++	avf_console_puts("avf: the firmware refused to end the machine\n", NULL);
++}
++
++void
++loader_return(void)
++{
++#if defined(GENERIC_PSCI_SMP)
++	/*
++	 * With more than one processor: the others switch themselves off first, and the rest of
++	 * this is done by the boot processor, the one the loader gave us. This call comes back
++	 * on that processor only (on another one it has it call loader_return() in its turn).
++	 */
++	psci_smp_stop_others();
++#endif
++	hakios_ufs_quiesce();          /* this kernel's requests to the storage done, UEFI's list as it was, for the log */
++	hakios_adreno_quiesce();       /* the GPU block, if it was started, has tables in memory that is about to be reused */
++	hakios_wifi_quiesce();         /* the Wi-Fi DSP, if it still runs (a panic), is not left to itself */
++	hakios_adsp_quiesce();         /* nor the audio DSP */
++	hakios_mpss_quiesce();         /* nor the modem */
++	hakios_ddr_quiesce();          /* and the vote for the memory's bandwidth taken away */
++	hakios_haptic_quiesce();       /* the vibration motor's chip back into reset, if it was let out */
++	hakios_torch_quiesce();        /* the flashlight off, if it was lit */
++	hakios_camera_quiesce();       /* the camera powered down, if it was powered up */
++	hakios_mic_quiesce();          /* (what the microphones' path did, said again: it happens in the log's middle) */
++	hakios_max98512_quiesce();     /* the S9's speaker amplifiers shut down, while UAIF1's clocks still run */
++	hakios_exynos_abox_quiesce();  /* then ABOX's RDMA0 and UAIF1: no more reading of memory the loader reuses */
++	hakios_cs47l93_quiesce();      /* the S9's audio codec held in reset */
++	hakios_s2mpb02_torch_quiesce(); /* the S9's flashlight off */
++	hakios_exynos_camera_quiesce(); /* the S9's front camera powered down */
++	hakios_exynos_iris_quiesce();   /* the S9's iris camera powered down, its sensor (and so its IR LED) stopped */
++	hakios_exynos_pcie_quiesce();  /* the S9's Wi-Fi chip held in reset, unpowered: no DMA into the loader's memory */
++	/*
++	 * A panic's text is first collected in the panic buffer and only later
++	 * flushed to the console; if the console itself is what failed, that
++	 * never happens. Append the buffer so the loader gets it either way.
++	 */
++	loader_log_linearize();
++	/*
++	 * Who asked for the return: on a new phone a kernel that came back before its message buffer existed said nothing
++	 * else. Unslid by vm_kernel_slide, nm on the unstripped kernel names the function.
++	 */
++	{
++		uint64_t caller = (uint64_t)__builtin_return_address(0);
++
++		loader_log_puts("\n--- loader_return() from ");
++		loader_log_hex(caller);
++		loader_log_puts(", unslid ");
++		loader_log_hex(caller - vm_kernel_slide);
++		loader_log_puts(" ---\n");
++	}
++	if (!loader_return_entered) {
++		loader_log_append_msgbuf();
++	}
++	if (!loader_return_entered && debug_buf_base != NULL && debug_buf_ptr > debug_buf_base &&
++	    (size_t)(debug_buf_ptr - debug_buf_base) < 256 * 1024) {
++		loader_log_puts("\n--- panic buffer ---\n");
++		for (const char *c = debug_buf_base; c < debug_buf_ptr; c++) {
++			loader_log_putc(*c);
++		}
++	}
++	hakios_usb_gadget_quiesce();   /* last: the panic text above goes out over USB too, before the controller stops */
++	loader_jump(0, 0);
++	loader_exit_without_loader();
++}
++
++/*
++ * Bring-up aid: stop here if the loader asked for checkpoint n. Every checkpoint passed is also written to the log the
++ * loader gets back ("[c10][c11]..."), so a kernel that ends before its first line still says how far it came.
++ */
++void
++loader_checkpoint(uint64_t n)
++{
++	char digits[20];
++	uint64_t v = n;
++	int i = 0;
++
++	do {
++		digits[i++] = (char)('0' + v % 10);
++		v /= 10;
++	} while (v != 0 && i < (int)sizeof(digits));
++	loader_log_putc('[');
++	loader_log_putc('c');
++	while (i > 0) {
++		loader_log_putc(digits[--i]);
++	}
++	loader_log_putc(']');
++	if (loader_stub_slot[2] == n) {
++		loader_jump(2, n);
++	}
++}
++
++/*
++ * boot-arg loader_return_after=<seconds>: hand control back to the loader
++ * after that long, whatever the kernel is doing. This is how the log gets out
++ * when the kernel does not panic but simply waits (e.g. for a root device).
++ */
++/*
++ * For trying the ways out when there is more than one processor: boot-arg return_cpu=<n> has
++ * that processor make the timed return, from an interrupt handler -- any but the boot processor
++ * has to hand it over (psci_smp_stop_others()) --, and return_panic=1 makes a panic of it.
++ */
++static void
++loader_return_test(void *as_panic)
++{
++	if (as_panic != (void *)1) {
++		panic("return_panic: the panic that was asked for, on cpu %d", cpu_number());
++	}
++	loader_return();
++}
++
++static void
++loader_return_timer(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
++{
++	static const char banner[] = "\n--- loader_return_after expired ---\n";
++	uint32_t cpu = 0, as_panic = 0;
++
++	for (const char *c = banner; *c; c++) {
++		loader_log_putc(*c);
++	}
++	PE_parse_boot_argn("return_panic", &as_panic, sizeof(as_panic));
++	if (!as_panic) {
++		hakios_var_save_on_return();   /* the data volume kept, while the system is still whole */
++		hakios_adreno_stop();          /* a GPU kept for the system is given back while there is a thread to wait in */
++		hakios_wifi_stop();            /* and the Wi-Fi DSP, if it runs, shut down */
++		hakios_adsp_stop();            /* and the audio DSP */
++		hakios_mpss_stop();            /* and the modem */
++	}
++	if (PE_parse_boot_argn("return_cpu", &cpu, sizeof(cpu)) && cpu <= (uint32_t)ml_get_max_cpu_number() &&
++	    cpu_xcall((int)cpu, loader_return_test, (void *)(uintptr_t)(as_panic ? 2 : 1)) == KERN_SUCCESS) {
++		for (;;) {
++			delay_for_interval(1000, NSEC_PER_MSEC);        /* that processor ends it */
++		}
++	}
++	loader_return_test((void *)(uintptr_t)(as_panic ? 2 : 1));
++}
++
++__startup_func
++static void
++loader_return_timer_init(void)
++{
++	uint32_t seconds = 0;
++	uint64_t deadline;
++
++	if (!PE_parse_boot_argn("loader_return_after", &seconds, sizeof(seconds)) || seconds == 0) {
++		return;
++	}
++	thread_call_t call = thread_call_allocate(loader_return_timer, NULL);
++	clock_interval_to_deadline(seconds, NSEC_PER_SEC, &deadline);
++	thread_call_enter_delayed(call, deadline);
++}
++STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, loader_return_timer_init);
++
++/*
++ * A loader that watches from another core also listens to the host, and passes on a request to
++ * end the run ("xl stop") by setting loader_live.stop. Look once a second.
++ */
++static thread_call_t loader_stop_call;
++
++static void
++loader_stop_poll(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
++{
++	uint64_t deadline;
++
++	if (loader_live.stop) {
++		static const char banner[] = "\n--- the host asked for the end of the run: back to the loader ---\n";
++		for (const char *c = banner; *c; c++) {
++			loader_log_putc(*c);
++		}
++		hakios_var_save_on_return();
++		hakios_adreno_stop();
++		hakios_wifi_stop();
++		hakios_adsp_stop();
++		loader_return();
++	}
++	clock_interval_to_deadline(1, NSEC_PER_SEC, &deadline);
++	thread_call_enter_delayed(loader_stop_call, deadline);
++}
++
++__startup_func
++static void
++loader_stop_poll_init(void)
++{
++	loader_stop_call = thread_call_allocate(loader_stop_poll, NULL);
++	loader_stop_poll(NULL, NULL);
++}
++STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, loader_stop_poll_init);
++
++/*
++ * boot-arg hv_wdt_pet=1: the loader has armed the Qualcomm hypervisor's
++ * virtual watchdog (it resets the phone when a kernel hangs, so that test
++ * runs need nobody at the device). Its timeout is at most 65 seconds; feed
++ * it from a timer so that a healthy kernel can run for as long as it likes.
++ */
++#define VIRT_WDT_PET            0x86000007u
++#define HV_WDT_PET_SECONDS      10
++
++static thread_call_t hv_wdt_call;
++static uint32_t hv_wdt_enabled;
++
++#define MEMORY_REPORT_BEATS     6               /* a line about memory every so many heartbeats */
++
++extern unsigned int memorystatus_available_pages, memorystatus_available_pages_critical,
++    memorystatus_available_pages_critical_base;
++extern uint32_t c_segment_pages_compressed;
++extern _Atomic uint64_t ramfs_pages_in_use;
++extern void MiniIOSurfaceUsage(uint32_t *count, uint64_t *bytes);
++
++/*
++ * Where the memory is, in megabytes: for reading a session's log afterwards. "available" is what
++ * the kernel's own count says (free and file-backed): below the first threshold it kills idle
++ * daemons, and once none is left and it is below the second, whatever is next in line -- the
++ * window server included.
++ */
++void hakios_memory_line(char *buf, size_t len);
++
++/* The line itself (also kern.hakios_memory, for a job list to keep: bsd/miscfs/apfs/apfs_vfsops.c) */
++void
++hakios_memory_line(char *buf, size_t len)
++{
++#define MB(pages)       ((unsigned int)(((uint64_t)(pages) * PAGE_SIZE) >> 20))
++	uint32_t surfaces = 0;
++	uint64_t surface_bytes = 0;
++
++	MiniIOSurfaceUsage(&surfaces, &surface_bytes);
++	snprintf(buf, len, "memory: free %u, files %u, programs %u, wired %u (%u surfaces %u, ramfs %u), compressor %u "
++	    "(holding %u) MB; available %u, kills below %u (the idle) and %u (anybody)\n",
++	    MB(vm_page_free_count), MB(vm_page_pageable_external_count), MB(vm_page_pageable_internal_count),
++	    MB(vm_page_wire_count), surfaces, (unsigned int)(surface_bytes >> 20),
++	    MB(os_atomic_load(&ramfs_pages_in_use, relaxed)),
++	    MB(VM_PAGE_COMPRESSOR_COUNT), MB(c_segment_pages_compressed),
++	    MB(memorystatus_available_pages),
++	    MB(memorystatus_available_pages_critical), MB(memorystatus_available_pages_critical_base));
++#undef MB
++}
++
++static void
++memory_report(void)
++{
++	char line[256];
++
++	hakios_memory_line(line, sizeof(line));
++	printf("%s", line);
++	hakios_adreno_minute();                /* (and how warm the GPU is, if it is in use) */
++}
++
++/* Every HV_WDT_PET_SECONDS: feed the watchdog if there is one, and show any watching loader a sign of life. */
++static void
++hv_wdt_pet(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
++{
++	uint64_t deadline;
++
++	if (hv_wdt_enabled) {
++		register uint64_t x0 __asm__("x0") = VIRT_WDT_PET;
++		register uint64_t x1 __asm__("x1") = 0;
++		register uint64_t x2 __asm__("x2") = 0;
++		register uint64_t x3 __asm__("x3") = 0;
++
++		__asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3) : :
++		    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
++	}
++	if (++loader_live.heartbeat % MEMORY_REPORT_BEATS == 0) {
++		memory_report();
++	}
++
++	clock_interval_to_deadline(HV_WDT_PET_SECONDS, NSEC_PER_SEC, &deadline);
++	thread_call_enter_delayed(hv_wdt_call, deadline);
++}
++
++__startup_func
++static void
++hv_wdt_pet_init(void)
++{
++	PE_parse_boot_argn("hv_wdt_pet", &hv_wdt_enabled, sizeof(hv_wdt_enabled));
++	hv_wdt_call = thread_call_allocate(hv_wdt_pet, NULL);
++	hv_wdt_pet(NULL, NULL);
++}
++STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, hv_wdt_pet_init);
++
++void hakios_esslog_start(void);
++void
++hakios_esslog_start(void)
++{
++	uint32_t on = 0, len;
++	uint64_t daif;
++	bool locked = false;
++	volatile uint8_t *hdr, *buf;
++
++	if (esslog_buf != NULL || !PE_parse_boot_argn("esslog", &on, sizeof(on)) || on == 0) {
++		return;
++	}
++	hdr = (volatile uint8_t *)ml_io_map(ESSLOG_HDR_PA, 0x1000);
++	buf = (volatile uint8_t *)ml_io_map(ESSLOG_BUF_PA, ESSLOG_SIZE);     /* uncached: a hard hang must not lose what sat in a write-combining buffer */
++	if (hdr == NULL || buf == NULL) {
++		printf("esslog: could not map\n");
++		return;
++	}
++	*(volatile uint64_t *)(buf + ESSLOG_SIZE - 8) = 0;
++	daif = __builtin_arm_rsr64("DAIF");
++	__builtin_arm_wsr("DAIFSet", DAIFSC_IRQF | DAIFSC_FIQF);
++	for (uint32_t tries = 0; !locked && tries < 10000000; tries++) {
++		locked = os_atomic_cmpxchg(&loader_log_lock, 0, 1, acquire);
++	}
++	len = loader_log_len < LOADER_LOG_HEAD || loader_log_linear || !loader_log_wrapped ? loader_log_len : LOADER_LOG_HEAD;
++	if (len > ESSLOG_SIZE - 64) {
++		len = ESSLOG_SIZE - 64;
++	}
++	for (uint32_t i = 0; i < len; i++) {
++		buf[i] = (uint8_t)loader_log[i];
++	}
++	esslog_at = len;
++	esslog_hdr = hdr;
++	*(volatile uint32_t *)(hdr + 0x200) = (uint32_t)(ESSLOG_BUF_PA + esslog_at);
++	esslog_buf = buf;
++	if (locked) {
++		os_atomic_store(&loader_log_lock, 0, release);
++	}
++	__builtin_arm_wsr64("DAIF", daif);
++	printf("esslog: the log goes to exynos-snapshot's log_kernel too (%u bytes so far): /proc/last_kmsg in TWRP\n", len);
++}
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+index e76e7e70ab9c31534064d431d2558a862f410cd5..d98d347b6358d62bdbe2428bfd34e4c1f1be0830 100644
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -734,6 +734,11 @@ ml_get_machine_mem(void)
+ 	return machine_info.memory_size;
+ }
+ 
++extern void loader_return(void);
++extern void loader_exit_wanted(bool reset);    /* osfmk/arm64/loader_return.c */
++extern void hakios_adreno_stop(void);
++extern void hakios_exynos_halt_off(boolean_t reboot);  /* drivers/power/exynos/hakios.exynos_poweroff.c (halt_off=N, the Galaxy S9) */
++
+ __attribute__((noreturn))
+ void
+ halt_all_cpus(boolean_t reboot)
+@@ -745,6 +750,11 @@ halt_all_cpus(boolean_t reboot)
+ 		printf("CPU halted\n");
+ 		PEHaltRestart(kPEHaltCPU);
+ 	}
++	/* No platform driver powers the machine off: hand control (and the log) back to the loader. */
++	hakios_adreno_stop();
++	hakios_exynos_halt_off(reboot); /* a halt with halt_off=N on the S9: panel dark, PS_HOLD low; back here only if not off */
++	loader_exit_wanted(reboot);     /* without a loader: PSCI SYSTEM_RESET or SYSTEM_OFF */
++	loader_return();
+ 	while (1) {
+ 		;
+ 	}
+@@ -932,6 +942,101 @@ ml_read_chip_revision(unsigned int *rev __unused)
+ #endif
+ }
+ 
++/*
++ * The slower cores (an L2 access penalty, or the loader's "small-core"): each is made the SMT
++ * sibling ("secondary") of a faster core of its own, and the scheduler then treats it as XNU
++ * treats the second thread of a hyperthreaded core: a thread is put on it only when no faster
++ * core is idle or running something of lower priority; it looks for work only when none of
++ * them is idle; and what runs on it goes back to the run queue at every rescheduling, to be
++ * put on a faster core that has come free meanwhile. (XNU itself pairs such a core with the
++ * boot processor, which allows one of them; the phone has three: with cpus=8, cores 3, 2 and
++ * 1 go with 4, 5 and 6, so that 7, the boot core and the fastest, where real-time threads go
++ * first, stays alone: the scheduler idles a secondary while its primary runs a real-time
++ * thread.)
++ */
++static uint32_t small_cores_apart = 2;          /* boot-arg small_cores, read in ml_parse_cpu_topology() (before tunables are) */
++static int ml_slow_core_partner[MAX_CPUS];      /* by cpu_id: the faster core it is paired with, -1 if none */
++
++static void
++ml_choose_slow_core_partners(void)
++{
++	bool taken[MAX_CPUS] = { false };
++
++	for (int i = 0; i < MAX_CPUS; i++) {
++		ml_slow_core_partner[i] = -1;
++	}
++	for (int i = 0; i < (int)topology_info.num_cpus; i++) {
++		int partner = -1;
++
++		if (topology_info.cpus[i].l2_access_penalty == 0) {
++			continue;
++		}
++		/* the last fast core not yet taken; the boot core only if there is no other */
++		for (int j = (int)topology_info.num_cpus - 1; j >= 0; j--) {
++			if (topology_info.cpus[j].l2_access_penalty != 0 || taken[j]) {
++				continue;
++			}
++			if (&topology_info.cpus[j] == topology_info.boot_cpu) {
++				if (partner < 0) {
++					partner = j;
++				}
++				continue;
++			}
++			partner = j;
++			break;
++		}
++		if (partner >= 0) {
++			taken[partner] = true;
++			ml_slow_core_partner[i] = partner;
++		}
++	}
++}
++
++extern void loader_log_line(const char *line);
++
++/* At the registration of each processor: pairs it with its partner, if that one is registered too. */
++static void
++ml_pair_slow_processors(int cpu_id)
++{
++	for (int i = 0; i < (int)topology_info.num_cpus; i++) {
++		int partner = ml_slow_core_partner[i];
++		processor_t slow, fast;
++		char line[128];
++
++		if (partner < 0 || (i != cpu_id && partner != cpu_id)) {
++			continue;
++		}
++		slow = processor_array[i];
++		fast = processor_array[partner];
++		if (slow == PROCESSOR_NULL || fast == PROCESSOR_NULL || slow->processor_primary == fast) {
++			continue;
++		}
++		sched_slow_secondaries = small_cores_apart >= 2;
++		processor_set_primary(slow, fast);
++		snprintf(line, sizeof(line), "cpu %d (phys id 0x%x) is a slower core: the scheduler uses it after cpu %d (phys id 0x%x)\n",
++		    i, topology_info.cpus[i].phys_id, partner, topology_info.cpus[partner].phys_id);
++		printf("%s", line);
++		loader_log_line(line);          /* (the kernel's own log of a run keeps only its end) */
++	}
++}
++
++/* How long processor cpu_id has been idle since it started, in mach_absolute_time() units (hakios.cpufreq.c's cpuload). */
++bool ml_cpu_idle_time(int cpu_id, uint64_t *idle);
++
++bool
++ml_cpu_idle_time(int cpu_id, uint64_t *idle)
++{
++	struct recount_usage usage = { 0 };
++
++	if (cpu_id < 0 || cpu_id >= MAX_SCHED_CPUS || processor_array[cpu_id] == PROCESSOR_NULL) {
++		return false;
++	}
++	recount_processor_usage(&processor_array[cpu_id]->pr_recount, &usage, idle);
++	return true;
++}
++
++static void ml_mpidr_numbering(void);
++
+ void
+ ml_parse_cpu_topology(void)
+ {
+@@ -945,6 +1050,7 @@ ml_parse_cpu_topology(void)
+ 	int64_t cluster_max_cpu_phys_id[MAX_CPU_CLUSTER_PHY_ID + 1];
+ 	const boolean_t cpus_boot_arg_present = PE_parse_boot_argn("cpus", &cpu_boot_arg, sizeof(cpu_boot_arg));
+ 	const boolean_t cpumask_boot_arg_present = PE_parse_boot_argn("cpumask", &cpumask_boot_arg, sizeof(cpumask_boot_arg));
++	PE_parse_boot_argn("small_cores", &small_cores_apart, sizeof(small_cores_apart));
+ 
+ 	// The cpus=N and cpumask=N boot args cannot be used simultaneously. Flag this
+ 	// so that we trigger a panic later in the boot process, once serial is enabled.
+@@ -1005,6 +1111,20 @@ ml_parse_cpu_topology(void)
+ 		cpu->phys_id = (uint32_t)ml_readprop(child, "reg", ML_READPROP_MANDATORY);
+ 
+ 		cpu->l2_access_penalty = (uint32_t)ml_readprop(child, "l2-access-penalty", 0);
++		/*
++		 * A core the boot loader calls small (on the phone the Cortex-A55s; the Cortex-A78 the
++		 * kernel boots on is about 2.5 times as fast) is to be used only when the faster ones are all
++		 * busy: what XNU does with a core that has an L2 access penalty (ml_pair_slow_processors()).
++		 * The loader gives it a name of its own because a kernel without that function would make
++		 * every such core the sibling of the boot processor, and stop at the assertion that a
++		 * processor has only one. Boot-arg small_cores=0: all cores alike, as before; 1: paired as
++		 * XNU pairs the two threads of a hyperthreaded core (a secondary kept idle while its primary
++		 * runs a real-time thread, and so on); 2 (the default): as cores of their own (see
++		 * sched_slow_secondaries in osfmk/kern/sched.h).
++		 */
++		if (cpu->l2_access_penalty == 0 && ml_readprop(child, "small-core", 0) != 0 && small_cores_apart) {
++			cpu->l2_access_penalty = 1;
++		}
+ 		cpu->l2_cache_size = (uint32_t)ml_readprop(child, "l2-cache-size", 0);
+ 		cpu->l2_cache_id = (uint32_t)ml_readprop(child, "l2-cache-id", 0);
+ 		cpu->l3_cache_size = (uint32_t)ml_readprop(child, "l3-cache-size", 0);
+@@ -1107,6 +1227,8 @@ ml_parse_cpu_topology(void)
+ 	cluster_offsets[0] = 0;
+ #endif
+ 	assert(topology_info.boot_cpu != NULL);
++	ml_mpidr_numbering();
++	ml_choose_slow_core_partners();
+ 	ml_read_chip_revision(&topology_info.chip_revision);
+ 
+ 	/*
+@@ -1180,6 +1302,38 @@ ml_get_boot_cluster_type(void)
+ 	return topology_info.boot_cluster->cluster_type;
+ }
+ 
++/*
++ * HakiOS (patch 1504): a device tree that numbers the cores as the firmware does, where the cores' own MPIDR has them
++ * one affinity field higher. The Galaxy S9's Cortex-A55s sit in a DynamIQ cluster: MT set, the core in Affinity1
++ * (core 2 reads 0x81000200). Samsung's device tree, its EL3 and Carbon's PSCI all call that core 2 (Affinity0). Set
++ * when the boot processor's MPIDR is in the device tree only that way; read by the reset vector as well (start.s),
++ * with the MMU off, so it is cleaned to memory.
++ */
++uint32_t ml_mpidr_mt_aff1;
++
++uint32_t
++ml_phys_id_from_mpidr(uint64_t mpidr)
++{
++	if (ml_mpidr_mt_aff1 && (mpidr & (1ULL << 24)) != 0) {
++		return (uint32_t)((mpidr >> MPIDR_AFF1_SHIFT) & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK));
++	}
++	return (uint32_t)(mpidr & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK));
++}
++
++static void
++ml_mpidr_numbering(void)
++{
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++
++	if (ml_get_cpu_number((uint32_t)mpidr) >= 0 || (mpidr & (1ULL << 24)) == 0) {
++		return;
++	}
++	if (ml_get_cpu_number((uint32_t)(mpidr >> MPIDR_AFF1_SHIFT)) >= 0) {
++		ml_mpidr_mt_aff1 = 1;
++		CleanPoC_DcacheRegion((vm_offset_t)&ml_mpidr_mt_aff1, sizeof(ml_mpidr_mt_aff1));
++	}
++}
++
+ int
+ ml_get_cpu_number(uint32_t phys_id)
+ {
+@@ -1215,7 +1369,7 @@ ml_get_cpu_number_local(void)
+ 
+ 	/* We identify the CPU based on the constant bits of MPIDR_EL1. */
+ 	MRS(mpidr_el1_value, "MPIDR_EL1");
+-	cpu_id = ml_get_cpu_number((uint32_t)mpidr_el1_value);
++	cpu_id = ml_get_cpu_number(ml_phys_id_from_mpidr(mpidr_el1_value));
+ 
+ 	assert(cpu_id <= (unsigned int)ml_get_max_cpu_number());
+ 
+@@ -1230,7 +1384,7 @@ ml_get_cluster_number_local()
+ 
+ 	/* We identify the cluster based on the constant bits of MPIDR_EL1. */
+ 	MRS(mpidr_el1_value, "MPIDR_EL1");
+-	cluster_id = ml_get_cluster_number((uint32_t)mpidr_el1_value);
++	cluster_id = ml_get_cluster_number(ml_phys_id_from_mpidr(mpidr_el1_value));
+ 
+ 	assert(cluster_id <= (unsigned int)ml_get_max_cluster_number());
+ 
+@@ -1427,17 +1581,15 @@ ml_processor_register(ml_processor_info_t *in_processor_info,
+ 	processor_t processor = PERCPU_GET_RELATIVE(processor, cpu_data, this_cpu_datap);
+ 	if (!is_boot_cpu) {
+ 		processor_init(processor, this_cpu_datap->cpu_number, pset);
+-
+-		if (this_cpu_datap->cpu_l2_access_penalty) {
+-			/*
+-			 * Cores that have a non-zero L2 access penalty compared
+-			 * to the boot processor should be de-prioritized by the
+-			 * scheduler, so that threads use the cores with better L2
+-			 * preferentially.
+-			 */
+-			processor_set_primary(processor, master_processor);
+-		}
+ 	}
++	/*
++	 * Cores that have a non-zero L2 access penalty compared
++	 * to the boot processor should be de-prioritized by the
++	 * scheduler, so that threads use the cores with better L2
++	 * preferentially. (Each with a faster core of its own, not all with the boot
++	 * processor: see ml_choose_slow_core_partners().)
++	 */
++	ml_pair_slow_processors(this_cpu_datap->cpu_number);
+ 
+ 	*processor_out = processor;
+ 	*ipi_handler_out = cpu_signal_handler;
+@@ -2237,8 +2389,16 @@ _enable_virtual_timer(void)
+ 	uint64_t cntvctl = CNTV_CTL_EL0_ENABLE; /* One wants to use 32 bits, but "mrs" prefers it this way */
+ 
+ 	__builtin_arm_wsr64("CNTV_CTL_EL0", cntvctl);
++#if defined(APPLE_ARM64_ARCH_FAMILY)
+ 	/* disable the physical timer as a precaution, as its registers reset to architecturally unknown values */
+ 	__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_IMASKED);
++#else
++	/*
++	 * When running at EL1 under a third-party hypervisor (e.g. Qualcomm's),
++	 * the EL1 physical timer registers are trapped and the access faults.
++	 * The guest only owns the virtual timer.
++	 */
++#endif
+ }
+ 
+ void
+diff --git a/osfmk/arm64/pcb.c b/osfmk/arm64/pcb.c
+index 7b98a3323d3ac29e76022899d3dfa00c156ea00f..2a979474094ec753d1c096c4337d1228241807ca 100644
+--- a/osfmk/arm64/pcb.c
++++ b/osfmk/arm64/pcb.c
+@@ -156,6 +156,10 @@ machine_switch_pmap_and_extended_context(thread_t old, thread_t new)
+ 	machine_thread_switch_cpu_data(old, new);
+ }
+ 
++#if __ARM_PAN_AVAILABLE__
++extern uint32_t hakios_pan_off;         /* osfmk/arm/arm_init.c (patch 1509) */
++#endif
++
+ /*
+  * Routine: machine_switch_context
+  *
+@@ -168,7 +172,7 @@ machine_switch_context(thread_t old,
+ 	thread_t retval;
+ 
+ #if __ARM_PAN_AVAILABLE__
+-	if (__improbable(__builtin_arm_rsr("pan") == 0)) {
++	if (__improbable(!hakios_pan_off && __builtin_arm_rsr("pan") == 0)) {
+ 		panic("context switch with PAN disabled");
+ 	}
+ #endif
+@@ -511,7 +515,7 @@ machine_stack_handoff(thread_t old,
+ 	vm_offset_t  stack;
+ 
+ #if __ARM_PAN_AVAILABLE__
+-	if (__improbable(__builtin_arm_rsr("pan") == 0)) {
++	if (__improbable(!hakios_pan_off && __builtin_arm_rsr("pan") == 0)) {
+ 		panic("stack handoff with PAN disabled");
+ 	}
+ #endif
+diff --git a/osfmk/arm64/platform_tests.c b/osfmk/arm64/platform_tests.c
+index b58b94d1eeb3ee3218938af4c1213df7f09c6264..32f1599a078cf893f00ec115437912d35e858e4d 100644
+--- a/osfmk/arm64/platform_tests.c
++++ b/osfmk/arm64/platform_tests.c
+@@ -1346,6 +1346,12 @@ arm64_pan_test()
+ {
+ 	bool values_match = false;
+ 	vm_offset_t priv_addr = 0;
++	extern uint32_t hakios_pan_off;
++
++	if (hakios_pan_off) {
++		T_LOG("PAN is off (patch 1509: pan=0, or a core without it): not tested.");
++		return KERN_SUCCESS;
++	}
+ 
+ 	T_LOG("Testing PAN.");
+ 
+diff --git a/osfmk/arm64/ppl/sart.h b/osfmk/arm64/ppl/sart.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ced2c5f7617708a2cedea1b593bac029642f0922
+--- /dev/null
++++ b/osfmk/arm64/ppl/sart.h
+@@ -0,0 +1,11 @@
++/*
++ * Stand-in for a header Apple omits from the open-source XNU drop.
++ * SART is an Apple-SoC DMA filter; there is none on this platform.
++ */
++#ifndef _ARM64_PPL_SART_H_
++#define _ARM64_PPL_SART_H_
++static inline void
++sart_bootstrap(void)
++{
++}
++#endif /* _ARM64_PPL_SART_H_ */
+diff --git a/osfmk/arm64/ppl/uat.h b/osfmk/arm64/ppl/uat.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..0ece76de0cc552691091f63b566142b90852b2ac
+--- /dev/null
++++ b/osfmk/arm64/ppl/uat.h
+@@ -0,0 +1,11 @@
++/*
++ * Stand-in for a header Apple omits from the open-source XNU drop.
++ * UAT is the Apple GPU address translator; there is none on this platform.
++ */
++#ifndef _ARM64_PPL_UAT_H_
++#define _ARM64_PPL_UAT_H_
++static inline void
++uat_bootstrap(void)
++{
++}
++#endif /* _ARM64_PPL_UAT_H_ */
+diff --git a/osfmk/arm64/psci_smp.c b/osfmk/arm64/psci_smp.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..e410c0e2cceb41036ad04d303bae66b2cb321953
+--- /dev/null
++++ b/osfmk/arm64/psci_smp.c
+@@ -0,0 +1,969 @@
++/*
++ * More than one processor on generic (non-Apple) ARMv8 boards.
++ *
++ * On Apple hardware the other cores are powered up by closed drivers. Here
++ * the firmware does it, through the standard power interface of ARM systems
++ * (PSCI): CPU_ON starts a core at an address of the caller's choice, CPU_OFF
++ * stops the calling core for good. The address we give is the kernel's own
++ * reset vector (LowResetVectorBase in start.s), so that a new core takes the
++ * path Apple's cores take: it finds its cpu data by its MPIDR, turns the MMU
++ * on and comes out in arm_init_cpu(). The calls are made with SMC or, under
++ * a hypervisor that implements them itself, with HVC; the boot loader says
++ * which (/chosen/psci-method).
++ *
++ * The platform expert (iokit/Kernel/GenericARMPE.cpp) registers the cores of
++ * the device tree and starts them here, one after the other. Signals between
++ * processors are interrupts of the GIC (gic_v3_irq.c).
++ *
++ * A new core begins with its MMU and caches off, and what it reads then it
++ * reads from memory. On real hardware that is not the same as what the
++ * running processors see: under Qualcomm's hypervisor (the phone this was
++ * written for) a line that is dirty in another core's cache is simply not
++ * there yet. QEMU has no cache and shows none of this. So before CPU_ON
++ * everything that core will read before its MMU is on is written back to
++ * memory (psci_smp_start_cpu()), and what it writes in that state is read
++ * only after throwing away the reader's cached copy.
++ *
++ * The other half is the way out. The kernel ends by returning to the boot
++ * loader (loader_return.c), and the loader gets back only what it started:
++ * one core, the boot processor's. psci_smp_stop_others() makes every other
++ * core switch itself off first, wherever it is.
++ */
++#include <stdarg.h>
++#include <mach/mach_types.h>
++#include <kern/clock.h>
++#include <kern/cpu_number.h>
++#include <kern/debug.h>
++#include <kern/kalloc.h>
++#include <kern/misc_protos.h>
++#include <kern/thread_call.h>
++#include <libkern/kernel_mach_header.h>
++#include <machine/atomic.h>
++#include <arm/caches_internal.h>
++#include <arm/cpu_data_internal.h>
++#include <arm/cpu_internal.h>
++#include <arm/machine_routines.h>
++#include <arm64/proc_reg.h>
++#include <arm64/psci_smp.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <pexpert/arm64/board_config.h>
++#include <vm/pmap.h>
++
++#if defined(GENERIC_PSCI_SMP)
++
++#define PSCI_CPU_OFF            0x84000002u
++#define PSCI_CPU_ON             0xC4000003u
++#define PSCI_AFFINITY_INFO      0xC4000004u
++#define PSCI_AFFINITY_OFF       1
++
++#define PSCI_SMP_START_SECONDS  5       /* how long a started core is waited for */
++#define PSCI_SMP_STOP_SECONDS   3       /* ... and the cores that were told to stop */
++
++extern void loader_return(void);
++extern void loader_log_putc(char c);
++extern void loader_log_line(const char *line);
++extern int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
++extern unsigned long gVirtBase, gPhysBase;
++extern unsigned int processor_avail_count;      /* (kern/processor.h) */
++/*
++ * HakiOS (patch 1508): asked before every CPU_ON; anything but 0 and that core is not started. The Galaxy S9's big
++ * cores need six PMU fields set first (drivers/soc/exynos/hakios.exynos_m3.c, m3_prep=); elsewhere, and with that driver
++ * left out, it is a stub that says go ahead (hakios.stubs.c).
++ */
++extern int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);
++
++/* The firmware is called with HVC, not SMC. (start.s reads this too, at its physical address.) */
++uint32_t psci_smp_hvc;
++
++/*
++ * Left by a core that took an exception between its first instruction and the kernel's vectors
++ * (Lsecondary_early_exception in start.s). That core writes it with its cache off; it has a
++ * cache line to itself so that looking at memory does not disturb anything else.
++ */
++struct psci_smp_start_fault {
++	uint64_t valid, mpidr, esr, elr, far, lr, sp, spsr;
++	uint64_t tpidr, ttbr0, ttbr1, tcr, sctlr, vbar, x21, source;   /* patch 1509 */
++} psci_smp_start_fault __attribute__((aligned(64)));
++_Static_assert(sizeof(struct psci_smp_start_fault) == 128, "two cache lines, as start.s writes them");
++
++/*
++ * HakiOS (patch 1509), boot-arg m3_diag=1: a core being started keeps the physical early vectors until it has its
++ * thread (start.s, psci_smp_diag_vectors()), and an exception sleh takes on it before it has joined the scheduler is
++ * recorded too (psci_smp_diag_sleh()). Either way the core parks (WFE, interrupts off) and the boot processor says
++ * everything about it in the log, then goes on without it. start.s reads this with its MMU off.
++ */
++uint32_t psci_smp_diag;
++extern vm_offset_t vm_kernel_slide;
++extern uint64_t cpu_ttep;
++extern void ExceptionVectorsBase;
++extern uint32_t hakios_pan_off;         /* osfmk/arm/arm_init.c, patch 1509 */
++
++static uint32_t psci_smp_cpu_stage[MAX_CPUS];   /* PSCI_SMP_CPU_*, by cpu number */
++uint32_t hakios_m3_park;                        /* start.s: a big core parks after writing its IDs (m3_ids=1) */
++static uint32_t psci_smp_started;               /* a bit per core that CPU_ON was granted for */
++
++static int      psci_smp_stop_owner = -1;       /* the processor that began the return to the boot loader */
++static bool     psci_smp_boot_wanted;           /* it was not the boot processor: that one is to finish */
++static bool     psci_smp_boot_busy;             /* ... and has begun to */
++static bool     psci_smp_stopping;              /* every other core switches itself off */
++
++/*
++ * HakiOS (patch 1513): the boot loader's own core, the kernel's for the middle of the run (core0=1; the Galaxy S9 with
++ * ufs=3). With bootcpu= the loader stays on the core it started on (core 0) and watches the kernel from there; on the S9
++ * it is also the storage's server (ufs=2) until the kernel's own UFS driver has taken the controller (ufs=3's switch).
++ * With core0=1 the loader lists that core last among the kernel's and writes its MPIDR into this box, which it finds by
++ * the magic and the box's own address in the second word (xnuloader/loader.c, struct loader_core_box: the same layout).
++ *   - psci_smp_start_cpu() does not start that core: it waits, as a core that has not come yet (PROCESSOR_START);
++ *   - the loader, once it only watches, says OFFERED, where the core goes back to and the watchdog to feed;
++ *   - after the switch the UFS driver calls hakios_loader_core_take(): every second for up to a minute, until the loader
++ *     has offered it, then the kernel's segments are cleaned as for CPU_ON, the watchdog is fed, the entry written and
++ *     WANTED said; the loader quiets the core's timers and GIC, says GONE and jumps to the entry with its MMU off, as
++ *     the firmware's CPU_ON would have started it, and the core joins as any other (psci: cpu N: stage 3);
++ *   - from then the Exynos watchdog is fed here, every PSCI_SMP_LOADER_FEED_SECONDS (the loader armed it for 60 s);
++ *   - the loader's storage service is gone: a request to it fails at once (hakios_loader_core_taken(), hakios.ufs.c);
++ *   - on the way out (psci_smp_cpu_off() on that core: psci_smp_stop_others(), a panic, processor_exit()) the core is
++ *     not switched off but given back: RETURNING, then a jump to the loader's core0_return_stub, mapped 1:1 here as
++ *     loader_jump() maps its own stub; the loader takes up its watch again and the kernel's return finds it there.
++ */
++#define LOADER_CORE_MAGIC       0x3045524f434c4458ULL   /* "XDLCORE0" */
++#define LOADER_CORE_NONE        0
++#define LOADER_CORE_OFFERED     1
++#define LOADER_CORE_WANTED      2
++#define LOADER_CORE_GONE        3
++#define LOADER_CORE_RETURNING   4
++#define LOADER_CORE_BACK        5
++#define PSCI_SMP_LOADER_FEED_SECONDS    10
++#define PSCI_SMP_LOADER_ASK_SECONDS     120
++
++struct loader_core_box {
++	uint64_t magic;                 /* LOADER_CORE_MAGIC */
++	uint64_t self;                  /* this box's address: the loader's proof that it found the box and not the number */
++	uint64_t mpidr;                 /* the loader's: the core it gives (~0: none) */
++	volatile uint64_t state;        /* LOADER_CORE_* */
++	uint64_t entry;                 /* ours: where the core enters (physical: LowResetVectorBase) */
++	uint64_t back;                  /* the loader's: where the core goes back to it (physical) */
++	uint64_t wdt_pa, wdt_count;     /* the loader's: the Exynos watchdog fed here while the core is ours, 0: none */
++} __attribute__((aligned(64)));
++
++struct loader_core_box loader_core_box = {
++	.magic = LOADER_CORE_MAGIC, .self = (uint64_t)&loader_core_box, .mpidr = ~0ULL,
++};
++
++static int              psci_smp_loader_cpu = -1;       /* the kernel's number for that core, once it was asked for */
++static uint32_t         psci_smp_loader_wanted;         /* hakios_loader_core_take() was called, maybe before that core had a number */
++static uint32_t         psci_smp_loader_asked;          /* ... and has begun to ask */
++static uint32_t         psci_smp_loader_tries;
++static thread_call_t    psci_smp_loader_call;
++static volatile uint32_t *psci_smp_loader_wdt;          /* WTCNT, mapped */
++void hakios_loader_core_take(void);
++
++static int64_t
++psci_call(uint64_t function, uint64_t arg1, uint64_t arg2, uint64_t arg3)
++{
++	register uint64_t x0 __asm__("x0") = function;
++	register uint64_t x1 __asm__("x1") = arg1;
++	register uint64_t x2 __asm__("x2") = arg2;
++	register uint64_t x3 __asm__("x3") = arg3;
++
++	if (psci_smp_hvc) {
++		__asm__ volatile ("hvc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3) : :
++                    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
++	} else {
++		__asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3) : :
++                    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
++	}
++	return (int64_t)x0;
++}
++
++static const char *
++psci_error(int64_t status)
++{
++	static const char *const names[] = {
++		"success", "not supported", "invalid parameters", "denied", "already on", "on pending",
++		"internal failure", "not present", "disabled", "invalid address",
++	};
++
++	return (status <= 0 && status > -(int64_t)(sizeof(names) / sizeof(names[0]))) ? names[-status] : "?";
++}
++
++/*
++ * End the machine through the firmware: SYSTEM_OFF, or SYSTEM_RESET with reset. Under crosvm
++ * (AVF) either one ends the VM, and the VM's owner is told how it stopped. Returns only if the
++ * firmware refuses.
++ */
++#define PSCI_SYSTEM_OFF         0x84000008u
++#define PSCI_SYSTEM_RESET       0x84000009u
++
++int64_t
++psci_system_off(int reset)
++{
++	DTEntry chosen;
++	void const *prop;
++	unsigned int size;
++
++	/* (psci_smp_init() runs only when there are more processors to start: ask the device tree here) */
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "psci-method", &prop, &size) != kSuccess || size < 3) {
++		return -1;                      /* no PSCI firmware described */
++	}
++	psci_smp_hvc = strncmp((const char *)prop, "hvc", 3) == 0;
++	return psci_call(reset ? PSCI_SYSTEM_RESET : PSCI_SYSTEM_OFF, 0, 0, 0);
++}
++
++void
++psci_smp_init(void)
++{
++	DTEntry chosen;
++	void const *prop;
++	unsigned int size;
++
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) == kSuccess &&
++	    SecureDTGetProperty(chosen, "psci-method", &prop, &size) == kSuccess &&
++	    size >= 3 && strncmp((const char *)prop, "hvc", 3) == 0) {
++		psci_smp_hvc = 1;
++	}
++}
++
++/* A processor other than the boot processor says how far it has come. */
++void
++psci_smp_cpu_reached(uint32_t stage)
++{
++	os_atomic_store(&psci_smp_cpu_stage[cpu_number()], stage, release);
++}
++
++/* ... all the way: from GenericARMCPU::initCPU(), where the scheduler takes it. */
++void
++psci_smp_cpu_running(void)
++{
++	psci_smp_cpu_reached(PSCI_SMP_CPU_RUNNING);
++}
++
++static void
++psci_smp_clean_segment(const char *name)
++{
++	unsigned long size = 0;
++	vm_offset_t start = (vm_offset_t)getsegdatafromheader(&_mh_execute_header, name, &size);
++
++	if (start != 0 && size != 0) {
++		CleanPoC_DcacheRegion(start, size);
++	}
++}
++
++/* ---- patch 1509: m3_diag=1, m3_flush=1 ---- */
++
++static void psci_smp_step(const char *fmt, ...) __printflike(1, 2);
++static uint64_t psci_smp_us(uint64_t abs);
++
++static const char *
++psci_smp_ec_name(uint32_t ec)
++{
++	switch (ec) {
++	case 0x00: return "unknown instruction: UNDEFINED here (an ARMv8.1+ instruction on an ARMv8.0 core?)";
++	case 0x01: return "WFI/WFE trapped";
++	case 0x07: return "FP/SIMD access trapped (CPACR)";
++	case 0x0e: return "illegal execution state";
++	case 0x16: return "HVC";
++	case 0x17: return "SMC";
++	case 0x18: return "MSR/MRS/system instruction trapped";
++	case 0x20: return "instruction abort from EL0";
++	case 0x21: return "instruction abort at EL1";
++	case 0x22: return "PC alignment";
++	case 0x24: return "data abort from EL0";
++	case 0x25: return "data abort at EL1";
++	case 0x26: return "SP alignment";
++	case 0x2f: return "SError";
++	case 0x3c: return "BRK";
++	default:   return "?";
++	}
++}
++
++/* An address the faulting core gave: physical (start.s, MMU off or through the V=P map) or a kernel one; as unslid. */
++static uint64_t
++psci_smp_unslid(uint64_t a)
++{
++	if (a >= gPhysBase && a < gPhysBase + 0x40000000ULL) {
++		a += gVirtBase - gPhysBase;
++	}
++	return a >= VM_MIN_KERNEL_AND_KEXT_ADDRESS ? a - vm_kernel_slide : 0;
++}
++
++/* The boot processor, just before CPU_ON: the flags start.s reads with its MMU off, and m3_flush=1. */
++static void
++psci_smp_diag_before(int cpu, uint32_t phys_id)
++{
++	static bool asked;
++	uint32_t v = 0;
++
++	if (!asked) {
++		asked = true;
++		if (PE_parse_boot_argn("m3_diag", &v, sizeof(v)) && v != 0) {
++			psci_smp_diag = 1;
++		}
++		psci_smp_step("psci: m3_diag=%u; PAN %s (boot core ID_AA64MMFR1 0x%llx; pan=0 turns it off on every core)\n",
++		    psci_smp_diag, hakios_pan_off ? "OFF" : "on", __builtin_arm_rsr64("S3_0_C0_C7_1"));
++	}
++	bzero(&psci_smp_start_fault, sizeof(psci_smp_start_fault));
++	FlushPoC_DcacheRegion((vm_offset_t)&psci_smp_start_fault, sizeof(psci_smp_start_fault));
++	FlushPoC_DcacheRegion((vm_offset_t)&psci_smp_diag, sizeof(psci_smp_diag));
++	FlushPoC_DcacheRegion((vm_offset_t)&hakios_pan_off, sizeof(hakios_pan_off));
++	/*
++	 * m3_flush=1 (a test of cluster coherency): everything this core's caches hold, written back to memory and
++	 * dropped, by set/way at every level CLIDR names, just before the new core is started: if the big cluster
++	 * did not see the little one's caches, page tables and data would then be right in memory all the same.
++	 */
++	v = 0;
++	if (PE_parse_boot_argn("m3_flush", &v, sizeof(v)) && v != 0) {
++		uint64_t t = mach_absolute_time();
++
++		FlushPoC_Dcache();
++		__builtin_arm_dsb(DSB_SY);
++		psci_smp_step("psci: m3_flush: cpu %d (MPIDR 0x%x): the boot core's whole data cache cleaned to PoC in %llu us\n",
++		    cpu, phys_id, psci_smp_us(mach_absolute_time() - t));
++	}
++}
++
++/* The boot processor, after a core being started left its record (m3_diag=1). */
++static void
++psci_smp_diag_report(int cpu, cpu_data_t *cdp, uint32_t stage)
++{
++	struct psci_smp_start_fault *f = &psci_smp_start_fault;
++	uint32_t ec = (uint32_t)(f->esr >> 26) & 0x3f, iss = (uint32_t)f->esr & 0x1ffffff;
++	uint64_t elr_u = psci_smp_unslid(f->elr), insn_va = 0;
++	uint32_t insn = 0;
++
++	psci_smp_step("psci: m3_diag: cpu %d (MPIDR 0x%llx) took its first exception %s (stage %u), and is parked\n",
++	    cpu, f->mpidr, f->source == 1 ? "in the early vectors (before it had its thread)" : "in sleh (it had its thread)",
++	    stage);
++	psci_smp_step("psci: m3_diag:   ESR 0x%llx: EC 0x%x %s; ISS 0x%x; FAR 0x%llx\n", f->esr, ec, psci_smp_ec_name(ec), iss,
++	    f->far);
++	if (ec == 0x24 || ec == 0x25 || ec == 0x20 || ec == 0x21) {
++		psci_smp_step("psci: m3_diag:   abort: FSC 0x%x (0x04-0x07 translation L0-L3, 0x09-0x0b access flag, 0x0d-0x0f "
++		    "permission, 0x10 external, 0x21 alignment) WnR %u S1PTW %u\n", iss & 0x3f, (iss >> 6) & 1, (iss >> 7) & 1);
++	}
++	if (ec == 0x18) {
++		psci_smp_step("psci: m3_diag:   trapped: %s S%u_%u_C%u_C%u_%u (x%u)\n", (iss & 1) ? "MRS" : "MSR", (iss >> 20) & 3,
++		    (iss >> 14) & 7, (iss >> 10) & 0xf, (iss >> 1) & 0xf, (iss >> 17) & 7, (iss >> 5) & 0x1f);
++	}
++	/* the instruction itself, read through the kernel's own mapping of its text */
++	if (elr_u != 0) {
++		insn_va = elr_u + vm_kernel_slide;
++		insn = *(volatile uint32_t *)insn_va;
++	}
++	psci_smp_step("psci: m3_diag:   ELR 0x%llx (unslid 0x%llx) insn 0x%08x%s\n", f->elr, elr_u, insn,
++	    (insn & 0xfffff0ffu) == 0xd500409fu ? " = MSR PAN, #imm (ARMv8.1 PAN: pan=0)" :
++	    (insn & 0xffffffe0u) == 0xd5384260u ? " = MRS Xt, PAN (pan=0)" :
++	    (insn & 0xffffffe0u) == 0xd5184260u ? " = MSR PAN, Xt (pan=0)" :
++	    (insn & 0x3fa07c00u) == 0x08a07c00u || (insn & 0x3f200c00u) == 0x38200000u ? " = an LSE atomic (ARMv8.1)" : "");
++	psci_smp_step("psci: m3_diag:   LR 0x%llx (unslid 0x%llx) SP 0x%llx SPSR 0x%llx\n", f->lr, psci_smp_unslid(f->lr), f->sp,
++	    f->spsr);
++	psci_smp_step("psci: m3_diag:   TPIDR_EL1 0x%llx TTBR0 0x%llx TTBR1 0x%llx\n", f->tpidr, f->ttbr0, f->ttbr1);
++	psci_smp_step("psci: m3_diag:   TCR 0x%llx SCTLR 0x%llx VBAR 0x%llx x21 0x%llx\n", f->tcr, f->sctlr, f->vbar, f->x21);
++	psci_smp_step("psci: m3_diag:   the boot core's TCR 0x%llx SCTLR 0x%llx TTBR1 0x%llx; cpu_ttep 0x%llx\n",
++	    __builtin_arm_rsr64("TCR_EL1"), __builtin_arm_rsr64("SCTLR_EL1"), __builtin_arm_rsr64("TTBR1_EL1"), cpu_ttep);
++	psci_smp_step("psci: m3_diag:   its cpu data at %p (PA 0x%llx): number %d phys_id 0x%x flags 0x%x cluster %u\n", cdp,
++	    (uint64_t)ml_static_vtop((vm_offset_t)cdp), cdp->cpu_number, cdp->cpu_phys_id, cdp->cpu_flags, cdp->cpu_cluster_id);
++	psci_smp_step("psci: m3_diag:   active thread %p (TPIDR_EL1 %s) intstack_top 0x%lx excepstack_top 0x%lx\n",
++	    cdp->cpu_active_thread, f->tpidr == (uint64_t)cdp->cpu_active_thread ? "matches" :
++	    f->tpidr == 0 ? "still 0" : "DIFFERS", (unsigned long)cdp->intstack_top, (unsigned long)cdp->excepstack_top);
++}
++
++/*
++ * The core being started, in arm_init_cpu() once its thread is in TPIDR_EL1: the kernel's vectors from now on, the ones
++ * common_start would have given it (m3_diag=1 only; start.s left it the physical early ones).
++ */
++void
++psci_smp_diag_vectors(void)
++{
++	if (psci_smp_diag != 0) {
++		__builtin_arm_wsr64("VBAR_EL1", (uint64_t)&ExceptionVectorsBase);
++		__builtin_arm_isb(ISB_SY);
++	}
++}
++
++/*
++ * Called first thing by sleh_synchronous() when m3_diag=1: if this is a core being started that has not joined the
++ * scheduler yet, record the exception and park here for good. Anything else returns at once.
++ */
++void
++psci_smp_diag_sleh(uint32_t esr, uint64_t far, uint64_t elr, uint64_t spsr, uint64_t lr, uint64_t sp)
++{
++	struct psci_smp_start_fault *f = &psci_smp_start_fault;
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++	int cpu = ml_get_cpu_number(ml_phys_id_from_mpidr(mpidr));
++	uint32_t stage;
++
++	if (cpu < 0 || cpu >= MAX_CPUS || cpu == master_cpu) {
++		return;
++	}
++	stage = os_atomic_load(&psci_smp_cpu_stage[cpu], acquire);
++	if (stage == 0 || stage >= PSCI_SMP_CPU_RUNNING) {
++		return;
++	}
++	__builtin_arm_wsr("DAIFSet", DAIFSC_ALL);
++	f->mpidr = mpidr;
++	f->esr = esr;
++	f->elr = elr;
++	f->far = far;
++	f->lr = lr;
++	f->sp = sp;
++	f->spsr = spsr;
++	f->tpidr = __builtin_arm_rsr64("TPIDR_EL1");
++	f->ttbr0 = __builtin_arm_rsr64("TTBR0_EL1");
++	f->ttbr1 = __builtin_arm_rsr64("TTBR1_EL1");
++	f->tcr = __builtin_arm_rsr64("TCR_EL1");
++	f->sctlr = __builtin_arm_rsr64("SCTLR_EL1");
++	f->vbar = __builtin_arm_rsr64("VBAR_EL1");
++	f->x21 = 0;
++	f->source = 2;
++	__builtin_arm_dmb(DMB_SY);
++	f->valid = 1;
++	FlushPoC_DcacheRegion((vm_offset_t)f, sizeof(*f));
++	__builtin_arm_dsb(DSB_SY);
++	for (;;) {
++		__builtin_arm_wfe();
++	}
++}
++
++/*
++ * Start a registered processor: the platform's half of cpu_start(). Waits until the core has
++ * joined the scheduler, and says what became of it if it has not: on a phone the log is all
++ * there is to go by.
++ */
++/*
++ * HakiOS (patch 1505): each step of a core's start, straight into the loader's log. On the Galaxy S9 the start of the
++ * first big core (an M3, MPIDR 0x100) left the boot processor silent for good (round 4): this says whether the
++ * firmware's CPU_ON came back, and how far the new core got.
++ */
++static void psci_smp_step(const char *fmt, ...) __printflike(1, 2);
++
++static void
++psci_smp_step(const char *fmt, ...)
++{
++	char line[200];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(line, sizeof(line), fmt, ap);
++	va_end(ap);
++	loader_log_line(line);
++}
++
++static uint64_t
++psci_smp_us(uint64_t abs)
++{
++	uint64_t ns;
++
++	absolutetime_to_nanoseconds(abs, &ns);
++	return ns / 1000;
++}
++
++/* What a core started with its MMU off reads first (see psci_smp_start_cpu()), out to memory. */
++static void
++psci_smp_clean_for_start(void)
++{
++	psci_smp_start_fault.valid = 0;
++	psci_smp_clean_segment("__TEXT");
++	psci_smp_clean_segment("__DATA_CONST");
++	psci_smp_clean_segment("__TEXT_EXEC");
++	psci_smp_clean_segment("__DATA");
++	psci_smp_clean_segment("__BOOTDATA");
++	for (int other = 0; other <= ml_get_max_cpu_number(); other++) {
++		if (cpu_datap(other) != NULL) {
++			CleanPoC_DcacheRegion((vm_offset_t)cpu_datap(other), sizeof(cpu_data_t));
++		}
++	}
++	__builtin_arm_dsb(DSB_SY);
++}
++
++kern_return_t
++psci_smp_start_cpu(int cpu)
++{
++	cpu_data_t *cdp = cpu_datap(cpu);
++	uint32_t phys_id = cdp->cpu_phys_id, stage;
++	uint64_t entry = ml_static_vtop((vm_offset_t)&LowResetVectorBase);
++	uint64_t now, deadline, t0 = mach_absolute_time(), t1;
++	uint32_t seen = 0;
++	int64_t status;
++
++	if (loader_core_box.mpidr != ~0ULL && phys_id == (uint32_t)loader_core_box.mpidr) {
++		uint32_t core0 = 1;
++
++		/*
++		 * patch 1513: the loader's core, the kernel's later (hakios_loader_core_take()); until then it has not come. The
++		 * loader fills the box only for core0=1 or 2, which it reads from the payload's whole command line: the kernel's
++		 * copy (607 characters) may have lost it, so without core0= here it is 1.
++		 */
++		os_atomic_store(&psci_smp_loader_cpu, cpu, seq_cst);
++		os_atomic_store(&psci_smp_cpu_stage[cpu], PSCI_SMP_CPU_ASKED, release);
++		(void) PE_parse_boot_argn("core0", &core0, sizeof(core0));
++		psci_smp_step("psci: cpu %d (MPIDR 0x%x) is the boot loader's core (core0=%u): not started now; it comes %s\n", cpu,
++		    phys_id, core0, core0 == 2 ? "once the loader offers it (core0=2: asked for now, for a loader that serves nothing)" :
++		    "once the storage no longer needs the loader (ufs=3's switch)");
++		if (core0 == 2 || os_atomic_load(&psci_smp_loader_wanted, seq_cst)) {
++			/*
++			 * core0=2, a platform whose loader serves the kernel nothing (QEMU): asked for at once, taken when it is offered.
++			 * Or the storage's switch came first: the slower cores, among them this one, start 28 s into the run
++			 * (GenericARMPE.cpp, small_cores_after=), and ufs=3 may have switched by then.
++			 */
++			hakios_loader_core_take();
++		}
++		return KERN_SUCCESS;
++	}
++	if (hakios_psci_cpu_on_prepare(cpu, phys_id) != 0) {
++		psci_smp_step("psci: cpu %d (MPIDR 0x%x) is not started: its preparation says no\n", cpu, phys_id);
++		printf("psci: cpu %d (MPIDR 0x%x) was not started: its preparation says no\n", cpu, phys_id);
++		return KERN_FAILURE;
++	}
++
++	/*
++	 * What that core reads with its MMU off: the code and the page tables of start.s, and what
++	 * the reset vector finds its way by (ResetHandlerData, CpuDataEntries, the boot arguments,
++	 * cpu_ttep, psci_smp_hvc ...), all of it in the kernel's own segments; and the cpu data of
++	 * every processor, which the reset vector goes through looking for its own.
++	 * Clean, not flush: the processors that are running keep using all of it.
++	 */
++	psci_smp_clean_for_start();
++
++	os_atomic_store(&psci_smp_cpu_stage[cpu], PSCI_SMP_CPU_ASKED, release);
++	t1 = mach_absolute_time();
++	psci_smp_step("psci: cpu %d (MPIDR 0x%x): the kernel's segments cleaned in %llu us; CPU_ON with entry 0x%llx (%s)\n",
++	    cpu, phys_id, psci_smp_us(t1 - t0), entry, psci_smp_hvc ? "HVC" : "SMC");
++	{
++		uint32_t ids = 0;
++
++		if (PE_parse_boot_argn("m3_ids", &ids, sizeof(ids)) && ids != 0 && (phys_id & 0xff00) == 0x100) {
++			hakios_m3_park = 1;
++			FlushPoC_DcacheRegion((vm_offset_t)&hakios_m3_park, sizeof(hakios_m3_park));
++		}
++	}
++	psci_smp_diag_before(cpu, phys_id);
++	status = psci_call(PSCI_CPU_ON, phys_id, entry, 0);
++	if (hakios_m3_park) {
++		volatile uint64_t *slot = (volatile uint64_t *)ml_io_map(0xFDA10000 + 32 * ((phys_id >> 8) & 0xf), 0x1000);
++
++		for (int i = 0; i < 5; i++) {
++			delay_for_interval(20, NSEC_PER_MSEC);
++			if (slot != NULL) {
++				psci_smp_step("psci: m3_ids: cpu %d: MMFR0 0x%016llx MIDR 0x%llx MPIDR 0x%llx PFR0 0x%016llx\n", cpu, slot[0],
++				    slot[1], slot[2], slot[3]);
++			}
++		}
++		psci_smp_step("psci: m3_ids: done; the big core is parked (not started)\n");
++		return KERN_FAILURE;
++	}
++	psci_smp_step("psci: cpu %d: the firmware answered %lld (%s) in %llu us\n", cpu, status, psci_error(status),
++	    psci_smp_us(mach_absolute_time() - t1));
++	if (status != 0) {
++		os_atomic_store(&psci_smp_cpu_stage[cpu], 0, release);
++		printf("psci: cpu %d (MPIDR 0x%x) was not started: the firmware answers %lld (%s)\n",
++		    cpu, phys_id, status, psci_error(status));
++		return KERN_FAILURE;
++	}
++	os_atomic_or(&psci_smp_started, 1u << cpu, relaxed);
++
++	clock_interval_to_deadline(PSCI_SMP_START_SECONDS, NSEC_PER_SEC, &deadline);
++	do {
++		stage = os_atomic_load(&psci_smp_cpu_stage[cpu], acquire);
++		if (psci_smp_diag != 0) {
++			FlushPoC_DcacheRegion((vm_offset_t)&psci_smp_start_fault, sizeof(psci_smp_start_fault));
++			if (psci_smp_start_fault.valid != 0) {
++				break;
++			}
++		}
++		if (stage != seen) {
++			seen = stage;
++			psci_smp_step("psci: cpu %d: stage %u after %llu us\n", cpu, stage, psci_smp_us(mach_absolute_time() - t1));
++		}
++		if (stage >= PSCI_SMP_CPU_RUNNING) {
++			return KERN_SUCCESS;
++		}
++		/* memory, not this processor's copy of it */
++		FlushPoC_DcacheRegion((vm_offset_t)&psci_smp_start_fault, sizeof(psci_smp_start_fault));
++		if (psci_smp_start_fault.valid != 0) {
++			break;
++		}
++		delay_for_interval(1, NSEC_PER_MSEC);
++		now = mach_absolute_time();
++	} while (now < deadline);
++
++	if (psci_smp_start_fault.valid != 0 && psci_smp_diag != 0) {
++		psci_smp_diag_report(cpu, cdp, stage);
++		os_atomic_andnot(&psci_smp_started, 1u << cpu, relaxed);        /* parked: not to be stopped, nor waited for */
++		os_atomic_store(&psci_smp_cpu_stage[cpu], 0, release);
++		return KERN_FAILURE;
++	}
++	if (psci_smp_start_fault.valid != 0) {
++		struct psci_smp_start_fault *f = &psci_smp_start_fault;
++		uint64_t to_virtual = gVirtBase - gPhysBase;
++
++		printf("psci: cpu %d (MPIDR 0x%llx) took an exception on its way in and has switched itself off: "
++		    "ESR 0x%llx ELR 0x%llx FAR 0x%llx LR 0x%llx SP 0x%llx (ELR and LR as kernel addresses: 0x%llx 0x%llx)\n",
++		    cpu, f->mpidr, f->esr, f->elr, f->far, f->lr, f->sp, f->elr + to_virtual, f->lr + to_virtual);
++		os_atomic_andnot(&psci_smp_started, 1u << cpu, relaxed);        /* nothing of it is left to stop */
++	} else {
++		printf("psci: cpu %d (MPIDR 0x%x) was started %d seconds ago and has not joined: %s\n",
++		    cpu, phys_id, PSCI_SMP_START_SECONDS,
++		    stage >= PSCI_SMP_CPU_IN_KERNEL ? "it got as far as arm_init_cpu()" : "no sign of it since the firmware took the request");
++	}
++	return KERN_FAILURE;
++}
++
++/* ---- patch 1513: the boot loader's core ---- */
++
++static void psci_smp_note(const char *what, int cpu);
++
++/* the Exynos watchdog, fed while the loader's core is ours (the loader feeds it otherwise) */
++static void
++psci_smp_loader_feed(void)
++{
++	if (psci_smp_loader_wdt != NULL && loader_core_box.state == LOADER_CORE_GONE) {
++		*psci_smp_loader_wdt = (uint32_t)loader_core_box.wdt_count;
++		__builtin_arm_dsb(DSB_SY);
++	}
++}
++
++/* 1: the loader's core is the kernel's (asked for, or taken): the loader serves nothing any more */
++int hakios_loader_core_taken(void);
++int
++hakios_loader_core_taken(void)
++{
++	uint64_t state = loader_core_box.state;
++
++	return state == LOADER_CORE_WANTED || state == LOADER_CORE_GONE;
++}
++
++static void
++psci_smp_loader_poll(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
++{
++	int cpu = psci_smp_loader_cpu;
++	uint64_t deadline, t1, state = loader_core_box.state;
++	uint32_t stage, seen = 0;
++
++	if (state == LOADER_CORE_GONE) {
++		/* ours: the watchdog's feeding goes on for as long as it is */
++		psci_smp_loader_feed();
++		clock_interval_to_deadline(PSCI_SMP_LOADER_FEED_SECONDS, NSEC_PER_SEC, &deadline);
++		thread_call_enter_delayed(psci_smp_loader_call, deadline);
++		return;
++	}
++	if (state != LOADER_CORE_OFFERED) {
++		if (state == LOADER_CORE_NONE && ++psci_smp_loader_tries < PSCI_SMP_LOADER_ASK_SECONDS) {
++			clock_interval_to_deadline(1, NSEC_PER_SEC, &deadline);
++			thread_call_enter_delayed(psci_smp_loader_call, deadline);
++		} else if (state == LOADER_CORE_NONE) {
++			psci_smp_step("psci: cpu %d: the loader has not offered its core in %u s: it stays the loader's\n", cpu,
++			    psci_smp_loader_tries);
++		}
++		return;
++	}
++	/* offered: the watchdog's page, fed once before the loader's last feeding runs out */
++	if (loader_core_box.wdt_pa != 0 && psci_smp_loader_wdt == NULL) {
++		vm_offset_t va = ml_io_map(loader_core_box.wdt_pa & ~(uint64_t)PAGE_MASK, PAGE_SIZE);
++
++		if (va != 0) {
++			psci_smp_loader_wdt = (volatile uint32_t *)(va + (loader_core_box.wdt_pa & PAGE_MASK) + 0x8);
++		}
++	}
++	if (loader_core_box.wdt_pa != 0 && psci_smp_loader_wdt == NULL) {
++		psci_smp_step("psci: cpu %d: the watchdog at 0x%llx could not be mapped: the loader's core stays the loader's\n",
++		    cpu, loader_core_box.wdt_pa);
++		return;
++	}
++	psci_smp_clean_for_start();
++	os_atomic_store(&psci_smp_cpu_stage[cpu], PSCI_SMP_CPU_ASKED, release);
++	os_atomic_or(&psci_smp_started, 1u << cpu, relaxed);
++	loader_core_box.entry = ml_static_vtop((vm_offset_t)&LowResetVectorBase);
++	__builtin_arm_dsb(DSB_SY);
++	loader_core_box.state = LOADER_CORE_WANTED;
++	__builtin_arm_dsb(DSB_SY);
++	__builtin_arm_sev();
++	t1 = mach_absolute_time();
++	psci_smp_step("psci: cpu %d (MPIDR 0x%llx): asked of the loader with entry 0x%llx; the watchdog %s\n", cpu,
++	    loader_core_box.mpidr, loader_core_box.entry, loader_core_box.wdt_pa != 0 ? "fed here from now on" : "none");
++	if (psci_smp_loader_wdt != NULL) {
++		*psci_smp_loader_wdt = (uint32_t)loader_core_box.wdt_count;
++		__builtin_arm_dsb(DSB_SY);
++	}
++	clock_interval_to_deadline(PSCI_SMP_START_SECONDS, NSEC_PER_SEC, &deadline);
++	do {
++		stage = os_atomic_load(&psci_smp_cpu_stage[cpu], acquire);
++		if (stage != seen) {
++			seen = stage;
++			psci_smp_step("psci: cpu %d: stage %u after %llu us (the loader: %llu)\n", cpu, stage,
++			    psci_smp_us(mach_absolute_time() - t1), loader_core_box.state);
++		}
++		if (stage >= PSCI_SMP_CPU_RUNNING) {
++			break;
++		}
++		delay_for_interval(1, NSEC_PER_MSEC);
++	} while (mach_absolute_time() < deadline);
++	if (stage >= PSCI_SMP_CPU_RUNNING) {
++		psci_smp_step("psci: cpu %d: the loader's core has joined: %u processors are running (hw.ncpu %u)\n", cpu,
++		    processor_avail_count, ml_get_max_cpu_number() + 1);
++		printf("psci: cpu %d (MPIDR 0x%llx), the boot loader's core, has joined the kernel\n", cpu, loader_core_box.mpidr);
++	} else {
++		psci_smp_step("psci: cpu %d: the loader's core has not joined in %d s (the loader: %llu; stage %u)\n", cpu,
++		    PSCI_SMP_START_SECONDS, loader_core_box.state, stage);
++		printf("psci: cpu %d (MPIDR 0x%llx), the boot loader's core, has not joined\n", cpu, loader_core_box.mpidr);
++	}
++	/* the feeding, every PSCI_SMP_LOADER_FEED_SECONDS while the core is ours */
++	clock_interval_to_deadline(PSCI_SMP_LOADER_FEED_SECONDS, NSEC_PER_SEC, &deadline);
++	thread_call_enter_delayed(psci_smp_loader_call, deadline);
++}
++
++/*
++ * The storage needs the loader no more (hakios.ufs.c, ufs=3's switch): its core is the kernel's, if the loader offers
++ * it (core0=1). Returns at once; the asking is done by a thread call.
++ */
++void
++hakios_loader_core_take(void)
++{
++	uint32_t want = 1;      /* (the loader's box says it was asked for: see psci_smp_start_cpu()) */
++
++	os_atomic_store(&psci_smp_loader_wanted, 1u, seq_cst);
++	if (os_atomic_load(&psci_smp_loader_cpu, seq_cst) < 0 || os_atomic_xchg(&psci_smp_loader_asked, 1u, relaxed)) {
++		return;         /* (a core not numbered yet: psci_smp_start_cpu() calls this again) */
++	}
++	(void) PE_parse_boot_argn("core0", &want, sizeof(want));
++#if ARM_PGSHIFT != 12
++	want = 0;       /* (the way back maps the loader's stub with 4 KB tables, as loader_jump() does) */
++#endif
++	if (want != 1 && want != 2) {
++		psci_smp_step("psci: cpu %d, the boot loader's core: not asked for (core0=%u)\n", psci_smp_loader_cpu, want);
++		return;
++	}
++	psci_smp_step("psci: cpu %d, the boot loader's core: nothing needs the loader any more (core0=%u); asking for it\n",
++	    psci_smp_loader_cpu, want);
++	psci_smp_loader_call = thread_call_allocate_with_options(psci_smp_loader_poll, NULL, THREAD_CALL_PRIORITY_KERNEL,
++	    THREAD_CALL_OPTIONS_ONCE);
++	if (psci_smp_loader_call != NULL) {
++		thread_call_enter(psci_smp_loader_call);
++	}
++}
++
++#if ARM_PGSHIFT == 12
++static uint64_t psci_smp_loader_l1[512] __attribute__((aligned(4096)));
++static uint64_t psci_smp_loader_l2[512] __attribute__((aligned(4096)));
++#endif
++
++/*
++ * On the loader's core, its last thing in the kernel: back to the loader's core0_return_stub, mapped 1:1 through TTBR0
++ * (as loader_jump() maps the loader's return stub); the stub turns the MMU off and takes up the loader's state. Called
++ * with interrupts off, the timer and this core's GIC interface quiet (psci_smp_cpu_off()). Returns only if it cannot.
++ */
++static void
++psci_smp_loader_give_back(void)
++{
++#if ARM_PGSHIFT == 12
++	uint64_t stub = loader_core_box.back, tcr = __builtin_arm_rsr64("TCR_EL1"), t0sz = tcr & 0x3f;
++
++	if (stub == 0 || t0sz < 25 || t0sz > 33 || (stub >> (64 - t0sz)) != 0) {
++		return;
++	}
++	psci_smp_note(" (the boot loader's core) goes back to the loader\n", cpu_number());
++	psci_smp_loader_l1[stub >> 30] = ml_static_vtop((vm_offset_t)psci_smp_loader_l2) | ARM_TTE_TYPE_TABLE | ARM_TTE_VALID;
++	psci_smp_loader_l2[(stub >> 21) & 0x1ff] = (stub & ~0x1fffffULL) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_AP(AP_RWNA) |
++	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITEBACK);
++	loader_core_box.state = LOADER_CORE_RETURNING;
++	__builtin_arm_dsb(DSB_SY);
++
++	register uint64_t r_ttbr0 __asm__("x0") = ml_static_vtop((vm_offset_t)psci_smp_loader_l1);
++	register uint64_t r_tcr __asm__("x4") = tcr;
++	register uint64_t r_stub __asm__("x5") = stub;
++
++	__asm__ volatile (
++                "msr DAIFSet, #0xf\n"
++                "bic x4, x4, #0x80\n"           /* TCR_EL1.EPD0: allow TTBR0 walks */
++                "msr TCR_EL1, x4\n"
++                "msr TTBR0_EL1, x0\n"
++                "isb\n"
++                "tlbi vmalle1\n"
++                "dsb sy\n"
++                "isb\n"
++                "mov x0, #0\n"
++                "br x5\n"
++                : : "r" (r_ttbr0), "r" (r_tcr), "r" (r_stub));
++	__builtin_unreachable();
++#endif
++}
++
++/*
++ * The calling processor switches itself off. Its interrupted work, if any, is abandoned where
++ * it was: only for the end of the system.
++ */
++void
++psci_smp_cpu_off(void)
++{
++	__builtin_arm_wsr("DAIFSet", DAIFSC_ALL);
++	/* leave nothing behind that would interrupt a core that is no longer there */
++	__builtin_arm_wsr64("CNTV_CTL_EL0", CNTV_CTL_EL0_IMASKED);
++	gic_v3_irq_cpu_shutdown();
++	os_atomic_store(&psci_smp_cpu_stage[cpu_number()], PSCI_SMP_CPU_OFF, release);
++	__builtin_arm_dsb(DSB_SY);
++
++	if (cpu_number() == psci_smp_loader_cpu && loader_core_box.state == LOADER_CORE_GONE) {
++		psci_smp_loader_give_back();    /* patch 1513: not off, back to the loader (returns only if it cannot) */
++	}
++	(void) psci_call(PSCI_CPU_OFF, 0, 0, 0);
++	for (;;) {
++		__builtin_arm_wfi();    /* the firmware refused: stay out of the way all the same */
++	}
++}
++
++static void
++psci_smp_note(const char *what, int cpu)
++{
++	static const char prefix[] = "\npsci: cpu ";
++
++	for (const char *c = prefix; *c; c++) {
++		loader_log_putc(*c);
++	}
++	loader_log_putc((char)('0' + cpu));
++	for (const char *c = what; *c; c++) {
++		loader_log_putc(*c);
++	}
++}
++
++/* Tell every core but this one to switch itself off (psci_smp_stop_here() is where they hear it). */
++static void
++psci_smp_stop_rest(void)
++{
++	int me = cpu_number(), max_cpu = ml_get_max_cpu_number();
++
++	os_atomic_store(&psci_smp_stopping, true, release);
++	__builtin_arm_dsb(DSB_SY);
++	for (int cpu = 0; cpu <= max_cpu; cpu++) {
++		cpu_data_t *cdp = cpu_datap(cpu);
++
++		if (cpu != me && cdp != NULL && (cpu == master_cpu || (psci_smp_started & (1u << cpu)))) {
++			gic_v3_irq_signal_stop(cdp->cpu_phys_id);
++		}
++	}
++	/* for those that wait with their interrupts off (wait_while_mp_kdp_trap(), after a panic) */
++	__builtin_arm_sev();
++}
++
++/*
++ * The system is going back to the boot loader (loader_return()). Returns on the boot processor
++ * only, once the other cores are off -- or have been given up on. On any other processor it
++ * does not return: that one hands the job to the boot processor, which the loader's side of
++ * the return belongs to, and switches itself off like the rest.
++ */
++void
++psci_smp_stop_others(void)
++{
++	int me, max_cpu;
++	uint64_t now, deadline;
++
++	if (psci_smp_started == 0) {
++		return;                 /* there is only this one */
++	}
++	__builtin_arm_wsr("DAIFSet", DAIFSC_ALL);
++	me = cpu_number();
++	max_cpu = ml_get_max_cpu_number();
++	if (!os_atomic_cmpxchg(&psci_smp_stop_owner, -1, me, acq_rel) && psci_smp_stop_owner != me && me != master_cpu) {
++		psci_smp_cpu_off();     /* another processor is at it already */
++	}
++
++	if (me != master_cpu) {
++		/*
++		 * Nobody is stopped before the boot processor has answered: a core that is switched
++		 * off while it holds a lock the boot processor is waiting for would take the return
++		 * with it.
++		 */
++		psci_smp_note(" ends the system: the return to the boot loader is the boot processor's to make\n", me);
++		os_atomic_store(&psci_smp_boot_wanted, true, release);
++		__builtin_arm_dsb(DSB_SY);
++		gic_v3_irq_signal_stop(cpu_datap(master_cpu)->cpu_phys_id);
++		__builtin_arm_sev();
++		now = mach_absolute_time();
++		nanoseconds_to_absolutetime(PSCI_SMP_STOP_SECONDS * NSEC_PER_SEC, &deadline);
++		deadline += now;
++		while (!os_atomic_load(&psci_smp_stopping, acquire) && now < deadline) {
++			now = mach_absolute_time();
++		}
++		if (!os_atomic_load(&psci_smp_stopping, acquire)) {
++			/*
++			 * It does not hear (stuck with its interrupts off). There is no return without
++			 * it; a loader that watches from its own core will find the kernel silent and
++			 * take the log as it is, and so this goes into the log.
++			 */
++			psci_smp_note(" cannot return to the boot loader and the boot processor does not answer: all cores stop here\n", me);
++			psci_smp_stop_rest();
++		}
++		psci_smp_cpu_off();
++	}
++
++	psci_smp_stop_rest();
++	now = mach_absolute_time();
++	nanoseconds_to_absolutetime(PSCI_SMP_STOP_SECONDS * NSEC_PER_SEC, &deadline);
++	deadline += now;
++	for (int cpu = 0; cpu <= max_cpu; cpu++) {
++		cpu_data_t *cdp = cpu_datap(cpu);
++
++		if (cpu == me || cdp == NULL || !(psci_smp_started & (1u << cpu))) {
++			continue;
++		}
++		while (now < deadline) {
++			if (os_atomic_load(&psci_smp_cpu_stage[cpu], acquire) == PSCI_SMP_CPU_OFF) {
++				/* it has said it is going; the firmware knows when it has gone (if it can tell at all) */
++				int64_t state = psci_call(PSCI_AFFINITY_INFO, cdp->cpu_phys_id, 0, 0);
++
++				if (state == PSCI_AFFINITY_OFF || state < 0) {
++					break;
++				}
++			}
++			now = mach_absolute_time();
++		}
++		if (os_atomic_load(&psci_smp_cpu_stage[cpu], acquire) != PSCI_SMP_CPU_OFF &&
++		    psci_call(PSCI_AFFINITY_INFO, cdp->cpu_phys_id, 0, 0) != PSCI_AFFINITY_OFF) {
++			psci_smp_note(" did not stop: it is left running\n", cpu);
++		}
++	}
++}
++
++/*
++ * Where a processor learns that the system is ending: the interrupt psci_smp_stop_rest() sends,
++ * and the loop in which the processors wait while another one panics (they have their
++ * interrupts off there). Comes back if there is nothing of the kind going on.
++ */
++void
++psci_smp_stop_here(void)
++{
++	if (psci_smp_started == 0) {
++		return;
++	}
++	if (cpu_number() != master_cpu) {
++		if (os_atomic_load(&psci_smp_stopping, acquire)) {
++			psci_smp_cpu_off();
++		}
++		return;
++	}
++	if (os_atomic_load(&psci_smp_boot_wanted, acquire) && !psci_smp_boot_busy) {
++		psci_smp_boot_busy = true;
++		loader_return();        /* stops the rest (psci_smp_stop_others()); back only if no loader listens */
++		for (;;) {
++			__builtin_arm_wfi();
++		}
++	}
++}
++
++#else /* !defined(GENERIC_PSCI_SMP) */
++
++/* patch 1513: one processor, no loader's core to take (hakios.ufs.c asks all the same) */
++int hakios_loader_core_taken(void);
++int
++hakios_loader_core_taken(void)
++{
++	return 0;
++}
++
++void hakios_loader_core_take(void);
++void
++hakios_loader_core_take(void)
++{
++}
++
++#endif /* defined(GENERIC_PSCI_SMP) */
+diff --git a/osfmk/arm64/psci_smp.h b/osfmk/arm64/psci_smp.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce7e81ea6635713f1e28be820723a5f1ba957055
+--- /dev/null
++++ b/osfmk/arm64/psci_smp.h
+@@ -0,0 +1,43 @@
++/*
++ * More than one processor on generic (non-Apple) ARMv8 boards: see psci_smp.c.
++ */
++#ifndef _ARM64_PSCI_SMP_H_
++#define _ARM64_PSCI_SMP_H_
++
++#include <mach/mach_types.h>
++#include <sys/cdefs.h>
++
++__BEGIN_DECLS
++
++/* How far a processor other than the boot processor has come (psci_smp_cpu_reached()). */
++#define PSCI_SMP_CPU_ASKED      1       /* the firmware has agreed to start it */
++#define PSCI_SMP_CPU_IN_KERNEL  2       /* it runs C code on the kernel's page tables (arm_init_cpu()) */
++#define PSCI_SMP_CPU_RUNNING    3       /* it has joined the scheduler (psci_smp_cpu_running()) */
++#define PSCI_SMP_CPU_OFF        4       /* it has switched itself off, or is about to */
++
++extern void             psci_smp_init(void);
++extern kern_return_t    psci_smp_start_cpu(int cpu);
++extern void             psci_smp_cpu_reached(uint32_t stage);
++extern void             psci_smp_cpu_running(void);
++extern void             psci_smp_cpu_off(void) __dead2;
++
++/* PSCI SYSTEM_OFF (reset = false) or SYSTEM_RESET; returns only if the firmware refuses */
++extern int64_t          psci_system_off(int reset);
++
++/* patch 1509: m3_diag=1, the first exception of a core being started recorded and that core parked */
++extern uint32_t         psci_smp_diag;
++extern void             psci_smp_diag_vectors(void);
++extern void             psci_smp_diag_sleh(uint32_t esr, uint64_t far, uint64_t elr, uint64_t spsr, uint64_t lr, uint64_t sp);
++
++extern void             psci_smp_stop_others(void);
++extern void             psci_smp_stop_here(void);
++
++/* osfmk/arm64/gic_v3_irq.c */
++extern void             gic_v3_irq_signal(uint32_t phys_id);
++extern void             gic_v3_irq_signal_stop(uint32_t phys_id);
++extern void             gic_v3_irq_quiesce(void);
++extern void             gic_v3_irq_cpu_shutdown(void);
++
++__END_DECLS
++
++#endif /* _ARM64_PSCI_SMP_H_ */
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 2cc442e05791fb493c3ebc7dd2f48524015a7bea..7fdb374d0b5834e57a832a21add5f070d1a5c449 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -74,6 +74,9 @@
+ 
+ 
+ #include <arm64/platform_error_handler.h>
++#if defined(GENERIC_PSCI_SMP)
++#include <arm64/psci_smp.h>
++#endif
+ 
+ #if KASAN_TBI
+ #include <san/kasan.h>
+@@ -141,6 +144,7 @@ static void handle_mach_absolute_time_trap(arm_saved_state_t *);
+ static void handle_mach_continuous_time_trap(arm_saved_state_t *);
+ 
+ static void handle_msr_trap(arm_saved_state_t *state, uint32_t esr);
++static bool hakios_user_cache_op(arm_saved_state_t *state, uint32_t esr);
+ #if __has_feature(ptrauth_calls)
+ static void handle_pac_fail(arm_saved_state_t *state, uint32_t esr) __dead2;
+ #endif
+@@ -611,6 +615,14 @@ sleh_synchronous(arm_context_t *context, uint32_t esr, vm_offset_t far)
+ 	uintptr_t saved_expected_fault_addr = 0;
+ #endif /* CONFIG_XNUPOST */
+ 
++#if defined(GENERIC_PSCI_SMP)
++	/* HakiOS (patch 1509): m3_diag=1, a core being started records its first exception here and parks */
++	if (__improbable(psci_smp_diag != 0)) {
++		psci_smp_diag_sleh(esr, far, get_saved_state_pc(state), get_saved_state_cpsr(state), get_saved_state_lr(state),
++		    get_saved_state_sp(state));
++	}
++#endif
++
+ 	ASSERT_CONTEXT_SANITY(context);
+ 
+ 	task_vtimer_check(thread);
+@@ -705,6 +717,9 @@ sleh_synchronous(arm_context_t *context, uint32_t esr, vm_offset_t far)
+ 		break;
+ 
+ 	case ESR_EC_MSR_TRAP:
++		if (hakios_user_cache_op(state, esr)) {    /* patch 1511 */
++			break;
++		}
+ 		handle_msr_trap(state, esr);
+ 		break;
+ /**
+@@ -1695,6 +1710,75 @@ handle_mach_continuous_time_trap(arm_saved_state_t *state)
+ }
+ 
+ 
++/*
++ * HakiOS (Galaxy S9, patch 1511): EL0's cache maintenance by VA, trapped because osfmk/arm/arm_init.c cleared
++ * SCTLR_EL1.UCI (hakios_ucache_apply(): the Exynos M3s need new code cleaned from their L1 data cache before they can
++ * fetch it, and iOS's sys_icache_invalidate() never cleans). Done here for the process, on the kernel's alias of the
++ * page (the caches are physically tagged for data and VIPT without aliases for instructions at 16 KB pages, so the
++ * alias reaches the same lines, and a page unmapped meanwhile cannot fault the kernel): DC CVAC (DC CIVAC for a DC
++ * CIVAC) of the line, then IC IVAU of it for an IC IVAU. A line that is not mapped, or not RAM, is passed over, as a
++ * no-op. Returns false for anything else, which handle_msr_trap() takes as before.
++ */
++extern uint32_t hakios_ucache_trap;     /* osfmk/arm/arm_init.c, patch 1511 */
++extern char *proc_name_address(struct proc *p);
++extern int task_pid(task_t task);
++uint64_t hakios_ucache_ops;              /* machdep.hakios_ucache_ops (bsd/dev/arm64/sysctl.c) */
++
++/* the ISS of a trapped SYS instruction: Op0 [21:20], Op2 [19:17], Op1 [16:14], CRn [13:10], Rt [9:5], CRm [4:1], dir [0] */
++#define HAKIOS_SYS_ISS_MASK     0x003ffc1fu                     /* everything but Rt */
++#define HAKIOS_SYS_CACHE(crm)   ((1u << 20) | (1u << 17) | (3u << 14) | (7u << 10) | ((uint32_t)(crm) << 1))
++
++static bool
++hakios_user_cache_op(arm_saved_state_t *state, uint32_t esr)
++{
++	uint32_t iss = ESR_ISS(esr), op = iss & HAKIOS_SYS_ISS_MASK, rt = (iss >> 5) & 0x1f;
++	bool icache = false;
++
++	if (!hakios_ucache_trap || !is_saved_state64(state) || PSR64_IS_KERNEL(get_saved_state_cpsr(state))) {
++		return false;
++	}
++	switch (op) {
++	case HAKIOS_SYS_CACHE(5):       /* IC IVAU */
++		icache = true;
++		break;
++	case HAKIOS_SYS_CACHE(10):      /* DC CVAC */
++	case HAKIOS_SYS_CACHE(11):      /* DC CVAU */
++	case HAKIOS_SYS_CACHE(12):      /* DC CVAP */
++	case HAKIOS_SYS_CACHE(13):      /* DC CVADP */
++	case HAKIOS_SYS_CACHE(14):      /* DC CIVAC */
++		break;
++	default:
++		return false;
++	}
++
++	uint64_t va = (rt == 31 ? 0 : get_saved_state_reg(state, rt)) & ~63ULL;
++	pmap_paddr_t pa = pmap_find_pa_nofault(vm_map_pmap(current_map()), va);
++
++	if (pa != 0 && pmap_valid_address(pa)) {
++		vm_offset_t kva = phystokv(pa) & ~63UL;
++
++		if (op == HAKIOS_SYS_CACHE(14)) {
++			__asm__ volatile ("dc civac, %0" : : "r"(kva) : "memory");
++		} else {
++			__asm__ volatile ("dc cvac, %0" : : "r"(kva) : "memory");
++		}
++		__builtin_arm_dsb(DSB_ISH);
++		if (icache) {
++			__asm__ volatile ("ic ivau, %0" : : "r"(kva) : "memory");
++			__builtin_arm_dsb(DSB_ISH);
++		}
++	}
++	if (hakios_ucache_ops++ == 0) {     /* machdep.hakios_ucache_ops; the first one said */
++		struct proc *proc = get_bsdtask_info(current_task());
++
++		printf("ucache_trap: the first cache maintenance by VA from user space (%s, %s[%d]) done for it, the data cleaned "
++		    "to the point of coherency first, for the Exynos M3s (patch 1511)\n", icache ? "IC IVAU" : "DC",
++		    proc ? proc_name_address(proc) : "?", task_pid(current_task()));
++	}
++	add_saved_state_pc(state, 4);
++	return true;
++}
++
+ __attribute__((noreturn))
+ static void
+ handle_msr_trap(arm_saved_state_t *state, uint32_t esr)
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index e5336e5a1cce791baefa1e96c8dc5ae71c79a605..f27b525a4ee283783d41acf7c520e7848bb754e0 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -126,6 +126,27 @@ LEXT(LowResetVectorBase)
+ 	.globl EXT(reset_vector)
+ LEXT(reset_vector)
+ 	// Preserve x0 for start_first_cpu, if called
++#if defined(GENERIC_PSCI_SMP)
++	/*
++	 * A core that the firmware has just started for us (PSCI CPU_ON, see
++	 * psci_smp.c) has no vectors at all, and under a third-party hypervisor
++	 * even the OS lock write can trap: vectors first. Not the boot
++	 * processor's early ones, which hand the exception to the boot loader:
++	 * that is not for this core to do.
++	 */
++	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
++	adrp	x0, EXT(LowSecondaryExceptionVectorBase)@page
++	add		x0, x0, EXT(LowSecondaryExceptionVectorBase)@pageoff
++	msr		VBAR_EL1, x0
++	isb
++	// The MMU and the caches are off, says PSCI; of the rest of SCTLR it
++	// says nothing. Only the bits that must be set, until common_start.
++	MOV64	x0, 0x30D00800
++	msr		SCTLR_EL1, x0
++	isb
++	// Unlock the core for debugging
++	msr		OSLAR_EL1, xzr
++#else /* defined(GENERIC_PSCI_SMP) */
+ 	// Unlock the core for debugging
+ 	msr		OSLAR_EL1, xzr
+ 	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
+@@ -136,6 +157,7 @@ LEXT(reset_vector)
+ 	add     x0, x0, EXT(LowExceptionVectorBase)@pageoff
+ 	msr     VBAR_EL1, x0
+ #endif
++#endif /* defined(GENERIC_PSCI_SMP) */
+ 
+ 
+ 
+@@ -143,8 +165,45 @@ LEXT(reset_vector)
+ 	adrp	x19, EXT(ResetHandlerData)@page			// Get address of the reset handler data
+ 	add		x19, x19, EXT(ResetHandlerData)@pageoff
+ 	mrs		x15, MPIDR_EL1						// Load MPIDR to get CPU number
+-#if HAS_CLUSTER
++	// HakiOS diagnostic (S9 M3 bring-up): this core's ID registers, MMU off, to the start of exynos-snapshot's
++	// log_kernel (0xFDA10000) at 32 * Affinity1: MMFR0, MIDR, MPIDR, PFR0 -- read back from TWRP's /proc/last_kmsg
++	movz	x2, #0xFDA1, lsl #16
++	ubfx	x3, x15, #8, #4
++	add		x2, x2, x3, lsl #5
++	mrs		x3, ID_AA64MMFR0_EL1
++	str		x3, [x2]
++	mrs		x3, MIDR_EL1
++	str		x3, [x2, #8]
++	str		x15, [x2, #16]
++	mrs		x3, ID_AA64PFR0_EL1
++	str		x3, [x2, #24]
++	dsb		sy
++	// a big core (MT clear, Affinity1 1) parks here when asked (boot-arg m3_ids=1): its IDs read by the boot core
++	adrp	x2, EXT(hakios_m3_park)@page
++	add		x2, x2, EXT(hakios_m3_park)@pageoff
++	ldr		w2, [x2]
++	cbz		w2, Lm3_nopark
++	tbnz	x15, #24, Lm3_nopark
++	ubfx	x3, x15, #8, #4
++	cmp		x3, #1
++	b.ne	Lm3_nopark
++Lm3_park:
++	wfe
++	b		Lm3_park
++Lm3_nopark:
++#if HAS_CLUSTER || defined(GENERIC_PSCI_SMP)
++	// (generic boards: some number their cores in Affinity1 and leave Affinity0 at zero;
++	// a cpu data's phys id is both fields, as the device tree's "reg" has them)
+ 	and		x0, x15, #0xFFFF					// CPU number in Affinity0, cluster ID in Affinity1
++	// HakiOS (patch 1504): a device tree numbering the cores one affinity field lower than an MT MPIDR
++	// does (the Galaxy S9's A55s: 0x81000200 is its core 2), as ml_phys_id_from_mpidr()
++	adrp	x2, EXT(ml_mpidr_mt_aff1)@page
++	add		x2, x2, EXT(ml_mpidr_mt_aff1)@pageoff
++	ldr		w2, [x2]
++	cbz		w2, Lmpidr_numbered
++	tbz		x15, #24, Lmpidr_numbered
++	ubfx	x0, x15, #8, #16
++Lmpidr_numbered:
+ #else
+ 	and		x0, x15, #0xFF						// CPU number is in MPIDR Affinity Level 0
+ #endif
+@@ -233,40 +292,207 @@ LEXT(_start)
+ 	.global	EXT(LowExceptionVectorBase)
+ LEXT(LowExceptionVectorBase)
+ 	/* EL1 SP 0 */
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	/* EL1 SP1 */
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	/* EL0 64 */
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	/* EL0 32 */
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
+ 	.align	7
+-	b		.
++	b		Lloader_early_exception
++
++/*
++ * Early-boot exceptions used to spin here. When the XNU loader has patched
++ * the address of its return stub into the slot below, report the exception
++ * to it instead (see osfmk/arm64/loader_return.c):
++ *   x0/x1 = PA/length of the captured kernel log, x2 = 1 (early exception),
++ *   x3 = ESR, x4 = ELR, x5 = FAR, x6 = LR, x7 = SP
++ * This vector is only installed while VBAR holds a physical address, so
++ * PC-relative addressing yields physical addresses, MMU on (V=P) or off.
++ */
++	.align	3
++Lloader_early_exception:
++	mov		x6, lr
++	mov		x7, sp
++	mrs		x3, ESR_EL1
++	mrs		x4, ELR_EL1
++	mrs		x5, FAR_EL1
++	adrp	x0, EXT(loader_log)@page
++	add		x0, x0, EXT(loader_log)@pageoff
++	adrp	x1, EXT(loader_log_len)@page
++	add		x1, x1, EXT(loader_log_len)@pageoff
++	ldr		w1, [x1]
++	// Write the log back to RAM: cached copies are lost once the MMU is off
++	mov		x9, x0
++	add		x10, x0, x1
++1:
++	dc		cvac, x9
++	add		x9, x9, #64
++	cmp		x9, x10
++	b.lo	1b
++	dsb		sy
++	mov		x2, #1
++	mrs		x9, SCTLR_EL1
++	bic		x9, x9, #1
++	msr		SCTLR_EL1, x9
++	isb
++	adr		x9, Lloader_stub_slot
++	ldr		x9, [x9, #8]
++	cbz		x9, .
++	br		x9
++	.align	3
++	.globl EXT(loader_stub_slot)
++LEXT(loader_stub_slot)
++Lloader_stub_slot:
++	.ascii	"XNULDRST"				// magic the loader searches for
++	.quad	0						// PA of the loader's return stub
++	.quad	0						// checkpoint number to stop at (0 = none)
++	.quad	0						// (physical - virtual) offset of the static kernel image
++
++#if defined(GENERIC_PSCI_SMP)
++/*
++ * The same for a core other than the boot processor, from its first
++ * instruction (reset_vector) until common_start gives it the kernel's
++ * vectors. The boot loader is not this core's to return to; it leaves a note
++ * of what happened where the processor that is waiting for it looks
++ * (psci_smp_start_cpu()) and switches itself off again.
++ *
++ * VBAR holds a physical address here too, so the note is addressed
++ * physically; the store goes straight to memory when the MMU is still off,
++ * and is sent there when it is not.
++ */
++	.align	11
++	.globl EXT(LowSecondaryExceptionVectorBase)
++LEXT(LowSecondaryExceptionVectorBase)
++	/* EL1 SP 0 */
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	/* EL1 SP1 */
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	/* EL0 64 */
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	/* EL0 32 */
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++	.align	7
++	b		Lsecondary_early_exception
++
++	.align	3
++Lsecondary_early_exception:
++	// struct psci_smp_start_fault (psci_smp.c, patch 1509: two cache lines): { valid, MPIDR, ESR, ELR,
++	// FAR, LR, SP, SPSR, TPIDR_EL1, TTBR0, TTBR1, TCR, SCTLR, VBAR, x21 (start.s: the cpu data's PA), source }
++	adrp	x9, EXT(psci_smp_start_fault)@page
++	add		x9, x9, EXT(psci_smp_start_fault)@pageoff
++	mrs		x10, MPIDR_EL1
++	str		x10, [x9, #8]
++	mrs		x10, ESR_EL1
++	str		x10, [x9, #16]
++	mrs		x10, ELR_EL1
++	str		x10, [x9, #24]
++	mrs		x10, FAR_EL1
++	str		x10, [x9, #32]
++	str		lr, [x9, #40]
++	mov		x10, sp
++	str		x10, [x9, #48]
++	mrs		x10, SPSR_EL1
++	str		x10, [x9, #56]
++	mrs		x10, TPIDR_EL1
++	str		x10, [x9, #64]
++	mrs		x10, TTBR0_EL1
++	str		x10, [x9, #72]
++	mrs		x10, TTBR1_EL1
++	str		x10, [x9, #80]
++	mrs		x10, TCR_EL1
++	str		x10, [x9, #88]
++	mrs		x10, SCTLR_EL1
++	str		x10, [x9, #96]
++	mrs		x10, VBAR_EL1
++	str		x10, [x9, #104]
++	str		x21, [x9, #112]
++	mov		x10, #1								// source 1: the early vectors
++	str		x10, [x9, #120]
++	add		x10, x9, #64
++	dc		civac, x10							// the second line first: valid is in the first
++	dsb		sy
++	mov		x10, #1
++	str		x10, [x9]
++	dc		civac, x9
++	dsb		sy
++	// m3_diag=1: park here (an M3 does not come back from CPU_OFF, and Carbon leaves VBAR_EL2 unset on a
++	// secondary core, so neither HVC nor CPU_OFF is safe on the core being diagnosed)
++	adrp	x10, EXT(psci_smp_diag)@page
++	add		x10, x10, EXT(psci_smp_diag)@pageoff
++	ldr		w10, [x10]
++	cbz		w10, Lsecondary_early_off
++	msr		DAIFSet, #(DAIFSC_ALL)
++Lsecondary_early_park:
++	wfe
++	b		Lsecondary_early_park
++Lsecondary_early_off:
++	// PSCI CPU_OFF, by the firmware's calling convention (psci_smp_hvc)
++	adrp	x9, EXT(psci_smp_hvc)@page
++	add		x9, x9, EXT(psci_smp_hvc)@pageoff
++	ldr		w9, [x9]
++	mov		x0, #0x0002
++	movk	x0, #0x8400, lsl #16
++	cbnz	w9, 1f
++	smc		#0
++	b		2f
++1:
++	hvc		#0
++2:
++	wfi											// it does not return; if it does, stay here
++	b		2b
++#endif /* defined(GENERIC_PSCI_SMP) */
+ 	.align 12, 0
+ 
+ #if defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR)
+@@ -452,22 +678,51 @@ start_cpu:
+  * Cold boot init routine.  Called from __start
+  *   x0 - Boot args
+  */
++/*
++ * LOADER_CHECKPOINT n
++ *   Bring-up aid: if the loader asked to stop at checkpoint n, return to it
++ *   right here (reason 2, code n). Usable while executing at physical
++ *   addresses, MMU off or on (V=P). Clobbers x0-x3, x9-x11.
++ */
++.macro LOADER_CHECKPOINT
++	adrp	x9, EXT(loader_stub_slot)@page
++	add		x9, x9, EXT(loader_stub_slot)@pageoff
++	ldr		x10, [x9, #16]
++	cmp		x10, #$0
++	b.ne	1f
++	mov		x0, #0
++	mov		x1, #0
++	mov		x2, #2
++	mov		x3, #$0
++	mrs		x11, SCTLR_EL1
++	bic		x11, x11, #1
++	msr		SCTLR_EL1, x11
++	isb
++	ldr		x9, [x9, #8]
++	br		x9
++1:
++.endmacro
++
+ 	.align 2
+ 	.globl EXT(start_first_cpu)
+ LEXT(start_first_cpu)
+ 
+-	// Unlock the core for debugging
+-	msr		OSLAR_EL1, xzr
+ 	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
+ 
+ 	mov		x20, x0
+ 	mov		x21, #0
++	LOADER_CHECKPOINT 1
+ 
+-	// Set low reset vector before attempting any loads
++	// Set low reset vector before attempting anything that might trap
++	// (under a third-party hypervisor even the OS lock write below can).
+ 	adrp	x0, EXT(LowExceptionVectorBase)@page
+ 	add		x0, x0, EXT(LowExceptionVectorBase)@pageoff
+ 	MSR_VBAR_EL1_X0
+ 
++	// Unlock the core for debugging
++	msr		OSLAR_EL1, xzr
++	LOADER_CHECKPOINT 2
++
+ 
+ 	// Get the kernel memory parameters from the boot args
+ 	ldr		x22, [x20, BA_VIRT_BASE]			// Get the kernel virt base
+@@ -612,6 +867,7 @@ Lkernelcache_base_found:
+ 	/* Ensure TTEs are visible */
+ 	dsb		ish
+ 
++	LOADER_CHECKPOINT 3
+ 
+ 	b		common_start
+ 
+@@ -686,7 +942,10 @@ common_start:
+ 	dsb		ish
+ 
+ 
+-#if defined(BCM2837)
++#if defined(BCM2837) && defined(BCM2837_CORE_TIMER_ROUTING)
++	// Raspberry Pi 3 only: pokes the SoC's local-interrupt block at a fixed
++	// physical address (0x4000004X). Fatal on any other board, so it is
++	// disabled unless explicitly requested.
+ 	// Setup timer interrupt routing; must be done before MMU is enabled
+ 	mrs		x15, MPIDR_EL1						// Load MPIDR to get CPU number
+ 	and		x15, x15, #0xFF						// CPU number is in MPIDR Affinity Level 0
+@@ -734,16 +993,38 @@ common_start:
+ 	add		x0, x0, x22									// Convert exception vector address to KVA
+ 	sub		x0, x0, x23
+ 1:
++#if defined(GENERIC_PSCI_SMP)
++	// HakiOS (patch 1509): with m3_diag=1 a core being started keeps the physical early vectors
++	// (LowSecondaryExceptionVectorBase, reached through the V=P map once the MMU is on) until
++	// arm_init_cpu() has its thread in TPIDR_EL1 (psci_smp_diag_vectors()). Its first exception is then
++	// recorded in full and the core parks, instead of entering sleh with no thread and recursing.
++	cbz		x21, Lvbar_kernel
++	adrp	x9, EXT(psci_smp_diag)@page
++	add		x9, x9, EXT(psci_smp_diag)@pageoff
++	ldr		w9, [x9]
++	cbnz	w9, Lvbar_done
++Lvbar_kernel:
++#endif
+ 	MSR_VBAR_EL1_X0
++#if defined(GENERIC_PSCI_SMP)
++Lvbar_done:
++#endif
+ 
+ #if HAS_APPLE_PAC
+ 	PAC_INIT_KEY_STATE tmp=x0, tmp2=x1
+ #endif /* HAS_APPLE_PAC */
+ 
++	cbnz	x21, 1f								// boot CPU cold start only
++	LOADER_CHECKPOINT 4
++1:
+ 	// Enable caches, MMU, ROP and JOP
+ 	MOV64   x0, SCTLR_EL1_DEFAULT
+ 	MSR_SCTLR_EL1_X0
+ 	isb		sy
++	cbnz	x21, 1f
++	LOADER_CHECKPOINT 5
++	MOV64   x0, SCTLR_EL1_DEFAULT				// restore what the checkpoint clobbered
++1:
+ 
+ #if !VMAPPLE
+ 	MOV64   x1, SCTLR_EL1_DEFAULT
+diff --git a/osfmk/arm64/tunables/tunables.s b/osfmk/arm64/tunables/tunables.s
+new file mode 100644
+index 0000000000000000000000000000000000000000..46f4b1d91d4ac0e1dca6f77df3a6dc18c877b6f8
+--- /dev/null
++++ b/osfmk/arm64/tunables/tunables.s
+@@ -0,0 +1,7 @@
++/*
++ * Stand-in for a file Apple omits from the open-source XNU drop.
++ * Apple's version applies per-SoC chicken-bit tunables keyed on MIDR;
++ * non-Apple cores need none.
++ */
++.macro APPLY_TUNABLES
++.endmacro
+diff --git a/osfmk/arm64/user_exception_trace.c b/osfmk/arm64/user_exception_trace.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..60afefdb608be7fa8e837907eec7ef99cece5792
+--- /dev/null
++++ b/osfmk/arm64/user_exception_trace.c
+@@ -0,0 +1,731 @@
++/*
++ * Bring-up aid: with boot-arg systrace set, describe every fatal-looking
++ * exception a user thread takes, before it is delivered. There is no crash
++ * reporter in this system, so this is the only place a crash is recorded.
++ *
++ * Besides the registers it prints the shared cache slide (most crashes are
++ * inside system libraries: subtract the slide and look the address up in
++ * the cache with "ipsw dyld a2s"), any text a register points at (the
++ * library crash helpers leave their message in one) and the return
++ * addresses found by walking the frame pointers.
++ */
++
++#include <arm/thread.h>
++#include <kern/debug.h>
++#include <kern/misc_protos.h>
++#include <kern/startup.h>
++#include <kern/task.h>
++#include <kern/thread.h>
++#include <mach/exception_types.h>
++#include <mach/machine/thread_status.h>
++#include <string.h>
++#include <stdarg.h>
++#include <vm/vm_map.h>
++#include <vm/vm_shared_region.h>
++
++extern char *proc_name_address(struct proc *p);
++
++void user_exception_trace(exception_type_t exception, mach_exception_data_t code, mach_msg_type_number_t count, thread_t thread);
++
++/* usertrap:, userabort:, top: and ustacks: lines go to the console and to the loader's log (the USB log, esslog) */
++extern void loader_log_line(const char *line);
++extern int vsnprintf(char *, size_t, const char *, va_list) __printflike(3, 0);
++static void
++ut_say(const char *fmt, ...) __printflike(1, 2);
++static void
++ut_say(const char *fmt, ...)
++{
++	char line[512];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(line, sizeof(line), fmt, ap);
++	va_end(ap);
++	printf("%s", line);
++	loader_log_line(line);
++}
++
++static TUNABLE(uint32_t, user_exception_trace_enabled, "systrace", 0);
++
++static bool
++plausible_user_address(uint64_t address)
++{
++	return address >= 0x100000000ULL && address < MACH_VM_MAX_ADDRESS;
++}
++
++void
++user_exception_trace(exception_type_t exception, mach_exception_data_t code, mach_msg_type_number_t count, thread_t thread)
++{
++	static const unsigned message_registers[] = { 0, 1, 2, 3, 8, 16 };
++	const arm_saved_state_t *state;
++	vm_shared_region_t region;
++	uint64_t frame[2], fp;
++	uint32_t slide = 0;
++	task_t task;
++	struct proc *proc;
++
++	if (!user_exception_trace_enabled || thread != current_thread()) {
++		return;
++	}
++	if (exception != EXC_BAD_ACCESS && exception != EXC_BAD_INSTRUCTION && exception != EXC_ARITHMETIC &&
++	    exception != EXC_BREAKPOINT) {
++		return;
++	}
++	task = get_threadtask(thread);
++	state = get_user_regs(thread);
++	if (task == kernel_task || state == NULL || !is_saved_state64(state)) {
++		return;
++	}
++	region = vm_shared_region_get(task);
++	if (region != NULL) {
++		slide = region->sr_slide;
++		vm_shared_region_deallocate(region);
++	}
++	proc = get_bsdtask_info(task);
++
++	ut_say("usertrap: %s[%d] exception %d code 0x%llx 0x%llx: pc 0x%llx lr 0x%llx sp 0x%llx, shared cache slide 0x%x\n",
++	    proc ? proc_name_address(proc) : "?", proc ? proc_pid(proc) : -1, exception,
++	    count > 0 ? (unsigned long long)code[0] : 0, count > 1 ? (unsigned long long)code[1] : 0,
++	    (unsigned long long)get_saved_state_pc(state), (unsigned long long)get_saved_state_lr(state),
++	    (unsigned long long)get_saved_state_sp(state), slide);
++
++	for (unsigned i = 0; i < sizeof(message_registers) / sizeof(message_registers[0]); i++) {
++		uint64_t value = (uint64_t)get_saved_state_reg(state, message_registers[i]);
++		char text[128];
++		vm_size_t length = 0;
++		bool printable = true;
++
++		if (!plausible_user_address(value)) {
++			continue;
++		}
++		bzero(text, sizeof(text));
++		(void)copyinstr((user_addr_t)value, text, sizeof(text) - 1, &length);
++		for (unsigned c = 0; c < 6; c++) {
++			printable = printable && text[c] >= 0x20 && text[c] < 0x7f;
++		}
++		if (printable) {
++			ut_say("usertrap:   x%u -> \"%s\"\n", message_registers[i], text);
++		}
++	}
++
++	fp = (uint64_t)get_saved_state_fp(state);
++	for (int depth = 0; depth < 10 && plausible_user_address(fp) && (fp & 7) == 0; depth++) {
++		if (copyin((user_addr_t)fp, frame, sizeof(frame)) != 0) {
++			break;
++		}
++		ut_say("usertrap:   called from 0x%llx\n", (unsigned long long)frame[1]);
++		if (frame[0] <= fp) {
++			break;
++		}
++		fp = frame[0];
++	}
++}
++
++/*
++ * A program calls abort(): say which, and from where. The reason is usually an exception nobody
++ * caught, or an assertion; the text of it goes to the program's standard error (boot-arg applog=1
++ * puts that on the console), the stack is here. Then where every other thread of it is (the
++ * "ustacks:" lines below, all threads, to the loader's log too): a program that aborts because a
++ * watchdog of its own found it stuck (bluetoothd's "Stack Mutex try lock failed") was stuck in one
++ * of those, and x16, the system call number, says in which call.
++ */
++void user_abort_trace(void);
++static void ustacks_task(task_t task, struct proc *proc, bool on_abort);
++
++void
++user_abort_trace(void)
++{
++	thread_t thread = current_thread();
++	task_t task = get_threadtask(thread);
++	const arm_saved_state_t *state = get_user_regs(thread);
++	struct proc *proc = get_bsdtask_info(task);
++	vm_shared_region_t region;
++	uint64_t frame[2], fp;
++	uint32_t slide = 0;
++
++	if (task == kernel_task || state == NULL || !is_saved_state64(state)) {
++		return;
++	}
++	region = vm_shared_region_get(task);
++	if (region != NULL) {
++		slide = region->sr_slide;
++		vm_shared_region_deallocate(region);
++	}
++	ut_say("userabort: %s[%d] aborts, shared cache slide 0x%x; called from:", proc ? proc_name_address(proc) : "?",
++	    proc ? proc_pid(proc) : -1, slide);
++	fp = (uint64_t)get_saved_state_fp(state);
++	for (int depth = 0; depth < 24 && plausible_user_address(fp) && (fp & 7) == 0; depth++) {
++		if (copyin((user_addr_t)fp, frame, sizeof(frame)) != 0) {
++			break;
++		}
++		ut_say(" 0x%llx", (unsigned long long)frame[1]);
++		if (frame[0] <= fp) {
++			break;
++		}
++		fp = frame[0];
++	}
++	ut_say("\n");
++	if (proc != NULL) {
++		ustacks_task(task, proc, true);
++	}
++}
++
++/*
++ * Boot-args ustacks=NAME ustacks_at=SECONDS [ustacks_ms=MILLISECONDS]: that long after boot
++ * (and then periodically) print where every thread of every process called NAME is -- pc, lr
++ * and the return addresses up the stack. Shows what a daemon that "does nothing" waits for.
++ * ustacks_now(NAME) does it at once: under QEMU, "qemu/touch.py stacks NAME" on the host.
++ * The addresses are symbolized on the host (qemu/symstack.py).
++ * The name "top" asks for something else: who has had the processor (see ustacks_top()).
++ */
++#include <kern/recount.h>
++#include <kern/thread_call.h>
++#include <kern/clock.h>
++#include <kern/queue.h>
++#include <pexpert/pexpert.h>
++
++extern queue_head_t tasks;
++extern lck_mtx_t tasks_threads_lock;
++
++#define USTACKS_MAX_THREADS 96
++#define USTACKS_MAX_FRAMES  14
++
++static char ustacks_name[32];
++static uint32_t ustacks_every;
++static uint32_t ustacks_threads = USTACKS_MAX_THREADS;  /* boot-arg ustacks_threads=N: only the first N (1: the main thread) */
++/*
++ * Boot-arg ustacks_tname=TEXT: only the threads whose name has TEXT in it (ustacks_tname=coreanimation:
++ * the window server's render-server and its other threads), each line with the thread's name and, in
++ * the first, the time in microseconds of mach_absolute_time (as the "tl:" lines of tools/latency.py);
++ * the lines are few enough then to go to the loader's log as well, where all of a long run is kept.
++ * ustacks_tname=* takes every thread, named or not, and sends them to the loader's log too.
++ */
++static char ustacks_tname[32];
++static uint32_t ustacks_count;          /* boot-arg ustacks_count=N: so many times, then no more (0: for ever) */
++static thread_call_t ustacks_call;
++
++extern void bsd_getthreadname(void *uth, char *buffer);
++extern void loader_log_line(const char *line);
++
++static void
++ustacks_say(const char *line, bool on_abort)
++{
++	printf("%s", line);
++	if (ustacks_tname[0] != 0 || on_abort) {
++		loader_log_line(line);
++	}
++}
++
++/* on_abort: from user_abort_trace(), every thread whatever the boot-args, with x16 (the system call it is in, if any) */
++static void
++ustacks_task(task_t task, struct proc *proc, bool on_abort)
++{
++	static struct {
++		uint64_t tid, pc, lr, fp, x16;
++		int state;
++		char name[64];          /* (bsd_getthreadname() copies MAXTHREADNAMESIZE, 64) */
++	} snap[USTACKS_MAX_THREADS];
++	char line[512];
++	int at;
++	vm_shared_region_t region;
++	vm_map_t map, old_map;
++	thread_t thread;
++	uint32_t slide = 0;
++	unsigned count = 0;
++
++	task_lock(task);
++	queue_iterate(&task->threads, thread, thread_t, task_threads) {
++		const arm_saved_state_t *state = get_user_regs(thread);
++
++		if (count == USTACKS_MAX_THREADS || (!on_abort && count >= ustacks_threads) || state == NULL ||
++		    !is_saved_state64(state)) {
++			continue;
++		}
++		snap[count].name[0] = 0;
++		if (get_bsdthread_info(thread) != NULL) {
++			bsd_getthreadname(get_bsdthread_info(thread), snap[count].name);
++			snap[count].name[63] = 0;
++		}
++		if (!on_abort && ustacks_tname[0] != 0 && strcmp(ustacks_tname, "*") != 0 &&
++		    strnstr(snap[count].name, ustacks_tname, sizeof(snap[count].name)) == NULL) {
++			continue;
++		}
++		snap[count].tid = thread_tid(thread);
++		snap[count].state = thread->state;
++		snap[count].pc = get_saved_state_pc(state);
++		snap[count].lr = get_saved_state_lr(state);
++		snap[count].fp = get_saved_state_fp(state);
++		snap[count].x16 = get_saved_state_reg(state, 16);
++		count++;
++	}
++	map = task->map;
++	if (map != VM_MAP_NULL) {
++		vm_map_reference(map);
++	}
++	task_unlock(task);
++	if (map == VM_MAP_NULL) {
++		return;
++	}
++	region = vm_shared_region_get(task);
++	if (region != NULL) {
++		slide = region->sr_slide;
++		vm_shared_region_deallocate(region);
++	}
++	clock_sec_t secs;
++	clock_usec_t usecs;
++
++	uint64_t nanos;
++
++	clock_get_system_microtime(&secs, &usecs);
++	absolutetime_to_nanoseconds(mach_absolute_time(), &nanos);
++	snprintf(line, sizeof(line), "ustacks: %s[%d] %u threads, shared cache slide 0x%x, uptime %lu.%03u, at %llu\n",
++	    proc_name_address(proc), proc_pid(proc), count, slide, (unsigned long)secs, (unsigned)usecs / 1000, nanos / 1000);
++	ustacks_say(line, on_abort);
++
++	old_map = vm_map_switch(map);
++	for (unsigned i = 0; i < count; i++) {
++		uint64_t frame[2], fp = snap[i].fp;
++
++		/* (a thread that runs shows where it last came into the kernel, not where it is) */
++		at = snprintf(line, sizeof(line), "ustacks:  thread 0x%llx%s%s%s%s: 0x%llx 0x%llx", (unsigned long long)snap[i].tid,
++		    snap[i].name[0] ? " \"" : "", snap[i].name, snap[i].name[0] ? "\"" : "",
++		    (snap[i].state & TH_RUN) ? " (running)" : "", (unsigned long long)snap[i].pc, (unsigned long long)snap[i].lr);
++		if (on_abort) {
++			at += snprintf(line + at, sizeof(line) - at, " x16 %lld", (long long)snap[i].x16);
++		}
++		for (int depth = 0; depth < USTACKS_MAX_FRAMES && plausible_user_address(fp) && (fp & 7) == 0; depth++) {
++			if (copyin((user_addr_t)fp, frame, sizeof(frame)) != 0) {
++				break;
++			}
++			if (at < (int)sizeof(line) - 24) {
++				at += snprintf(line + at, sizeof(line) - at, " 0x%llx", (unsigned long long)frame[1]);
++			}
++			if (frame[0] <= fp) {
++				break;
++			}
++			fp = frame[0];
++		}
++		snprintf(line + at, sizeof(line) - at, "\n");
++		ustacks_say(line, on_abort);
++	}
++	vm_map_switch(old_map);
++	vm_map_deallocate(map);
++}
++
++/*
++ * ustacks_now("top"): the processes that have had the processor since this was last asked (the
++ * first time: since boot), each with its share of that time. A system that feels slow is either
++ * busy -- this says with what -- or waiting for something, and the two look the same on the screen.
++ */
++#define USTACKS_TOP_TASKS 512
++#define USTACKS_TOP_LINES 12
++
++static void
++ustacks_top(void)
++{
++	static struct {
++		int pid;
++		uint64_t total;                 /* user + system time so far, in Mach time units */
++		uint64_t used;                  /* ... of it since the last time */
++		char name[33];                  /* as long as a process name gets (2 * MAXCOMLEN + 1) */
++	} now[USTACKS_TOP_TASKS];
++	static struct {
++		int pid;
++		uint64_t total;
++	} before[USTACKS_TOP_TASKS];
++	static unsigned before_count;
++	static uint64_t before_when;
++	uint64_t when = mach_absolute_time(), elapsed = when - before_when, elapsed_ns, busy = 0;
++	unsigned count = 0;
++	task_t task;
++
++	lck_mtx_lock(&tasks_threads_lock);
++	queue_iterate(&tasks, task, task_t, tasks) {
++		struct proc *proc = get_bsdtask_info(task);
++		struct recount_times_mach times;
++
++		if (count == USTACKS_TOP_TASKS || proc == NULL) {
++			continue;
++		}
++		times = recount_task_times(task);
++		now[count].pid = proc_pid(proc);
++		now[count].total = times.rtm_user + times.rtm_system;
++		strlcpy(now[count].name, proc_name_address(proc), sizeof(now[count].name));
++		count++;
++	}
++	lck_mtx_unlock(&tasks_threads_lock);
++
++	/* a process that was not there the last time has used all it has since */
++	for (unsigned i = 0; i < count; i++) {
++		uint64_t earlier = 0;
++
++		for (unsigned j = 0; j < before_count; j++) {
++			if (before[j].pid == now[i].pid) {
++				earlier = before[j].total;
++				break;
++			}
++		}
++		now[i].used = now[i].total - MIN(earlier, now[i].total);
++		busy += now[i].used;
++	}
++	absolutetime_to_nanoseconds(elapsed, &elapsed_ns);
++	ut_say("top: in the last %llu ms the processor was busy %llu%% of the time\n", elapsed_ns / NSEC_PER_MSEC,
++	    elapsed ? busy * 100 / elapsed : 0);
++	for (unsigned i = 0; i < count; i++) {
++		before[i].pid = now[i].pid;
++		before[i].total = now[i].total;
++	}
++	before_count = count;
++	before_when = when;
++	for (unsigned line = 0; line < USTACKS_TOP_LINES && count != 0 && elapsed != 0; line++) {
++		unsigned most = 0;
++
++		for (unsigned i = 1; i < count; i++) {
++			if (now[i].used > now[most].used) {
++				most = i;
++			}
++		}
++		if (now[most].used * 1000 / elapsed == 0) {
++			break;
++		}
++		ut_say("top:  %3llu.%llu%%  %s[%d]\n", now[most].used * 100 / elapsed, now[most].used * 1000 / elapsed % 10,
++		    now[most].name, now[most].pid);
++		now[most].used = 0;
++	}
++}
++
++static void
++ustacks_fire(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
++{
++	static task_t found[8];
++	unsigned count = 0;
++	task_t task;
++
++	if (strcmp(ustacks_name, "top") == 0) {
++		ustacks_top();
++		goto again;
++	}
++	lck_mtx_lock(&tasks_threads_lock);
++	queue_iterate(&tasks, task, task_t, tasks) {
++		struct proc *proc = get_bsdtask_info(task);
++
++		if (count < 8 && proc != NULL && strncmp(proc_name_address(proc), ustacks_name, sizeof(ustacks_name)) == 0) {
++			task_reference(task);
++			found[count++] = task;
++		}
++	}
++	lck_mtx_unlock(&tasks_threads_lock);
++	if (count == 0) {
++		ut_say("ustacks: no process called %s\n", ustacks_name);
++	}
++	for (unsigned i = 0; i < count; i++) {
++		struct proc *proc = get_bsdtask_info(found[i]);
++
++		if (proc != NULL) {
++			ustacks_task(found[i], proc, false);
++		}
++		task_deallocate(found[i]);
++	}
++again:
++	if (ustacks_count != 0 && --ustacks_count == 0) {
++		return;
++	}
++	if (ustacks_every != 0) {
++		uint64_t deadline;
++
++		clock_interval_to_deadline(ustacks_every, NSEC_PER_MSEC, &deadline);
++		thread_call_enter_delayed(ustacks_call, deadline);
++	}
++}
++
++/* The same at once, for whoever asks (a debugging key sequence, see drivers/virtio/hakios.virtio_input.c). */
++void ustacks_now(const char *name);
++
++void
++ustacks_now(const char *name)
++{
++	strlcpy(ustacks_name, name, sizeof(ustacks_name));
++	if (ustacks_call == NULL) {
++		ustacks_call = thread_call_allocate(ustacks_fire, NULL);
++	}
++	thread_call_enter(ustacks_call);
++}
++
++static void
++ustacks_init(void)
++{
++	uint32_t at = 0;
++	uint64_t deadline;
++
++	if (!PE_parse_boot_argn("ustacks", ustacks_name, sizeof(ustacks_name)) ||
++	    !PE_parse_boot_argn("ustacks_at", &at, sizeof(at)) || at == 0) {
++		return;
++	}
++	PE_parse_boot_argn("ustacks_ms", &ustacks_every, sizeof(ustacks_every));
++	PE_parse_boot_argn("ustacks_threads", &ustacks_threads, sizeof(ustacks_threads));
++	PE_parse_boot_argn("ustacks_tname", ustacks_tname, sizeof(ustacks_tname));
++	PE_parse_boot_argn("ustacks_count", &ustacks_count, sizeof(ustacks_count));
++	ustacks_call = thread_call_allocate(ustacks_fire, NULL);
++	clock_interval_to_deadline(at, NSEC_PER_SEC, &deadline);
++	thread_call_enter_delayed(ustacks_call, deadline);
++}
++STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, ustacks_init);
++
++/*
++ * kern.hakios.ksample (boot-arg ksample=N): where one thread is while it runs, a sample every ksample_us (boot-arg,
++ * default 1000) microseconds. ustacks above shows where a thread last came into the kernel, which for a thread that
++ * computes is nowhere useful; this stops the processor it runs on (an IPI, cpu_xcall()), and there, with the thread
++ * interrupted, reads its registers and walks its frame pointers through the hardware's own translation of its
++ * addresses (mmu_uvtop(): no fault can be taken in an interrupt), so what is printed is where it was at that moment.
++ * Only while the thread runs: a thread that waits costs nothing and prints nothing.
++ *   1  SpringBoard's main thread
++ *   2  backboardd's render thread (the thread whose name has "render" in it)
++ *   N  (above 2) the main thread of process N
++ * One line a sample, "tl: k US CPU U|K PC LR RET...": microseconds of mach_absolute_time (as the other "tl:" lines),
++ * the processor, whether the thread was in user space (U) or in the kernel (K: the PC is then where it came in), then
++ * the addresses: inside the shared cache as an offset from the cache's unslid base 0x180000000 (so "ipsw dyld a2s CACHE
++ * 0x180000000+OFFSET" names it), others whole with an "@" before them. "tl: K NAME PID THREAD slide S" says whose.
++ */
++#include <kern/processor.h>
++#include <kern/sched_prim.h>
++#include <arm/cpu_data_internal.h>
++
++extern pmap_paddr_t mmu_uvtop(vm_offset_t va);
++extern kern_return_t cpu_xcall(int cpu_number, broadcastFunc func, void *param);
++extern void hakios_tl(const char *format, ...) __printflike(1, 2);
++
++#define KSAMPLE_FRAMES  18
++#define KSAMPLE_CACHE   0x180000000ULL
++
++static TUNABLE(uint32_t, ksample_us, "ksample_us", 1000);
++static uint32_t ksample_mode;
++static int ksample_wakeup;
++
++struct ksample {
++	thread_t thread;
++	volatile int done;              /* 1: taken, 2: the thread was not there */
++	bool user;
++	uint64_t pc[KSAMPLE_FRAMES];
++	unsigned count;
++};
++
++/* a user word through the translation in force on this processor (the interrupted thread's), or false */
++static bool
++ksample_word(uint64_t va, uint64_t *value)
++{
++	pmap_paddr_t pa;
++
++	if (!plausible_user_address(va) || (va & 7) != 0) {
++		return false;
++	}
++	pa = mmu_uvtop((vm_offset_t)va);
++	if (pa == 0 || !pmap_valid_address(pa)) {
++		return false;
++	}
++	*value = *(volatile uint64_t *)phystokv(pa);
++	return true;
++}
++
++/* on the thread's processor, in the IPI */
++static void
++ksample_take(void *arg)
++{
++	struct ksample *s = arg;
++	thread_t thread = current_thread();
++	arm_saved_state_t *state, *interrupted = getCpuDatap()->cpu_int_state;
++	uint64_t fp, frame[2];
++
++	if (thread != s->thread || (state = get_user_regs(thread)) == NULL || !is_saved_state64(state)) {
++		s->done = 2;
++		return;
++	}
++	s->user = interrupted != NULL && PSR64_IS_USER(get_saved_state_cpsr(interrupted));
++	s->count = 0;
++	s->pc[s->count++] = get_saved_state_pc(state);
++	s->pc[s->count++] = get_saved_state_lr(state);
++	fp = get_saved_state_fp(state);
++	while (s->count < KSAMPLE_FRAMES && ksample_word(fp, &frame[0]) && ksample_word(fp + 8, &frame[1])) {
++		s->pc[s->count++] = frame[1];
++		if (frame[0] <= fp) {
++			break;
++		}
++		fp = frame[0];
++	}
++	s->done = 1;
++}
++
++/* the thread to watch for this mode, referenced; and its task's shared cache slide */
++static thread_t
++ksample_find(uint32_t mode, uint32_t *slide)
++{
++	thread_t found = THREAD_NULL, thread;
++	task_t task;
++
++	lck_mtx_lock(&tasks_threads_lock);
++	queue_iterate(&tasks, task, task_t, tasks) {
++		struct proc *proc = get_bsdtask_info(task);
++		const char *name = proc ? proc_name_address(proc) : "";
++
++		if (proc == NULL || !(mode == 1 ? strcmp(name, "SpringBoard") == 0 : mode == 2 ? strcmp(name, "backboardd") == 0 :
++		    proc_pid(proc) == (int)mode)) {
++			continue;
++		}
++		task_lock(task);
++		queue_iterate(&task->threads, thread, thread_t, task_threads) {
++			char tname[64] = "";
++
++			if (mode == 2) {
++				if (get_bsdthread_info(thread) == NULL) {
++					continue;
++				}
++				bsd_getthreadname(get_bsdthread_info(thread), tname);
++				tname[63] = 0;
++				if (strnstr(tname, "render", sizeof(tname)) == NULL) {
++					continue;
++				}
++			}
++			found = thread;
++			thread_reference(found);
++			break;
++		}
++		task_unlock(task);
++		if (found != THREAD_NULL) {
++			vm_shared_region_t region = vm_shared_region_get(task);
++
++			*slide = 0;
++			if (region != NULL) {
++				*slide = region->sr_slide;
++				vm_shared_region_deallocate(region);
++			}
++			hakios_tl("tl: K %s %d 0x%llx slide 0x%x\n", name, proc_pid(proc), thread_tid(found), *slide);
++		}
++		break;
++	}
++	lck_mtx_unlock(&tasks_threads_lock);
++	return found;
++}
++
++static void
++ksample_line(const struct ksample *s, uint64_t when, int cpu, uint32_t slide)
++{
++	char line[192];
++	uint64_t base = KSAMPLE_CACHE + slide, us;
++	int at;
++
++	absolutetime_to_nanoseconds(when, &us);
++	us /= 1000;
++	at = snprintf(line, sizeof(line), "tl: k %llu %d %c", us, cpu, s->user ? 'U' : 'K');
++	for (unsigned i = 0; i < s->count && at < (int)sizeof(line) - 16; i++) {
++		uint64_t a = s->pc[i] & 0x0000000fffffffffULL;  /* (no pointer authentication on this processor; a mask anyway) */
++
++		if (a >= base && a < base + 0x100000000ULL) {
++			at += snprintf(line + at, sizeof(line) - at, " %llx", a - base);
++		} else {
++			at += snprintf(line + at, sizeof(line) - at, " @%llx", a);
++		}
++	}
++	snprintf(line + at, sizeof(line) - at, "\n");
++	hakios_tl("%s", line);
++}
++
++static void
++ksample_thread(__unused void *param, __unused wait_result_t wr)
++{
++	static struct ksample sample;
++	thread_t target = THREAD_NULL;
++	uint32_t mode = 0, slide = 0;
++	uint64_t looked = 0, every, refind;
++
++	nanoseconds_to_absolutetime((uint64_t)MAX(ksample_us, 200) * NSEC_PER_USEC, &every);
++	nanoseconds_to_absolutetime(2 * NSEC_PER_SEC, &refind);
++	for (;;) {
++		uint64_t now = mach_absolute_time(), deadline;
++		processor_t processor;
++
++		if (ksample_mode != mode || (target == THREAD_NULL && ksample_mode != 0 && now - looked > refind)) {
++			if (target != THREAD_NULL) {
++				thread_deallocate(target);
++				target = THREAD_NULL;
++			}
++			mode = ksample_mode;
++			looked = now;
++			if (mode != 0) {
++				target = ksample_find(mode, &slide);
++				if (target == THREAD_NULL) {
++					hakios_tl("tl: K none for %u\n", mode);
++				}
++			}
++		}
++		if (mode == 0) {
++			assert_wait((event_t)&ksample_wakeup, THREAD_UNINT);
++			thread_block(THREAD_CONTINUE_NULL);
++			continue;
++		}
++		if (target != THREAD_NULL && (target->state & TH_TERMINATE)) {
++			thread_deallocate(target);
++			target = THREAD_NULL;
++		}
++		processor = target != THREAD_NULL ? target->last_processor : PROCESSOR_NULL;
++		if (processor != PROCESSOR_NULL && processor != current_processor() && processor->active_thread == target &&
++		    (target->state & TH_RUN)) {
++			uint64_t until = now + every / 2;
++
++			sample.thread = target;
++			sample.done = 0;
++			if (cpu_xcall(processor->cpu_id, ksample_take, &sample) == KERN_SUCCESS) {
++				while (sample.done == 0 && mach_absolute_time() < until) {
++					;
++				}
++				if (sample.done == 1) {
++					ksample_line(&sample, now, processor->cpu_id, slide);
++				}
++			}
++		}
++		deadline = now + every;
++		assert_wait_deadline((event_t)&ksample_wakeup, THREAD_UNINT, deadline);
++		thread_block(THREAD_CONTINUE_NULL);
++	}
++}
++
++/* kern.hakios.ksample (MiniIOMobileFramebuffer.cpp, which has the frames' sysctls): the mode now, and a new one */
++int hakios_ksample_get(void);
++bool hakios_ksample_set(int value);
++
++int
++hakios_ksample_get(void)
++{
++	return (int)ksample_mode;
++}
++
++bool
++hakios_ksample_set(int value)
++{
++	static bool started;
++
++	if (value < 0) {
++		return false;
++	}
++	if (!started) {
++		thread_t thread;
++
++		if (kernel_thread_start_priority(ksample_thread, NULL, MAXPRI_KERNEL, &thread) != KERN_SUCCESS) {
++			return false;
++		}
++		thread_deallocate(thread);
++		started = true;
++	}
++	ksample_mode = (uint32_t)value;
++	thread_wakeup((event_t)&ksample_wakeup);
++	return true;
++}
++
++static void
++ksample_init(void)
++{
++	uint32_t mode = 0;
++
++	if (PE_parse_boot_argn("ksample", &mode, sizeof(mode)) && mode != 0) {
++		(void)hakios_ksample_set((int)mode);
++	}
++}
++STARTUP(LOCKDOWN, STARTUP_RANK_LAST, ksample_init);

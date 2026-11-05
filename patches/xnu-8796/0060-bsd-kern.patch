@@ -1,0 +1,1080 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index 4df41ba1f61b57d3ed6033f63af707b7b63800ea..2c3da931dd5554c1d927c72d447efbcb4adf8814 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -147,6 +147,14 @@
+ #include <net/if_ether.h>               /* for ether_family_init() */
+ #include <net/if_gif.h>                 /* for gif_init() */
+ #include <miscfs/devfs/devfsdefs.h>     /* for devfs_kernel_mount() */
++#include <sys/hakios.input.h>
++#include <sys/hakios.audio.h>
++#include <sys/hakios.virtio_blk.h>
++#include <sys/hakios.sparse.h>
++#include <sys/hakios.version.h>
++#if APFS
++#include <sys/hakios.apfs_check.h>
++#endif
+ #include <vm/vm_kern.h>                 /* for kmem_suballoc() */
+ #include <sys/proc_uuid_policy.h>       /* proc_uuid_policy_init() */
+ #include <netinet/flow_divert.h>        /* flow_divert_init() */
+@@ -490,7 +498,7 @@ bsd_init(void)
+ 	platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_BSD_INIT);
+ #endif
+ 
+-#define DEBUG_BSDINIT 0
++#define DEBUG_BSDINIT 1 /* bring-up: trace bsd_init steps (only visible with -enable_kprintf_spam) */
+ 
+ #if DEBUG_BSDINIT
+ #define bsd_init_kprintf(x, ...) kprintf("bsd_init: " x, ## __VA_ARGS__)
+@@ -905,7 +913,14 @@ bsd_init(void)
+ 	init_rootvnode = NULLVP;  /* use rootvnode after this point */
+ 
+ 
+-	if (!bsd_rooted_ramdisk()) {
++	/*
++	 * A virtio disk root (rd=rvblkN, bsd/dev/hakios.virtio_blk.c) is an image the host serves,
++	 * like a RAM disk: nothing here can verify a seal on it.
++	 */
++	char rd_virtio[16] = "";
++	bool rooted_virtio = PE_parse_boot_argn("rd", rd_virtio, sizeof(rd_virtio)) && strncmp(rd_virtio, "rvblk", 5) == 0;
++
++	if (!bsd_rooted_ramdisk() && !rooted_virtio) {
+ 		boolean_t require_rootauth = FALSE;
+ 
+ #if XNU_TARGET_OS_OSX && defined(__arm64__)
+@@ -976,6 +991,19 @@ bsd_init(void)
+ 
+ 		bsd_init_kprintf("calling devfs_kernel_mount\n");
+ 		devfs_kernel_mount(mounthere);
++		hakios_version_init();         /* kern.hakios.version, and the version in the boot log */
++		hakios_input_init();           /* /dev/hakios-touch */
++		hakios_audio_init();           /* /dev/hakios-audio */
++		hakios_virtio_blk_init();      /* /dev/rvblk0, a disk image of the host (QEMU) */
++		{
++			extern void hakios_vgpu3d_init(void);
++			hakios_vgpu3d_init();  /* boot-arg gpu3d=1: virtio-gpu 3D bring-up (bsd/dev/hakios.vgpu3d_xnu.c) */
++		}
++		hakios_sparse_init();          /* /dev/rsp0, part of an image too big to hold */
++#if APFS
++		/* mounts and walks /dev/rvblk0 once userland has /private/var up */
++		hakios_apfs_check_init();
++#endif
+ 	}
+ #endif /* DEVFS */
+ 
+diff --git a/bsd/kern/decmpfs.c b/bsd/kern/decmpfs.c
+index 95192dd62449918ef81e27f7c44ab7b2f901f11a..b00da803b5b4c5bf8067acd892517b3b96d2b22a 100644
+--- a/bsd/kern/decmpfs.c
++++ b/bsd/kern/decmpfs.c
+@@ -515,7 +515,7 @@ decmpfs_fetch_compressed_header(vnode_t vp, decmpfs_cnode *cp, decmpfs_header **
+ 	const bool no_additional_data = ((cp != NULL)
+ 	    && (cp->cmp_type != 0)
+ 	    && (cp->cmp_minimal_xattr != 0));
+-	uio_stackbuf_t uio_buf[UIO_SIZEOF(1)];
++	uio_stackbuf_t uio_buf[(UIO_SIZEOF(1) + sizeof(uio_stackbuf_t) - 1) / sizeof(uio_stackbuf_t)];
+ 	decmpfs_header *hdr = NULL;
+ 
+ 	/*
+diff --git a/bsd/kern/kern_cs.c b/bsd/kern/kern_cs.c
+index 43b1ea6c63034f59d4f0b22a1ac58eadc8c5059e..ce1854426b6938726e971f6dd911f3a3c6069d47 100644
+--- a/bsd/kern/kern_cs.c
++++ b/bsd/kern/kern_cs.c
+@@ -175,6 +175,23 @@ cs_init(void)
+ 		cs_enforcement_panic = (panic != 0);
+ 	}
+ 
++#if CONFIG_MACF
++	/* boot-arg security= (bsd/kern/kern_minimac.c): off = no enforcement, full = every process */
++	extern int minimac_security_level(void);
++	switch (minimac_security_level()) {
++	case 0:
++		cs_system_enforcement_enable = 0;
++		cs_process_enforcement_enable = 0;
++		break;
++	case 2:
++		cs_system_enforcement_enable = 1;
++		cs_process_enforcement_enable = 1;
++		break;
++	default:
++		break;
++	}
++#endif /* CONFIG_MACF */
++
+ 	PE_parse_boot_argn("cs_relax_platform_task_ports",
+ 	    &cs_relax_platform_task_ports,
+ 	    sizeof(cs_relax_platform_task_ports));
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 1d71c66629fb2efdc013cf0592252e34babc0403..a22095ccf5f0ab1e526fce91c158cf7c13d85ba0 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -1157,6 +1157,9 @@ SYSCTL_PROC(_vm, OID_AUTO, shared_region_control,
+  *		activators should not be given the opportunity to attempt
+  *		to activate the image.
+  */
++/* Bring-up aid: with boot-arg systrace set, say which stage of an exec refused the image. */
++static TUNABLE(uint32_t, exec_trace, "systrace", 0);
++
+ static int
+ exec_mach_imgact(struct image_params *imgp)
+ {
+@@ -1315,6 +1318,9 @@ grade:
+ 	 * Actually load the image file we previously decided to load.
+ 	 */
+ 	lret = load_machfile(imgp, mach_header, thread, &map, &load_result);
++	if (lret != LOAD_SUCCESS && exec_trace) {
++		printf("exectrace: %s: load_machfile failed: %d\n", imgp->ip_ndp->ni_cnd.cn_pnbuf, lret);
++	}
+ 	if (lret != LOAD_SUCCESS) {
+ 		error = load_return_to_errno(lret);
+ 
+@@ -2197,6 +2203,9 @@ again:
+ 	}
+ 
+ 	error = exec_check_permissions(imgp);
++	if (error && exec_trace) {
++		printf("exectrace: %s: exec_check_permissions failed: %d\n", imgp->ip_ndp->ni_cnd.cn_pnbuf, error);
++	}
+ 	if (error) {
+ 		goto bad;
+ 	}
+@@ -2640,6 +2649,57 @@ done:
+ 	return ret;
+ }
+ 
++/*
++ * Bring-up aid, boot-arg applog=1: what applications and other programs started without a
++ * terminal say is worth reading here. Their standard output and error, which launchd opens on
++ * /dev/null, go to the console instead (that shows NSLog and the "Terminating app due to
++ * uncaught exception" kind of message). With applog=2 every program also gets
++ * OS_ACTIVITY_DT_MODE in its environment, which makes os_log write to standard error as well:
++ * everything any program logs, and a much slower system. applog_name=NAME[,NAME...] with
++ * applog=1 does that for the programs whose file names begin with one of the NAMEs only,
++ * which is how to read what one application extension has to say (launchd starts those for
++ * whoever asks, so there is no job description of ours to put the variable in).
++ */
++static TUNABLE(uint32_t, exec_applog, "applog", 0);
++static TUNABLE_STR(exec_applog_name, 128, "applog_name", "");
++
++static bool
++exec_applog_oslog(struct image_params *imgp)
++{
++	const char *name, *p = exec_applog_name;
++
++	if (exec_applog >= 2) {
++		return true;
++	}
++	if (exec_applog == 0 || *p == 0 || imgp->ip_ndp == NULL) {
++		return false;
++	}
++	name = imgp->ip_ndp->ni_cnd.cn_nameptr;
++	while (*p != 0) {
++		const char *word = p;
++
++		while (*p != 0 && *p != ',') {
++			p++;
++		}
++		if (p != word && (size_t)(p - word) <= imgp->ip_ndp->ni_cnd.cn_namelen && strncmp(word, name, (size_t)(p - word)) == 0) {
++			return true;
++		}
++		if (*p == ',') {
++			p++;
++		}
++	}
++	return false;
++}
++
++static const char *
++exec_applog_path(int fd, const char *path)
++{
++	if (exec_applog && (fd == 1 || fd == 2) && strcmp(path, "/dev/null") == 0) {
++		return "/dev/console";
++	}
++	return path;
++}
++
+ /*
+  * exec_handle_file_actions
+  *
+@@ -2709,7 +2769,7 @@ exec_handle_file_actions(struct image_params *imgp, short psa_flags)
+ 			AUDIT_SUBCALL_ENTER(OPEN, p, uthread);
+ 
+ 			NDINIT(ndp, LOOKUP, OP_OPEN, FOLLOW | AUDITVNPATH1, UIO_SYSSPACE,
+-			    CAST_USER_ADDR_T(psfa->psfaa_openargs.psfao_path),
++			    CAST_USER_ADDR_T(exec_applog_path(psfa->psfaa_filedes, psfa->psfaa_openargs.psfao_path)),
+ 			    imgp->ip_vfs_context);
+ 
+ 			error = open1(imgp->ip_vfs_context, ndp,
+@@ -3094,10 +3154,16 @@ spawn_validate_persona(struct _posix_spawn_persona_info *px_persona)
+ 	int error = 0;
+ 	struct persona *persona = NULL;
+ 
+-	if (!IOCurrentTaskHasEntitlement( PERSONA_MGMT_ENTITLEMENT)) {
+-		return EPERM;
+-	}
+-
++	/*
++	 * hakios: two of the three checks below cannot be passed in this port, and both stand in
++	 * the way of something ordinary. The entitlement is one nobody carries here (nothing is
++	 * signed, AMFI is a stub), and the persona is one nobody makes -- yet a package manager
++	 * becomes root by asking for exactly this: Sileo spawns apt and dpkg into persona 99 with
++	 * the uid it wants (its APTWrapper). Refused here, the spawn failed before the program was
++	 * ever started, and the application waited for an answer that could not come. The check
++	 * that still means something -- the size of the group list -- stays; see
++	 * spawn_persona_adopt() below for what happens then.
++	 */
+ 	if (px_persona->pspi_flags & POSIX_SPAWN_PERSONA_GROUPS) {
+ 		if (px_persona->pspi_ngroups > NGROUPS_MAX) {
+ 			return EINVAL;
+@@ -3105,12 +3171,6 @@ spawn_validate_persona(struct _posix_spawn_persona_info *px_persona)
+ 	}
+ 
+ 	persona = persona_lookup(px_persona->pspi_id);
+-	if (!persona) {
+-		error = ESRCH;
+-		goto out;
+-	}
+-
+-out:
+ 	if (persona) {
+ 		persona_put(persona);
+ 	}
+@@ -3130,9 +3190,6 @@ spawn_persona_adopt(proc_t p, struct _posix_spawn_persona_info *px_persona)
+ 	 * the kauth with a different UID/GID combo
+ 	 */
+ 	persona = persona_lookup(px_persona->pspi_id);
+-	if (!persona) {
+-		return ESRCH;
+-	}
+ 
+ 	cred = kauth_cred_proc_ref(p);
+ 
+@@ -3158,6 +3215,48 @@ spawn_persona_adopt(proc_t p, struct _posix_spawn_persona_info *px_persona)
+ 		    px_persona->pspi_gmuid);
+ 	}
+ 
++	if (persona == NULL) {
++		/*
++		 * hakios: there are no personas in this port -- nothing makes them, and
++		 * kpersona_find_by_type() answers "no such process" to everyone who asks. Darwin's own
++		 * programs get along without them, but a package manager becomes root by way of one:
++		 * Sileo asks posix_spawn for persona 99 with OVERRIDE and uid 0 (its APTWrapper), and
++		 * that is how it runs apt and dpkg. With the persona missing the lookup failed, the
++		 * whole spawn failed with ESRCH, and the application sat for ever waiting for an
++		 * answer from a program that was never started. What the caller is after is the
++		 * credential, not the persona, so the credential is what it gets: the uid, gid and
++		 * groups it asked for, set on the process being spawned.
++		 *
++		 * The thread's own credential is not touched here: the thread running this is the
++		 * parent's, and the new process gets its credential when its image is activated.
++		 *
++		 * And the count of processes per real uid follows, as persona_proc_adopt() keeps it:
++		 * fork1() counted the new process under the parent's uid (mobile's), its exit takes
++		 * it off under the one it has then (root's). Without that, every program Sileo ran as
++		 * root took one away from root's count that had never been given -- and once Sileo's
++		 * own mv, cp and rm ran at all, a few dozen of them brought root's count to nothing,
++		 * and the next process of root's to exit panicked the kernel ("chgproccnt: lost user").
++		 */
++		__block kauth_cred_t new_cred = cred;
++		__block uid_t old_ruid = KAUTH_UID_NONE;
++		uid_t new_ruid = kauth_cred_getruid(cred);
++
++		(void)proc_update_label(p, true, ^kauth_cred_t (kauth_cred_t cur_cred) {
++			old_ruid = kauth_cred_getruid(cur_cred);
++			if (new_cred != cur_cred) {
++			        kauth_cred_ref(new_cred);
++			        kauth_cred_unref(&cur_cred);
++			}
++			return new_cred;
++		});
++		kauth_cred_unref(&cred);
++		if (old_ruid != KAUTH_UID_NONE && old_ruid != new_ruid) {
++			(void)chgproccnt(new_ruid, 1);
++			(void)chgproccnt(old_ruid, -1);
++		}
++		return 0;
++	}
++
+ 	ret = persona_proc_adopt(p, persona, cred);
+ 
+ 	kauth_cred_unref(&cred);
+@@ -5586,10 +5685,75 @@ bad:
+  * Note:	The argument and environment vectors are user space pointers
+  *		to arrays of user space pointers.
+  */
++/*
++ * Bring-up aid: the sysctl kern.exec_inject holds "LIBRARY NAME NAME ..."; every program
++ * whose file name is one of the NAMEs is started with DYLD_INSERT_LIBRARIES=LIBRARY in its
++ * environment, so that dyld loads our library into it. Several such groups may follow each
++ * other, separated by ";". A program named in more than one group gets every one of those
++ * libraries, joined with ":" in the one DYLD_INSERT_LIBRARIES, so SpringBoard can carry both
++ * our window-server library and the tweak loader. launchd refuses to pass DYLD_ variables
++ * from a job description, which is why the kernel adds this one. Set once by our init (from
++ * etc/inject.conf) before it hands over to launchd.
++ */
++static char exec_inject_conf[512];
++SYSCTL_STRING(_kern, OID_AUTO, exec_inject, CTLFLAG_RW | CTLFLAG_LOCKED, exec_inject_conf, sizeof(exec_inject_conf),
++    "LIBRARY NAME... [; LIBRARY NAME...]: programs started with the library inserted");
++
++static bool
++exec_inject_env(struct image_params *imgp, char *env, size_t size)
++{
++	const char *name, *p = exec_inject_conf;
++	size_t namelen, used;
++	bool any = false;
++
++	if (*p == 0 || imgp->ip_ndp == NULL) {
++		return false;
++	}
++	name = imgp->ip_ndp->ni_cnd.cn_nameptr;
++	namelen = imgp->ip_ndp->ni_cnd.cn_namelen;
++	used = strlcpy(env, "DYLD_INSERT_LIBRARIES=", size);
++	while (*p != 0) {
++		const char *library;
++		size_t liblen;
++		bool matched = false;
++
++		while (*p == ' ' || *p == ';') {
++			p++;
++		}
++		library = p;
++		while (*p != 0 && *p != ' ' && *p != ';') {
++			p++;
++		}
++		liblen = (size_t)(p - library);
++		while (*p == ' ') {
++			const char *word = ++p;
++
++			while (*p != 0 && *p != ' ' && *p != ';') {
++				p++;
++			}
++			if (!matched && (size_t)(p - word) == namelen && namelen != 0 && liblen != 0 &&
++			    strncmp(word, name, namelen) == 0) {
++				matched = true;         /* this group names this program; its library is added once */
++			}
++		}
++		if (matched && liblen != 0 && used + 1 + liblen < size) {
++			if (any) {
++				env[used++] = ':';      /* dyld takes several libraries separated by ":" */
++			}
++			memcpy(env + used, library, liblen);
++			used += liblen;
++			env[used] = 0;
++			any = true;
++		}
++	}
++	return any;
++}
++
+ __attribute__((noinline))
+ static int
+ exec_extract_strings(struct image_params *imgp)
+ {
++	char            inject_env[512];
+ 	int error = 0;
+ 	int     ptr_size = (imgp->ip_flags & IMGPF_WAS_64BIT_ADDR) ? 8 : 4;
+ 	int new_ptr_size = (imgp->ip_flags & IMGPF_IS_64BIT_ADDR) ? 8 : 4;
+@@ -5759,6 +5923,33 @@ exec_extract_strings(struct image_params *imgp)
+ 		imgp->ip_envc++;
+ 	}
+ 
++	/* one more variable for the programs that get our library inside them (see exec_inject_env) */
++	if (exec_inject_env(imgp, inject_env, sizeof(inject_env))) {
++		error = exec_add_user_string(imgp, CAST_USER_ADDR_T(inject_env), UIO_SYSSPACE, TRUE);
++		if (error) {
++			goto bad;
++		}
++		if (imgp->ip_argspace < new_ptr_size) {
++			error = E2BIG;
++			goto bad;
++		}
++		imgp->ip_argspace -= new_ptr_size;
++		imgp->ip_envc++;
++	}
++	/* ... and one for everybody when the logs are wanted on the console (see exec_applog_path) */
++	if (exec_applog_oslog(imgp)) {
++		error = exec_add_user_string(imgp, CAST_USER_ADDR_T("OS_ACTIVITY_DT_MODE=YES"), UIO_SYSSPACE, TRUE);
++		if (error) {
++			goto bad;
++		}
++		if (imgp->ip_argspace < new_ptr_size) {
++			error = E2BIG;
++			goto bad;
++		}
++		imgp->ip_argspace -= new_ptr_size;
++		imgp->ip_envc++;
++	}
++
+ 	/* Save space for envv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {
+ 		error = E2BIG;
+@@ -6636,7 +6827,23 @@ handle_mac_transition:
+ 	}
+ 
+ 	/* Update the process' identity version and set the security token */
+-	proc_setpidversion(p, OSIncrementAtomic(&nextpidversion));
++	{
++		/*
++		 * (redwood) Except when xpcproxy becomes the service it was spawned for: then the process keeps
++		 * xpcproxy's identity version, as if launchd had spawned the service itself, which is what launchd
++		 * means by eliding xpcproxy ("service will attempt to elide xpcproxy"; here it spawns xpcproxy
++		 * all the same). RunningBoard keeps the audit token of such a process from before the exec and
++		 * never takes the newer one: every entitlement check it made for it failed (SecTaskLoadEntitlements
++		 * error 3, a thousand times a minute with Safari open), and Safari's web processes got no
++		 * assertions ("target is not running or doesn't have entitlement
++		 * com.apple.runningboard.assertions.webkit"). Boot-arg xpcproxy_idversion=1: a new version, as XNU.
++		 */
++		static TUNABLE(uint32_t, xpcproxy_idversion, "xpcproxy_idversion", 0);
++
++		if (xpcproxy_idversion || strncmp(p->p_comm, "xpcproxy", sizeof(p->p_comm)) != 0) {
++			proc_setpidversion(p, OSIncrementAtomic(&nextpidversion));
++		}
++	}
+ 	task_set_uniqueid(task);
+ 	set_security_token_task_internal(p, task);
+ 
+@@ -7538,6 +7745,11 @@ process_signature(proc_t p, struct image_params *imgp)
+ 	}
+ 
+ done:
++	if (error && exec_trace) {
++		printf("exectrace: %s[%d]: process_signature failed: %d (csflags 0x%x, mac %d, cs_error %d)\n",
++		    p->p_comm, proc_getpid(p), error, imgp->ip_csflags, imgp->ip_mac_return,
++		    signature_failure_reason != OS_REASON_NULL);
++	}
+ 	if (0 == error) {
+ 		/*
+ 		 * Update the new process's signature-dependent process state.
+diff --git a/bsd/kern/kern_memorystatus.c b/bsd/kern/kern_memorystatus.c
+index 1750d3a52d3ceda8f0750c1675dd0a640a02d369..0373d0dd160f317bca532534c2e764033f2d9951 100644
+--- a/bsd/kern/kern_memorystatus.c
++++ b/bsd/kern/kern_memorystatus.c
+@@ -222,6 +222,15 @@ MACRO_END
+ 
+ /* General tunables */
+ 
++/*
++ * hakios: the memory there is to manage. max_mem is the whole of the kernel's memory window, and
++ * here more than half of that window is the system image -- a RAM disk the kernel boots from, which
++ * is nobody's to use or to give back. Thresholds that are per cent of max_mem had idle daemons
++ * killed with a quarter of the usable memory still available, and the window server not long after.
++ * sane_size leaves the image (and the kernel itself) out.
++ */
++#define memstat_memory_size     sane_size
++
+ unsigned long delta_percentage = 5;
+ unsigned long critical_threshold_percentage = 5;
+ // On embedded devices with more than 3GB of memory we lower the critical percentage.
+@@ -1365,7 +1374,7 @@ memorystatus_init(void)
+ 	if (delta_percentage == 0) {
+ 		delta_percentage = 5;
+ 	}
+-	if (max_mem > config_jetsam_large_memory_cutoff) {
++	if (memstat_memory_size > config_jetsam_large_memory_cutoff) {
+ 		critical_threshold_percentage = critical_threshold_percentage_larger_devices;
+ 		delta_percentage = delta_percentage_larger_devices;
+ 	}
+@@ -1400,11 +1409,11 @@ memorystatus_init(void)
+ 		PE_get_default("kern.jetsam_idle_snapshot", &memorystatus_idle_snapshot, sizeof(memorystatus_idle_snapshot));
+ 	}
+ 
+-	memorystatus_delta = (unsigned int) (delta_percentage * atop_64(max_mem) / 100);
+-	memorystatus_available_pages_critical_idle_offset = (unsigned int) (idle_offset_percentage * atop_64(max_mem) / 100);
++	memorystatus_delta = (unsigned int) (delta_percentage * atop_64(memstat_memory_size) / 100);
++	memorystatus_available_pages_critical_idle_offset = (unsigned int) (idle_offset_percentage * atop_64(memstat_memory_size) / 100);
+ 	memorystatus_available_pages_critical_base = (unsigned int) ((critical_threshold_percentage / delta_percentage) * memorystatus_delta);
+ 	memorystatus_policy_more_free_offset_pages = (unsigned int) ((policy_more_free_offset_percentage / delta_percentage) * memorystatus_delta);
+-	memorystatus_sysproc_aging_aggr_pages = (unsigned int) (sysproc_aging_aggr_threshold_percentage * atop_64(max_mem) / 100);
++	memorystatus_sysproc_aging_aggr_pages = (unsigned int) (sysproc_aging_aggr_threshold_percentage * atop_64(memstat_memory_size) / 100);
+ 
+ 	/* Set the swapin trigger in pages based on the maximum size allocated for each c_seg */
+ 	memorystatus_swapin_trigger_pages = (unsigned int) atop_64(memorystatus_swapin_trigger_segments * c_seg_allocsize);
+@@ -5103,7 +5112,7 @@ memorystatus_pages_update(unsigned int pages_avail)
+ 	if (critical || delta) {
+ 		unsigned int total_pages;
+ 
+-		total_pages = (unsigned int) atop_64(max_mem);
++		total_pages = (unsigned int) atop_64(memstat_memory_size);
+ #if CONFIG_SECLUDED_MEMORY
+ 		total_pages -= vm_page_secluded_count;
+ #endif /* CONFIG_SECLUDED_MEMORY */
+@@ -6609,7 +6618,7 @@ memorystatus_update_levels_locked(boolean_t critical_only)
+ 	}
+ 
+ #if VM_PRESSURE_EVENTS
+-	memorystatus_available_pages_pressure = (int32_t)(pressure_threshold_percentage * (atop_64(max_mem) / 100));
++	memorystatus_available_pages_pressure = (int32_t)(pressure_threshold_percentage * (atop_64(memstat_memory_size) / 100));
+ #endif
+ }
+ 
+diff --git a/bsd/kern/kern_minimac.c b/bsd/kern/kern_minimac.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..1593428f87525a8b0047e833223fc449a8064b9d
+--- /dev/null
++++ b/bsd/kern/kern_minimac.c
+@@ -0,0 +1,430 @@
++/*
++ * Stand-ins for the two closed security policies user space cannot do
++ * without: AMFI and the Sandbox. On a device they are kexts that register
++ * MAC policies of those names; system software talks to them through
++ * __mac_syscall() and relies on what they decide.
++ *
++ * Neither stand-in is a security mechanism. This kernel runs whatever it is
++ * given (see libkern/amfi/miniamfi.c); these only give the answers the Darwin
++ * user space needs in order to run at all:
++ *
++ *   AMFI     The binaries of the operating system carry ad hoc signatures
++ *            (no certificate chain); on a device AMFI finds their hashes
++ *            in the trust cache and flags them as platform binaries.
++ *            launchd panics if a system daemon is not one. There is no
++ *            trust cache here, so every ad hoc signed binary is taken for
++ *            a platform binary. Unsigned programs (our own) are not.
++ *
++ *   Sandbox  Every query (may this process look up that service?) is
++ *            answered "allowed", and every request to apply a profile
++ *            succeeds without applying anything. The one question with
++ *            an answer of its own is which container a process is in.
++ */
++
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/kernel.h>
++#include <sys/codesign.h>
++#include <sys/errno.h>
++#include <sys/kpi_socket.h>
++#include <sys/priv.h>
++#include <sys/proc_internal.h>
++#include <sys/ubc_internal.h>
++#include <sys/vnode_internal.h>
++#include <libkern/libkern.h>
++#include <kern/startup.h>
++#include <kern/task.h>
++#include <mach/vm_param.h>
++#include <vm/vm_kern.h>
++#include <vm/vm_map.h>
++#include <security/mac_framework.h>
++#include <security/mac_policy.h>
++#include <pexpert/pexpert.h>
++
++void minimac_policy_init(void);
++int minimac_security_level(void);
++
++/*
++ * boot-arg security=full|bringup|off (default bringup): how much of what these stand-ins and
++ * the kernel's own code-signing checks can enforce is enforced. See avf/README.md.
++ *
++ *   off      AMFI: every signature accepted, ad hoc ones as platform binaries, dyld may do
++ *            anything (DYLD_* variables, inserted libraries) for anyone, "not enforcing" when
++ *            asked; Sandbox: everything allowed, every privilege granted to everyone; no
++ *            code-signing enforcement, not even of the dyld shared cache.
++ *   bringup  as HakiOS has always run: as off, but privileges only by entitlement (the table
++ *            below) and the kernel's default code-signing checks (the shared cache's).
++ *   full     as bringup, and: code-signing enforcement for every process (code pages are
++ *            checked against their signature; unsigned code is killed), dyld's freedoms only
++ *            for platform binaries, and AMFI says "enforcing" when asked.
++ *
++ * None of this is iOS's security model: there is no trust cache, no Sandbox profile is
++ * evaluated, and an ad hoc signature counts as Apple's.
++ */
++#define MINIMAC_SECURITY_OFF      0
++#define MINIMAC_SECURITY_BRINGUP  1
++#define MINIMAC_SECURITY_FULL     2
++
++static int minimac_level = -1;
++
++int
++minimac_security_level(void)
++{
++	char value[16];
++
++	if (minimac_level < 0) {
++		minimac_level = MINIMAC_SECURITY_BRINGUP;
++		if (PE_parse_boot_arg_str("security", value, sizeof(value))) {
++			if (strcmp(value, "off") == 0) {
++				minimac_level = MINIMAC_SECURITY_OFF;
++			} else if (strcmp(value, "full") == 0) {
++				minimac_level = MINIMAC_SECURITY_FULL;
++			} else if (strcmp(value, "bringup") != 0) {
++				printf("security: unknown level \"%s\", using bringup\n", value);
++			}
++		}
++	}
++	return minimac_level;
++}
++
++static int
++miniamfi_vnode_check_signature(__unused struct vnode *vp, __unused struct label *label, __unused cpu_type_t cpu_type,
++    struct cs_blob *cs_blob, unsigned int *cs_flags, __unused unsigned int *signer_type, __unused int flags,
++    __unused unsigned int platform, __unused char **fatal_failure_desc, __unused size_t *fatal_failure_desc_len)
++{
++	if (cs_blob == NULL) {
++		return 0;
++	}
++	/*
++	 * Accepting a signature is what marks the process as signed; the
++	 * kernel consults the signature of a process only when that is set.
++	 */
++	*cs_flags |= CS_SIGNED;
++	if (*cs_flags & CS_ADHOC) {
++		*cs_flags |= CS_PLATFORM_BINARY;
++	}
++	return 0;
++}
++
++/*
++ * dyld asks AMFI what it may do for the process it is starting (request 0x5a, "check dyld
++ * policy"): the argument is { flags in, pointer to flags out }. Everything is allowed --
++ * @paths, the DYLD_* variables, inserted libraries and interposing -- which is what lets
++ * our own library be loaded into stock daemons (DYLD_INSERT_LIBRARIES).
++ */
++#define AMFI_SYSCALL_CHECK_DYLD_POLICY  0x5a
++#define AMFI_DYLD_OUTPUT_ALLOW_ALL      0xffULL
++
++/*
++ * Request 0x60, "query boot-arg state" (amfi_interface_query_bootarg_state() in libamfi): the
++ * argument points to 64 bits of flags, one for each boot-arg that switches a part of AMFI off
++ * (amfi_get_out_of_my_way and its kin). ExtensionKit asks, and unless one of the bits 0x86 is set
++ * it wants the signature of the system's table of extension points
++ * (/System/Library/xpc/extensions.plist.sig) verified by AMFI's IOKit service. There is no such
++ * service here ("Unable to find AMFI"); the table is then not read and LaunchServices knows no
++ * extension point: every application extension is refused when the applications are registered
++ * ("does not correspond to a known extension point"), pkd cannot make a record for any extension
++ * point, and Shortcuts dies on a nil one. Nothing is enforced by this kernel, so that is what it
++ * says. (Which of the three bits stands for which boot-arg is not known; ExtensionKit takes any
++ * of them.)
++ */
++#define AMFI_SYSCALL_QUERY_BOOTARG_STATE 0x60
++#define AMFI_BOOTARG_STATE_NOT_ENFORCING 0x86ULL
++
++static int
++miniamfi_policy_syscall(struct proc *p, int call, user_addr_t arg)
++{
++	struct {
++		uint64_t input_flags;
++		user_addr_t output_flags;
++	} args;
++	uint64_t flags = AMFI_DYLD_OUTPUT_ALLOW_ALL;
++	uint64_t state = AMFI_BOOTARG_STATE_NOT_ENFORCING;
++	int error;
++
++	if (call == AMFI_SYSCALL_QUERY_BOOTARG_STATE) {
++		if (minimac_security_level() == MINIMAC_SECURITY_FULL) {
++			state = 0;              /* enforcing (ExtensionKit then wants AMFI's service, which is not here) */
++		}
++		return copyout(&state, arg, sizeof(state));
++	}
++	/* full: the DYLD_* variables and inserted libraries only for platform binaries */
++	if (minimac_security_level() == MINIMAC_SECURITY_FULL && p != NULL &&
++	    (proc_getcsflags(p) & CS_PLATFORM_BINARY) == 0) {
++		flags = 0;
++	}
++	if (call != AMFI_SYSCALL_CHECK_DYLD_POLICY) {
++		return ENOPOLICY;               /* what user space got before there was a handler */
++	}
++	error = copyin(arg, &args, sizeof(args));
++	if (error == 0) {
++		error = copyout(&flags, args.output_flags, sizeof(flags));
++	}
++	return error;
++}
++
++static const struct mac_policy_ops miniamfi_ops = {
++	.mpo_vnode_check_signature = miniamfi_vnode_check_signature,
++	.mpo_policy_syscall = miniamfi_policy_syscall,
++};
++
++SECURITY_READ_ONLY_LATE(static struct mac_policy_conf) miniamfi_conf = {
++	.mpc_name = "AMFI",
++	.mpc_fullname = "Apple Mobile File Integrity (stand-in)",
++	.mpc_ops = &miniamfi_ops,
++};
++SECURITY_READ_ONLY_LATE(static mac_policy_handle_t) miniamfi_handle;
++
++/*
++ * Request 4, "container path of a process": sandbox_container_path_for_pid() and
++ * sandbox_container_path_for_audit_token() of libsystem_sandbox. The argument is
++ * { pid, version of the pid, buffer, its size, whether the version is to be compared }.
++ *
++ * On a device the Sandbox learns the container when the program is executed (it asks
++ * containermanagerd) and confines the process to it. Nothing is confined here, but the question
++ * is still asked and the answer matters: an application extension hosted by PlugInKit does not
++ * run without a container. It gives the buffer a "?" to start with and wants a longer string
++ * back, else "plugin has invalid sandbox or container" (-[PKService checkEnvironment:]) -- the
++ * end of every Intents extension while this request "succeeded" without writing anything.
++ *
++ * Whoever starts a program that lives in a container -- RunningBoard an application, pkd an
++ * extension -- has had the path from containermanagerd and passes it in the environment as
++ * CFFIXED_USER_HOME, which is where Foundation takes the home directory from. So that is the
++ * answer: it is looked up among the strings exec left at the top of the stack of the process.
++ * A process without the variable has no container, and gets what every process got before:
++ * success and an untouched buffer.
++ */
++#define SANDBOX_SYSCALL_CONTAINER_PATH  4
++#define SANDBOX_CONTAINER_VARIABLE      "CFFIXED_USER_HOME="
++
++static int
++minisandbox_container_path(user_addr_t arg)
++{
++	struct {
++		int64_t     pid;
++		uint64_t    pidversion;
++		user_addr_t buffer;
++		user_size_t size;
++		uint64_t    check_pidversion;
++	} args;
++	const size_t prefix_len = sizeof(SANDBOX_CONTAINER_VARIABLE) - 1;
++	proc_t p;
++	task_t task;
++	vm_map_t map;
++	vm_map_copy_t copy = NULL;
++	vm_offset_t strings = 0;
++	vm_size_t strings_size;
++	user_addr_t user_stack;
++	size_t argslen, len;
++	const char *s, *end;
++	int error;
++
++	error = copyin(arg, &args, sizeof(args));
++	if (error) {
++		return error;
++	}
++	p = proc_find((int)args.pid);
++	if (p == PROC_NULL) {
++		return ESRCH;
++	}
++	if (args.check_pidversion && (uint64_t)proc_pidversion(p) != args.pidversion) {
++		proc_rele(p);
++		return ESRCH;
++	}
++	user_stack = p->user_stack;
++	argslen = p->p_argslen;
++	task = proc_task(p);
++	if (user_stack == 0 || argslen == 0 || task == TASK_NULL) {
++		proc_rele(p);
++		return 0;
++	}
++	/* the same way as sysctl_procargsx(): the task keeps the map alive once the process is let go */
++	task_reference(task);
++	proc_rele(p);
++	map = get_task_map_reference(task);
++	task_deallocate(task);
++	if (map == VM_MAP_NULL) {
++		return 0;
++	}
++	strings_size = vm_map_round_page(argslen, vm_map_page_mask(map));
++	if (kmem_alloc(kernel_map, &strings, strings_size, KMA_DATA | KMA_ZERO, VM_KERN_MEMORY_BSD) != KERN_SUCCESS) {
++		vm_map_deallocate(map);
++		return ENOMEM;
++	}
++	if (vm_map_copyin(map, (vm_map_address_t)(user_stack - strings_size), strings_size, FALSE, &copy) != KERN_SUCCESS) {
++		copy = NULL;
++	}
++	vm_map_deallocate(map);
++	if (copy == NULL || vm_map_copy_overwrite(kernel_map, strings, copy, strings_size, FALSE) != KERN_SUCCESS) {
++		if (copy != NULL) {
++			vm_map_copy_discard(copy);
++		}
++		kmem_free(kernel_map, strings, strings_size);
++		return 0;                       /* the process is on its way out, or has unmapped its own stack */
++	}
++
++	end = (const char *)(strings + strings_size);
++	for (s = end - argslen; s < end; s += len + 1) {
++		len = strnlen(s, end - s);
++		if (len > prefix_len && s + len < end && strncmp(s, SANDBOX_CONTAINER_VARIABLE, prefix_len) == 0) {
++			s += prefix_len;
++			len -= prefix_len;
++			error = len < args.size ? copyout(s, args.buffer, len + 1) : ENAMETOOLONG;
++			break;
++		}
++	}
++	kmem_free(kernel_map, strings, strings_size);
++	return error;
++}
++
++/* Which request numbers have been seen: one log line each, to learn what user space asks for. */
++static uint64_t minisandbox_seen;
++
++static int
++minisandbox_policy_syscall(struct proc *p, int call, user_addr_t arg)
++{
++	if (call >= 0 && call < 64 && (minisandbox_seen & (1ULL << call)) == 0) {
++		minisandbox_seen |= 1ULL << call;
++		printf("minisandbox: request %d (first seen from %s[%d]): %s\n", call, p->p_comm, proc_getpid(p),
++		    call == SANDBOX_SYSCALL_CONTAINER_PATH ? "answered" : "allowed");
++	}
++	if (call == SANDBOX_SYSCALL_CONTAINER_PATH) {
++		return minisandbox_container_path(arg);
++	}
++	return 0;
++}
++
++/*
++ * Privileges for processes that are not root. On a device the sandbox hands them out by
++ * entitlement: a privilege is granted to a process whose code signature has the entitlement
++ * that goes with it. The table is the same pairing: the names are the entitlements Darwin's own
++ * programs carry for them (dasd "vm-pressure-level", symptomsd and aggregated
++ * com.apple.private.network.statistics, mediaserverd and mDNSResponder
++ * com.apple.private.network.socket-delegate -- without which NECP said "does not hold the
++ * necessary entitlement to delegate network traffic" -- and so on).
++ *
++ * That NECP line is worth knowing for what it is NOT: it costs nothing. The macro that prints it
++ * (bsd/net/necp.c, NECP_VERIFY_DELEGATION_ENTITLEMENT) only breaks out of the parameter it was
++ * reading, so the delegation is dropped and the policy is matched against the caller itself; no
++ * error is returned and no connection is refused. A session where trustd prints it four hundred
++ * times is a session where trustd's own connections all go through. A stock iPhone prints it too.
++ * It is noise, not a wall -- do not go looking for a daemon's missing network behind it.
++ *
++ *   PRIV_WORK_INTERVAL    is granted to every process, entitlement or not: telling the scheduler
++ *                         about the work of drawing a frame. UIKit does it as soon as anything
++ *                         scrolls, and takes a refusal for a programming error ("Failed to create
++ *                         work interval"): SpringBoard died of it on the first swipe between
++ *                         pages of the home screen.
++ *
++ * Whatever is refused is said once, to learn what there is. Boot-arg privs=0: only
++ * PRIV_WORK_INTERVAL, as before.
++ */
++extern kern_return_t miniamfi_entitlement_boolean(struct proc *proc, const char *name);
++
++static const struct {
++	int priv;
++	const char *entitlement;
++} minisandbox_privileges[] = {
++	{ PRIV_PROC_UUID_POLICY, "com.apple.private.kernel.uuid-policy" },
++	{ PRIV_GLOBAL_PROC_INFO, "com.apple.private.kernel.global-proc-info" },
++	{ PRIV_SYSTEM_OVERRIDE, "com.apple.private.kernel.system-override" },
++	{ PRIV_HW_DEBUG_DATA, "com.apple.private.kernel.hw-debug-data" },
++	{ PRIV_SELECTIVE_FORCED_IDLE, "com.apple.private.kernel.selective-forced-idle" },
++	{ PRIV_DARKBOOT, "com.apple.private.kernel.darkboot" },
++	{ PRIV_AUDIO_LATENCY, "com.apple.private.kernel.audio_latency" },
++	{ PRIV_KTRACE_BACKGROUND, "com.apple.private.kernel.ktrace-background" },
++	{ PRIV_SETPRIORITY_DARWIN_ROLE, "com.apple.private.kernel.setpriority-darwin-role" },
++	{ PRIV_PACKAGE_EXTENSIONS, "com.apple.private.kernel.set-package-extensions" },
++	{ PRIV_TRIM_ACTIVE_FILE, "com.apple.private.apfs.trim-active-file" },
++	{ PRIV_PROC_CPUMON_OVERRIDE, "com.apple.private.kernel.override-cpumon" },
++	{ PRIV_VM_PRESSURE, "vm-pressure-level" },
++	{ PRIV_VM_JETSAM, "com.apple.private.kernel.jetsam" },
++	{ PRIV_NET_PRIVILEGED_TRAFFIC_CLASS, "com.apple.private.network.privileged-traffic-class" },
++	{ PRIV_NET_PRIVILEGED_SOCKET_DELEGATE, "com.apple.private.network.socket-delegate" },
++	{ PRIV_NET_INTERFACE_CONTROL, "com.apple.private.network.interface-control" },
++	{ PRIV_NET_PRIVILEGED_NETWORK_STATISTICS, "com.apple.private.network.statistics" },
++	{ PRIV_NET_PRIVILEGED_NECP_POLICIES, "com.apple.private.necp.policies" },
++	{ PRIV_NET_RESTRICTED_AWDL, "com.apple.private.network.awdl.restricted" },
++	{ PRIV_NET_QOSMARKING_POLICY_OVERRIDE, "com.apple.private.network.qos-marking-policy-override" },
++	{ PRIV_NET_RESTRICTED_MULTIPATH_EXTENDED, "com.apple.developer.networking.multipath_extended" },
++	{ PRIV_NET_RESTRICTED_ROUTE_NC_READ, "com.apple.developer.networking.route_nc_read" },
++	{ PRIV_NET_VALIDATED_RESOLVER, "com.apple.private.validated-resolver" },
++	{ PRIV_NET_CUSTOM_PROTOCOL, "com.apple.developer.networking.custom-protocol" },
++	{ PRIV_NET_PRIVILEGED_NECP_DROP_ALL_BYPASS, "com.apple.private.necp.drop_all_bypass" },
++	{ PRIV_NET_PRIVILEGED_IPSEC_WAKE_PACKET, "com.apple.private.network.ipsec-wake-packet" },
++	{ PRIV_NETINET_RESERVEDPORT, "com.apple.private.network.reserved-port" },
++	{ PRIV_NETINET_TCP_KA_OFFLOAD, "com.apple.developer.networking.tcp_ka_offload" },
++	{ PRIV_SKYWALK_REGISTER_USER_PIPE, "com.apple.private.skywalk.register-user-pipe" },
++	{ PRIV_SKYWALK_REGISTER_KERNEL_PIPE, "com.apple.private.skywalk.register-kernel-pipe" },
++	{ PRIV_SKYWALK_REGISTER_NET_IF, "com.apple.private.skywalk.register-net-if" },
++	{ PRIV_SKYWALK_REGISTER_FLOW_SWITCH, "com.apple.private.skywalk.register-flow-switch" },
++	{ PRIV_SKYWALK_OBSERVE_ALL, "com.apple.private.skywalk.observe-all" },
++	{ PRIV_SKYWALK_OBSERVE_STATS, "com.apple.private.skywalk.observe-stats" },
++	{ PRIV_VFS_OPEN_BY_ID, "com.apple.private.vfs.open-by-id" },
++	{ PRIV_VFS_MOVE_DATA_EXTENTS, "com.apple.private.vfs.move-data-extents" },
++	{ PRIV_VFS_SNAPSHOT, "com.apple.private.vfs.snapshot" },
++	{ PRIV_VFS_DATALESS_RESOLVER, "com.apple.private.vfs.dataless-resolver" },
++	{ PRIV_VFS_SETSIZE, "com.apple.private.vfs.setsize" },
++};
++static TUNABLE(uint32_t, minisandbox_by_entitlement, "privs", 1);
++
++static int
++minisandbox_priv_grant(kauth_cred_t cred, int priv)
++{
++	static int seen[32];
++	static unsigned seen_count;
++	proc_t proc = current_proc();
++
++	if (priv == PRIV_WORK_INTERVAL || minimac_security_level() == MINIMAC_SECURITY_OFF) {
++		return 0;
++	}
++	/* (the entitlements are the current process's: only for a question about its own credential) */
++	for (unsigned i = 0; minisandbox_by_entitlement && cred == kauth_cred_get() &&
++	    i < sizeof(minisandbox_privileges) / sizeof(minisandbox_privileges[0]); i++) {
++		if (minisandbox_privileges[i].priv == priv) {
++			if (miniamfi_entitlement_boolean(proc, minisandbox_privileges[i].entitlement) == KERN_SUCCESS) {
++				return 0;
++			}
++			break;
++		}
++	}
++	for (unsigned i = 0; i < seen_count; i++) {
++		if (seen[i] == priv) {
++			return EPERM;
++		}
++	}
++	if (seen_count < sizeof(seen) / sizeof(seen[0])) {
++		seen[seen_count++] = priv;
++		printf("minisandbox: privilege %d refused to %s[%d] (first time)\n", priv, proc->p_comm,
++		    proc_getpid(proc));
++	}
++	return EPERM;
++}
++
++static const struct mac_policy_ops minisandbox_ops = {
++	.mpo_policy_syscall = minisandbox_policy_syscall,
++	.mpo_priv_grant = minisandbox_priv_grant,
++};
++
++SECURITY_READ_ONLY_LATE(static struct mac_policy_conf) minisandbox_conf = {
++	.mpc_name = "Sandbox",
++	.mpc_fullname = "Seatbelt sandbox policy (stand-in)",
++	.mpc_ops = &minisandbox_ops,
++};
++SECURITY_READ_ONLY_LATE(static mac_policy_handle_t) minisandbox_handle;
++
++/* Called from kernel_bootstrap_thread() once the MAC framework is up. */
++void
++minimac_policy_init(void)
++{
++	static const char *const names[] = { "off", "bringup", "full" };
++	int level = minimac_security_level();
++
++	mac_policy_register(&miniamfi_conf, &miniamfi_handle, NULL);
++	mac_policy_register(&minisandbox_conf, &minisandbox_handle, NULL);
++	printf("security: %s (boot-arg security=full|bringup|off): AMFI stand-in, Sandbox stand-in; "
++	    "privileges %s; dyld freedoms %s; code-signing enforcement %s\n", names[level],
++	    level == MINIMAC_SECURITY_OFF ? "for everyone" : "by entitlement",
++	    level == MINIMAC_SECURITY_FULL ? "for platform binaries" : "for everyone",
++	    level == MINIMAC_SECURITY_FULL ? "for every process" : level == MINIMAC_SECURITY_OFF ? "off" : "shared cache only");
++}
+diff --git a/bsd/kern/kern_priv.c b/bsd/kern/kern_priv.c
+index 88adf2dda936329661656e44f9b4ee908d8027cb..168384889bc1996f2747d836ffd6be2eed68aa30 100644
+--- a/bsd/kern/kern_priv.c
++++ b/bsd/kern/kern_priv.c
+@@ -82,6 +82,19 @@ priv_check_cred(kauth_cred_t cred, int priv, int flags)
+ #endif
+ 	int error;
+ 
++	/*
++	 * hakios: nothing is signed here and no process carries an entitlement (AMFI is a stub), so
++	 * every privilege that an entitlement would answer for is refused -- and Darwin leans on one of
++	 * them for ordinary work. A daemon that goes to the network on behalf of an application
++	 * (trustd checking the certificate for whoever opened the connection, nsurlsessiond carrying
++	 * out its downloads) describes the connection to NECP as delegated, and without this
++	 * privilege the kernel refuses it with EPERM: the download then never starts and never fails.
++	 * These daemons run as mobile, so the "root gets everything" rule below does not reach them.
++	 */
++	if (priv == PRIV_NET_PRIVILEGED_SOCKET_DELEGATE) {
++		return 0;
++	}
++
+ 	/*
+ 	 * We first evaluate policies that may deny the granting of
+ 	 * privilege unilaterally.
+diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
+index ae4a5f33df1e4bc7ffe39c5ff32b5b0de3e03f5e..986b517dfd18ce1432732b313356c188bf18b2bc 100644
+--- a/bsd/kern/kern_sig.c
++++ b/bsd/kern/kern_sig.c
+@@ -1099,6 +1099,14 @@ __pthread_kill(__unused proc_t p, struct __pthread_kill_args *uap,
+ 	thread_t target_act;
+ 	int error = 0;
+ 	int signum = uap->sig;
++
++#if defined(__arm64__)
++	if (signum == SIGABRT) {
++		extern void user_abort_trace(void);
++
++		user_abort_trace();             /* no crash reporter here: this is where an abort() gets recorded */
++	}
++#endif
+ 	struct uthread *uth;
+ 
+ 	target_act = (thread_t)port_name_to_thread(uap->thread_port,
+diff --git a/bsd/kern/kpi_socket.c b/bsd/kern/kpi_socket.c
+index 003cfb074a99dfd757bd03ef21582bf3c08b89e6..c597065f24f110044504acb68aad4bfe20134a84 100644
+--- a/bsd/kern/kpi_socket.c
++++ b/bsd/kern/kpi_socket.c
+@@ -727,7 +727,7 @@ sock_receive_internal(socket_t sock, struct msghdr *msg, mbuf_t *data,
+ 	int error = 0;
+ 	user_ssize_t length = 0;
+ 	struct sockaddr *fromsa = NULL;
+-	uio_stackbuf_t uio_buf[UIO_SIZEOF((msg != NULL) ? msg->msg_iovlen : 0)];
++	uio_stackbuf_t uio_buf[(UIO_SIZEOF((msg != NULL) ? msg->msg_iovlen : 0) + sizeof(uio_stackbuf_t) - 1) / sizeof(uio_stackbuf_t)];
+ 
+ 	if (sock == NULL) {
+ 		return EINVAL;
+diff --git a/bsd/kern/sys_generic.c b/bsd/kern/sys_generic.c
+index 4ca22ee4371a76122d9f80b5475287275a85009a..e95e618b4cb670d0534fc73378c0a5db7615e663 100644
+--- a/bsd/kern/sys_generic.c
++++ b/bsd/kern/sys_generic.c
+@@ -303,7 +303,7 @@ dofileread(vfs_context_t ctx, struct fileproc *fp,
+     user_addr_t bufp, user_size_t nbyte, off_t offset, int flags,
+     user_ssize_t *retval)
+ {
+-	uio_stackbuf_t uio_buf[UIO_SIZEOF(1)];
++	uio_stackbuf_t uio_buf[(UIO_SIZEOF(1) + sizeof(uio_stackbuf_t) - 1) / sizeof(uio_stackbuf_t)];
+ 	uio_t uio;
+ 	int spacetype;
+ 
+@@ -350,7 +350,7 @@ static int
+ read_internal(struct proc *p, int fd, user_addr_t buf, user_size_t nbyte,
+     off_t offset, int flags, user_ssize_t *retval)
+ {
+-	uio_stackbuf_t uio_buf[UIO_SIZEOF(1)];
++	uio_stackbuf_t uio_buf[(UIO_SIZEOF(1) + sizeof(uio_stackbuf_t) - 1) / sizeof(uio_stackbuf_t)];
+ 	uio_t uio;
+ 	int spacetype = IS_64BIT_PROCESS(p) ? UIO_USERSPACE64 : UIO_USERSPACE32;
+ 
+@@ -631,7 +631,7 @@ dofilewrite(vfs_context_t ctx, struct fileproc *fp,
+     user_addr_t bufp, user_size_t nbyte, off_t offset, int flags,
+     user_ssize_t *retval)
+ {
+-	uio_stackbuf_t uio_buf[UIO_SIZEOF(1)];
++	uio_stackbuf_t uio_buf[(UIO_SIZEOF(1) + sizeof(uio_stackbuf_t) - 1) / sizeof(uio_stackbuf_t)];
+ 	uio_t uio;
+ 	int spacetype;
+ 
+@@ -678,7 +678,7 @@ int
+ write_internal(struct proc *p, int fd, user_addr_t buf, user_size_t nbyte,
+     off_t offset, int flags, guardid_t *puguard, user_ssize_t *retval)
+ {
+-	uio_stackbuf_t uio_buf[UIO_SIZEOF(1)];
++	uio_stackbuf_t uio_buf[(UIO_SIZEOF(1) + sizeof(uio_stackbuf_t) - 1) / sizeof(uio_stackbuf_t)];
+ 	uio_t uio;
+ 	int spacetype = IS_64BIT_PROCESS(p) ? UIO_USERSPACE64 : UIO_USERSPACE32;
+ 
+diff --git a/bsd/kern/sys_work_interval.c b/bsd/kern/sys_work_interval.c
+index b544bf307dfe4abb7c8c3cddd9d83eca506912de..a06cbc68ffdb6659cba3db59f6bb52d52642359a 100644
+--- a/bsd/kern/sys_work_interval.c
++++ b/bsd/kern/sys_work_interval.c
+@@ -265,6 +265,22 @@ work_interval_ctl(__unused proc_t p, struct work_interval_ctl_args *uap,
+ 
+ 		break;
+ 
++	case 6:
++	case 7:
++	case 8:
++		/*
++		 * (redwood) Not in the open source: what os_workgroup_interval_start(), _update() and
++		 * _finish() of Darwin send, for the performance controller, which is not here either.
++		 * CoreAudio does it in every I/O cycle and logs an error each time it is refused: fifty
++		 * lines a second from the audio server's real-time thread. For its threads, and only
++		 * for them, there is nothing to do and nothing wrong. (The window server asks for its
++		 * frames too, and is used to the refusal.)
++		 */
++		if (kern_work_interval_type_of_thread(current_thread()) == WORK_INTERVAL_TYPE_COREAUDIO) {
++			return 0;
++		}
++		return ENOTSUP;
++
+ 	default:
+ 		return ENOTSUP;
+ 	}
+diff --git a/bsd/kern/uipc_syscalls.c b/bsd/kern/uipc_syscalls.c
+index dce802fc36f14a97bd3dfb2096f053fc95f5e057..e2e6b3a3f3db9f2915ef9847d5938cdcf1de9dbf 100644
+--- a/bsd/kern/uipc_syscalls.c
++++ b/bsd/kern/uipc_syscalls.c
+@@ -3561,7 +3561,7 @@ sendfile(proc_ref_t p, struct sendfile_args *uap, __unused int *retval)
+ 		mbuf_t  m;
+ 		unsigned int    nbufs = SFUIOBUFS, i;
+ 		uio_t   auio;
+-		uio_stackbuf_t    uio_buf[UIO_SIZEOF(SFUIOBUFS)]; /* 1 KB !!! */
++		uio_stackbuf_t    uio_buf[(UIO_SIZEOF(SFUIOBUFS) + sizeof(uio_stackbuf_t) - 1) / sizeof(uio_stackbuf_t)]; /* 1 KB !!! */
+ 		size_t  uiolen;
+ 		user_ssize_t    rlen;
+ 		off_t   pgoff;

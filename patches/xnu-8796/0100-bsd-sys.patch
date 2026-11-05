@@ -1,0 +1,3813 @@
+diff --git a/bsd/sys/disk.h b/bsd/sys/disk.h
+index 82efb4fcc0004b778d447f4f533233c0ed5757da..47a4cd98e59faf99ec9f4757cccd4a536c8209d2 100644
+--- a/bsd/sys/disk.h
++++ b/bsd/sys/disk.h
+@@ -284,7 +284,7 @@ typedef struct{
+ typedef struct{
+ 	boolean_t mi_mdev; /* Is this a memdev device? */
+ 	boolean_t mi_phys; /* Physical memory? */
+-	uint32_t mi_base; /* Base page number of the device? */
++	uint64_t mi_base; /* Base page number of the device (a kernel VA page number does not fit in 32 bits) */
+ 	uint64_t mi_size; /* Size of the device (in ) */
+ } dk_memdev_info_t;
+ 
+diff --git a/bsd/sys/hakios.apfs_check.h b/bsd/sys/hakios.apfs_check.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ac2acc0fb85f70d3edb1c3331b0c037ee1a692f
+--- /dev/null
++++ b/bsd/sys/hakios.apfs_check.h
+@@ -0,0 +1,11 @@
++/*
++ * Mount the APFS volume on /dev/rvblk0 and walk it, to compare with what the host reader
++ * sees in the same image.  Only with boot-arg apfs_check.
++ * See drivers/storage/hakios.apfs_check.c.
++ */
++#ifndef _SYS_HAKIOS_APFS_CHECK_H_
++#define _SYS_HAKIOS_APFS_CHECK_H_
++
++void hakios_apfs_check_init(void);
++
++#endif /* _SYS_HAKIOS_APFS_CHECK_H_ */
+diff --git a/bsd/sys/hakios.audio.h b/bsd/sys/hakios.audio.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..44e7a71f852894c7b4e1100a6c1c24aba2d2c4d5
+--- /dev/null
++++ b/bsd/sys/hakios.audio.h
+@@ -0,0 +1,168 @@
++/*
++ * /dev/hakios-audio: the sound Darwin plays, on its way to whatever can make it heard.
++ *
++ * Darwin expects its output devices from Apple's audio drivers through IOAudio2; neither exists
++ * here. Instead the audio server (mediaserverd) is given a plug-in of ours that presents one
++ * stereo output device, and the plug-in writes what the server has mixed for that device
++ * here. In the kernel the samples go to a sink -- a driver for something that plays them --
++ * and, if asked for, into a recording that outlives the kernel (see dev/hakios.audio.c).
++ *
++ *   write(): whole frames in the format below. Never blocks: the writer is the audio server's
++ *            real-time thread, which paces itself (48000 frames a second while anything
++ *            plays, nothing at all otherwise). What the sink cannot take is dropped.
++ */
++#ifndef _SYS_HAKIOS_AUDIO_H_
++#define _SYS_HAKIOS_AUDIO_H_
++
++#include <stdint.h>
++
++#define HAKIOS_AUDIO_DEVICE    "/dev/hakios-audio"
++
++/* The one format: 16-bit signed little-endian samples, left then right. */
++#define HAKIOS_AUDIO_RATE      48000
++#define HAKIOS_AUDIO_CHANNELS  2
++#define HAKIOS_AUDIO_FRAME     4       /* bytes */
++
++/*
++ * ioctl(HAKIOS_AUDIO_SET_VOLUME): the speakers' volume, as Darwin sets it on the plug-in's volume
++ * control -- how many eighths of a dB under the loudest they may play, and whether they are
++ * muted (Darwin's volume at 0). The loudest is the kernel's to say (on the phone: Android's own
++ * level less sound_below, hakios.sound.c); the plug-in only says how far under it.
++ */
++#include <sys/ioccom.h>
++
++struct hakios_audio_volume {
++	uint32_t below;                 /* eighths of a dB */
++	uint32_t muted;
++};
++#define HAKIOS_AUDIO_SET_VOLUME _IOW('r', 1, struct hakios_audio_volume)
++
++/*
++ * /dev/hakios-mic: what the phone's main microphone hears, for the audio server (the plug-in's device "Codec"): 16-bit
++ * signed samples, ONE channel, HAKIOS_AUDIO_RATE. The kernel listens only while the device is open. read() never
++ * waits: it gives what has come, keeping the reader about 40 ms behind the microphone, and nothing until that much is
++ * there (the plug-in makes up the rest with silence). Made by whichever driver has a microphone (boot-arg mic=4 on the
++ * POCO X5 Pro, hakios.mic.c; abox_mic=1 with abox=8 on the Galaxy S9, hakios.exynos_abox.c).
++ */
++#define HAKIOS_MIC_DEVICE      "/dev/hakios-mic"
++#define HAKIOS_MIC_CHANNELS    1
++
++/*
++ * ioctl(HAKIOS_AUDIO_GET_ROUTE) on /dev/hakios-audio: where what is written goes now. `jack': something is plugged into
++ * the headphone jack; `headphones': the sound goes to it, not to the speakers (on the Galaxy S9 only with boot-arg
++ * cs47l93_hp=1). `generation' counts the changes, so a reader that polls sees one it would otherwise miss.
++ */
++struct hakios_audio_route {
++	uint32_t jack;
++	uint32_t headphones;
++	uint32_t generation;
++};
++#define HAKIOS_AUDIO_GET_ROUTE _IOR('r', 2, struct hakios_audio_route)
++
++#ifdef KERNEL
++#include <stdbool.h>
++
++/*
++ * For drivers. A sink is offered frames as they are written and says how many it took (the
++ * rest are lost); it is called from the writer's thread and must not wait.
++ */
++typedef uint32_t (*hakios_audio_sink_t)(const int16_t *frames, uint32_t count);
++
++void hakios_audio_set_sink(const char *name, hakios_audio_sink_t sink);
++/* The volume Darwin has set last (HAKIOS_AUDIO_SET_VOLUME): false if it has set none; *generation counts the settings. */
++bool hakios_audio_volume(uint32_t *below, bool *muted, uint32_t *generation);
++/* ... for a sink, which is called with the device's lock held (hakios_audio_volume takes it) */
++bool hakios_audio_volume_held(uint32_t *below, bool *muted, uint32_t *generation);
++void hakios_audio_init(void);
++
++/* ---- /dev/hakios-mic (above): the input's side of this file, for the driver that listens ---- */
++bool hakios_audio_input_create(const char *source);           /* the device made (once), fed by `source' */
++bool hakios_audio_input_wanted(void);                          /* it is open: listen */
++void hakios_audio_input_begin(void);                           /* a recording starts: the reader starts afresh */
++void hakios_audio_input_put(const int16_t *samples, uint32_t count);  /* mono samples heard, as they come */
++void hakios_audio_input_counts(uint64_t *skipped, uint64_t *dry);     /* since begin: frames skipped as late, reads short */
++/* HAKIOS_AUDIO_GET_ROUTE's answer, from the driver that knows the jack (hakios.cs47l93.c) */
++void hakios_audio_set_route(bool jack, bool headphones);
++void hakios_virtio_sound_init(void);   /* boot-arg virtio_sound=1: QEMU's virtio sound device */
++void hakios_speaker_init(void);        /* boot-arg speaker_probe=N: a look at the phone's speaker amplifiers */
++void hakios_haptic_init(void);         /* boot-arg haptic=N: the phone's vibration motor (drivers/haptic/hakios.haptic.c) */
++void hakios_haptic_quiesce(void);      /* its chip back into reset: at the run's end and on a panic's way out */
++void hakios_haptic_pretend(uint32_t peak); /* a test's stand-in for Darwin's waveform: as if a write of this loudness came */
++void hakios_torch_init(void);          /* boot-arg torch=N: the phone's flashlight (drivers/camera/hakios.torch.c) */
++void hakios_torch_quiesce(void);       /* the light off: at the run's end and on a panic's way out */
++void hakios_camera_init(void);         /* boot-arg cam=N: the phone's cameras (drivers/camera/hakios.camera.c) */
++void hakios_camera_quiesce(void);      /* whatever of them was switched on, off: at the run's end and on a panic's way out */
++
++/*
++ * The phone's speakers (drivers/audio/hakios.speaker.c): its two Awinic amplifiers, set up as
++ * Android's driver sets them up, from Android's own configuration file (see there).
++ */
++bool hakios_speaker_prepare(const uint8_t *acf, uint64_t size);       /* found, reset, configured: powered down, muted */
++bool hakios_speaker_start(void);       /* powered up and unmuted at the lowest volume: only while the I2S clock runs */
++bool hakios_speaker_volume(uint32_t below, uint32_t step_ms); /* below Android's level, in eighths of a dB; 6 dB a step */
++bool hakios_speaker_healthy(void);     /* no fault reported; on one, both are powered down at once */
++void hakios_speaker_stop(void);        /* faded out, muted, powered down, in Android's order */
++void hakios_speaker_quiesce(void);     /* powered down at once, without sleeping: on a panic's way out */
++/* the amplifiers' own temperature and battery voltage read (every second while they play): the reduction they call for */
++uint32_t hakios_speaker_monitor(bool tell);
++
++/*
++ * The speakers' guard (drivers/audio/hakios.guard.c): what the samples go through in the feeder on their
++ * way to the amplifiers, for want of the DSP's speaker protection. Levels in eighths of a dB.
++ */
++#define HAKIOS_GUARD_SILENT    0xffffffffu     /* the amplifiers are off: nothing reaches the speakers */
++struct hakios_guard_report {
++	uint32_t blocks, rms_blocks, fast_blocks, slow_blocks;  /* blocks done, and in how many each average held the level down */
++	uint32_t limited_frames;        /* frames in which the peak limiter turned the level down */
++	uint32_t peak_in, peak_out;     /* the largest sample that came in and that went out */
++	uint32_t least_peak_gain;       /* the peak limiter's least gain, in 1/65536 */
++	uint64_t least_gain, gain;      /* the power guard's (with the monitor's) least gain and the latest, Q30 */
++	uint64_t rms, fast, slow;       /* the averages now, the louder speaker's: Q30 of a full-scale square wave at Android's level */
++};
++#define HAKIOS_GUARD_MAX_GAIN  (12 * 8)        /* the most gain before the guard: 12 dB */
++void hakios_guard_configure(bool hpf, uint32_t gain);         /* the high-pass filter; `gain' before everything */
++void hakios_guard_attenuation(uint32_t below);                 /* the amplifiers' level under Android's (or HAKIOS_GUARD_SILENT):
++                                                                 * what the limits are reckoned from */
++void hakios_guard_monitor(uint32_t below);                     /* a reduction asked for by hakios_speaker_monitor() */
++void hakios_guard_process(int16_t *frames, uint32_t count);    /* stereo frames, in place */
++void hakios_guard_take_report(struct hakios_guard_report *report);   /* what happened since the last call */
++int hakios_guard_decibels(uint64_t ratio);                     /* 10 log10 of a Q30 ratio, in tenths of a dB */
++/* boot-arg rec_sound_fed=1: the recording (rec_sound=N) has what the guard let through instead of what Darwin wrote */
++bool hakios_audio_recording_fed(void);
++void hakios_audio_record_fed(const int16_t *frames, uint32_t count);
++
++/*
++ * The audio DSP's services, for the sound's path (drivers/audio/hakios.adsp.c, drivers/audio/hakios.sound.c).
++ * hakios_adsp_apr() sends one APR packet to a service of the DSP (AFE 4, ASM 7, ADM 8) with the
++ * given port and token (0: one of its own) and, with wait_ms, waits for the packet that carries
++ * that token back. What is not waited for goes to the handler of events, if there is one and it
++ * takes it (returns true). The handler is called on the link's thread and must not wait.
++ */
++struct hakios_apr_answer {
++	uint32_t opcode, token, length;         /* length: of the payload, in bytes */
++	uint32_t words[64];
++};
++typedef bool (*hakios_apr_events_t)(uint8_t service, uint16_t port, uint32_t opcode, uint32_t token, const uint32_t *payload,
++    uint32_t length);
++
++bool hakios_adsp_apr(uint8_t service, uint16_t port, uint32_t token, uint32_t opcode, const void *payload, uint32_t length,
++    uint32_t wait_ms, struct hakios_apr_answer *answer);
++void hakios_adsp_apr_events(hakios_apr_events_t handler);
++const uint8_t *hakios_adsp_fw_file(const char *name, uint64_t *size);        /* /fw/name, read whole; give back with: */
++void hakios_adsp_fw_free(const uint8_t *data, uint64_t size);
++
++void hakios_sound_dsp_up(void);        /* the DSP's audio services are up (adsp=1): boot-arg sound=N begins */
++void hakios_sound_dsp_down(void);      /* before the DSP is shut down at the run's end: everything of the sound's stopped */
++void hakios_sound_quiesce(void);       /* on a panic's way out: the amplifiers off, without sleeping */
++/* the microphones' part of the memory the DSP sees (hakios.sound.c): false if it cannot be had; given back with _put() */
++bool hakios_audio_dsp_memory(uintptr_t *memory, uint64_t *dsp_address, uint32_t *bytes);
++void hakios_audio_dsp_memory_put(void);
++/* a second handler of the DSP's events (the microphones'), asked when the first does not take one */
++void hakios_adsp_apr_events_second(hakios_apr_events_t handler);
++/* boot-arg rec_sound_mic=1: the recording (rec_sound=N) has what the microphone hears (given with hakios_audio_record_fed()) */
++bool hakios_audio_recording_mic(void);
++void hakios_mic_dsp_up(void);          /* the DSP's audio services are up (adsp=1): boot-arg mic=N begins */
++void hakios_mic_dsp_down(void);        /* before the DSP is shut down at the run's end: what the microphones' path asked for given back */
++#endif
++
++#endif /* _SYS_HAKIOS_AUDIO_H_ */
+diff --git a/bsd/sys/hakios.bcm4361_cis.h b/bsd/sys/hakios.bcm4361_cis.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e1b25bc7a3044cdcd324e9f6a079a60f203f41c
+--- /dev/null
++++ b/bsd/sys/hakios.bcm4361_cis.h
+@@ -0,0 +1,135 @@
++/*
++ * Darwin-on-hakios: which module the Galaxy S9's BCM4361 is (Murata or Samsung Electro-Mechanics, and its revision), from
++ * the chip's own OTP, and so which of the vendor's files are this phone's: the Wi-Fi NVRAM and the Bluetooth patch.
++ *
++ * Facts, from Samsung's bcmdhd for the S9 (drivers/net/wireless/broadcom/bcmdhd_101_12 of its GPL kernel, read, not
++ * copied): dhd_custom_cis.c, dhd_parse_board_information_bcm() reads the CIS tuples the module maker wrote into OTP, a
++ * word at a time from the backplane at 0x18011110..0x18011167, after writing OTP Control 1 (0x18010324) with 0x00fa0000 and
++ * the PMU's minimum resource mask (0x18012618) with 0x0e4fffff; the first tuple's id is 0x80, and each tuple is an id, a
++ * length (of the tag and data), a tag and data: tag 0x81 is the module's "VID" (two bytes here: the module's revision and
++ * its maker, 0x33 SEMCO, 0x22 Murata; bcmdhd matches only a VID of exactly two), tag 0x1b its board type. vid_info[] of the BCM4361 names the VIDs, and
++ * bcm4361_naming_table[] turns the name's last three parts into the NVRAM's suffix; a name with "_mur_" (a Murata front
++ * end) puts "_murata" before it (dhd_pcie.c, concate_revision_bcm4361()). The table below has the S9's B2 entries and
++ * the B0 ones; what the vendor's /vendor/firmware has for B2 is nvram.txt_r02a_b2, nvram.txt_r02b_b2 (SEMCO) and
++ * nvram.txt_murata_r041_b2 (Murata, whose VID that BSP's table does not list), and the Bluetooth patches
++ * bcm4361B2_murata.hcd and bcm4361B2_semco.hcd.
++ *
++ * Nothing but C here, so that tools/brcmfmac-test.py compiles it on the machine the kernel is built on.
++ */
++#ifndef _SYS_HAKIOS_BCM4361_CIS_H_
++#define _SYS_HAKIOS_BCM4361_CIS_H_
++
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++#ifdef KERNEL
++#include <libkern/libkern.h>     /* snprintf */
++#else
++#include <stdio.h>
++#endif
++
++#define BCM4361_CIS_START       0x18011110u     /* the first word of the CIS tuples in the backplane's view of OTP */
++#define BCM4361_CIS_END         0x18011167u     /* the last byte */
++#define BCM4361_CIS_WORDS       ((BCM4361_CIS_END - BCM4361_CIS_START + 1) / 4)
++#define BCM4361_OTP_CONTROL1    0x18010324u     /* written 0x00fa0000 before the read (bcmdhd) */
++#define BCM4361_OTP_CONTROL1_ON 0x00fa0000u
++#define BCM4361_PMU_MIN_RES     0x18012618u     /* written 0x0e4fffff before the read: "keep on ARMHTAVAIL" (bcmdhd) */
++#define BCM4361_PMU_MIN_RES_ON  0x0e4fffffu
++
++struct bcm4361_module {
++	uint8_t vid[8];
++	unsigned vid_length;            /* 0: none found */
++	int boardtype;                  /* -1: none found */
++	char maker[8];                  /* "murata", "semco" or "" */
++	char nvram[40];                 /* the vendor's NVRAM file for it, or "" */
++	int known;                      /* 1 when the VID is one of the table's, 0 when the name is only the maker's */
++};
++
++/* What bcmdhd's vid_info[] (B0 and B2 of the BCM4361) and naming table make of each VID: the NVRAM's suffix */
++static const struct {
++	uint8_t rev, maker;
++	const char *suffix;     /* after "nvram.txt" */
++} bcm4361_vids[] = {
++	{ 0x51, 0x33, "_r01d_b0" }, { 0x61, 0x33, "_r01f_b0" }, { 0x62, 0x33, "_r02g_b0" }, { 0x71, 0x33, "_r01h_b0" },
++	{ 0x81, 0x33, "_r01i_b0" }, { 0x82, 0x33, "_r02j_b0" },
++	{ 0x91, 0x33, "_r02a_b2" }, { 0xa1, 0x33, "_r02b_b2" },
++	{ 0x13, 0x22, "_murata_r013_b0" }, { 0x14, 0x22, "_murata_r014_b0" }, { 0x15, 0x22, "_murata_r015_b0" },
++	{ 0x20, 0x22, "_murata_r020_b0" }, { 0x21, 0x22, "_murata_r021_b0" }, { 0x22, 0x22, "_murata_r022_b0" },
++	{ 0x23, 0x22, "_murata_r023_b0" }, { 0x24, 0x22, "_murata_r024_b0" }, { 0x30, 0x22, "_murata_r030_b0" },
++	{ 0x31, 0x22, "_murata_r030_b0" },      /* (bcmdhd: "exceptional case: r31 -> r30") */
++	{ 0x32, 0x22, "_murata_r032_b0" }, { 0x33, 0x22, "_murata_r033_b0" }, { 0x34, 0x22, "_murata_r034_b0" },
++	{ 0x50, 0x22, "_murata_r020_b2" }, { 0x51, 0x22, "_murata_r021_b2" }, { 0x52, 0x22, "_murata_r022_b2" },
++	{ 0x61, 0x22, "_murata_r031_b2" },
++};
++
++/*
++ * The tuples in `cis` (length bytes, the words read from BCM4361_CIS_START in the chip's order: little-endian) read into
++ * *m. 1 when the first tuple is the start tag and a VID was found; 0 otherwise (*m then says what was).
++ */
++static inline int
++bcm4361_cis_parse(const uint8_t *cis, size_t length, struct bcm4361_module *m)
++{
++	size_t at = 0;
++
++	memset(m, 0, sizeof(*m));
++	m->boardtype = -1;
++	if (length < 3 || cis[0] != 0x80) {
++		return 0;
++	}
++	while (at + 2 <= length) {
++		unsigned len = cis[at + 1];
++
++		if (at + 2 + len > length) {
++			break;
++		}
++		if (len >= 1 && cis[at + 2] == 0x81 && m->vid_length == 0) {
++			m->vid_length = len - 1 > sizeof(m->vid) ? sizeof(m->vid) : len - 1;
++			memcpy(m->vid, cis + at + 3, m->vid_length);
++		} else if (len >= 2 && cis[at + 2] == 0x1b && m->boardtype < 0) {
++			m->boardtype = cis[at + 3];
++		}
++		if (m->vid_length != 0 && m->boardtype >= 0) {
++			break;
++		}
++		at += 2 + len;
++	}
++	return m->vid_length != 0;
++}
++
++/*
++ * The module's files for chip revision `rev_tag` ("b0" or "b2"): its maker from the VID's second byte, its NVRAM from
++ * the table; a VID of a known maker that the table does not have gets that maker's one B2 NVRAM of the vendor's (SEMCO:
++ * nvram.txt_r02b_b2, the later of the two; Murata: nvram.txt_murata_r041_b2), with known = 0.
++ */
++static inline void
++bcm4361_module_files(struct bcm4361_module *m, const char *rev_tag)
++{
++	m->maker[0] = 0;
++	m->nvram[0] = 0;
++	m->known = 0;
++	if (m->vid_length < 2) {
++		return;
++	}
++	if (m->vid[1] == 0x33) {
++		snprintf(m->maker, sizeof(m->maker), "semco");
++	} else if (m->vid[1] == 0x22) {
++		snprintf(m->maker, sizeof(m->maker), "murata");
++	} else {
++		return;
++	}
++	for (size_t i = 0; i < sizeof(bcm4361_vids) / sizeof(bcm4361_vids[0]); i++) {
++		size_t sl = strlen(bcm4361_vids[i].suffix);
++
++		if (m->vid_length == 2 && bcm4361_vids[i].rev == m->vid[0] && bcm4361_vids[i].maker == m->vid[1] && sl > 3 &&
++		    strcmp(bcm4361_vids[i].suffix + sl - 2, rev_tag) == 0) {
++			snprintf(m->nvram, sizeof(m->nvram), "nvram.txt%s", bcm4361_vids[i].suffix);
++			m->known = 1;
++			return;
++		}
++	}
++	if (strcmp(rev_tag, "b2") == 0) {
++		snprintf(m->nvram, sizeof(m->nvram), "%s", m->vid[1] == 0x33 ? "nvram.txt_r02b_b2" : "nvram.txt_murata_r041_b2");
++	}
++}
++
++#endif /* _SYS_HAKIOS_BCM4361_CIS_H_ */
+diff --git a/bsd/sys/hakios.camera.h b/bsd/sys/hakios.camera.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..47be533776dfa61842b594c974d0971f6ea1b217
+--- /dev/null
++++ b/bsd/sys/hakios.camera.h
+@@ -0,0 +1,63 @@
++/*
++ * /dev/hakios-camera: the phone's wide camera for Darwin (boot-arg cam=5; drivers/camera/hakios.camera.c).
++ *
++ *   open()   the first one powers the sensor up and starts its frames (the sensor's mode: boot-arg
++ *            cam_mode, else the module file's 4000x3000 one); the last close puts everything down
++ *            again, and so does a second without a read.
++ *   read()   waits (at most a second) for the newest frame not read yet: a struct
++ *            hakios_camera_frame, then as many of the frame's bytes as the buffer has room for.
++ *            A buffer of the header's size learns the frame's size and nothing else is copied.
++ *            EIO when the camera has had a fault: it stays off for the rest of the run.
++ *   write()  commands: a struct hakios_camera_command, then what it says follows.
++ */
++#ifndef _SYS_HAKIOS_CAMERA_H_
++#define _SYS_HAKIOS_CAMERA_H_
++
++#include <stdint.h>
++
++#define HAKIOS_CAMERA_DEVICE           "/dev/hakios-camera"
++#define HAKIOS_CAMERA_MAGIC            "RWFRAME1"
++
++struct hakios_camera_frame {
++	char            magic[8];       /* HAKIOS_CAMERA_MAGIC */
++	uint32_t        header_bytes;   /* this structure's size: the frame's bytes follow */
++	uint32_t        width, height;  /* pixels */
++	uint32_t        stride;         /* bytes from one line to the next */
++	uint32_t        format;         /* 1: MIPI RAW10, four pixels in five bytes */
++	uint32_t        bayer;          /* the order of a 2x2 cell: 0 RGGB, 1 GRBG, 2 GBRG, 3 BGGR */
++	uint32_t        black;          /* the black level, in 10-bit steps */
++	uint64_t        sequence;       /* the frame's number since the sensor started, from 1 */
++	uint64_t        time;           /* when the frame was done, in mach_absolute_time()'s units */
++	uint32_t        exposure_lines; /* the exposure it was taken with, in lines ... */
++	uint32_t        line_ns;        /* ... of this many nanoseconds */
++	uint32_t        gain;           /* the sensor's analog gain register ... */
++	uint32_t        gain_unity;     /* ... which is this for 1x */
++	uint32_t        gain_max;       /* the most it may be given */
++	uint32_t        frame_lines;    /* the frame's length in lines (frames a second: 1e9 / (frame_lines * line_ns)) */
++	uint32_t        frame_lines_min; /* the mode's own length: the shortest frame */
++	uint32_t        frame_lines_max; /* the longest frame it may be given */
++	uint32_t        margin;         /* exposure_lines is at most frame_lines - margin */
++	uint32_t        sensor;         /* which: 0 the macro, 1 the wide, 2 the front, 3 the ultra-wide camera */
++	uint32_t        focus;          /* the lens's position as last set, 0 (the furthest) to 1023: HAKIOS_CAMERA_NO_FOCUS where it
++	                                 * has no motor (or it does not answer) */
++	uint32_t        reserved[5];
++};
++
++#define HAKIOS_CAMERA_NO_FOCUS 0xffffffffu
++
++enum {
++	HAKIOS_CAMERA_EXPOSURE = 1,    /* a: lines, b: gain, c: frame lines (0: the shortest that holds the exposure) */
++	HAKIOS_CAMERA_KEEP = 2,        /* a picture for the host: a width, b height, c stride, d format (1 the frame's RAW10, 2 NV12,
++	                                 * 3 BGRA); bytes follow */
++	HAKIOS_CAMERA_SENSOR = 3,      /* another sensor: a which (as in the frames' header), b its mode (~0: the usual one);
++	                                 * the frames stop, everything goes down, and the next read starts the other one */
++	HAKIOS_CAMERA_FOCUS = 4,       /* the lens to a: 0 (the furthest) to 1023, from the next frame or so */
++};
++
++struct hakios_camera_command {
++	uint32_t        command;
++	uint32_t        bytes;          /* of what follows this structure */
++	uint32_t        a, b, c, d;
++};
++
++#endif /* _SYS_HAKIOS_CAMERA_H_ */
+diff --git a/bsd/sys/hakios.cs47l93.h b/bsd/sys/hakios.cs47l93.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e03654f1c8a2f614301c3dcf182405e49b3fcdc
+--- /dev/null
++++ b/bsd/sys/hakios.cs47l93.h
+@@ -0,0 +1,18 @@
++/*
++ * The Galaxy S9's audio codec, a Cirrus Logic CS47L93 (the Madera family) on spi@10470000 (USI01 of PERIC0):
++ * drivers/audio/codec/hakios.cs47l93.c, boot-arg cs47l93=N. The headphones, the jack and the microphones go through it; the
++ * speakers do not (ABOX's UAIF1 drives the MAX98512s directly).
++ */
++#ifndef _SYS_HAKIOS_CS47L93_H_
++#define _SYS_HAKIOS_CS47L93_H_
++
++#include <stdint.h>
++
++#define HAKIOS_CS47L93_ID               0x6371  /* MADERA_SOFTWARE_RESET (0x0000) reads it: CS47L92 and CS47L93 */
++
++#ifdef KERNEL
++void hakios_cs47l93_console(const char *arg);  /* the USB console's "codec" (hakios.dwc3.c) */
++void hakios_cs47l93_quiesce(void);             /* loader_return(): the outputs off, the codec held in reset */
++#endif
++
++#endif /* _SYS_HAKIOS_CS47L93_H_ */
+diff --git a/bsd/sys/hakios.ext4.h b/bsd/sys/hakios.ext4.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..9dfd832d9021bae4f8bf6bf9f1de6b6874507490
+--- /dev/null
++++ b/bsd/sys/hakios.ext4.h
+@@ -0,0 +1,596 @@
++/*
++ * Darwin-on-hakios: a file of an ext4 file system, read only, by its path. For the drivers that load the user's own
++ * firmware from the phone's own partitions at run time (the Galaxy S9's VENDOR: the BCM4361's Wi-Fi firmware, NVRAM and
++ * CLM, its Bluetooth patch), so that nothing of the vendor's is put into an image or a repository.
++ *
++ * What it reads, from the ext4 documentation (the kernel.org "ext4 Data Structures and Algorithms" pages) and nothing
++ * else: the superblock at byte 1024; the group descriptors (32 or 64 bytes) in the block after it; an inode by its group
++ * and index; a file's blocks through its extent tree (any depth; an extent not yet written reads as zeroes) or, without
++ * extents, through ext2/3's block map (12 direct, single, double and triple indirect; a hole reads as zeroes); a
++ * directory's entries read in order, block by block (an htree directory is also a list of ordinary blocks, its index
++ * blocks looking like one empty entry, so no hash is needed); a symbolic link, short (in the inode) or long (in a block),
++ * relative or, when it begins with the mount point given (the VENDOR partition is mounted at /vendor), absolute;
++ * data in the inode (inline_data) when the whole file or directory fits there (60 bytes).
++ *
++ * Nothing is written, nothing is trusted: every number read is checked against the file system's size before it is used,
++ * and a feature it does not know how to read (meta_bg, compression, a journal device; an encrypted file) is refused,
++ * not guessed at. Checksums are not checked (metadata_csum is read as if absent): this is a reader of a partition Android
++ * itself mounts read only.
++ *
++ * Nothing but C here, so that tools/ext4-test.py compiles it on the machine the kernel is built on and reads file
++ * systems made by mke2fs with it. The kernel's side (drivers/storage/hakios.ext4.c) gives it a way to read the partition
++ * and to allocate.
++ *
++ * Use: struct hakios_ext4 fs; hakios_ext4_open(&fs, read, context, mount, alloc, free) (0 or an errno);
++ * hakios_ext4_file(&fs, "/etc/wifi/bcmdhd_sta.bin_b2", max, &data, &size) gives the file in memory from alloc (the
++ * caller frees it with free(data, size)), or an errno: ENOENT not there, EFBIG larger than max, EFTYPE not a file,
++ * ENOTSUP a feature not read, EIO a read or a structure that is not right, ELOOP too many links.
++ */
++#ifndef _SYS_HAKIOS_EXT4_H_
++#define _SYS_HAKIOS_EXT4_H_
++
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++#ifndef EFTYPE
++#define EFTYPE 79
++#endif
++
++#define HAKIOS_EXT4_MAGIC               0xEF53
++/*
++ * incompat features read (FILETYPE, RECOVER, EXTENTS, 64BIT, MMP, FLEX_BG, CSUM_SEED, LARGEDIR, INLINE_DATA, ENCRYPT).
++ * ENCRYPT only says that some files and directories may be encrypted (Samsung sets it on the S9's EFS); those, the
++ * ones whose inode has EXT4_ENCRYPT_FL, are refused, and the rest read as ever.
++ */
++#define HAKIOS_EXT4_INCOMPAT_READ       (0x0002u | 0x0004u | 0x0040u | 0x0080u | 0x0100u | 0x0200u | 0x2000u | 0x4000u | \
++	                                 0x8000u | 0x10000u)
++#define HAKIOS_EXT4_INCOMPAT_FILETYPE   0x0002u
++#define HAKIOS_EXT4_INCOMPAT_RECOVER    0x0004u
++#define HAKIOS_EXT4_INCOMPAT_64BIT      0x0080u
++#define HAKIOS_EXT4_ENCRYPT_FL          0x00000800u
++#define HAKIOS_EXT4_EXTENTS_FL          0x00080000u
++#define HAKIOS_EXT4_INLINE_DATA_FL      0x10000000u
++#define HAKIOS_EXT4_EXTENT_MAGIC        0xF30A
++#define HAKIOS_EXT4_ROOT                2
++#define HAKIOS_EXT4_LINKS               8               /* symbolic links followed in one lookup */
++#define HAKIOS_EXT4_CHUNK               (1u << 20)      /* the most one read asks for */
++
++typedef int (*hakios_ext4_read_t)(void *context, uint64_t offset, void *dst, uint64_t length);
++typedef void *(*hakios_ext4_alloc_t)(uint64_t size);
++typedef void (*hakios_ext4_free_t)(void *p, uint64_t size);
++
++struct hakios_ext4 {
++	hakios_ext4_read_t read;
++	void *context;
++	hakios_ext4_alloc_t alloc;
++	hakios_ext4_free_t free;
++	const char *mount;              /* where the partition is mounted ("/vendor"), for absolute links; or NULL */
++	uint64_t blocks;                /* the file system's size in blocks */
++	uint32_t block_size;
++	uint32_t inode_size;
++	uint32_t inodes;
++	uint32_t inodes_per_group;
++	uint32_t groups;
++	uint32_t desc_size;
++	uint32_t first_data_block;
++	uint32_t incompat;
++	uint8_t *block;                 /* one block, for directories and the block map's indirect blocks */
++	uint8_t *block2;                /* and one more, for the extent tree's inner nodes */
++};
++
++struct hakios_ext4_inode {
++	uint32_t number;
++	uint16_t mode;
++	uint32_t flags;
++	uint64_t size;
++	uint8_t i_block[60];
++};
++
++static inline uint16_t
++hakios_ext4_le16(const uint8_t *p)
++{
++	return (uint16_t)(p[0] | (p[1] << 8));
++}
++
++static inline uint32_t
++hakios_ext4_le32(const uint8_t *p)
++{
++	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++static inline int
++hakios_ext4_read_block(struct hakios_ext4 *fs, uint64_t block, uint8_t *dst)
++{
++	if (block >= fs->blocks) {
++		return 5;       /* EIO */
++	}
++	return fs->read(fs->context, block * fs->block_size, dst, fs->block_size) == 0 ? 0 : 5;
++}
++
++static inline void
++hakios_ext4_close(struct hakios_ext4 *fs)
++{
++	if (fs->block != NULL) {
++		fs->free(fs->block, fs->block_size);
++		fs->block = NULL;
++	}
++	if (fs->block2 != NULL) {
++		fs->free(fs->block2, fs->block_size);
++		fs->block2 = NULL;
++	}
++}
++
++static inline int
++hakios_ext4_open(struct hakios_ext4 *fs, hakios_ext4_read_t read, void *context, const char *mount,
++    hakios_ext4_alloc_t alloc, hakios_ext4_free_t free_)
++{
++	uint8_t sb[1024];
++	uint32_t log, blocks_per_group;
++
++	memset(fs, 0, sizeof(*fs));
++	fs->read = read;
++	fs->context = context;
++	fs->mount = mount;
++	fs->alloc = alloc;
++	fs->free = free_;
++	if (read(context, 1024, sb, sizeof(sb)) != 0) {
++		return 5;
++	}
++	if (hakios_ext4_le16(sb + 56) != HAKIOS_EXT4_MAGIC) {
++		return 79;      /* EFTYPE: not ext2/3/4 */
++	}
++	log = hakios_ext4_le32(sb + 24);
++	if (log > 6) {          /* 1 KB to 64 KB */
++		return 5;
++	}
++	fs->block_size = 1024u << log;
++	fs->incompat = hakios_ext4_le32(sb + 96);
++	if (fs->incompat & ~HAKIOS_EXT4_INCOMPAT_READ) {
++		return 45;      /* ENOTSUP */
++	}
++	fs->blocks = hakios_ext4_le32(sb + 4);
++	if (fs->incompat & HAKIOS_EXT4_INCOMPAT_64BIT) {
++		fs->blocks |= (uint64_t)hakios_ext4_le32(sb + 0x150) << 32;
++		fs->desc_size = hakios_ext4_le16(sb + 254);
++		if (fs->desc_size < 32 || fs->desc_size > 1024 || (fs->desc_size & (fs->desc_size - 1)) != 0) {
++			return 5;
++		}
++	} else {
++		fs->desc_size = 32;
++	}
++	fs->inodes = hakios_ext4_le32(sb + 0);
++	fs->first_data_block = hakios_ext4_le32(sb + 20);
++	blocks_per_group = hakios_ext4_le32(sb + 32);
++	fs->inodes_per_group = hakios_ext4_le32(sb + 40);
++	fs->inode_size = hakios_ext4_le32(sb + 76) == 0 ? 128 : hakios_ext4_le16(sb + 88);
++	if (fs->blocks == 0 || blocks_per_group == 0 || fs->inodes_per_group == 0 || fs->inode_size < 128 ||
++	    fs->inode_size > fs->block_size || (fs->inode_size & (fs->inode_size - 1)) != 0 ||
++	    fs->first_data_block >= fs->blocks) {
++		return 5;
++	}
++	fs->groups = (uint32_t)((fs->blocks - fs->first_data_block + blocks_per_group - 1) / blocks_per_group);
++	if ((uint64_t)fs->groups * fs->inodes_per_group < fs->inodes) {
++		return 5;
++	}
++	fs->block = (uint8_t *)alloc(fs->block_size);
++	fs->block2 = (uint8_t *)alloc(fs->block_size);
++	if (fs->block == NULL || fs->block2 == NULL) {
++		hakios_ext4_close(fs);
++		return 12;      /* ENOMEM */
++	}
++	return 0;
++}
++
++/* inode `number` (1 is the first) */
++static inline int
++hakios_ext4_inode(struct hakios_ext4 *fs, uint32_t number, struct hakios_ext4_inode *inode)
++{
++	uint32_t group, index;
++	uint64_t table, where;
++	uint8_t desc[64], raw[128];
++
++	if (number == 0 || number > fs->inodes) {
++		return 5;
++	}
++	group = (number - 1) / fs->inodes_per_group;
++	index = (number - 1) % fs->inodes_per_group;
++	if (group >= fs->groups) {
++		return 5;
++	}
++	/* the descriptors begin in the block after the superblock's (block 2 for 1 KB blocks, else block 1) */
++	where = (uint64_t)(fs->first_data_block + 1) * fs->block_size + (uint64_t)group * fs->desc_size;
++	if (fs->read(fs->context, where, desc, fs->desc_size >= 64 ? 64 : 32) != 0) {
++		return 5;
++	}
++	table = hakios_ext4_le32(desc + 8);
++	if (fs->desc_size >= 64) {
++		table |= (uint64_t)hakios_ext4_le32(desc + 0x28) << 32;
++	}
++	if (table == 0 || table >= fs->blocks) {
++		return 5;
++	}
++	if (fs->read(fs->context, table * fs->block_size + (uint64_t)index * fs->inode_size, raw, sizeof(raw)) != 0) {
++		return 5;
++	}
++	inode->number = number;
++	inode->mode = hakios_ext4_le16(raw + 0);
++	inode->flags = hakios_ext4_le32(raw + 32);
++	if (inode->flags & HAKIOS_EXT4_ENCRYPT_FL) {
++		return 45;      /* ENOTSUP: an encrypted file or directory (INCOMPAT_ENCRYPT) */
++	}
++	inode->size = hakios_ext4_le32(raw + 4) | ((uint64_t)hakios_ext4_le32(raw + 108) << 32);
++	memcpy(inode->i_block, raw + 40, 60);
++	return 0;
++}
++
++/*
++ * The physical block of the file's logical block `logical`, 0 for a hole or an extent not yet written (zeroes), and in
++ * *run how many blocks from there on are contiguous both in the file and on the disk (at least 1), so that a file is read
++ * a piece at a time and not a block at a time.
++ */
++static inline int
++hakios_ext4_map_extents(struct hakios_ext4 *fs, const struct hakios_ext4_inode *inode, uint32_t logical,
++    uint64_t *physical, uint32_t *run)
++{
++	const uint8_t *node = inode->i_block;
++	uint32_t room = 60;
++
++	for (unsigned level = 0; level < 6; level++) {
++		uint16_t entries, depth;
++		int found = -1;
++
++		if (room < 12 || hakios_ext4_le16(node) != HAKIOS_EXT4_EXTENT_MAGIC) {
++			return 5;
++		}
++		entries = hakios_ext4_le16(node + 2);
++		depth = hakios_ext4_le16(node + 6);
++		if (entries > (room - 12) / 12) {
++			return 5;
++		}
++		/* the last entry that begins at or before the block wanted (entries are in order) */
++		for (unsigned e = 0; e < entries; e++) {
++			if (hakios_ext4_le32(node + 12 + 12 * e) <= logical) {
++				found = (int)e;
++			} else {
++				break;
++			}
++		}
++		if (depth == 0) {
++			const uint8_t *x;
++			uint32_t first, length;
++			uint64_t start;
++			int unwritten;
++
++			if (found < 0) {
++				*physical = 0;
++				*run = 1;
++				return 0;
++			}
++			x = node + 12 + 12 * found;
++			first = hakios_ext4_le32(x);
++			length = hakios_ext4_le16(x + 4);
++			unwritten = length > 32768;
++			if (unwritten) {
++				length -= 32768;
++			}
++			start = ((uint64_t)hakios_ext4_le16(x + 6) << 32) | hakios_ext4_le32(x + 8);
++			if (logical - first >= length) {
++				*physical = 0;          /* a hole after this extent */
++				*run = 1;
++				return 0;
++			}
++			if (start + length > fs->blocks || start < fs->first_data_block) {
++				return 5;
++			}
++			*physical = unwritten ? 0 : start + (logical - first);
++			*run = length - (logical - first);
++			return 0;
++		} else {
++			const uint8_t *x;
++			uint64_t leaf;
++
++			if (found < 0) {
++				*physical = 0;
++				*run = 1;
++				return 0;
++			}
++			x = node + 12 + 12 * found;
++			leaf = ((uint64_t)hakios_ext4_le16(x + 8) << 32) | hakios_ext4_le32(x + 4);
++			if (hakios_ext4_read_block(fs, leaf, fs->block2) != 0) {
++				return 5;
++			}
++			node = fs->block2;
++			room = fs->block_size;
++			if (hakios_ext4_le16(node + 6) != depth - 1) {
++				return 5;
++			}
++		}
++	}
++	return 5;
++}
++
++/* The same through ext2/3's block map: 12 direct blocks, then single, double and triple indirect ones */
++static inline int
++hakios_ext4_map_blocks(struct hakios_ext4 *fs, const struct hakios_ext4_inode *inode, uint32_t logical,
++    uint64_t *physical, uint32_t *run)
++{
++	uint32_t per = fs->block_size / 4, block, levels;
++	uint64_t index = logical, span = 1;
++
++	*run = 1;
++	if (index < 12) {
++		block = hakios_ext4_le32(inode->i_block + 4 * index);
++		*physical = block;
++		return block < fs->blocks ? 0 : 5;
++	}
++	index -= 12;
++	for (levels = 1; levels <= 3; levels++) {
++		span *= per;
++		if (index < span) {
++			break;
++		}
++		index -= span;
++	}
++	if (levels > 3) {
++		return 5;
++	}
++	block = hakios_ext4_le32(inode->i_block + 4 * (11 + levels));
++	for (uint32_t l = levels; l > 0; l--) {
++		span /= per;
++		if (block == 0) {
++			*physical = 0;
++			return 0;
++		}
++		if (hakios_ext4_read_block(fs, block, fs->block2) != 0) {
++			return 5;
++		}
++		block = hakios_ext4_le32(fs->block2 + 4 * (uint32_t)(index / span));
++		index %= span;
++	}
++	*physical = block;
++	return block < fs->blocks ? 0 : 5;
++}
++
++static inline int
++hakios_ext4_map(struct hakios_ext4 *fs, const struct hakios_ext4_inode *inode, uint32_t logical, uint64_t *physical,
++    uint32_t *run)
++{
++	if (inode->flags & HAKIOS_EXT4_EXTENTS_FL) {
++		return hakios_ext4_map_extents(fs, inode, logical, physical, run);
++	}
++	return hakios_ext4_map_blocks(fs, inode, logical, physical, run);
++}
++
++/* Bytes [0, length) of the inode's data into dst (length no more than its size) */
++static inline int
++hakios_ext4_read_data(struct hakios_ext4 *fs, const struct hakios_ext4_inode *inode, uint8_t *dst, uint64_t length)
++{
++	uint64_t done = 0;
++
++	if (inode->flags & HAKIOS_EXT4_INLINE_DATA_FL) {
++		/* the first 60 bytes are in i_block, the rest in an extended attribute, which is not read */
++		if (length > 60) {
++			return 45;
++		}
++		memcpy(dst, inode->i_block, (size_t)length);
++		return 0;
++	}
++	while (done < length) {
++		uint64_t physical, bytes;
++		uint32_t run, logical = (uint32_t)(done / fs->block_size);
++
++		if (done / fs->block_size > 0xffffffffull) {
++			return 5;
++		}
++		if (hakios_ext4_map(fs, inode, logical, &physical, &run) != 0) {
++			return 5;
++		}
++		bytes = (uint64_t)run * fs->block_size;
++		if (bytes > HAKIOS_EXT4_CHUNK) {
++			bytes = HAKIOS_EXT4_CHUNK;
++		}
++		if (bytes > length - done) {
++			bytes = length - done;
++		}
++		if (physical == 0) {
++			memset(dst + done, 0, (size_t)bytes);
++		} else if (fs->read(fs->context, physical * fs->block_size, dst + done, bytes) != 0) {
++			return 5;
++		}
++		done += bytes;
++	}
++	return 0;
++}
++
++/* The inode of `name` (length bytes, no '/') in the directory `dir`; ENOENT when it is not there */
++static inline int
++hakios_ext4_lookup(struct hakios_ext4 *fs, const struct hakios_ext4_inode *dir, const char *name, size_t length,
++    uint32_t *number)
++{
++	uint64_t blocks = (dir->size + fs->block_size - 1) / fs->block_size;
++
++	if ((dir->mode & 0xF000) != 0x4000) {
++		return 20;      /* ENOTDIR */
++	}
++	if (dir->flags & HAKIOS_EXT4_INLINE_DATA_FL) {
++		/*
++		 * a directory in its inode: the parent's number in 4 bytes (for ".."), then entries in the other 56; more than
++		 * fits there goes into an extended attribute, which is not read
++		 */
++		uint32_t at = 4;
++
++		if (dir->size > 60) {
++			return 45;
++		}
++		if (length == 2 && name[0] == '.' && name[1] == '.') {
++			*number = hakios_ext4_le32(dir->i_block);
++			return 0;
++		}
++		if (length == 1 && name[0] == '.') {
++			*number = dir->number;
++			return 0;
++		}
++		while (at + 8 <= 60) {
++			const uint8_t *e = dir->i_block + at;
++			uint32_t inode = hakios_ext4_le32(e);
++			uint16_t rec = hakios_ext4_le16(e + 4);
++			uint16_t len = e[6];
++
++			if (rec < 8 || at + rec > 60 || (uint32_t)len + 8 > rec) {
++				return 5;
++			}
++			if (inode != 0 && len == length && memcmp(e + 8, name, length) == 0) {
++				*number = inode;
++				return 0;
++			}
++			at += rec;
++		}
++		return 2;
++	}
++	for (uint64_t b = 0; b < blocks && b <= 0xffffffffull; b++) {
++		uint64_t physical;
++		uint32_t run, at = 0;
++
++		if (hakios_ext4_map(fs, dir, (uint32_t)b, &physical, &run) != 0) {
++			return 5;
++		}
++		if (physical == 0) {
++			continue;
++		}
++		if (hakios_ext4_read_block(fs, physical, fs->block) != 0) {
++			return 5;
++		}
++		while (at + 8 <= fs->block_size) {
++			const uint8_t *e = fs->block + at;
++			uint32_t inode = hakios_ext4_le32(e);
++			uint16_t rec = hakios_ext4_le16(e + 4);
++			uint16_t len = (fs->incompat & HAKIOS_EXT4_INCOMPAT_FILETYPE) ? e[6] : hakios_ext4_le16(e + 6);
++
++			if (rec < 8 || (rec & 3) != 0 || at + rec > fs->block_size || (uint32_t)len + 8 > rec) {
++				return 5;
++			}
++			if (inode != 0 && len == length && memcmp(e + 8, name, length) == 0) {
++				*number = inode;
++				return 0;
++			}
++			at += rec;
++		}
++	}
++	return 2;               /* ENOENT */
++}
++
++/*
++ * The inode `path` names (absolute within the file system: "/etc/wifi/x" or "etc/wifi/x"), following symbolic links,
++ * at most HAKIOS_EXT4_LINKS of them. `links` counts those followed so far.
++ */
++static inline int
++hakios_ext4_walk(struct hakios_ext4 *fs, uint32_t start, const char *path, size_t path_length,
++    struct hakios_ext4_inode *out, unsigned *links)
++{
++	struct hakios_ext4_inode at;
++	size_t i = 0;
++	int error;
++
++	if (path_length > 0 && path[0] == '/') {
++		start = HAKIOS_EXT4_ROOT;
++	}
++	if ((error = hakios_ext4_inode(fs, start, &at)) != 0) {
++		return error;
++	}
++	while (i < path_length) {
++		struct hakios_ext4_inode next;
++		uint32_t number, parent = at.number;
++		size_t begin;
++
++		while (i < path_length && path[i] == '/') {
++			i++;
++		}
++		begin = i;
++		while (i < path_length && path[i] != '/') {
++			i++;
++		}
++		if (i == begin) {
++			break;
++		}
++		if (i - begin > 255) {
++			return 63;      /* ENAMETOOLONG */
++		}
++		if ((error = hakios_ext4_lookup(fs, &at, path + begin, i - begin, &number)) != 0) {
++			return error;
++		}
++		if ((error = hakios_ext4_inode(fs, number, &next)) != 0) {
++			return error;
++		}
++		if ((next.mode & 0xF000) == 0xA000) {
++			char target[256];
++			size_t length, skip = 0, mount_length = fs->mount == NULL ? 0 : strlen(fs->mount);
++			uint32_t from = parent;
++
++			if (++*links > HAKIOS_EXT4_LINKS) {
++				return 62;      /* ELOOP */
++			}
++			if (next.size == 0 || next.size >= sizeof(target)) {
++				return 5;
++			}
++			length = (size_t)next.size;
++			/* a short link is in the inode itself (and has no blocks); a long one in its first block */
++			if (length < 60 && !(next.flags & (HAKIOS_EXT4_EXTENTS_FL | HAKIOS_EXT4_INLINE_DATA_FL))) {
++				memcpy(target, next.i_block, length);
++			} else if ((error = hakios_ext4_read_data(fs, &next, (uint8_t *)target, length)) != 0) {
++				return error;
++			}
++			target[length] = 0;
++			if (target[0] == '/') {
++				/* absolute: only within this file system's mount point */
++				if (mount_length == 0 || strncmp(target, fs->mount, mount_length) != 0 ||
++				    (target[mount_length] != '/' && target[mount_length] != 0)) {
++					return 18;      /* EXDEV: it leaves the partition */
++				}
++				skip = mount_length;
++				from = HAKIOS_EXT4_ROOT;
++			}
++			if ((error = hakios_ext4_walk(fs, from, target + skip, length - skip, &next, links)) != 0) {
++				return error;
++			}
++		}
++		at = next;
++	}
++	*out = at;
++	return 0;
++}
++
++static inline int
++hakios_ext4_file(struct hakios_ext4 *fs, const char *path, uint64_t max, uint8_t **data, uint64_t *size)
++{
++	struct hakios_ext4_inode inode;
++	unsigned links = 0;
++	uint8_t *buffer;
++	int error;
++
++	*data = NULL;
++	*size = 0;
++	if ((error = hakios_ext4_walk(fs, HAKIOS_EXT4_ROOT, path, strlen(path), &inode, &links)) != 0) {
++		return error;
++	}
++	if ((inode.mode & 0xF000) != 0x8000) {
++		return 79;              /* EFTYPE: not a regular file */
++	}
++	if (inode.size > max) {
++		*size = inode.size;
++		return 27;              /* EFBIG */
++	}
++	buffer = (uint8_t *)fs->alloc(inode.size == 0 ? 1 : inode.size);
++	if (buffer == NULL) {
++		return 12;
++	}
++	if ((error = hakios_ext4_read_data(fs, &inode, buffer, inode.size)) != 0) {
++		fs->free(buffer, inode.size == 0 ? 1 : inode.size);
++		return error;
++	}
++	*data = buffer;
++	*size = inode.size;
++	return 0;
++}
++
++#endif /* _SYS_HAKIOS_EXT4_H_ */
+diff --git a/bsd/sys/hakios.exynos_abox.h b/bsd/sys/hakios.exynos_abox.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc73d07c3abeb28d418967cfa390aff60de39263
+--- /dev/null
++++ b/bsd/sys/hakios.exynos_abox.h
+@@ -0,0 +1,317 @@
++/*
++ * ABOX, the Exynos 9810's audio block, as the Galaxy S9's speaker path (drivers/audio/abox/hakios.exynos_abox.c, boot-arg
++ * abox=N): memory -> RDMA0 -> SPUS (ABOX's stream bus) -> SIFS0 -> UAIF1 (I2S, ABOX the master) -> the two MAX98512
++ * amplifiers. ABOX's own CPU stays off ("bypass"): the AP programs what Samsung's ABOX firmware (calliope) would.
++ *
++ * This header is two things: the amplifiers' driver's way in (the hook below), and ABOX's registers as far as they are
++ * known, each marked FACT (read in the S9 kernel's source, file named) or INFERRED (worked out; why is said) -- the
++ * record for a firmware mode of the same driver and for an open ABOX firmware. The GPL source was read for these facts;
++ * nothing of it is copied.
++ *
++ * THE FORMAT ON UAIF1 (what the amplifiers' driver must match). From Samsung's machine driver (exynos9810_madera.c,
++ * the "UAIF1" link: SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS) and the defaults of ABOX's
++ * driver, which UAIF1 gets when nothing in user space says otherwise (abox.c: every SIF at 48000 Hz, S16, 2 channels;
++ * abox_if.c: the UAIF's width, channels and rate follow them):
++ *   - I2S (Philips): two slots a frame, LRCLK low for the left slot (slot 0), high for the right (slot 1); each sample's
++ *     MSB one BCLK after the LRCLK edge
++ *   - NB_NF: data changes on BCLK's falling edge and is sampled on its rising edge; LRCLK not inverted. In ABOX's terms
++ *     UAIF1_CTRL1 BCLK_POLARITY = 1, WS_POLAR = 0, WS_MODE = 0 (abox_if.c, abox_uaif_set_fmt)
++ *   - CBS_CFS: ABOX drives BCLK and LRCLK; the amplifiers are slaves (max98512.c: PCM_MASTER_MODE slave)
++ *   - 48 kHz, 2 slots of 16 bits, S16: BCLK = 32 x fs = 1.536 MHz, LRCLK = 48 kHz (max98512.c's BCLK/LRCLK ratio for
++ *     2 x 16: BSEL 32)
++ *   - slot 0 (left) is for the amplifier at 0x39, slot 1 (right) for the one at 0x3A (the device tree's max98512@39,
++ *     maxim,mono_stereo = 1; max98512.c: the left chip takes PCM channel 0, the right channel 1)
++ * Android's user space can set other widths through the "UAIF1 width/channel/rate" controls; nothing in the kernel's
++ * source does, and that is not followed here. The hook passes the numbers, so an amplifier driver can check them.
++ */
++#ifndef _SYS_HAKIOS_EXYNOS_ABOX_H_
++#define _SYS_HAKIOS_EXYNOS_ABOX_H_
++
++#include <stdint.h>
++#include <sys/hakios.exynos_soc.h>
++#define HAKIOS_ABOX_RATE                48000u
++#define HAKIOS_ABOX_SLOT_BITS           16u
++#define HAKIOS_ABOX_CHANNELS            2u
++
++#ifdef KERNEL
++/*
++ * The speaker amplifiers' driver (another file) registers itself here. start() is called once UAIF1's BCLK and LRCLK
++ * run (RDMA0 feeding it, silence at first) and stop() before they stop; both from the driver's own thread, which may
++ * sleep. With none registered, the stream runs and the log says that nothing can be heard.
++ */
++struct hakios_abox_amp {
++	const char *name;
++	int (*start)(uint32_t rate, uint32_t slot_bits, uint32_t channels);   /* after UAIF1's clocks run; 0 or an errno */
++	void (*stop)(void);                                                    /* before they stop */
++	void (*status)(const char *when);   /* may be NULL: what the amplifiers say of themselves, into the log */
++};
++void hakios_abox_set_amp(const struct hakios_abox_amp *amp);              /* NULL: none */
++
++void hakios_exynos_abox_init(void);    /* boot-arg abox=N on the Galaxy S9: the first N steps of ABOX's speaker path */
++void hakios_exynos_abox_quiesce(void); /* loader_return(): RDMA0 and UAIF1 stopped, if they run */
++void hakios_abox_console(const char *arg);      /* the USB console's "abox" (hakios.dwc3.c): status, tone, r, w, set */
++/*
++ * The headphones (hakios.cs47l93.c, cs47l93_hp=1): true asks for iOS's sound on UAIF0 (the codec's AIF1) instead of the
++ * amplifiers, false gives it back. Waits (200 ms at most) for step 8's loop to have done it; false if it has not (no
++ * stream for iOS: abox=8 not running).
++ */
++#include <stdbool.h>
++bool hakios_abox_headphones(bool on);
++#endif
++
++/*
++ * ---- Where things are (FACT: the S9's device tree, exynos9810-starlte_eur_open_26.dts) ----------------------------------
++ */
++#define ABOX_SFR_PA             ((uint32_t)EXYNOS_ABOX_SFR_PA)     /* abox@17c50000 "sfr", 64 KB */
++#define ABOX_SYSREG_PA          ((uint32_t)EXYNOS_ABOX_SYSREG_PA)     /* ... "sysreg": SYSREG_AUD */
++#define ABOX_SRAM_PA            ((uint32_t)EXYNOS_ABOX_SRAM_PA)     /* ... "sram", 0x31000 bytes: the CPU's memory (unused in bypass) */
++#define ABOX_GICD_PA            ((uint32_t)EXYNOS_ABOX_GICD_PA)     /* abox_gic: ABOX's own GIC-400 (unused in bypass) */
++#define ABOX_CMU_PA             ((uint32_t)EXYNOS_CMU_AUD_PA)     /* CMU_AUD (cal-if/exynos9810/cmucal-sfr.c: SFR_BLOCK(AUD), 0x8000) */
++#define ABOX_GPIO_PA            ((uint32_t)EXYNOS_GPIO_AUD_PA)     /* pinctrl@17C60000: gpb0, gpb1, gpb2 (GPIO_AUD) */
++#define ABOX_SYSMMU_PA          ((uint32_t)EXYNOS_ABOX_SYSMMU_PA)     /* sysmmu@17E00000, "Abox", ABOX's iommus */
++#define ABOX_PMU_PA             ((uint32_t)EXYNOS_PMU_PA)     /* the PMU (system-controller@14060000) */
++/* abox_rmem (the device tree's reserved-memory for ABOX, 0xFB200000 + 0x2800000): below 4 GB, kept out of UEFI and XNU
++ * by the loader (starlte's keep_out); the ring goes at its start when no RAM below 4 GB is the kernel's */
++#define ABOX_RMEM_PA            0xFB200000u
++#define ABOX_RMEM_SIZE          0x02800000u
++#define ABOX_DTZPC_ARG          EXYNOS_ABOX_ABOX_DTZPC_ARG     /* pd-aud's need_smc: the DTZPC restore's argument */
++
++/*
++ * ---- PMU (FACT) -----------------------------------------------------------------------------------------------------------
++ * cal-if/exynos9810/flexpmu_cal_local_exynos9810.h (aud_on, aud_off) and abox.c (the CONFIG_SOC_EXYNOS9810 block)
++ */
++#define PMU_AUD_CONFIGURATION   EXYNOS_ABOX_PMU_AUD_CONFIGURATION          /* [3:0] = 0xF on, 0 off */
++#define PMU_AUD_STATUS          EXYNOS_ABOX_PMU_AUD_STATUS          /* [3:0] == 0xF when on, 0 when off */
++#define PMU_GPIO_MODE_ABOX      EXYNOS_ABOX_PMU_GPIO_MODE_ABOX          /* GPIO_MODE_ABOX_SYS_PWR_REG: bit 0, set by abox_pad_retention() both ways */
++#define PMU_PAD_RETENTION_ABOX  EXYNOS_ABOX_PMU_PAD_RETENTION_ABOX          /* PAD_RETENTION_ABOX_OPTION: bit 28 set releases the pads' retention */
++#define PMU_PAD_RELEASE         (1u << 28)
++#define PMU_ABOX_CPU_CONFIG     EXYNOS_ABOX_PMU_ABOX_CPU_CONFIG          /* ABOX_CPU_CONFIGURATION: bit 0 the CPU's local power */
++#define PMU_ABOX_CPU_STATUS     EXYNOS_ABOX_PMU_ABOX_CPU_STATUS          /* bit 0: the CPU's power is on */
++#define PMU_ABOX_CPU_OPTION     EXYNOS_ABOX_PMU_ABOX_CPU_OPTION          /* bit 28: the CPU released (ENABLE_CPU) */
++#define PMU_ABOX_CPU_ENABLE     EXYNOS_ABOX_PMU_ABOX_CPU_ENABLE
++#define PMU_ABOX_CPU_STANDBY    EXYNOS_ABOX_PMU_ABOX_CPU_STANDBY          /* bit 29 WFE, bit 28 WFI */
++/* After AUD_STATUS reads on, the CAL makes SMC 0x82000410 (SMC_CMD_PREAPRE_PD_ONOFF, linux/smc.h) with (1, 0x17C10204):
++ * the DTZPC restore (exynos-el3_mon.c, exynos_pd_tz_restore), before any of the block's registers is touched. */
++#define ABOX_SMC_PD_ONOFF       0x82000410u
++
++/*
++ * ---- CMU_AUD (FACT: cal-if/exynos9810/cmucal-sfr.c, -node.c, -qch.c, -vclklut.c; ra.c for the sequences) ------------------
++ * PLL_AUD is a PLL_1031X fed by OSCCLK_AUD, 26 MHz: Fout = 26 MHz x (M + K/65536) / (P x 2^S). For 48 kHz the BSP's
++ * table has M 45, P 1, S 0, K 24319: 1179.648040 MHz (abox.h AUD_PLL_RATE_HZ_FOR_48000).
++ */
++#define CMU_PLL_LOCKTIME        EXYNOS_ABOX_CMU_PLL_LOCKTIME          /* [19:0]: P x 500 for a PLL with K (pll_spec.c: PLL_1031X flock_time 500) */
++#define CMU_PLL_CON0            EXYNOS_ABOX_CMU_PLL_CON0          /* S [2:0], P [13:8], M [25:16], MUX_SEL 4, MUX_BUSY 7, STABLE 29, ENABLE 31 */
++#define CMU_PLL_CON3            EXYNOS_ABOX_CMU_PLL_CON3          /* K [15:0], signed */
++#define PLL_MUX_SEL             (1u << 4)       /* 1: the PLL's output, 0: OSCCLK (ra.h) */
++#define PLL_MUX_BUSY            (1u << 7)
++#define PLL_STABLE              (1u << 29)
++#define PLL_ENABLE              (1u << 31)
++#define PLL_AUD_M               45u
++#define PLL_AUD_P               1u
++#define PLL_AUD_S               0u
++#define PLL_AUD_K               24319u
++#define PLL_AUD_LOCK            500u
++/* dividers: DIVRATIO (the ratio less one) in the low bits, BUSY bit 16, ENABLE_AUTOMATIC_CLKGATING bit 28 */
++#define CMU_DIV_AUDIF           EXYNOS_ABOX_CMU_DIV_AUDIF          /* [8:0] DIV_CLK_AUD_AUDIF from PLL_AUD: abox's "audif" */
++#define CMU_DIV_BUS             EXYNOS_ABOX_CMU_DIV_BUS          /* [2:0] DIV_CLK_AUD_BUS from PLL_AUD: ABOX's ACLK, abox's "bus" */
++#define CMU_DIV_BUSP            EXYNOS_ABOX_CMU_DIV_BUSP          /* [1:0] DIV_CLK_AUD_BUSP from DIV_CLK_AUD_BUS: the block's APB */
++#define CMU_DIV_PLL             EXYNOS_ABOX_CMU_DIV_PLL          /* [3:0] DIV_CLK_AUD_PLL: toward the CPU's clock (not touched) */
++#define CMU_DIV_UAIF1           EXYNOS_ABOX_CMU_DIV_UAIF1          /* [8:0] DIV_CLK_AUD_UAIF1 from DIV_CLK_AUD_AUDIF: UAIF1's BCLK */
++#define CMU_MUX_CPU             EXYNOS_ABOX_CMU_MUX_CPU          /* MUX_CLK_AUD_CPU (not touched) */
++#define CMU_MUX_UAIF1           EXYNOS_ABOX_CMU_MUX_UAIF1          /* [0]: 0 DIV_CLK_AUD_UAIF1, 1 CLKIO_AUD_UAIF1 (the pin); BUSY 16 */
++#define CMU_DIV_BUSY            EXYNOS_ABOX_CMU_DIV_BUSY
++/* rates: the CAL's common table for BLK_AUD (cmucal-vclklut.c blk_aud_lut_params) has DIV_CLK_AUD_BUS 1, BUSP 2; abox.c's
++ * abox_register_bclk_usage() with uaif_max_div 512 (device tree) asks AUDIF for 384000 x 96 x 2 = 73.728 MHz (ratio 16), and
++ * abox_if.c BCLK = rate x channels x width = 1.536 MHz (ratio 48 under AUDIF) */
++#define AUD_DIV_BUS             1u              /* 589.824 MHz */
++#define AUD_DIV_BUSP            2u              /* 196.608 MHz */
++#define AUD_DIV_AUDIF           15u             /* 73.728 MHz */
++#define AUD_DIV_UAIF1           47u             /* 1.536 MHz */
++/* gates of UAIF1 (CG_VAL 21, MANUAL 20, ENABLE_AUTOMATIC_CLKGATING 28): read, not written */
++#define CMU_GATE_BCLK_UAIF1     0x2020
++#define CMU_GATE_RSTN_UAIF1     0x2094
++/* Q-channels: ENABLE bit 0 (1: the hardware gates the clock by itself), CLOCK_REQ bit 1 (with ENABLE 0: 1 = clock on),
++ * IGNORE_FORCE_PM_EN bit 2, EXPIRE_VAL [25:16]. ra.c ra_req_enable_qch(): a clk_enable sets CLOCK_REQ only when ENABLE is 0 */
++#define CMU_QCH_DUMMY           0x3000          /* ABOX_QCH_DUMMY: abox's "cpu" clock (GATE_ABOX_DUMMY) */
++#define CMU_QCH_ACLK            0x3024          /* ABOX_QCH_ACLK (no Linux driver enables it) */
++#define CMU_QCH_BCLK1           0x302C          /* ABOX_QCH_BCLK1: UAIF1's "bclk_gate" (GATE_ABOX_BCLK1) */
++#define CMU_QCH_GPIO            0x304C          /* GPIO_AUD_QCH */
++#define CMU_QCH_SYSMMU          0x3060          /* SYSMMU_AUD_QCH: the SysMMU's "aclk" (GATE_SMMU_ABOX) */
++#define QCH_ENABLE              (1u << 0)
++#define QCH_CLOCK_REQ           (1u << 1)
++#define CMU_CONTROLLER_OPTION   0x0800          /* [29:28] kept by the CAL across power-down (aud_save) */
++#define CMU_HCHGEN_CLKMUX       0x0850
++
++/*
++ * ---- SYSREG_AUD (FACT: abox.h, abox.c abox_enable(); flexpmu aud_save) ----------------------------------------------------
++ */
++#define SYSREG_DRCG_EN          0x0104          /* BUS_COMPONENT_DRCG_EN (kept by the CAL across power-down) */
++#define SYSREG_SNPS_EMA         0x0300
++#define SYSREG_L2_CACHE_CON     0x0328          /* only with the "share vts sram" quirk, which the S9 has not */
++#define SYSREG_MISC_CON         0x032C          /* abox_enable() writes 1 before anything else; what bit 0 does is not said */
++
++/*
++ * ---- GPIO_AUD, bank gpb1 (FACT: pinctrl-exynos.c exynos9810_pin_banks1, bank_type_6; the device tree's aud-i2s1-bus) -----
++ * gpb1-0..3 are UAIF1's pins: function 2 and pud 1 when in use ("default"), function 0 and pud 1 when idle ("sleep").
++ * Every field 4 bits a pin but DAT (1) and CONPDN (2).
++ */
++#define GPIO_GPB1               0x0020
++#define GPIO_CON                0x00
++#define GPIO_DAT                0x04
++#define GPIO_PUD                0x08
++#define GPIO_DRV                0x0C
++#define GPIO_CONPDN             0x10
++#define GPIO_PUDPDN             0x14
++#define UAIF1_PINS_MASK         0xFFFFu         /* pins 0..3 */
++#define UAIF1_PINS_FUNC         0x2222u
++#define UAIF1_PINS_IDLE         0x0000u
++#define UAIF1_PINS_PUD          0x1111u
++
++/*
++ * ---- ABOX's SysMMU (FACT: drivers/iommu/exynos-iommu.h, -reg.h) -----------------------------------------------------------
++ * Linux's values: CTRL_ENABLE 0x5, CTRL_BLOCK 0x7, CTRL_DISABLE 0x0, CTRL_BLOCK_DISABLE 0x3 (what its runtime suspend
++ * leaves). So bit 2 is set exactly in the translating states and bit 1 in the blocked ones (INFERRED from those four
++ * values); MMU_STATUS bit 0 says blocked (sysmmu_block() waits for it).
++ */
++#define MMU_CTRL                0x000
++#define MMU_CFG                 0x004
++#define MMU_STATUS              0x008
++#define MMU_VERSION             0x034
++#define MMU_PT_BASE             0x00C           /* REG_PT_BASE_PPN: the page table's page number (exynos-iommu.h) */
++#define MMU_CTRL_TRANSLATE      (1u << 2)
++#define MMU_CTRL_BLOCK          (1u << 1)
++#define MMU_CTRL_DISABLE        0x0u
++
++/*
++ * ---- ABOX's own registers (FACT: abox.h, the 9810's side of it; abox.c's regmap defaults abox_reg_defaults_9810) ---------
++ */
++#define ABOX_IP_INDEX           0x0000          /* reads 0x41424F58, "ABOX" */
++#define ABOX_IP_INDEX_VALUE     0x41424F58u
++#define ABOX_VERSION            0x0004
++#define ABOX_SYSPOWER_CTRL      0x0010          /* bit 0; never written by Linux */
++#define ABOX_SYSPOWER_STATUS    0x0014
++#define ABOX_SYSTEM_CONFIG0     0x0020          /* resets to 0x4444 */
++#define ABOX_REMAP_MASK         0x0024          /* 0xFFF00000 */
++#define ABOX_REMAP_ADDR         0x0028          /* 0x17D00000: the CPU's address 0 is the SRAM */
++#define ABOX_DYN_CLOCK_OFF      0x0030          /* [30:0], resets to 0x7FFFFFFF */
++#define ABOX_QCHANNEL_DISABLE   0x0038          /* bit = enum qchannel: 0 CA7, 1 ACLK, 2..5 BCLK_UAIF0..3, 6 BCLK_DSIF ... */
++#define QCHANNEL_ACLK           (1u << 1)       /* 1: ABOX's bus clock never gated (the T570 work keeps it so while it plays) */
++#define QCHANNEL_BCLK_UAIF1     (1u << 3)       /* 1: never gated. Samsung sets it for UAIF0 (the codec) while it plays */
++#define ABOX_ROUTE_CTRL0        0x0040          /* UAIFn SPK at [4n+3:4n]: 1 SIFS0, 2 SIFS1, 3 SIFS2, 12 SIFMS; DSIF [23:20] */
++#define ROUTE_UAIF1_SHIFT       4
++#define ROUTE_SIFS0             1u
++#define ROUTE_SIFS1             2u
++#define ABOX_ROUTE_CTRL1        0x0044          /* NSRCn [4n+3:4n], SPUSM [19:16] */
++#define ABOX_ROUTE_CTRL2        0x0048          /* RSRCn [4n+3:4n]: 1..3 SIFS0..2, 8..11 NSRC0..3 */
++#define ABOX_SPUS_CTRL0         0x0200          /* chain n at [4n+3:4n]: IN bit 3 (0 RDMAn, 1 SIFSM), OUT [2:1] (0 SIFS1,
++                                                 * 1 SIFS0, 2 SIFS2), ASRC bit 0 (off/on) */
++#define SPUS_CHAIN_MASK         0xFu
++#define SPUS_IN_SIFSM           (1u << 3)
++#define SPUS_OUT_SIFS1          (0u << 1)
++#define SPUS_OUT_SIFS0          (1u << 1)
++#define SPUS_ASRC_ON            (1u << 0)
++#define ABOX_SPUS_CTRL1         0x0204          /* MIXP_FORMAT [4:0] (SIFS0, the mixer), SIFS_OUT1_SEL [18:16] (SPUS OUTn),
++                                                 * SIFS_OUT2_SEL [21:19], SIFM_IN_SEL [24:22] */
++#define SPUS_MIXP_FORMAT_MASK   0x1Fu
++#define SPUS_SIFS1_SEL_SHIFT    16
++#define SPUS_SIFS1_SEL_MASK     (7u << 16)
++#define ABOX_SPUS_CTRL2         0x0208          /* MIXP_FLUSH bit 0: written 1 before the mixer comes up and after it goes */
++#define ABOX_SPUS_CTRL3         0x020C          /* SIFS1_FLUSH 0, SIFS2_FLUSH 1, SIFM_FLUSH 2 */
++#define ABOX_SPUS_SIFS_CNT0     0x0280          /* SIFS0/1 counts: only for SIFS looped to NSRC (capture) */
++/*
++ * SPUS's sample banks: the piece of ABOX's own buffer memory each RDMA (and the ASRCs, the mixer) fills ahead of SPUS.
++ * FACT that they are there on the 9810 and reset to 0: abox.c's abox_reg_defaults_9810 lists 0x0220-0x023C, 0x0240 and
++ * 0x0260 with 0, and neither abox_readable_reg() nor abox_writeable_reg() takes them, so the 9810's AP never reads or
++ * writes them (calliope does, or nobody). FACT of the fields, from Samsung's next ABOX driver (the Galaxy S10's kernel,
++ * github.com/ivanmeler/android_kernel_samsung_beyondlte, sound/soc/samsung/abox/abox_soc.h, whose "ABOX version below
++ * 2.0.0" branch is the 9810's: its Kconfig gives SOC_EXYNOS9810 ABOX version 0x10100): SPUS_SBANK_RDMAn at 0x0220 + 4n,
++ * SBANK_ASRC at 0x0240, SBANK_MIXP at 0x0260; SIZE [29:20] in 16-byte units, STR [13:4]. There the AP sets an RDMA's SIZE
++ * itself before each stream (abox_cmpnt_v20.c abox_cmpnt_adjust_sbank(): 128 bytes for periods of 10 ms or less, else
++ * 512), keeping STR. INFERRED: a SIZE of 0 gives the RDMA nowhere to put what it reads, so in bypass the driver sets
++ * RDMA0's (abox_sbank=, 512 bytes, as Samsung does for our 10.7 ms periods) when it reads 0.
++ */
++#define ABOX_SPUS_SBANK_RDMA(n) (0x0220 + 4 * (n))
++#define ABOX_SPUS_SBANK_ASRC0   0x0240
++#define ABOX_SPUS_SBANK_MIXP    0x0260
++#define SBANK_SIZE_SHIFT        20
++#define SBANK_SIZE_MASK         (0x3FFu << SBANK_SIZE_SHIFT)
++#define SBANK_STR_MASK          (0x3FFu << 4)
++#define SBANK_BYTES(v)          ((((v) & SBANK_SIZE_MASK) >> SBANK_SIZE_SHIFT) * 16u)
++#define ABOX_UAIF_CTRL0(n)      (0x0500 + 0x10 * (n))  /* resets to 0x01000010 */
++#define ABOX_UAIF_CTRL1(n)      (0x0504 + 0x10 * (n))  /* resets to 0 */
++#define ABOX_UAIF_STATUS(n)     (0x050C + 0x10 * (n))  /* ERROR_OF_SPK bit 0, ERROR_OF_MIC bit 1 */
++/* UAIF CTRL0: START_FIFO_DIFF_MIC [31:28], START_FIFO_DIFF_SPK [27:24], DATA_MODE 4, IRQ_MODE 3, MODE 2 (1: master,
++ * CBS_CFS), MIC_ENABLE 1, SPK_ENABLE 0. Playback starts with SPK_ENABLE = 1 (the trigger) and stops with it 0 (shutdown) */
++#define UAIF_MODE_MASTER        (1u << 2)
++#define UAIF_SPK_ENABLE         (1u << 0)
++/* UAIF CTRL1: FORMAT [28:24], BCLK_POLARITY 23, WS_MODE 22 (0 I2S, 1 DSP_A), WS_POLAR 21, SLOT_MAX [20:18] (channels - 1),
++ * SBIT_MAX [17:12] (width - 1), VALID_STR [11:6], VALID_END [5:0] (0 and 0 for two channels, width - 1 otherwise) */
++#define UAIF_FORMAT_SHIFT       24
++#define UAIF_BCLK_POLARITY      (1u << 23)
++#define UAIF_WS_DSP_A           (1u << 22)
++#define UAIF_WS_POLAR           (1u << 21)
++#define UAIF_SLOT_MAX_SHIFT     18
++#define UAIF_SBIT_MAX_SHIFT     12
++/* the format code ABOX uses for a stream (abox.h abox_get_format()): channels - 1 in [2:0], width in [4:3] (1 16-bit,
++ * 2 24-bit, 3 32-bit). 16-bit stereo: 0x9. UAIF CTRL1 FORMAT, SPUS MIXP_FORMAT and SPUM RECP_SRC_FORMAT take it */
++#define ABOX_FORMAT(width, channels)    ((uint32_t)((channels) - 1) | ((width) == 16 ? 1u << 3 : (width) == 24 ? 2u << 3 : 3u << 3))
++
++/*
++ * RDMAn at 0x1000 + 0x100 n (RDMA0: 0x17C51000, the device tree's abox_rdma@17c51000).
++ *   FACT (abox.h, abox_rdma.c, abox.c):
++ *     CTRL0 0x00      ENABLE bit 0; the AP waits up to 40 ms after a stop for it to read 0 (abox_rdma_disable_barrier)
++ *     CTRL1 0x04      no field is named
++ *     BUF_STR 0x08, BUF_END 0x0C, BUF_OFFSET 0x10, STR_POINT 0x14   named, no field
++ *     VOL_FACTOR 0x18 [23:0] a volume (DMA_VOL_FACTOR_MAX_STEPS 0xFFFFFF); RDMA3's resets to 0
++ *     VOL_CHANGE 0x1C, SBACK_LIMIT 0x20   named, no field
++ *     STATUS 0x30     PROGRESS bit 31; RBUF_OFFSET [28:16] in 16-byte units; RBUF_CNT [12:0] in bytes: the position the
++ *                     AP reports is offset + count, the offset taken as the start of the period being read (the S10's
++ *                     header gives [27:16] and [11:0] for ABOX below 2.0.1: the same for any ring under 64 KB and
++ *                     periods under 4 KB, as here)
++ *     the RDMA raises "buffer empty" to ABOX's GIC (IPC id RDMA0_BUF_EMPTY 0xB), the period's end as the AP takes it
++ *     the firmware is told, for a stream: PCM_SET_BUFFER (the buffer's address as ABOX sees it, the period's bytes, the
++ *     number of periods), PCM_PLTDAI_HW_PARAMS (rate, bit depth, channels), PCM_PLTDAI_TRIGGER (1/0), and answers
++ *     with the position as an address (PCM_PLTDAI_POINTER)
++ *   FACT from the S10's ABOX driver (abox_soc.h, as above; the field has no version condition there): CTRL0 BURST_LEN
++ *   [22:19], which the AP sets before each stream (abox_rdma.c hw_params: 8, or 1 with a sample bank under 128 bytes).
++ *   The 9810's AP does not write it; the driver sets 8 when it reads 0 (abox_burst=).
++ *   INFERRED (from the names and those messages; see the driver's head): BUF_STR the first byte, BUF_END one past the
++ *   last, BUF_OFFSET the period's bytes, STR_POINT where to start (= BUF_STR); the format (rate, width, channels) in bits
++ *   of CTRL0 or CTRL1 that nothing names. A run of the firmware (a firmware mode) would settle all of it: after its
++ *   PCM_PLTDAI_TRIGGER, RDMA0's registers read back are what calliope wrote.
++ */
++#define ABOX_RDMA(n)            (0x1000 + 0x100 * (n))
++#define RDMA_CTRL0              0x00
++#define RDMA_CTRL1              0x04
++#define RDMA_BUF_STR            0x08
++#define RDMA_BUF_END            0x0C
++#define RDMA_BUF_OFFSET         0x10
++#define RDMA_STR_POINT          0x14
++#define RDMA_VOL_FACTOR         0x18
++#define RDMA_VOL_CHANGE         0x1C
++#define RDMA_SBACK_LIMIT        0x20
++#define RDMA_STATUS             0x30
++#define RDMA_ENABLE             (1u << 0)
++/*
++ * CTRL0's other fields, from the Galaxy Tab Active3's (SM-T570, the same Exynos 9810) firmware-less A-Box work, which
++ * read them out of calliope's own RDMA accessors (github.com/exynos-linux/samsung-gtactive3wifi docs/re/abox.md, patch
++ * 0106; read for facts only): BUF_TYPE 4, BUF_UPDATE 5 (calliope sets it with every new buffer), FORMAT [12:8] (the
++ * abox_get_format() code, 0x9 for 16-bit stereo), EXPAND 13 (16-bit mono to stereo), FUNC [18:16] (0 run, 1 pause).
++ * SBANK_LIMIT (0x20) [13:7]: the sample bank's size in 128-byte units, as calliope sets it. Not run there on hardware
++ * either: what the S9 does with them is in AUDIO.md.
++ */
++#define RDMA_BUF_TYPE           (1u << 4)
++#define RDMA_BUF_UPDATE         (1u << 5)
++#define RDMA_FORMAT_SHIFT       8
++#define RDMA_FORMAT_MASK        (0x1Fu << RDMA_FORMAT_SHIFT)
++#define RDMA_EXPAND             (1u << 13)
++#define RDMA_FUNC_MASK          (7u << 16)
++#define RDMA_SBANK_LIMIT_SHIFT  7
++#define RDMA_BURST_SHIFT        19
++#define RDMA_BURST_MASK         (0xFu << RDMA_BURST_SHIFT)
++#define RDMA_VOL_MASK           0xFFFFFFu
++#define RDMA_PROGRESS           (1u << 31)
++#define RDMA_RBUF_OFFSET(s)     ((((s) >> 16) & 0x1FFFu) << 4)
++#define RDMA_RBUF_CNT(s)        ((s) & 0x1FFFu)
++
++#endif /* _SYS_HAKIOS_EXYNOS_ABOX_H_ */
+diff --git a/bsd/sys/hakios.exynos_acpm.h b/bsd/sys/hakios.exynos_acpm.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..fb74cbab3f1a2d172367e6cfa4137e3f1f3104e2
+--- /dev/null
++++ b/bsd/sys/hakios.exynos_acpm.h
+@@ -0,0 +1,59 @@
++/*
++ * The Exynos 9810's always-on power processor (APM) and its ACPM firmware, asked from the kernel: drivers/core/
++ * hakios.exynos_acpm.c. What the PMIC's registers and the clocks' DVFS rates go through on this SoC. Polled; one
++ * request at a time (a lock inside); thread context only.
++ */
++#ifndef _SYS_HAKIOS_EXYNOS_ACPM_H_
++#define _SYS_HAKIOS_EXYNOS_ACPM_H_
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#define HAKIOS_ACPM_CH_DVFS     0       /* set and get a domain's rate (where Samsung's kernel sends them; see the .c) */
++#define HAKIOS_ACPM_CH_PMIC     2       /* the S2MPS18's registers, over SPEEDY */
++#define HAKIOS_ACPM_CH_ACPM     4       /* the firmware itself (the S9's acpm node's acpm-ipc-channel): its STOP */
++
++#define HAKIOS_ACPM_PMIC_TOP    0       /* the S2MPS18's blocks ("type") */
++#define HAKIOS_ACPM_PMIC_PMIC   1
++#define HAKIOS_ACPM_PMIC_RTC    2
++
++/* Find the firmware's channel table and say what it is (`say`: a driver's log); false: no ACPM here. Once is enough. */
++bool hakios_acpm_init(int (*say)(const char *, ...));
++/* One request on a channel: four words out, the reply's four back in their place. 0, or an errno. */
++int hakios_acpm_request(uint32_t channel, uint32_t cmd[4]);
++/*
++ * The PMIC: read a register, write one, or update the bits of `mask` to `value`. 0, or an errno (EIO: SPEEDY failed).
++ * A caller writes only registers it names in an allow-list of its own, and reads each write back.
++ */
++int hakios_acpm_pmic_read(uint32_t type, uint32_t reg, uint8_t *value);
++int hakios_acpm_pmic_write(uint32_t type, uint32_t reg, uint8_t value);
++int hakios_acpm_pmic_update(uint32_t type, uint32_t reg, uint8_t value, uint8_t mask);
++/* A DVFS domain's rate (its index: the low bits of the CAL id, 4 for G3D, 9 for AUD), in kHz. */
++int hakios_acpm_dvfs_get(uint32_t index, uint32_t *khz);
++int hakios_acpm_dvfs_set(uint32_t index, uint32_t khz);
++/*
++ * A DVFS domain's levels as the APM holds them (its "fvmap"), read only: rates in kHz and the voltages the APM applies
++ * with them, the fastest first, at most `most`. How many were read; 0 when there is no such table (said with `say`).
++ */
++uint32_t hakios_acpm_dvfs_table(uint32_t index, uint32_t *khz, uint32_t *uv, uint32_t most, int (*say)(const char *, ...));
++/*
++ * The Galaxy S9's CPU frequency governor (drivers/power/exynos/hakios.exynos_cpufreq.c): started with cpufreq_gov=1, in place of
++ * the fixed cpufreq_lit= and cpufreq_big= rates. True when it runs (it then owns both clusters' rates).
++ */
++bool hakios_exynos_cpufreq_gov_start(void);
++/*
++ * The governor's boosts: a finger event of the touch screen (hakios.s6sy761.c) and a frame given to the display
++ * (MiniIOMobileFramebuffer.cpp). Any context that may call thread_wakeup: a stamp, a count, the governor's thread woken;
++ * nothing waited for. Nothing when the governor does not run (and stubs without CONFIG_HAKIOS_EXYNOS_CPUFREQ).
++ */
++void hakios_exynos_cpufreq_touch(void);
++/* how many fingers are down now, after a change: the touch screen's thread, as above */
++void hakios_exynos_cpufreq_fingers(uint32_t down);
++void hakios_exynos_cpufreq_frame(void);
++/*
++ * Ask the APM to stop before the phone is powered off (Samsung's acpm_enter_wfi(), from exynos_acpm_reboot()): the firmware
++ * goes to WFI and no longer answers. Only on the way to PS_HOLD (drivers/power/exynos/hakios.exynos_poweroff.c). 0, or an errno.
++ */
++int hakios_acpm_stop(void);
++
++#endif /* _SYS_HAKIOS_EXYNOS_ACPM_H_ */
+diff --git a/bsd/sys/hakios.exynos_hsi2c.h b/bsd/sys/hakios.exynos_hsi2c.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..51e0820c4d3e1e45e0b822d7fcb233c9dc0a9190
+--- /dev/null
++++ b/bsd/sys/hakios.exynos_hsi2c.h
+@@ -0,0 +1,48 @@
++/*
++ * An Exynos HSI2C (an I2C master of a USI block) as this port drives it: drivers/soc/exynos/hakios.exynos_hsi2c.c.
++ * A driver describes its bus (where the controller is, the USI mode word that makes the block an I2C, the clock gates
++ * to force on, the pins) and calls these from its own thread; one driver per bus, no locking.
++ */
++#ifndef _SYS_HAKIOS_EXYNOS_HSI2C_H_
++#define _SYS_HAKIOS_EXYNOS_HSI2C_H_
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <mach/vm_types.h>
++
++struct hakios_hsi2c {
++	const char *name;               /* for the log */
++	uint64_t regs_pa;               /* the HSI2C */
++	uint64_t usi_mode_pa;           /* the USI's mode word in its system register block: 4 makes it an I2C */
++	uint64_t cmu_pa;                /* the CMU block its clocks are in, and in it: */
++	uint32_t cmu_size;
++	uint32_t gates[4], ngates;      /*   gates forced on (bit 20 manual, bit 21 on) */
++	uint32_t qch;                   /*   its Q-channel (bits 0-1 on), 0: none */
++	uint32_t div, mux;              /*   the IP clock's divider and mux, for the log */
++	uint64_t pins_pa;               /* the CON register of the bank of SCL and SDA, 0: left as they are */
++	uint32_t pins_mask, pins_want;  /*   ... and their two nibbles: function 2, I2C */
++	uint32_t ipclk_mhz;             /* the HSI2C's input clock (both other drivers assume 200) */
++	uint32_t bus_hz;
++	/* the bus's own */
++	vm_offset_t regs, usi, cmu, pins;
++	uint64_t transfers, errors;
++	uint32_t last_error;
++};
++
++/* Map everything and say what it is set to; writes nothing. false: a block could not be mapped. */
++bool hakios_hsi2c_map(struct hakios_hsi2c *bus, int (*say)(const char *, ...));
++/* The clocks on, the USI to I2C, the pins to I2C (the first writes). */
++void hakios_hsi2c_power(struct hakios_hsi2c *bus);
++/* The controller reset and set to bus_hz. */
++void hakios_hsi2c_reset(struct hakios_hsi2c *bus);
++/*
++ * One message to or from addr (7 bits), with a STOP after it or not (a repeated start follows then). 0, the INT_STAT
++ * error bits (abort, no ack, no device, time-out: 0xf00), or 1 for a time-out of ours; a failed one leaves the bus
++ * reset.
++ */
++uint32_t hakios_hsi2c_message(struct hakios_hsi2c *bus, uint8_t addr, bool reading, uint8_t *buf, uint32_t len,
++    bool stop);
++/* A register read the SMBus way: reg written, a repeated start, len bytes read. */
++uint32_t hakios_hsi2c_read_reg(struct hakios_hsi2c *bus, uint8_t addr, uint8_t reg, uint8_t *buf, uint32_t len);
++
++#endif /* _SYS_HAKIOS_EXYNOS_HSI2C_H_ */
+diff --git a/bsd/sys/hakios.exynos_pcie.h b/bsd/sys/hakios.exynos_pcie.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d603a9691bac6137941b835ed2e05795666dc4e
+--- /dev/null
++++ b/bsd/sys/hakios.exynos_pcie.h
+@@ -0,0 +1,40 @@
++/*
++ * Darwin-on-hakios: the Galaxy S9's PCIe root complex of channel 0 (drivers/wifi/brcmfmac/hakios.exynos_pcie.c), as the radio's
++ * driver behind it sees it (drivers/wifi/brcmfmac/hakios.brcmfmac.c, which gives it to Linux's brcmfmac as a struct pci_dev).
++ *
++ * There is one endpoint, 1:00.0, the BCM4361. Stage 1 (wifi_pcie=1..5) brings the link up and places the endpoint's
++ * BARs; wifi_pcie=6 then turns its memory decoding on and hands it over: hakios_brcmfmac_start() is called on the
++ * stage's own thread, and what is below may be used from then on, from any thread (one at a time: the radio's
++ * driver has one caller). Before that, or when stage 1 stopped short, hakios_exynos_pcie_ready() is false and the
++ * rest answers nothing (all ones, as a bus with nothing on it).
++ */
++#ifndef _SYS_HAKIOS_EXYNOS_PCIE_H_
++#define _SYS_HAKIOS_EXYNOS_PCIE_H_
++
++#include <stdbool.h>
++#include <stdint.h>
++
++bool     hakios_exynos_pcie_ready(void);                         /* the link is up and 1:00.0 placed and decoding */
++uint32_t hakios_exynos_pcie_config_read(uint32_t offset);        /* a word of 1:00.0's configuration space (offset & ~3) */
++void     hakios_exynos_pcie_config_write(uint32_t offset, uint32_t value);
++/* BAR n (0-5) where stage 1 placed it: its bus address (the CPU's, the window is an identity) and size; false: none */
++bool     hakios_exynos_pcie_bar(unsigned bar, uint64_t *address, uint64_t *size);
++
++/*
++ * The endpoint's interrupt: INTx, which the root complex latches in ELBI's PCIE_IRQ_PULSE (INTA bit 0 ... INTD bit 6) and
++ * passes to the GIC as SPI 253, level high, while a latched bit is enabled in PCIE_IRQ_EN_PULSE (Android's
++ * exynos_pcie_enable_interrupts() and exynos_pcie_irq_handler()). intx(true) enables INTA to INTD and nothing else
++ * (LEVEL and SPECIAL off, as Android), intx(false) none; intx_ack() reads the latch and writes it back (one clears),
++ * and says what was latched. Neither sleeps nor takes a lock.
++ */
++#define HAKIOS_EXYNOS_PCIE_INTX_SPI     253
++void     hakios_exynos_pcie_intx(bool on);
++uint32_t hakios_exynos_pcie_intx_ack(void);
++
++/* the SysMMU, SYSREG_FSYS1's shareability and both ends' status, said (a look, nothing changed) */
++void     hakios_exynos_pcie_say_dma(const char *when);
++
++/* the radio's driver, called once by wifi_pcie=6 when the link is handed over (a kernel without one has a stub) */
++void     hakios_brcmfmac_start(void);
++
++#endif
+diff --git a/bsd/sys/hakios.exynos_soc.h b/bsd/sys/hakios.exynos_soc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ee0fdca9f3020e35f4dceddb1846b707be09ebd
+--- /dev/null
++++ b/bsd/sys/hakios.exynos_soc.h
+@@ -0,0 +1,19 @@
++/*
++ * The numbers of the Exynos this kernel is built for: EXYNOS_* from socs/<soc>/include/hakios.<soc>_soc.h, chosen by CONFIG_SOC
++ * (tools/hakios-config.py writes HAKIOS_SOC_HEADER into hakios.drivers.h; xnu/apply.sh lays the header into sys/).
++ *
++ * Exynos drivers are also built into kernels for other SoCs, where they check the SoC's base at run time and do nothing;
++ * those kernels take the 9810's numbers to compile.
++ */
++#ifndef _SYS_HAKIOS_EXYNOS_SOC_H_
++#define _SYS_HAKIOS_EXYNOS_SOC_H_
++
++#include "../dev/hakios.drivers.h"
++
++#ifdef HAKIOS_SOC_HEADER
++#include HAKIOS_SOC_HEADER
++#else
++#include <sys/hakios.exynos9810_soc.h>
++#endif
++
++#endif /* _SYS_HAKIOS_EXYNOS_SOC_H_ */
+diff --git a/bsd/sys/hakios.exynos_spi.h b/bsd/sys/hakios.exynos_spi.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..0afe7cfbf5b3078610e394bb90bc77793ecf45d3
+--- /dev/null
++++ b/bsd/sys/hakios.exynos_spi.h
+@@ -0,0 +1,53 @@
++/*
++ * An Exynos SPI master -- the SPI of a USI block of the Exynos 9810 (Samsung's "samsung,exynos-spi", the s3c64xx
++ * family) -- polled, without DMA or interrupts, the chip select held by hand. drivers/soc/exynos/hakios.exynos_spi.c; first
++ * used for the Galaxy S9's audio codec (hakios.cs47l93.c, USI01 of PERIC0). A driver describes its bus in a struct
++ * hakios_exynos_spi and calls map, power, reset, then select / transfer / deselect for each message.
++ */
++#ifndef _SYS_HAKIOS_EXYNOS_SPI_H_
++#define _SYS_HAKIOS_EXYNOS_SPI_H_
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <mach/vm_types.h>
++
++struct hakios_exynos_spi {
++	const char *name;               /* for the log */
++	uint64_t regs_pa;               /* the SPI */
++	uint64_t usi_mode_pa;           /* the USI's mode word in its system register block: 2 makes it an SPI */
++	uint64_t cmu_pa;                /* the CMU block its clocks are in, and in it: */
++	uint32_t cmu_size;
++	uint32_t gates[4], ngates;      /*   gates forced on (bit 20 manual, bit 21 on) */
++	uint32_t qch;                   /*   its Q-channel (bits 0-1 on), 0: none */
++	uint32_t div, mux;              /*   the IP clock's divider and its mux (both for the log) */
++	uint32_t div_ratio;             /*   the divider's DIVRATIO [3:0] to set, 0xff: left as it is */
++	uint32_t ipclk_mhz;             /*   the divider's input (for the log: SCLK is a quarter of the IP clock) */
++	uint64_t pins_pa;               /* the CON register of the bank of the bus's pins, 0: left as they are */
++	uint32_t pins_mask, pins_want;  /*   their nibbles in CON (and in PUD, at +8): the functions */
++	uint32_t pud_mask, pud_want;    /*   and their pulls */
++	uint32_t fifo_bytes;            /* the device tree's samsung,spi-fifosize */
++	uint32_t mode;                  /* bit 0 CPHA, bit 1 CPOL (Linux's SPI_MODE_n) */
++	uint32_t fb_delay;              /* samsung,spi-feedback-delay (FB_CLK [1:0]) */
++	/* the bus's own */
++	vm_offset_t regs, usi, cmu, pins;
++	uint64_t transfers, errors;
++	uint32_t last_status;
++};
++
++/* Map everything and say what it is set to; writes nothing. false: a block could not be mapped. */
++bool hakios_exynos_spi_map(struct hakios_exynos_spi *bus, int (*say)(const char *, ...));
++/* The clocks on (and the divider set when div_ratio says), the USI to SPI, the pins to the SPI (the first writes). */
++void hakios_exynos_spi_power(struct hakios_exynos_spi *bus);
++/* The USI out of its reset, the controller reset: master, no DMA, no interrupt, 8-bit words, the chip select off. */
++void hakios_exynos_spi_reset(struct hakios_exynos_spi *bus);
++/* The chip select on (low) or off: it stays as set across transfers, so one message may be several transfers. */
++void hakios_exynos_spi_select(struct hakios_exynos_spi *bus, bool on);
++/*
++ * len bytes clocked out and in at once (tx NULL: zeroes sent; rx NULL: what comes back dropped), a FIFO's worth at a
++ * time. 0, or the controller's STATUS when it did not finish in time (and the FIFOs are then flushed).
++ */
++uint32_t hakios_exynos_spi_transfer(struct hakios_exynos_spi *bus, const uint8_t *tx, uint8_t *rx, uint32_t len);
++/* The controller's registers, for a driver's own report. */
++void hakios_exynos_spi_report(struct hakios_exynos_spi *bus, int (*say)(const char *, ...));
++
++#endif /* _SYS_HAKIOS_EXYNOS_SPI_H_ */
+diff --git a/bsd/sys/hakios.input.h b/bsd/sys/hakios.input.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..49b3bb0bdb0fd9d3854c4ef5dc28051ca9442e2d
+--- /dev/null
++++ b/bsd/sys/hakios.input.h
+@@ -0,0 +1,178 @@
++/*
++ * /dev/hakios-touch: touch samples on their way from whoever produces them to the
++ * program that turns them into HID events for the window server.
++ *
++ * Darwin expects touches from Apple's multitouch driver through IOHIDFamily; neither exists
++ * here. Instead a producer -- a kernel driver for a real touch controller or for an emulated
++ * pointer, or a user program replaying a script -- posts samples, and code of ours running
++ * inside backboardd reads them and synthesizes the events. Both sides use the same record.
++ *
++ *   write(): one or more records (time is ignored; the kernel stamps them)
++ *   read():  blocks until there is at least one record, returns as many whole ones as fit
++ */
++#ifndef _SYS_HAKIOS_INPUT_H_
++#define _SYS_HAKIOS_INPUT_H_
++
++#include <stdint.h>
++
++#define HAKIOS_TOUCH_DEVICE    "/dev/hakios-touch"
++
++#define HAKIOS_TOUCH_DOWN      1       /* a finger has landed */
++#define HAKIOS_TOUCH_MOVE      2
++#define HAKIOS_TOUCH_UP        3       /* it has lifted (x, y: where it was last) */
++#define HAKIOS_BUTTON_DOWN     4       /* a hardware button; `finger` says which (HAKIOS_BUTTON_*), x and y are 0 */
++#define HAKIOS_BUTTON_UP       5
++
++#define HAKIOS_BUTTON_LOCK     1       /* the side button */
++#define HAKIOS_BUTTON_VOLUME_UP 2
++#define HAKIOS_BUTTON_VOLUME_DOWN 3
++#define HAKIOS_BUTTON_HOME     4
++
++struct hakios_touch {
++	uint64_t time;                  /* mach_absolute_time() when the sample was posted */
++	uint32_t type;                  /* HAKIOS_TOUCH_* or HAKIOS_BUTTON_DOWN/UP */
++	uint32_t finger;                /* which finger, from 0 (or which button) */
++	uint32_t x, y;                  /* position on the display, 0 = left/top edge, 65535 = right/bottom edge */
++};
++
++#ifdef KERNEL
++/* For drivers; not from interrupt context. */
++void hakios_touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y);
++/* The same for a sample taken at mach_absolute_time() `when` (0 = now), e.g. the host's own time of a touch. */
++void hakios_touch_post_at(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, uint64_t when);
++void hakios_input_init(void);
++void hakios_virtio_input_init(void);   /* boot-arg virtio_input=1: QEMU's virtio pointer and keyboard */
++void hakios_goodix_init(void);         /* boot-arg touchscreen=1: the phone's Goodix or FocalTech touch screen */
++void hakios_buttons_init(void);        /* boot-arg buttons=1: the phone's power and volume keys */
++void hakios_exynos_keys_init(void);    /* boot-arg exynos_keys=1: the Galaxy S9's keys (GPIO) */
++void hakios_s6sy761_init(void);        /* boot-arg s6sy761=1: the Galaxy S9's touch screen (I2C) */
++void hakios_s6e3ha8_init(void);        /* boot-arg panel=1: the Galaxy S9's panel brightness (kern.hakios.brightness) */
++void hakios_s2mpb02_torch_init(void);  /* boot-arg torch=N on the Galaxy S9: its flashlight (/dev/hakios-torch) */
++void hakios_exynos_pcie_init(void);    /* boot-arg wifi_pcie=N on the Galaxy S9: PCIe to the BCM4361, stage 1 */
++const char *hakios_bcm4361_module(void); /* the S9's radio module, "murata" or "semco", once Wi-Fi read its OTP; or NULL */
++void hakios_bt_console(const char *arg);  /* the USB console's "bt" and "bt scan" (bt=7) */
++void hakios_bcm4361_bt_init(void);     /* boot-arg bt=N on the Galaxy S9: the BCM4361's Bluetooth on UART_BT, stage 1 */
++void hakios_ssp_init(void);            /* boot-arg shub=N on the Galaxy S9: its sensor hub (sys/hakios.sensors.h) */
++void hakios_s2mpb02_torch_quiesce(void); /* loader_return(): the S9's flashlight off, if it is lit */
++void hakios_exynos_mfc_init(void);     /* boot-arg mfc=N on the Exynos 9810: its hardware video decoder (hakios.exynos_mfc.c) */
++void hakios_exynos_camera_init(void);   /* boot-arg cam_s9=N on the Galaxy S9: its front camera, stage 1 */
++void hakios_exynos_camera_quiesce(void); /* loader_return(): the S9's front camera powered down, if it was powered */
++void hakios_exynos_tee_init(void);      /* boot-arg tee_probe=N on the Galaxy S9: its secure OS asked (1), started and left there (2) */
++void hakios_exynos_iris_init(void);     /* boot-arg iris_s9=N on the Galaxy S9: its iris camera (S5K5F1) and IR LED */
++void hakios_exynos_iris_quiesce(void);  /* loader_return(): the S9's iris camera powered down, if it was powered */
++void hakios_exynos_pcie_quiesce(void); /* loader_return(): the S9's Wi-Fi chip in reset and unpowered, if it was powered */
++int hakios_panel_brightness(int level);        /* 0-255; 0 where a panel driver is built in, started and took it */
++void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage, read only, through the loader (ufs_shared_pa=) */
++void hakios_ufs_report(const char *when); /* where reading the storage has spent its time so far */
++bool hakios_ufs_dev(dev_t dev);           /* one of the storage's devices */
++int hakios_ufs_read_partition(const char *name, uint64_t offset, uint8_t *dst, uint64_t len, uint64_t *bytes); /* for drivers */
++/* a file of one of the phone's ext4 partitions, read only, kept for the run (drivers/storage/hakios.ext4.c): 0 or an errno */
++int hakios_partition_file(const char *partition, const char *mount, const char *path, uint64_t max, const uint8_t **data,
++    uint64_t *size);
++/* a file of one of the RAM disks (drivers/storage/hakios.image.c): fw/<name> is the firmware userland/build.sh put there */
++const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
++void hakios_battery_init(void);        /* boot-arg battery=1: Qualcomm UEFI charger state shared by xnuloader */
++int hakios_battery_temperature(void);  /* the battery's temperature in C, -273 while it is not known */
++/* one transfer at a time through the PMIC arbiter for this system (drivers/input/hakios.buttons.c) */
++void hakios_spmi_lock(void);
++void hakios_spmi_unlock(void);
++/*
++ * How the battery is, as the audio DSP's battery manager says (drivers/audio/hakios.adsp.c, with adsp=1):
++ * handed to drivers/power/hakios.battery.c, which keeps it for the sysctls kern.hakios.battery_* and
++ * passes it on to drivers/power/hakios.battery.cpp, the power source that Darwin reads. The structure
++ * is repeated there (this header is not seen from iokit/), and `size` tells whether the two agree.
++ */
++struct hakios_battery_state {
++	uint32_t size;                  /* sizeof(struct hakios_battery_state) */
++	int32_t percent_hundredths;     /* the charge, 0..10000 */
++	int32_t voltage_uv;
++	int32_t current_ua;             /* more than 0 while the battery takes charge */
++	int32_t temperature_hundredths; /* of a degree Celsius */
++	int32_t present;                /* 1 if there is a battery */
++	int32_t external;               /* 1 if a charger or a computer is on the USB port */
++	int32_t status;                 /* Linux's POWER_SUPPLY_STATUS_*: 1 charging, 2 discharging, 3 not charging, 4 full */
++	int32_t charge_uah, full_uah, design_uah, cycles;      /* 0 when not known (yet) */
++	int32_t usb_type;               /* Linux's POWER_SUPPLY_USB_TYPE_*: 1 a computer's port, 2 a charger, ... */
++	int32_t usb_voltage_uv, usb_current_ua;                 /* what the port gives */
++};
++void hakios_battery_report(const struct hakios_battery_state *state);
++void hakios_scfb_battery_init(void);  /* scfb.addr=: the phone's battery under AVF, from the Scion app (hakios.scfb_battery.c) */
++void hakios_max77705_init(void);       /* boot-arg max77705=1: the Galaxy S9's fuel gauge and charger (I2C), read only */
++void hakios_net_init(void);            /* en0, if there is something to carry its frames: sys/hakios.net.h */
++void hakios_cpufreq_init(void);        /* boot-arg cpufreq=1: the phone's processor at full speed */
++void hakios_adreno_init(void);         /* boot-arg adreno=N: the first N steps of waking the phone's GPU */
++void hakios_adreno_quiesce(void);      /* on the way back to the loader: the GPU block stopped, out of our memory */
++void hakios_adreno_stop(void);         /* before that, where the ending is no panic's: the GPU given back in order */
++void hakios_adreno_minute(void);       /* once a minute: a line about how warm the GPU is, if it is in use */
++void hakios_mali_init(void);           /* boot-arg mali=N: the first N steps of bringing up the Galaxy S9's Mali-G72 */
++void hakios_wifi_init(void);           /* boot-arg wifi=1: the phone's Wi-Fi; wifi_step=N: the first N steps of it */
++void hakios_adsp_init(void);           /* boot-arg adsp=1: the phone's audio DSP started and linked; adsp_step=N: the first N steps */
++void hakios_mpss_init(void);           /* boot-arg modem=1: the phone's modem started and linked; modem_step=N: the first N steps */
++void hakios_wifi_stop(void);           /* where a run ends in order: the Wi-Fi DSP, if it was started, shut down */
++int hakios_wifi_say(const char *format, ...) __printflike(1, 2);      /* a line of the Wi-Fi steps' log */
++int hakios_wifi_tell(const char *format, ...) __printflike(1, 2);     /* ... one that is said even with wifi=1 */
++/* the radio's log kept (hakios.lx.c: what the Linux driver and its bus said, the last 32 KB), and said again with what
++ * the driver says of itself now: the USB console's "wifi", and once when the console is first up */
++void hakios_wifi_report_add(const char *line);
++void hakios_wifi_report(bool first);
++uint32_t hakios_wifi_option(const char *name);                         /* a boot-arg's number, or what wifi=1 stands for */
++const uint8_t *hakios_wifi_file(const char *name, uint64_t *size);     /* a file of fw/ in the small image, in place */
++bool hakios_wlfw_exchange(uint32_t step);                              /* step 15 of wifi_step=N: hakios.wlfw.c */
++bool hakios_wlfw_registers(uint64_t *address, uint32_t *size, bool *mission); /* ... and what it learnt for step 16 */
++void hakios_wlfw_stop(uint32_t step);                                  /* ... and its end, before the DSP is stopped */
++void hakios_wifi_quiesce(void);        /* on the way back to the loader: the Wi-Fi DSP, if it still runs, shut down */
++/* ath11k's object and the kernel's side of it (drivers/wifi/lx/hakios.lx.c), and what that asks of the phone's radio */
++int hakios_lx_start(void);             /* the driver brought up on the radio as far as it is built: 0 or an errno */
++void hakios_lx_stop(void);             /* ... and down again, if it stayed up (a network joined) */
++int hakios_lx_prepare(void);           /* before all that: the memory the radio will be shown, taken; 0 or an errno */
++void hakios_lx_net_early(void);        /* ... and en0 made on the radio now, if the kernel was given its address */
++bool hakios_wifi_dsp_is_up(void);      /* the DSP that runs the radio's firmware has been started and has a link */
++const uint8_t *hakios_wifi_driver_file(const char *name, uint64_t *size);     /* a file by the name Linux has for it */
++bool hakios_wifi_radio_map(uint64_t physical, uint64_t size, unsigned long long *address); /* memory shown to the radio */
++bool hakios_wifi_radio_msi(unsigned long long *address, uint32_t *data, uint32_t *first_spi); /* where the radio raises its interrupts */
++bool hakios_wifi_radio_address(uint8_t *address);      /* the radio's own address (boot-arg wifi_mac), if one was given */
++/* the network to join (fw/network of the small image): name and passphrase, buffer sizes in and lengths out */
++bool hakios_wifi_network(uint8_t *name, unsigned *name_length, uint8_t *passphrase, unsigned *passphrase_length);
++
++/*
++ * The GPU kept on (boot-arg adreno_keep=1), for drivers/gpu/hakios.gpu.cpp: see "the GPU kept on"
++ * in drivers/gpu/adreno/hakios.adreno.c. One caller at a time.
++ */
++bool hakios_gpu_ready(void);
++bool hakios_gpu_parameter(uint32_t which, uint64_t *value);
++uint64_t hakios_gpu_address(uint64_t size);
++void hakios_gpu_address_free(uint64_t address, uint64_t size);
++void hakios_gpu_space(uint64_t *used, uint32_t *live, uint64_t *largest, unsigned *holes, unsigned *most,
++    uint64_t *lost, uint32_t *refused);
++extern uint32_t gpu_va;                 /* boot-arg gpu_va: 0 as before, 1 describe the addresses, 2 also guard them */
++bool hakios_gpu_map(uint64_t address, uint64_t phys, bool read_only);
++void hakios_gpu_mapped(void);
++void hakios_gpu_unmap(uint64_t address, uint64_t size);
++void hakios_gpu_to_memory(void *start, uint64_t size);
++uint32_t hakios_gpu_submit(const uint64_t *addresses, const uint32_t *words, uint32_t count);
++bool hakios_gpu_done(uint32_t fence);
++uint32_t hakios_gpu_last(void);
++void hakios_gpu_worked(uint64_t *microseconds, uint32_t *submissions, uint32_t by[7]);
++void hakios_gpu_report(const char *why);
++bool hakios_gpu_recover(void);
++void hakios_gpu_stop(void);
++
++/*
++ * The Mali brought up to its last step (mali=9), for drivers/gpu/mali/hakios.mali.cpp: see "what the service that programs
++ * talk to uses" in drivers/gpu/mali/hakios.mali.c. hakios_keep(): a line of the kernel's own, said again every minute.
++ */
++bool hakios_mali_ready(void);
++bool hakios_mali_parameter(uint32_t which, uint64_t *value);
++uint64_t hakios_mali_address(uint64_t size, bool executable);
++bool hakios_mali_map(uint64_t gpu, uint64_t phys);
++void hakios_mali_mapped(void);
++void hakios_mali_unmap(uint64_t gpu, uint64_t size);
++void hakios_mali_tag(uint64_t address, uint32_t kind, uint32_t width, uint32_t height, uint32_t row_bytes,
++    uint32_t format, uint32_t offset);
++uint32_t hakios_mali_submit(uint64_t chain, bool fragment);
++uint64_t hakios_mali_enqueue(uint64_t chain, bool fragment);
++bool hakios_mali_wait(uint64_t seq, uint64_t timeout_ns);
++void hakios_keep(const char *format, ...) __printflike(1, 2);
++#endif
++
++#endif /* _SYS_HAKIOS_INPUT_H_ */
+diff --git a/bsd/sys/hakios.ipa.h b/bsd/sys/hakios.ipa.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..51af148342f6f3b924d9f221d04f2c71ea53cf9a
+--- /dev/null
++++ b/bsd/sys/hakios.ipa.h
+@@ -0,0 +1,54 @@
++/*
++ * The modem's packets: the IPA's data path for this processor (drivers/modem/hakios.ipa.c) and the
++ * network interface that stands on it (drivers/modem/hakios.cell.c).
++ *
++ * The IPA (the SoC's packet engine) carries IP packets between the modem and this processor in
++ * QMAP framing: a 4-byte header (pad length, mux id, packet length) before each packet. The
++ * driver of the modem (hakios.mpss.c) brings the IPA up; hakios.ipa.c sets up this processor's
++ * side of it -- GSI rings, the IPA's endpoints, its tables -- before the modem is started, and
++ * then moves packets. hakios.cell.c makes an Ethernet-looking interface (en1) out of that, with
++ * an ARP and DHCP responder of its own, so that Darwin configures it as it would a USB Ethernet
++ * adapter: address, router and DNS come from the modem's data session (QMI WDS), which
++ * hakios.mpss.c reports with hakios_cell_session().
++ */
++#ifndef _SYS_HAKIOS_IPA_H_
++#define _SYS_HAKIOS_IPA_H_
++
++#ifdef KERNEL
++#include <stdbool.h>
++#include <stdint.h>
++#include <stddef.h>
++
++/* ---- hakios.ipa.c: the IPA's endpoints for this processor ---- */
++
++/*
++ * Set up this processor's channels and endpoints; before the modem starts, with the IPA's clock on,
++ * its firmware running and its SMMU context in place (the modem driver's doing). False: no data
++ * path (the log says why); everything else goes on without it.
++ */
++bool hakios_ipa_data_setup(void);
++bool hakios_ipa_data_ready(void);
++/* One IP packet to the modem on QMAP mux `mux`. Copied. False if dropped (no room, too long). */
++bool hakios_ipa_transmit(uint8_t mux, const void *packet, size_t length);
++/*
++ * Packets from the modem: `receive` is called for each, with its mux id, from the caller's thread.
++ * Returns how many there were. Also finishes transmissions (frees their buffers).
++ */
++unsigned hakios_ipa_poll(void (*receive)(uint8_t mux, const uint8_t *packet, size_t length));
++/* What has gone through, for the log. */
++void hakios_ipa_status(char *to, size_t size);
++/* The IPA endpoints of this processor's data path to and from the modem (for QMI DPM Open Port). */
++void hakios_ipa_modem_endpoints(uint32_t *to_modem, uint32_t *from_modem);
++
++/* ---- hakios.cell.c: the interface ---- */
++
++/*
++ * Called by the modem driver: the data session is up with these settings (network byte order
++ * addresses; mtu 0: unknown), or down. From any thread.
++ */
++void hakios_cell_session(bool up, uint32_t address, uint32_t mask, uint32_t gateway, uint32_t dns1, uint32_t dns2, uint32_t mtu);
++/* Make en1 on the IPA's data path once hakios_ipa_data_setup() has succeeded. */
++void hakios_cell_attach(void);
++
++#endif /* KERNEL */
++#endif /* _SYS_HAKIOS_IPA_H_ */
+diff --git a/bsd/sys/hakios.log.h b/bsd/sys/hakios.log.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..391bbeb20ca19e12eaf2d361a4d4bed87628557b
+--- /dev/null
++++ b/bsd/sys/hakios.log.h
+@@ -0,0 +1,12 @@
++/*
++ * A driver's log line: to the kernel's log, and the loader's, which survives the run. At most 600 bytes.
++ */
++#ifndef _SYS_HAKIOS_LOG_H_
++#define _SYS_HAKIOS_LOG_H_
++
++#include <sys/cdefs.h>
++
++int hakios_say(const char *format, ...) __printflike(1, 2);
++#define say hakios_say
++
++#endif /* _SYS_HAKIOS_LOG_H_ */
+diff --git a/bsd/sys/hakios.lx.h b/bsd/sys/hakios.lx.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e08843e72a533d5b1b726e47f0874e6ff1cbf57
+--- /dev/null
++++ b/bsd/sys/hakios.lx.h
+@@ -0,0 +1,137 @@
++/*
++ * The whole of what the Wi-Fi driver's object asks of the kernel it is linked into. That object
++ * (tools/mk-ath11k.sh in the repository: Linux's ath11k on FreeBSD's LinuxKPI headers and our
++ * wifi/lx) is compiled as FreeBSD kernel code, drivers/wifi/lx/hakios.lx.c on this side as XNU's;
++ * neither sees the other's headers, so nothing but C's own types crosses (and the station
++ * boundary's, hakios.sta.h, which is written for both). Everything the
++ * driver's side knows of locks, timers, work queues and buffers is built in wifi/lx/src on the
++ * few calls here.
++ *
++ * Threads: the driver's code runs on threads made by lx_os_thread() and on the kernel's own
++ * threads that call into it; never in an interrupt.
++ */
++#ifndef _SYS_HAKIOS_LX_H_
++#define _SYS_HAKIOS_LX_H_
++
++#include "hakios.sta.h"
++
++/* ---- memory ---- */
++void	*lx_os_alloc(unsigned long size);			/* zeroed; NULL when there is none */
++void	 lx_os_free(void *memory, unsigned long size);
++/*
++ * Memory the radio itself reads and writes: whole pages, zeroed, which the radio knows from
++ * *address on (the machine says where: the radio sees memory through an SMMU). What either
++ * side writes the other sees at once: the processor's cache is not in between, which makes
++ * reading it slow. NULL when there is none; never given back.
++ */
++void	*lx_os_radio_memory(unsigned long size, unsigned long long *address);
++/* true: the radio's reads and writes look in the processors' caches (the S9 with wifi_pcie_coherent=1), and its memory is
++ * then the kernel's own, cached; false (the default, weak, in hakios.lx.c): the uncached view above */
++bool	 hakios_wifi_radio_coherent(void);
++void	*lx_os_map_registers(unsigned long long physical, unsigned long size);	/* never unmapped */
++
++/* ---- saying things ---- */
++void	 lx_os_print(const char *text);				/* for whoever looks for a fault: may be kept back */
++void	 lx_os_tell(const char *text);				/* for whoever runs the machine: always said */
++/* the driver's own account of itself, for the USB console's "wifi" (hakios_wifi_report()); NULL: no longer there */
++void	 lx_os_wifi_state(void (*say)(void));
++/* what is said between lx_os_failure(true) and (false) (the driver's state when its setup failed) is kept apart and
++ * said again with the rest of the radio's log, on the USB console's "wifi" and when the console is first up */
++void	 lx_os_failure(bool on);
++void	 lx_os_panic(const char *text) __attribute__((noreturn));
++
++/* ---- time, threads, sleeping ---- */
++unsigned long long lx_os_nanoseconds(void);			/* since some moment; never goes back */
++void	*lx_os_thread_self(void);				/* a value that tells the kernel's threads apart */
++/* a thread that runs function(argument) and ends when that returns: 0, or an errno */
++int	 lx_os_thread(const char *name, void (*function)(void *), void *argument);
++/*
++ * One lock, and sleeping under it as with a condition variable: lx_os_sleep() is called with the
++ * lock held, gives it up while asleep and has it again when it returns -- 0 when woken by
++ * lx_os_wakeup() on the same address, 1 when the time (nanoseconds; 0: no limit) ran out.
++ * The lock is held for a few instructions at a time and never across a call out of the layer.
++ */
++void	 lx_os_lock(void);
++void	 lx_os_unlock(void);
++int	 lx_os_sleep(const void *address, unsigned long long nanoseconds);
++void	 lx_os_wakeup(const void *address);			/* everyone asleep on it */
++
++/* ---- the rest of the machine ---- */
++void	 lx_os_random(void *buffer, unsigned long size);	/* bytes nobody can guess */
++/* a number given to the kernel when it was started ("wifi_lx=2"); 0 if it was not */
++unsigned lx_os_option(const char *name);
++/* a file the driver asks for by the name Linux has for it, in place: 0, or an errno (ENOENT) */
++int	 lx_os_firmware(const char *name, const void **data, unsigned long *size);
++/* the processor that runs the radio's firmware: started, and up when this returns; 0 or an errno */
++int	 lx_os_rproc_boot(void);
++/* the radio's own address (six bytes), if the machine has one for it: 1, or 0 and nothing written */
++int	 lx_os_radio_address(unsigned char *address);
++/* the BCM4361's CIS from its OTP (length bytes, chip ID, revision): which module it is, for the files it is given */
++void	 lx_os_radio_identity(const unsigned char *cis, unsigned long length, unsigned chip, unsigned revision);
++/*
++ * The network the radio is to join, if the machine was given one: its name and its passphrase,
++ * into buffers whose sizes come in and whose contents' lengths go out. 1, or 0.
++ */
++int	 lx_os_network(unsigned char *name, unsigned *name_length, unsigned char *passphrase, unsigned *passphrase_length);
++
++/* ---- frames: the radio as what carries the machine's network interface ---- */
++void	 lx_os_net_attach(const unsigned char *address);	/* there is a radio, and this is its address */
++void	 lx_os_net_link(int up);				/* frames can pass now (a network is joined) / no longer */
++void	 lx_os_net_input(const unsigned char *frame, unsigned long length);	/* an Ethernet frame has arrived */
++
++/*
++ * ---- the radio's interrupts (wifi_irq=1). The radio raises one by writing a number to an address
++ * (an "MSI": the GIC's register that raises the SPI of that number); vector v of its 32 is data + v.
++ * The driver's work for one is done in thread context, on the kernel's thread for them: the
++ * function given for a vector is called there after it has fired, with the vector masked until
++ * lx_os_irq_enable(). Nothing of the driver runs in an interrupt.
++ */
++int	 lx_os_irq_msi(unsigned long long *address, unsigned *data);	/* where and what: 1, or 0 (no interrupts) */
++int	 lx_os_irq_attach(unsigned vector, void (*function)(void *), void *argument);	/* masked to begin with; 0 or an errno */
++void	 lx_os_irq_enable(unsigned vector);
++void	 lx_os_irq_disable(unsigned vector);			/* returns when its function is not running */
++void	 lx_os_irq_detach_all(void);				/* returns when no function is running */
++unsigned long long lx_os_irq_count(unsigned vector);		/* how many have arrived */
++
++/*
++ * ---- or one line, level-triggered, which the radio's driver shares with nobody (the Galaxy S9's INTx, SPI 253, for
++ * brcmfmac; the WCN6750's kernel has none of these, and ath11k's object does not ask for them). The same contract as a
++ * vector's: function(argument) is called on the kernel's thread for it after the line has fired, with the line masked and
++ * the root complex's latch of it already cleared, until lx_os_irq_line_enable(); attached masked. 0, or an errno.
++ */
++int	 lx_os_irq_line_attach(void (*function)(void *), void *argument);
++void	 lx_os_irq_line_enable(void);
++void	 lx_os_irq_line_detach(void);				/* returns when function is not running (unless it is the caller) */
++unsigned long long lx_os_irq_line_count(void);			/* how many have arrived */
++
++/*
++ * ---- a radio on PCIe (the Galaxy S9's BCM4361, for brcmfmac: drivers/wifi/brcmfmac/hakios.brcmfmac.c; the WCN6750's kernel has
++ * none of these, and ath11k's object does not ask for them). One device, already enumerated and decoding.
++ */
++int	 lx_os_pci_device(unsigned *vendor, unsigned *device);	/* 1 if there is one, with its IDs; 0 */
++unsigned lx_os_pci_config_read(unsigned offset);		/* a 32-bit word of its configuration space (offset & ~3) */
++void	 lx_os_pci_config_write(unsigned offset, unsigned value);
++/* where BAR n is (the processor's physical address, which is also the bus's) and how big: 1, or 0 if it has none */
++int	 lx_os_pci_bar(unsigned bar, unsigned long long *address, unsigned long long *size);
++/* what stands between the radio and memory (the SysMMU, the shareability, both ends' status), said and kept */
++void	 lx_os_pci_say_dma(const char *when);
++
++/* ---- the station: scanning and joining, for whoever asks the kernel (hakios.sta.h) ---- */
++void	 lx_os_station(const struct hakios_sta_ops *ops);	/* here it is, to be asked; NULL: no longer (returns when no call is under way) */
++void	 lx_os_station_lost(int error);				/* the network joined is gone by itself */
++
++/*
++ * ---- the names the object shows the kernel. lx_start(): bring the driver up on the radio and
++ * do what the kernel's options ask (scan; join a network). 0, or an errno. Returns when that is
++ * over or has failed; with a network joined the driver stays up, lx_transmit() sends an
++ * Ethernet frame through it (0, or an errno; called by one thread, the kernel's own for that),
++ * and lx_stop() leaves the network and takes the driver down in order (and does nothing if it
++ * is not up).
++ */
++int	 lx_start(void);
++void	 lx_stop(void);
++int	 lx_transmit(const unsigned char *frame, unsigned long length);
++/* before lx_start(), if the kernel wants it early: take the memory the radio will be shown. 0, or an errno. */
++int	 lx_prepare(void);
++
++#endif
+diff --git a/bsd/sys/hakios.macaddr.h b/bsd/sys/hakios.macaddr.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..8baed747c18fea70fa9b9cb56d62ab22996c7cf8
+--- /dev/null
++++ b/bsd/sys/hakios.macaddr.h
+@@ -0,0 +1,69 @@
++/*
++ * Darwin-on-hakios: a radio's own address written as text, as Samsung's Android keeps the Galaxy S9's in
++ * /efs/wifi/.mac.info ("00:12:34:AB:CD:EF" and a newline; bcmdhd's dhd_custom_cis.c, dhd_set_macaddr_from_file(),
++ * reads it with MAC_CUSTOM_FORMAT, and writes a random one with Samsung's prefix 00:12:34 when the file is missing or
++ * all zeroes) and as boot-arg wifi_mac gives it. Nothing but C here, so that tools/brcmfmac-test.py compiles it on the
++ * machine the kernel is built on.
++ *
++ * hakios_macaddr_parse(): six bytes of one or two hexadecimal digits each, separated by ':' (or '-'), spaces and a line's
++ * end around them; nothing else after. An address of all zeroes, a group address (bit 0 of the first byte) and anything
++ * else is refused: 0, and nothing written. 1 when `address` has it.
++ */
++#ifndef _SYS_HAKIOS_MACADDR_H_
++#define _SYS_HAKIOS_MACADDR_H_
++
++#include <stddef.h>
++#include <stdint.h>
++
++static inline int
++hakios_macaddr_parse(const char *text, size_t length, uint8_t address[6])
++{
++	uint8_t bytes[6];
++	unsigned count = 0, digits = 0, value = 0, any = 0;
++	size_t i = 0;
++
++	while (i < length && (text[i] == ' ' || text[i] == '\t')) {
++		i++;
++	}
++	for (;; i++) {
++		char c = i < length ? text[i] : 0;
++		int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
++
++		if (digit >= 0) {
++			if (digits == 2 || count == 6) {
++				return 0;
++			}
++			value = value << 4 | (unsigned)digit;
++			digits++;
++			continue;
++		}
++		if (digits == 0) {
++			return 0;               /* (a separator with no digits before it, or nothing at all) */
++		}
++		bytes[count++] = (uint8_t)value;
++		any |= value;
++		digits = value = 0;
++		if (count < 6) {
++			if (c != ':' && c != '-') {
++				return 0;
++			}
++			continue;
++		}
++		/* the sixth: only blanks and the line's end may follow, up to the end of the text or a NUL */
++		for (; i < length && text[i] != 0; i++) {
++			if (text[i] != ' ' && text[i] != '\t' && text[i] != '\r' && text[i] != '\n') {
++				return 0;
++			}
++		}
++		break;
++	}
++	if (any == 0 || (bytes[0] & 1) != 0) {
++		return 0;
++	}
++	for (unsigned b = 0; b < 6; b++) {
++		address[b] = bytes[b];
++	}
++	return 1;
++}
++
++#endif
+diff --git a/bsd/sys/hakios.max98512.h b/bsd/sys/hakios.max98512.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..0db9dc1931f71cbbde55abd29ef0e8a9f5df10b3
+--- /dev/null
++++ b/bsd/sys/hakios.max98512.h
+@@ -0,0 +1,27 @@
++/*
++ * The Galaxy S9's speaker amplifiers (drivers/audio/codec/hakios.max98512.c): two Maxim MAX98512s on the HSI2C of USI07 of
++ * PERIC1, fed by UAIF1 of ABOX over I2S. The driver starts itself (boot-arg max98512=N); what it offers the rest of the
++ * kernel is the hook below, through which ABOX's driver turns the amplifiers on once UAIF1's clocks run and off before
++ * they stop.
++ *
++ * The hook is ABOX's, declared in sys/hakios.exynos_abox.h; a kernel without ABOX's driver has a stand-in that keeps
++ * nothing (drivers/core/hakios.stubs.c).
++ */
++#ifndef _SYS_HAKIOS_MAX98512_H_
++#define _SYS_HAKIOS_MAX98512_H_
++
++#include <stdint.h>
++
++#include <sys/hakios.exynos_abox.h>
++
++void hakios_max98512_quiesce(void);    /* loader_return(): both amplifiers shut down, if they were started */
++
++/*
++ * What the MAX98512 driver's hook asks of its caller: start() and stop() from a thread (they take a lock and talk over
++ * I2C), never at once from two; start() takes some tens of milliseconds (both amplifiers reset and set up anew), stop()
++ * about 16 (the amplifiers ramp down on UAIF1's clocks, so the clocks must still run until it returns). start() takes
++ * 48000 Hz, two channels (I2S: channel 0 the top speaker, 1 the bottom one) of 16, 24 or 32 bits, and refuses the rest.
++ * hakios_abox_set_amp() may be called before ABOX's driver has started: it is to keep the pointer, nothing more.
++ */
++
++#endif /* _SYS_HAKIOS_MAX98512_H_ */
+diff --git a/bsd/sys/hakios.mfc.h b/bsd/sys/hakios.mfc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..23002295acd3857b71e623a15cd6b506854ca4bd
+--- /dev/null
++++ b/bsd/sys/hakios.mfc.h
+@@ -0,0 +1,51 @@
++/*
++ * /dev/hakios-mfc: the Exynos 9810's hardware video decoder for user space (bsd/dev/hakios.exynos_mfc.c, boot-arg mfc=5). One client
++ * at a time: open(), HAKIOS_MFC_OPEN with the stream's parameter sets and first frame, then HAKIOS_MFC_DECODE with one access
++ * unit at a time (Annex B: start codes, parameter sets in-band) and the client's NV12 planes for whatever frame is to be
++ * shown; bytes = 0 drains. HAKIOS_MFC_OPEN again starts over (after a drain, the firmware's instance has finished; a stream
++ * goes on from a key frame). EBUSY, EIO: use software. ESTALE from a decode: the stream changed size in-band, open again.
++ */
++#ifndef _SYS_HAKIOS_MFC_H_
++#define _SYS_HAKIOS_MFC_H_
++
++#include <stdint.h>
++#include <sys/ioccom.h>
++
++#define HAKIOS_MFC_H264 0
++#define HAKIOS_MFC_HEVC 1
++
++struct hakios_mfc_open {
++	uint32_t codec;                 /* in */
++	uint32_t header_bytes;          /* in: Annex B with the parameter sets */
++	uint64_t header;                /* in */
++	uint32_t width, height;         /* out: the shown size */
++	uint32_t flags;                 /* in: HAKIOS_MFC_ZERO_COPY to ask; out: HAKIOS_MFC_ZERO_COPY if frames are to be the client's surfaces */
++	uint32_t stride;                /* out, zero copy: the bytes a row a surface must have, both planes */
++	uint32_t rows;                  /* out, zero copy: the rows of luma it must have (with the extended pixels); half of them of chroma */
++	uint32_t reserved;
++};
++
++struct hakios_mfc_decode {
++	uint64_t stream;                /* in: one access unit, Annex B */
++	uint32_t bytes;                 /* in: 0: drain */
++	uint32_t tag;                   /* in: comes back with its frame */
++	uint64_t y, uv;                 /* in: where a shown frame's planes go */
++	uint32_t y_stride, uv_stride;   /* in */
++	uint32_t shown;                 /* out: a frame was written */
++	uint32_t shown_tag;             /* out */
++	uint32_t width, height;         /* out */
++	uint32_t finished;              /* out: drained */
++	uint32_t room_width;            /* in: the most the planes above can hold; ERANGE if the picture is larger */
++	uint32_t room_height;           /* in */
++	uint32_t surface;               /* in, zero copy: the IOSurface (of the block's memory) this frame is decoded into */
++	int32_t slot;                   /* out, zero copy: the slot it went to, -1 none. The client keeps a slot's surface until `used` no longer has its bit */
++	int32_t shown_slot;             /* out, zero copy: the slot of the shown frame, instead of a copy into y and uv */
++	uint32_t used;                  /* out, zero copy: the slots the firmware keeps */
++};
++
++#define HAKIOS_MFC_ZERO_COPY    1u
++
++#define HAKIOS_MFC_OPEN         _IOWR('M', 1, struct hakios_mfc_open)
++#define HAKIOS_MFC_DECODE       _IOWR('M', 2, struct hakios_mfc_decode)
++
++#endif /* _SYS_HAKIOS_MFC_H_ */
+diff --git a/bsd/sys/hakios.nas.h b/bsd/sys/hakios.nas.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f84600352e48e23fb756e5939c71d9b548ead7c4
+--- /dev/null
++++ b/bsd/sys/hakios.nas.h
+@@ -0,0 +1,45 @@
++/* Minimal, transport-independent QMI NAS network state for cellular UI clients. */
++#ifndef _SYS_HAKIOS_NAS_H_
++#define _SYS_HAKIOS_NAS_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++struct hakios_nas_state {
++	bool registered;
++	bool has_signal;
++	uint8_t radio_interface; /* QMI NAS: 4 GSM, 5 UMTS, 8 LTE, 12 NR */
++	int16_t dbm;            /* LTE/NR RSRP; GSM/UMTS RSSI */
++	uint8_t bars;           /* 0 until registration and a valid signal reading */
++	uint16_t mcc, mnc;      /* the current PLMN (serving system TLV 0x10); 0: none told */
++	char operator_name[32]; /* its description, as the network gives it; "" when none */
++};
++
++/* Apply one complete QMI NAS frame. 1: state changed; 0: ignored; -1: malformed. */
++int hakios_nas_apply(struct hakios_nas_state *state, const void *frame, size_t length);
++
++struct hakios_qrtr_ops;
++struct hakios_qrtr_port;
++
++/* One NAS service client on a specified processor's QRTR transport. Callbacks are serialized
++ * by that transport; the caller must synchronize a state read on any other thread. */
++struct hakios_nas_client {
++	const struct hakios_qrtr_ops *transport;
++	struct hakios_qrtr_port *port;
++	struct hakios_nas_state state;
++	void (*changed)(void *context, const struct hakios_nas_state *state);
++	void *context;
++	uint32_t peer_node, peer_port;
++	uint16_t transaction;
++	uint32_t answers;       /* NAS frames received, changed or not */
++	bool connected;
++};
++
++int hakios_nas_client_open(struct hakios_nas_client *client, const struct hakios_qrtr_ops *transport,
++    void (*changed)(void *, const struct hakios_nas_state *), void *context);
++/* Get Serving System and Get Signal Info. Poll regularly until indications are configured. */
++int hakios_nas_client_poll(struct hakios_nas_client *client);
++void hakios_nas_client_close(struct hakios_nas_client *client);
++
++#endif
+diff --git a/bsd/sys/hakios.net.h b/bsd/sys/hakios.net.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d35bbe5ffa679a590ad472a98adaf6ab02fae60d
+--- /dev/null
++++ b/bsd/sys/hakios.net.h
+@@ -0,0 +1,69 @@
++/*
++ * en0, and what stands behind it.
++ *
++ * The network interface Darwin uses here is made in drivers/net/hakios.net.c with the kernel's own
++ * interface KPI: Ethernet as far as the rest of the kernel and user space can tell. What carries
++ * the frames is a "link", a driver of its own that knows nothing about interfaces: QEMU's virtio
++ * network device today (drivers/virtio/hakios.virtio_net.c), the phone's radio or frames carried over
++ * the boot loader's USB channel tomorrow. This is all the two know of each other.
++ *
++ * A link driver
++ *   - fills in a struct hakios_net_link and calls hakios_net_attach() once, when it is ready
++ *     to carry frames (for a radio: when its firmware is up, not when it has joined a network);
++ *   - hands every frame that arrives to hakios_net_input(): from its own thread, or from
++ *     the poll function the interface's thread calls for it. Not from interrupt context;
++ *   - says with hakios_net_link_state() when frames can pass and when they no longer can
++ *     (the cable, or for a radio: associated and the keys set). configd starts DHCP on that.
++ * A frame is what goes over an Ethernet cable without the checksum at its end: destination,
++ * source, type, payload; at most HAKIOS_NET_FRAME_MAX bytes. A radio whose frames are 802.11
++ * converts in its driver (or has its firmware do it: "Ethernet decap/encap").
++ */
++#ifndef _SYS_HAKIOS_NET_H_
++#define _SYS_HAKIOS_NET_H_
++
++#ifdef KERNEL
++#include <sys/kpi_mbuf.h>
++
++#define HAKIOS_NET_FRAME_MAX   1514
++#define HAKIOS_NET_UNITS       2       /* en0: the radio (or virtio); en1: the modem's packets (hakios.cell.c) */
++
++struct hakios_net_link {
++	const char *    name;           /* for the log */
++	unsigned        unit;           /* which enN this is (0 unless said otherwise) */
++	uint8_t         address[6];     /* the interface's Ethernet address */
++	bool            wireless;       /* the interface is told to be Wi-Fi (its "subfamily"), which is how the
++	                                 * network stack and configd tell a radio from a cable */
++	bool            up;             /* frames can pass from the start (else: wait for hakios_net_link_state()) */
++	/*
++	 * Send one frame: a chain of mbufs, `length` bytes in all, the Ethernet header first. The
++	 * packet stays the caller's: copy it (mbuf_copydata()). Returns false if it had to be dropped.
++	 * Called by one thread at a time, never from interrupt context.
++	 */
++	bool            (*transmit)(mbuf_t packet, size_t length);
++	/*
++	 * Optional. Look whether frames have arrived and call hakios_net_input() for each; returns
++	 * how many there were. The interface's thread calls it every 2 ms while frames are coming and
++	 * every 10 ms when none has for a while. A link that has a thread or an interrupt of its own
++	 * leaves it NULL.
++	 */
++	unsigned        (*poll)(void);
++	/* Optional. A few words of what the link has counted, for the USB console's "wifi stat" (no newline). */
++	void            (*counts)(char *line, size_t room);
++};
++
++/* Make en<unit> on top of that link (the structure must stay). One link per unit, once: false if there is one already. */
++bool hakios_net_attach(const struct hakios_net_link *link);
++/* A frame has arrived (on en0 / on en<unit>). Copied; the buffer is the caller's again on return. */
++void hakios_net_input(const uint8_t *frame, size_t length);
++void hakios_net_input_unit(unsigned unit, const uint8_t *frame, size_t length);
++/* Frames can pass now / can no longer pass (on en0 / on en<unit>). */
++void hakios_net_link_state(bool up);
++void hakios_net_link_state_unit(unsigned unit, bool up);
++
++void hakios_net_init(void);            /* the links there are: each looks for its hardware (or its boot-arg) */
++/* an Apple80211 request (SIOCGA80211, SIOCSA80211) for the interface of a radio: hakios.apple80211.c */
++errno_t hakios_apple80211_ioctl(u_long command, void *data);
++void hakios_virtio_net_init(void);     /* boot-arg virtio_net=1: QEMU's virtio network device */
++#endif /* KERNEL */
++
++#endif /* _SYS_HAKIOS_NET_H_ */
+diff --git a/bsd/sys/hakios.pci.h b/bsd/sys/hakios.pci.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebfb6c2e1a7218232e5c6fa254bfc1256b84b1c8
+--- /dev/null
++++ b/bsd/sys/hakios.pci.h
+@@ -0,0 +1,67 @@
++/*
++ * A generic PCI host bridge: the FDT's "pci-host-ecam-generic" (QEMU virt) or
++ * "pci-host-cam-generic" (crosvm, the Android Virtualization Framework), described to the
++ * kernel by the loader as the device tree node /pci0 (see bsd/dev/hakios.pci.c for its
++ * properties). Only the first bus is enumerated: both machines put every device on it.
++ * BARs that the firmware or the VMM left programmed are kept; the others are assigned from
++ * the bridge's memory windows. INTx is mapped to a GIC interrupt through the node's
++ * interrupt map; MSI/MSI-X are not used.
++ *
++ * Plain C, no allocation and no locks in enumeration and config access, so the console
++ * (hakios.virtio_console.c) can use it from serial_init(). C++ callers (iokit) include this
++ * inside extern "C" (it does that itself).
++ */
++#ifndef _SYS_HAKIOS_PCI_H_
++#define _SYS_HAKIOS_PCI_H_
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <sys/cdefs.h>
++
++__BEGIN_DECLS
++
++#define HAKIOS_PCI_MAX_DEVS    32
++
++#define HAKIOS_PCI_BAR_MEM64   0x01    /* 64-bit memory BAR (takes this slot and the next) */
++#define HAKIOS_PCI_BAR_PREFETCH 0x02
++#define HAKIOS_PCI_BAR_IO      0x04    /* an I/O BAR: never enabled */
++
++struct hakios_pci_dev {
++	uint8_t         bus, slot, func;
++	uint8_t         int_pin;        /* 1..4 = INTA..INTD, 0 = none */
++	uint16_t        vendor, device;
++	uint16_t        subsys_vendor, subsys;
++	uint32_t        class_rev;      /* class code << 8 | revision */
++	uint32_t        intid;          /* GIC INTID of its INTx line, 0 = none */
++	bool            intx_edge;      /* the map says edge-triggered (normally level) */
++	bool            firmware;       /* still in use by the firmware: leave it alone */
++	uint64_t        bar_pa[6];      /* CPU physical address, 0 = absent or unassigned */
++	uint64_t        bar_size[6];
++	uint8_t         bar_flags[6];
++	uintptr_t       cfg;            /* kernel VA of the function's configuration space */
++	uint32_t        cfg_size;       /* 256 (CAM) or 4096 (ECAM) */
++};
++
++/* Find /pci0, enumerate, assign BARs. Idempotent; 0, or ENXIO without a PCI bridge. */
++int hakios_pci_init(void);
++/* Print the device table (once; not from serial_init, printf is not up there yet). */
++void hakios_pci_dump(void);
++unsigned hakios_pci_count(void);
++struct hakios_pci_dev *hakios_pci_device(unsigned index);
++
++uint8_t  hakios_pci_cfg_read8(const struct hakios_pci_dev *d, uint32_t off);
++uint16_t hakios_pci_cfg_read16(const struct hakios_pci_dev *d, uint32_t off);
++uint32_t hakios_pci_cfg_read32(const struct hakios_pci_dev *d, uint32_t off);
++void hakios_pci_cfg_write8(const struct hakios_pci_dev *d, uint32_t off, uint8_t v);
++void hakios_pci_cfg_write16(const struct hakios_pci_dev *d, uint32_t off, uint16_t v);
++void hakios_pci_cfg_write32(const struct hakios_pci_dev *d, uint32_t off, uint32_t v);
++/* The next capability with this id after offset 'after' (0: from the first), 0 if none. */
++uint8_t hakios_pci_find_cap(const struct hakios_pci_dev *d, uint8_t cap_id, uint8_t after);
++/* Map [off, off + size) of a memory BAR as device memory; 0 on failure. */
++uintptr_t hakios_pci_map_bar(const struct hakios_pci_dev *d, unsigned bar, uint64_t off, uint64_t size);
++/* Command register: memory decoding and bus mastering on, INTx on or off. */
++void hakios_pci_enable(const struct hakios_pci_dev *d, bool intx);
++
++__END_DECLS
++
++#endif /* _SYS_HAKIOS_PCI_H_ */
+diff --git a/bsd/sys/hakios.physmap.h b/bsd/sys/hakios.physmap.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f50609b200e27409b82b259bc55462eb2c6916d3
+--- /dev/null
++++ b/bsd/sys/hakios.physmap.h
+@@ -0,0 +1,22 @@
++/*
++ * Physical memory that XNU does not manage, mapped into the kernel: hakios_physmap_wc(pa, bytes) (iokit/Kernel/
++ * hakios.physmap.cpp, built into every kernel). For the DMA buffers the Galaxy S9's drivers keep below 4 GB in the
++ * lower bank (sys/hakios.exynos9810_mem.h): an IOMemoryDescriptor of the physical range, mapped write-combined (normal
++ * memory, not cached, unaligned reads allowed: what a device writes is what the processor reads, with no cache
++ * maintenance), never ml_io_map(), whose io_submap is only 8 MB (a few MB of buffer there leaves the next driver's
++ * registers no room: a panic). Mapped once and kept for the run: the descriptor and its map are never released.
++ * The virtual address, or 0 if it cannot be mapped. The camera's frames and UFS's own mode use it; the display's
++ * scan-out buffers (MiniIOMobileFramebuffer.cpp) still map theirs themselves, the same way.
++ */
++#ifndef _SYS_HAKIOS_PHYSMAP_H_
++#define _SYS_HAKIOS_PHYSMAP_H_
++
++#include <stdint.h>
++#include <mach/vm_types.h>
++
++#ifdef __cplusplus
++extern "C"
++#endif
++vm_offset_t hakios_physmap_wc(uint64_t pa, uint64_t bytes);
++
++#endif /* _SYS_HAKIOS_PHYSMAP_H_ */
+diff --git a/bsd/sys/hakios.qmi.h b/bsd/sys/hakios.qmi.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..13bd7aaa5c2a087a49dda3317f841e0eb469b103
+--- /dev/null
++++ b/bsd/sys/hakios.qmi.h
+@@ -0,0 +1,219 @@
++/*
++ * QMI, the message protocol the firmware of Qualcomm's processors speaks (the Wi-Fi DSP's
++ * "WLFW" service among them): the helpers a client needs, under the names and with the meaning
++ * of Linux's <linux/soc/qcom/qmi.h>, so that a driver written for Linux -- ath11k's qmi.c --
++ * compiles against this header unchanged. The implementation (drivers/modem/hakios.qmi.c) is ours,
++ * written from what the interface and the wire format are publicly described to be; nothing of
++ * Linux's implementation is in it.
++ *
++ * What is here: messages described by tables of struct qmi_elem_info and coded to and from C
++ * structures by them; a handle that owns a port of the IPC router (sys/hakios.qrtr.h), looks a
++ * service up and tells its user when the service appears and goes; requests as transactions
++ * (init, send, wait or cancel) whose reply is decoded into the caller's structure; indications
++ * handed to handlers. What is not: serving (no qmi_add_server, no replies of our own).
++ *
++ * Only <stdint.h> types are used, so that the header does not care what the driver's own
++ * compatibility headers call a byte or a mutex.
++ *
++ * Who calls what from where: new_server, del_server and the indication handlers are called
++ * from the router's delivery thread, with no lock of the helpers held; they may send. A reply
++ * wakes the thread waiting in qmi_txn_wait().
++ */
++#ifndef _SYS_HAKIOS_QMI_H_
++#define _SYS_HAKIOS_QMI_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++/* ---- messages -------------------------------------------------------------------------------- */
++
++/* The first seven bytes of every message, little-endian. */
++#define QMI_REQUEST             0
++#define QMI_RESPONSE            2
++#define QMI_INDICATION          4
++#define QMI_HEADER_SIZE         7       /* type (1), transaction (2), message id (2), length of the rest (2) */
++
++/* The kind of an element of a message's description. */
++enum qmi_elem_type {
++	QMI_EOTI,                       /* the end of the table */
++	QMI_OPT_FLAG,                   /* a byte of the C structure, not of the message: whether the element after it is there */
++	QMI_DATA_LEN,                   /* the number of entries in the array after it: a uint32_t in C; elem_size 1
++	                                 * or 2 is its size in the message */
++	QMI_UNSIGNED_1_BYTE,
++	QMI_UNSIGNED_2_BYTE,
++	QMI_UNSIGNED_4_BYTE,
++	QMI_UNSIGNED_8_BYTE,
++	QMI_SIGNED_2_BYTE_ENUM,
++	QMI_SIGNED_4_BYTE_ENUM,
++	QMI_STRUCT,                     /* described by ei_array */
++	QMI_STRING,                     /* in C: characters and a zero in elem_len bytes */
++};
++
++enum qmi_array_type {
++	NO_ARRAY,
++	STATIC_ARRAY,                   /* always elem_len entries */
++	VAR_LEN_ARRAY,                  /* as many as the QMI_DATA_LEN element before it says, at most elem_len */
++};
++
++struct qmi_elem_info {
++	enum qmi_elem_type      data_type;
++	uint32_t                elem_len;       /* entries (for a string: bytes in C, the zero included) */
++	uint32_t                elem_size;      /* bytes of one entry in C; of a basic type, on the wire as well */
++	enum qmi_array_type     array_type;
++	uint8_t                 tlv_type;       /* at the top level: the type of the TLV the element is in */
++	uint32_t                offset;         /* where it is in the C structure */
++	const struct qmi_elem_info *ei_array;   /* QMI_STRUCT: its elements */
++};
++
++#define QMI_COMMON_TLV_TYPE     0
++
++/* The TLV of type 2 that every reply starts with. */
++struct qmi_response_type_v01 {
++	uint16_t result;
++	uint16_t error;
++};
++extern const struct qmi_elem_info qmi_response_type_v01_ei[];
++
++#define QMI_RESULT_SUCCESS_V01          0
++#define QMI_RESULT_FAILURE_V01          1
++
++#define QMI_ERR_NONE_V01                0
++#define QMI_ERR_MALFORMED_MSG_V01       1
++#define QMI_ERR_NO_MEMORY_V01           2
++#define QMI_ERR_INTERNAL_V01            3
++#define QMI_ERR_CLIENT_IDS_EXHAUSTED_V01 5
++#define QMI_ERR_INVALID_ID_V01          41
++#define QMI_ERR_ENCODING_V01            58
++#define QMI_ERR_DISABLED_V01            69
++#define QMI_ERR_INCOMPATIBLE_STATE_V01  90
++#define QMI_ERR_NOT_SUPPORTED_V01       94
++
++/*
++ * The coding by itself (the helpers below use it; tests call it directly). Both return the
++ * number of bytes of the message, header included, or a negative errno.
++ *   encode: `structure` by `ei` into `buffer` of `size` bytes, behind a header of that type,
++ *           message id and transaction;
++ *   decode: the message of `length` bytes at `buffer` by `ei` into `structure` (which the caller
++ *           has zeroed: what the message does not have is left as it is).
++ */
++int hakios_qmi_encode(uint8_t type, uint16_t message, uint16_t transaction, const struct qmi_elem_info *ei, const void *structure,
++    void *buffer, size_t size);
++int hakios_qmi_decode(const void *buffer, size_t length, const struct qmi_elem_info *ei, void *structure);
++
++/* ---- the router's addresses -------------------------------------------------------------------- */
++
++#ifndef AF_QIPCRTR
++#define AF_QIPCRTR              42
++#endif
++struct sockaddr_qrtr {
++	uint16_t sq_family;
++	uint32_t sq_node;
++	uint32_t sq_port;
++};
++
++/* ---- a handle, services, transactions ------------------------------------------------------------ */
++
++struct qmi_handle;
++struct qmi_txn;
++struct socket;                          /* (only ever a pointer here: what a handle's `sock` is called in Linux) */
++
++/* A server of a service that was looked up. */
++struct qmi_service {
++	unsigned int service, version, instance;
++	unsigned int node, port;
++	void *priv;                     /* the user's */
++	struct qmi_service *next;       /* the helpers' */
++};
++
++struct qmi_ops {
++	/* a server has appeared; a negative answer and it is forgotten again */
++	int (*new_server)(struct qmi_handle *qmi, struct qmi_service *service);
++	/* ... and has gone */
++	void (*del_server)(struct qmi_handle *qmi, struct qmi_service *service);
++	/* (the rest of Linux's structure, for sources that fill it in; never called here) */
++	void (*net_reset)(struct qmi_handle *qmi);
++	void (*msg_handler)(struct qmi_handle *qmi, struct sockaddr_qrtr *sq, const void *data, size_t length);
++	void (*bye)(struct qmi_handle *qmi, unsigned int node);
++	void (*del_client)(struct qmi_handle *qmi, unsigned int node, unsigned int port);
++};
++
++/* What to do with a message that is no reply to a transaction; the list ends with an entry without fn. */
++struct qmi_msg_handler {
++	unsigned int type;              /* QMI_INDICATION (or QMI_REQUEST, QMI_RESPONSE) */
++	unsigned int msg_id;
++	const struct qmi_elem_info *ei;
++	size_t decoded_size;            /* of the C structure, which is made, filled in and freed around fn */
++	void (*fn)(struct qmi_handle *qmi, struct sockaddr_qrtr *sq, struct qmi_txn *txn, const void *decoded);
++};
++
++struct qmi_handle {
++	struct socket *sock;            /* what kernel_connect() is given; not NULL while the handle is in use */
++};
++
++struct hakios_qrtr_ops;
++
++struct qmi_txn {
++	struct qmi_handle *qmi;
++	uint16_t id;
++	int result;                     /* of decoding the reply */
++	const struct qmi_elem_info *ei; /* the reply's description, and ... */
++	void *dest;                     /* ... the structure it goes into */
++	struct qmi_txn *next;           /* the helpers' */
++	bool done, waiting;
++};
++
++/*
++ * `largest`: the biggest message that will be taken (bigger ones are dropped). 0, or a negative
++ * errno: -ENXIO where there is no router (hakios_qmi_set_transport() has not been called).
++ */
++int qmi_handle_init(struct qmi_handle *qmi, size_t largest, const struct qmi_ops *ops, const struct qmi_msg_handler *handlers);
++/* Bind a handle to a specific processor's QRTR transport (e.g. WPSS or MPSS). */
++int hakios_qmi_handle_init_transport(struct qmi_handle *qmi, size_t largest, const struct qmi_ops *ops,
++    const struct qmi_msg_handler *handlers, const struct hakios_qrtr_ops *transport);
++void qmi_handle_release(struct qmi_handle *qmi);
++/* Ask for a service: ops->new_server is called for every server of it there is and will be. */
++int qmi_add_lookup(struct qmi_handle *qmi, unsigned int service, unsigned int version, unsigned int instance);
++
++/* A transaction: its number (not negative), or a negative errno. The reply will be decoded by `ei` into `structure`. */
++int qmi_txn_init(struct qmi_handle *qmi, struct qmi_txn *txn, const struct qmi_elem_info *ei, void *structure);
++/*
++ * Send the request of that transaction to `sq`, or with sq NULL to the server the handle was
++ * connected to. `largest`: the most the encoded message may take, header not counted.
++ */
++int qmi_send_request(struct qmi_handle *qmi, struct sockaddr_qrtr *sq, struct qmi_txn *txn, int msg_id, size_t largest,
++    const struct qmi_elem_info *ei, const void *structure);
++/* Give a transaction up that will not be waited for. */
++void qmi_txn_cancel(struct qmi_txn *txn);
++/*
++ * Wait for the reply: what decoding it gave (not negative: the bytes decoded), -ETIMEDOUT, or
++ * the error of a reply that could not be decoded. The transaction is over either way.
++ */
++int hakios_qmi_txn_wait_ms(struct qmi_txn *txn, uint64_t milliseconds);
++
++/*
++ * Linux's qmi_txn_wait() takes the time in "jiffies", of which the caller's Linux has HZ a second.
++ * HZ is looked up where qmi_txn_wait() is used, so it is the caller's whatever it is (a number,
++ * a variable); a caller without one defines HAKIOS_QMI_JIFFIES_TO_MS(j) itself before this.
++ */
++#ifndef HAKIOS_QMI_JIFFIES_TO_MS
++#define HAKIOS_QMI_JIFFIES_TO_MS(j)    ((uint64_t)(j) * 1000 / HZ)
++#endif
++#define qmi_txn_wait(txn, timeout)      hakios_qmi_txn_wait_ms((txn), HAKIOS_QMI_JIFFIES_TO_MS(timeout))
++
++/*
++ * The server that requests without an address go to. In Linux this is a connect() on the
++ * handle's socket, which is how ath11k does it; here that call is this one.
++ */
++int hakios_qmi_connect(struct socket *sock, uint32_t node, uint32_t port);
++#ifndef HAKIOS_QMI_NO_KERNEL_CONNECT
++static inline int
++kernel_connect(struct socket *sock, void *address, __attribute__((unused)) int length, __attribute__((unused)) int flags)
++{
++	const struct sockaddr_qrtr *sq = address;       /* (a pointer of whatever type the caller's Linux has for it) */
++
++	return hakios_qmi_connect(sock, sq->sq_node, sq->sq_port);
++}
++#endif
++
++#endif /* _SYS_HAKIOS_QMI_H_ */
+diff --git a/bsd/sys/hakios.qrtr.h b/bsd/sys/hakios.qrtr.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4dabb87689d4288dc2603ce071913d737ba7f29c
+--- /dev/null
++++ b/bsd/sys/hakios.qrtr.h
+@@ -0,0 +1,49 @@
++/*
++ * QRTR as the QMI helpers (sys/hakios.qmi.h) need it: datagrams to and from a port of a node of
++ * Qualcomm's IPC router, and the question "where is that service".
++ *
++ * On the phone the router's other nodes are the processors beside ours (the Wi-Fi DSP is one), and
++ * the datagrams travel over GLINK; whoever implements that hands these four calls to the QMI
++ * helpers with hakios_qmi_set_transport(). On a development machine a test puts a fake in the
++ * same place. Nothing here knows what is inside a datagram.
++ */
++#ifndef _SYS_HAKIOS_QRTR_H_
++#define _SYS_HAKIOS_QRTR_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++struct hakios_qrtr_port;
++
++/*
++ * A datagram for the port has arrived from (node, port). The data is the caller's again on return.
++ */
++typedef void (*hakios_qrtr_receive_t)(void *context, uint32_t node, uint32_t port, const void *data, size_t length);
++/*
++ * A server of a service that was asked for with lookup() has appeared at (node, port), or the one
++ * that was there has gone. Called once for each that exists when the question is asked, too.
++ */
++typedef void (*hakios_qrtr_server_t)(void *context, bool arrived, uint32_t service, uint32_t version, uint32_t instance,
++    uint32_t node, uint32_t port);
++
++/*
++ * Both callbacks come from one thread at a time, never from interrupt context, and may sleep
++ * (the QMI helpers take a mutex in them and call their user's handlers from them). `context` is
++ * what open() was given.
++ */
++struct hakios_qrtr_ops {
++	/* A port of our own node; NULL if there is none to be had. */
++	struct hakios_qrtr_port *(*open)(hakios_qrtr_receive_t receive, hakios_qrtr_server_t server, void *context);
++	/* One datagram to (node, port); 0, or an errno. May sleep. Up to 8192 bytes. */
++	int (*send)(struct hakios_qrtr_port *port, uint32_t node, uint32_t to_port, const void *data, size_t length);
++	/* Tell this port's `server` callback about the servers of that service, now and from now on; 0, or an errno. */
++	int (*lookup)(struct hakios_qrtr_port *port, uint32_t service, uint32_t version, uint32_t instance);
++	/* No callback comes after this has returned. */
++	void (*close)(struct hakios_qrtr_port *port);
++};
++
++/* The transport there is; NULL takes it away (handles made before keep the one they were made with). */
++void hakios_qmi_set_transport(const struct hakios_qrtr_ops *ops);
++
++#endif /* _SYS_HAKIOS_QRTR_H_ */
+diff --git a/bsd/sys/hakios.scgpu.h b/bsd/sys/hakios.scgpu.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..1fcdd04915be9a5e1238aae60c3e36aa16b188b1
+--- /dev/null
++++ b/bsd/sys/hakios.scgpu.h
+@@ -0,0 +1,144 @@
++/*
++ * SCGPU: the GPU of the Scion app, for an XNU guest under the Android Virtualization Framework.
++ *
++ * crosvm's virtio-gpu draws with the phone's GPU through gfxstream, but it can't show a picture to
++ * a sideloaded app (avf/DISPLAY.md), so every frame had to come back into guest memory and go out
++ * again through the shared framebuffer (SCFB): a readback of the GPU's picture for every frame, then
++ * two copies. Here the app runs gfxstream's host renderer itself (tools/gfxstream/mk-host-android.sh)
++ * and presents the guest's colour buffers straight into its window: nothing comes back.
++ *
++ * The guest still speaks virtio-gpu to it -- the same commands /dev/vgpu3d sends to crosvm
++ * (bsd/dev/hakios.vgpu3d.c), the same gfxstream pipe on top -- but through a region of guest RAM the
++ * app lends and maps too, as SCFB and SCCAM are lent (a CustomMemoryBackingFile). The kernel learns
++ * where from scgpu.addr= and scgpu.size=; avfboot keeps the region out of XNU's memory.
++ *
++ *   +0           struct scgpu_header (one page)
++ *   +4 KiB       the command: one virtio-gpu control command, as it would go on the control queue
++ *   +64 KiB      its reply
++ *   +128 KiB...  the pool: memory the guest hands out and names by guest physical address, as it would
++ *                to a virtio device (ATTACH_BACKING of the pipe buffers, SCGPU_CMD_TRANSFER's staging);
++ *                the app reaches it at the same offset in its own mapping
++ *
++ * One command at a time, as on a control queue: the guest writes the command and req_len, then bumps
++ * req_seq (a release); the app sees it (an acquire), runs it, writes the reply, resp_len and status,
++ * then sets resp_seq = req_seq (a release).
++ *
++ * Waiting: each side spins a little, then sleeps on a doorbell -- a virtio-input device named
++ * "scion-scgpu" (SCGPU_BELL_NAME) whose socket is the app's. The guest rings by putting an event on
++ * its status queue (crosvm writes it into the socket), the app by writing one into the socket (crosvm
++ * puts it on the event queue: an interrupt). A side rings only when the other has said it sleeps
++ * (host_sleeping, guest_waiting), and says so before its last look at the sequence it waits for, with
++ * a full barrier on both sides, so one of the two always sees the other. Without the device (an older
++ * app) both sides poll as before.
++ *
++ * The stream ring: what user space writes to the pipe (the GL stream, write(2) on /dev/vgpu3d) does
++ * not go through the mailbox, one command per write and a wait for each, but into a byte ring in the
++ * pool (ring_off, ring_size, a power of two) as records -- struct scgpu_record, then the bytes, then
++ * padding to 16 -- and the guest goes on at once. ring_head (the guest's) and ring_tail (the app's) count
++ * bytes forever; their difference is what waits. The app hands each record to its resource (the
++ * context's pipe) and moves ring_tail on, and it does so with everything the ring holds before it runs
++ * any mailbox command: so a reply, an upload or a read still comes after every byte written before it.
++ * The guest waits only for room (and rings the app, or is rung, as for the mailbox).
++ *
++ * With SCGPU_F_RING_CMDS from the app, a record of kind SCGPU_REC_CMD holds a virtio-gpu command
++ * instead of stream bytes, one whose reply nothing waits for: RESOURCE_CREATE_3D,
++ * RESOURCE_ATTACH_BACKING, CTX_ATTACH_RESOURCE, CTX_DETACH_RESOURCE, RESOURCE_UNREF, and uploads:
++ * SCGPU_CMD_TRANSFER to the host with staging 0, the rows (staging_len bytes, at the resource's pitch)
++ * right after it in the record. The app runs it where it is in the ring, in order with the stream
++ * around it, and only logs a failure. A colour buffer then costs the guest no round trip to make, fill
++ * (up to a quarter of the ring) or let go (it was five and one a fill, each a wait for the app).
++ *
++ * Commands are virtio-gpu's (virtio 1.2, 5.7.6), with these meanings at the app:
++ *   GET_CAPSET_INFO, GET_CAPSET            gfxstream's capsets (stream_renderer_get_cap_set/fill_caps)
++ *   CTX_CREATE, CTX_DESTROY                stream_renderer_context_create/destroy
++ *   RESOURCE_CREATE_3D, RESOURCE_UNREF     stream_renderer_resource_create/unref
++ *   RESOURCE_ATTACH_BACKING                the entries are in the pool (none: no backing)
++ *   CTX_ATTACH_RESOURCE, CTX_DETACH_RESOURCE
++ *   TRANSFER_TO_HOST_3D, TRANSFER_FROM_HOST_3D   on the attached backing (the pipe)
++ *   RESOURCE_FLUSH                         present the resource (a colour buffer) in the app's window:
++ *                                          stream_renderer_flush; SET_SCANOUT is not needed
++ * and one of its own:
++ *   SCGPU_CMD_TRANSFER                     a transfer through a staging buffer in the pool instead of
++ *                                          a backing attached for good, so that the hundreds of
++ *                                          colour buffers CoreAnimation shares cost no guest memory
++ */
++#ifndef _SYS_HAKIOS_SCGPU_H_
++#define _SYS_HAKIOS_SCGPU_H_
++
++#include <stdint.h>
++
++#define SCGPU_MAGIC             0x50474353u     /* "SCGP" */
++#define SCGPU_VERSION           1u
++#define SCGPU_CMD_OFF           0x1000u
++#define SCGPU_CMD_MAX           (0x10000u - SCGPU_CMD_OFF)
++#define SCGPU_RESP_OFF          0x10000u
++#define SCGPU_RESP_MAX          0x1000u
++#define SCGPU_POOL_OFF          0x20000u
++
++/* the app's renderer is up and answers the mailbox */
++#define SCGPU_F_HOST_READY      (1u << 0)
++/* ... and takes the stream ring's records (without it the guest makes no ring: every write by mailbox) */
++#define SCGPU_F_RING            (1u << 1)
++/*
++ * guest_flags: the guest has begun to show frames through the host (rcFBPost): the app can put the
++ * renderer's window in front from now on (before, the shared framebuffer had the picture)
++ */
++#define SCGPU_G_PRESENTING      (1u << 0)
++
++/* flags: the app runs commands from the ring (records of kind SCGPU_REC_CMD) */
++#define SCGPU_F_RING_CMDS       (1u << 2)
++
++/* struct scgpu_record's kind */
++#define SCGPU_REC_STREAM        0u      /* bytes for the context's pipe */
++#define SCGPU_REC_CMD           1u      /* a virtio-gpu command, its reply dropped (SCGPU_F_RING_CMDS) */
++
++/* the doorbell's virtio-input device (its name, ID_NAME) */
++#define SCGPU_BELL_NAME         "scion-scgpu"
++
++/* SCGPU_CMD_TRANSFER: outside virtio-gpu's command numbers */
++#define SCGPU_CMD_TRANSFER      0x0f00u
++
++struct scgpu_header {
++	uint32_t magic, version;
++	uint64_t size;                  /* of the whole region */
++	uint32_t flags;                 /* SCGPU_F_*, set by the app */
++	uint32_t features_lo, features_hi;      /* the virtio-gpu features the "device" offers */
++	uint32_t num_capsets;
++	/* the mailbox */
++	uint32_t req_seq;               /* the guest's, bumped after the command is written */
++	uint32_t req_len;               /* bytes at SCGPU_CMD_OFF */
++	uint32_t resp_max;              /* bytes the guest takes at SCGPU_RESP_OFF */
++	uint32_t resp_seq;              /* the app's: = req_seq once the reply is there */
++	uint32_t resp_len;
++	int32_t status;                 /* 0, or a negative errno: the app could not run the command */
++	/* counters, for the logs of both sides */
++	uint64_t commands, presents, host_busy_ns;
++	uint32_t guest_flags;           /* SCGPU_G_*, set by the guest */
++	uint32_t host_sleeping;         /* the app waits for the doorbell, not polling: ring it */
++	uint32_t guest_waiting;         /* the guest waits for a reply (or for room in the ring) asleep: ring it */
++	uint32_t ring_off, ring_size;   /* the stream ring, in the region; size 0: no ring (every write by mailbox) */
++	uint32_t ring_head, ring_tail;  /* bytes put in (the guest's), bytes taken out (the app's), forever */
++	uint32_t reserved[9];
++};
++
++/* A record of the stream ring: the bytes follow, then padding to 16. */
++struct scgpu_record {
++	uint32_t resource_id, ctx_id;   /* the pipe of a context (SCGPU_REC_STREAM) */
++	uint32_t len, kind;             /* SCGPU_REC_*: 0 in apps before SCGPU_F_RING_CMDS */
++};
++
++/* struct virtio_gpu_transfer_host_3d's twin, with the staging buffer instead of the backing */
++struct scgpu_transfer {
++	uint32_t type, flags;           /* struct virtio_gpu_ctrl_hdr, type = SCGPU_CMD_TRANSFER */
++	uint64_t fence_id;
++	uint32_t ctx_id;
++	uint8_t ring_idx, padding[3];
++	uint32_t resource_id;
++	uint32_t to_host;               /* 1: guest to host, 0: host to guest */
++	uint32_t x, y, w, h;            /* the box, in pixels */
++	uint64_t offset;                /* of pixel (x, y) in the resource's rows (width * 4 bytes each) */
++	uint64_t staging;               /* guest physical address in the pool: pixel (x, y), then the */
++	uint64_t staging_len;           /* rows at the resource's pitch, (h - 1) * pitch + w * 4 bytes */
++};
++
++#endif /* _SYS_HAKIOS_SCGPU_H_ */
+diff --git a/bsd/sys/hakios.scsnd.h b/bsd/sys/hakios.scsnd.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e9bc383f6083bccb983af1c5e203e152bb6383a8
+--- /dev/null
++++ b/bsd/sys/hakios.scsnd.h
+@@ -0,0 +1,44 @@
++/*
++ * SCSND: iOS's sound played by the Scion app (patch 1401, for the Android Virtualization Framework).
++ *
++ * AVF's own sound device (crosvm's vhost-user virtio-snd) failed to start two times in three on the
++ * Pixel 10, and the VM went with it. Instead the app lends the guest a region of RAM, as it lends
++ * the framebuffer's (SCFB), the camera's (SCCAM) and the GPU's (SCGPU), and says where with
++ * scsnd.addr= scsnd.size= in the kernel parameters; avfboot keeps it out of the kernel's memory.
++ * The region begins with the header below, which the app writes before the VM starts, and holds a
++ * ring of samples in /dev/hakios-audio's one format (sys/hakios.audio.h: 48000 frames a second,
++ * 16-bit, left then right). The kernel's sink (bsd/dev/hakios.scsnd.c) puts in what the audio server
++ * writes; the app takes it out and plays it through Android's audio (AAudio).
++ *
++ * The ring: ring_bytes (a power of two, whole frames) at ring_off from the region's start. head and
++ * tail count bytes, free-running, modulo 2^32: the guest alone moves head (after the samples are in,
++ * with a barrier), the app alone moves tail (after it has taken them). What is in: head - tail. The
++ * guest never waits: what does not fit is lost (counted in dropped). The app never lets more than a
++ * little build up: if it finds too much, it skips ahead (counted in skipped).
++ *
++ * The volume iOS sets on its speaker (HAKIOS_AUDIO_SET_VOLUME) is passed on in below/muted, and the
++ * app scales by it: iOS's volume is then a part of Android's media volume.
++ */
++#ifndef _SYS_HAKIOS_SCSND_H_
++#define _SYS_HAKIOS_SCSND_H_
++
++#include <stdint.h>
++
++#define SCSND_MAGIC     0x4e534353u    /* "SCSN" */
++#define SCSND_VERSION   1u
++
++struct scsnd_header {
++	uint32_t magic, version;        /* the app's */
++	uint32_t ring_off, ring_bytes;  /* the app's: where the ring is, and how big */
++	uint32_t rate, channels;        /* the app's: 48000, 2 (what it plays) */
++	uint32_t head;                  /* the guest's: bytes put in */
++	uint32_t tail;                  /* the app's: bytes taken out */
++	uint32_t below, muted;          /* the guest's: iOS's volume, eighths of a dB under the loudest; muted */
++	uint32_t guest_ready;           /* the guest's: 1 once its sink is in place */
++	uint32_t dropped;               /* the guest's: frames that did not fit */
++	uint32_t skipped;               /* the app's: frames it skipped to catch up */
++	uint32_t underruns;             /* the app's: times it had less than it was asked for */
++	uint32_t reserved[18];          /* (128 bytes in all) */
++};
++
++#endif
+diff --git a/bsd/sys/hakios.sensors.h b/bsd/sys/hakios.sensors.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5fc5a9b5c0d7cd91d9184b1b4da30212b664b60
+--- /dev/null
++++ b/bsd/sys/hakios.sensors.h
+@@ -0,0 +1,46 @@
++/*
++ * /dev/hakios-sensors: the phone's motion and environment sensors, sample by sample, on their way from the kernel driver
++ * that reads them (the Galaxy S9's sensor hub: drivers/input/ssp/hakios.ssp.c, shub=6) to the code of ours in backboardd that
++ * turns them into the HID events iOS's own consumers read (userland/src/inject.c). The same idea as /dev/hakios-touch
++ * (sys/hakios.input.h): a queue, read() blocking until there is at least one sample and returning as many whole ones as
++ * fit. The queue only fills while the device is open; a reader that falls 256 samples behind loses the oldest.
++ *
++ * Values are the sensor's own, as the hub reports them, in the phone's frame as Samsung's HAL gets them (the hub has
++ * already turned the chips' axes into Android's: x right, y up, z out of the screen, with the device tree's positions):
++ *   ACCEL      v[0..2] x, y, z; scale = the range in g (32768 counts are scale g: 8 g gives 4096 counts per g).
++ *              Android's sign: lying flat, face up, z is +1 g (iOS reports -1 g there: the reader turns it around)
++ *   GYRO       v[0..2] x, y, z in the hub's units (Samsung's HAL: 1/1000 degree per second... see SENSORS.md)
++ *   MAG        v[0..2] x, y, z (calibrated), v[3] the accuracy 0-3
++ *   PRESSURE   v[0] the pressure, v[1] the temperature (SENSORS.md has their units)
++ *   LIGHT      v[0] lux, v[1] the colour temperature in K
++ *   PROXIMITY  v[0] 1 when something is near, 0 when not; v[1] the raw reading
++ */
++#ifndef _SYS_HAKIOS_SENSORS_H_
++#define _SYS_HAKIOS_SENSORS_H_
++
++#include <stdint.h>
++
++#define HAKIOS_SENSORS_NAME     "hakios-sensors"
++#define HAKIOS_SENSORS_DEVICE   "/dev/hakios-sensors"
++
++#define HAKIOS_SENSOR_ACCEL     1
++#define HAKIOS_SENSOR_GYRO      2
++#define HAKIOS_SENSOR_MAG       3
++#define HAKIOS_SENSOR_PRESSURE  4
++#define HAKIOS_SENSOR_LIGHT     5
++#define HAKIOS_SENSOR_PROXIMITY 6
++
++struct hakios_sensor_sample {
++	uint64_t time;                  /* mach_absolute_time() when the kernel got it */
++	uint64_t hub_ns;                /* the hub's own time stamp, in ns */
++	uint32_t type;                  /* HAKIOS_SENSOR_* */
++	int32_t scale;                  /* ACCEL: the range in g; else 0 */
++	int32_t v[4];
++};
++
++#ifdef KERNEL
++void hakios_ssp_init(void);             /* boot-arg shub=N on the Galaxy S9: its sensor hub (also in sys/hakios.input.h) */
++void hakios_ssp_console(const char *arg); /* the USB console's "sensors" (hakios.dwc3.c) */
++#endif
++
++#endif /* _SYS_HAKIOS_SENSORS_H_ */
+diff --git a/bsd/sys/hakios.sparse.h b/bsd/sys/hakios.sparse.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7257dd0d0cbc24e34f858127351f25b40e53c8bb
+--- /dev/null
++++ b/bsd/sys/hakios.sparse.h
+@@ -0,0 +1,12 @@
++/*
++ * A block device over an image holding only some of its blocks: how the real Darwin root
++ * volume is read on the phone, which cannot hold all of it.  Only with boot-arg
++ * apfs_sparse=<offset in md0>.  See drivers/storage/hakios.sparse.c.
++ */
++#ifndef _SYS_HAKIOS_SPARSE_H_
++#define _SYS_HAKIOS_SPARSE_H_
++
++void hakios_sparse_init(void);
++void hakios_sparse_report(void);
++
++#endif /* _SYS_HAKIOS_SPARSE_H_ */
+diff --git a/bsd/sys/hakios.sta.h b/bsd/sys/hakios.sta.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b589a12580680fda92f6a40f649f4c596871f1a7
+--- /dev/null
++++ b/bsd/sys/hakios.sta.h
+@@ -0,0 +1,132 @@
++/*
++ * Darwin-on-hakios: the station boundary.
++ *
++ * On one side whatever does the scanning and the joining with a radio: the station logic over
++ * ath11k on the phone (wifi/lx in the repository). On the other whoever wants a network: the
++ * Apple80211 requests of Darwin's Wi-Fi side, answered in drivers/wifi/hakios.apple80211.c, and the
++ * kernel's own join of the network it was given in a file (drivers/wifi/hakios.wifi.c). Frames do
++ * not pass here, and neither does "the link is up": those go through bsd/sys/hakios.net.h,
++ * which the station side calls itself.
++ *
++ * Between the two stands drivers/wifi/hakios.sta.c: one thread, on which every call into the station
++ * side is made, one at a time, and what the last scan heard, kept for whoever asks.
++ *
++ * Nothing but C's own types here: the station side is not compiled as XNU's code.
++ */
++#ifndef _SYS_HAKIOS_STA_H_
++#define _SYS_HAKIOS_STA_H_
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#define HAKIOS_STA_ELEMENTS_MOST       1024
++
++/* One access point, as a scan heard it. */
++struct hakios_sta_bss {
++	uint8_t bssid[6];
++	uint8_t ssid[32], ssid_length;
++	uint16_t frequency;                     /* MHz */
++	int16_t rssi;                           /* dBm */
++	uint16_t beacon_interval;               /* in units of 1024 microseconds */
++	uint16_t capability;                    /* the beacon's capability field */
++	uint32_t age_ms;                        /* how long ago it was last heard */
++	uint16_t elements_length;               /* the beacon's information elements as received: who asks */
++	uint8_t elements[HAKIOS_STA_ELEMENTS_MOST];    /* reads the network's protection out of them itself */
++};
++
++/* What to scan for. All zero: every channel, the radio's own way. */
++struct hakios_sta_scan {
++	uint8_t ssid[32], ssid_length;          /* ask for this network by name (a hidden one answers only then) */
++	uint16_t frequencies[64], frequency_count;      /* only these channels */
++	bool passive;                           /* only listen */
++	uint16_t dwell_ms;                      /* on each channel; 0: the radio's own */
++};
++
++enum { HAKIOS_STA_OPEN, HAKIOS_STA_WPA2_PSK };
++
++struct hakios_sta_join {
++	uint8_t ssid[32], ssid_length;
++	uint8_t bssid[6];                       /* all zero: the access point of that name heard best */
++	int security;
++	uint8_t pmk[32];                        /* WPA2 with a passphrase: the key made of the passphrase and the name ... */
++	uint8_t passphrase[64], passphrase_length;      /* ... or, if this is not empty, the passphrase itself */
++};
++
++enum hakios_sta_phase { HAKIOS_STA_OFF, HAKIOS_STA_IDLE, HAKIOS_STA_SCANNING, HAKIOS_STA_JOINING, HAKIOS_STA_JOINED };
++
++struct hakios_sta_state {
++	enum hakios_sta_phase phase;
++	struct hakios_sta_bss bss;             /* the network joined or being joined */
++	int last_error;                         /* why the last join failed or the network was lost (an errno); 0: it was not */
++};
++
++/* How the network joined is being heard now, as the radio's firmware measures it. */
++struct hakios_sta_quality {
++	int16_t rssi;                           /* dBm */
++	uint16_t tx_rate, rx_rate;              /* Mbit/s of the last frames each way; 0: none lately */
++};
++
++#define HAKIOS_STA_CHANNEL_PASSIVE     1u      /* the radio may only listen there */
++#define HAKIOS_STA_CHANNEL_RADAR       2u      /* ... and has to look out for radar */
++
++struct hakios_sta_channel {
++	uint16_t frequency;                     /* MHz */
++	uint16_t flags;
++};
++
++/*
++ * What the station side supplies. All but state() are called on one thread, one at a time, and
++ * may take as long as the thing takes: scan() returns when the scan is over, join() when frames
++ * can pass or it is known why not. Each gives 0 or an errno.
++ */
++struct hakios_sta_ops {
++	int (*power)(bool on);                  /* off: leave the network, stop the radio; on: start it */
++	int (*scan)(const struct hakios_sta_scan *what);
++	void (*heard)(void (*each)(const struct hakios_sta_bss *bss, void *context), void *context);   /* by the last scan */
++	int (*join)(const struct hakios_sta_join *what);
++	int (*leave)(void);
++	void (*state)(struct hakios_sta_state *state);         /* on any thread; does not sleep */
++	unsigned (*channels)(struct hakios_sta_channel *channels, unsigned most);      /* what the radio may tune to */
++	uint8_t address[6];
++	int (*link_quality)(struct hakios_sta_quality *quality);       /* measured now, the network joined (NULL: it cannot say) */
++};
++
++/* What happens, said to whoever listens (the Apple80211 side). */
++enum hakios_sta_event {
++	HAKIOS_STA_POWER,                      /* status: 1 on, 0 off */
++	HAKIOS_STA_SCAN_DONE,                  /* status: 0, or the scan's errno */
++	HAKIOS_STA_JOIN_DONE,                  /* status: 0, or the join's errno */
++	HAKIOS_STA_LINK,                       /* status: 1 a network is joined, 0 it has been left when asked,
++	                                         * an errno: it was lost (the access point showed us the door) */
++};
++
++#ifdef KERNEL
++/* ---- the station side ---- */
++void     hakios_sta_attach(const struct hakios_sta_ops *ops);         /* NULL: it is going away (waits for a call under way) */
++void     hakios_sta_lost(int error);                                   /* the network joined is gone by itself */
++
++/* ---- who wants a network: each asks and returns; the outcome is an event. 0, or an errno ---- */
++bool     hakios_sta_present(void);
++int      hakios_sta_ask_power(bool on);
++int      hakios_sta_ask_scan(const struct hakios_sta_scan *what);
++int      hakios_sta_ask_join(const struct hakios_sta_join *what);
++/* ... and joined again whenever the radio is turned on, until some other network is asked for */
++int      hakios_sta_ask_join_standing(const struct hakios_sta_join *what);
++int      hakios_sta_ask_leave(void);
++bool     hakios_sta_busy(void);                                        /* something asked for is not over yet */
++bool     hakios_sta_powered(void);
++/* the `index`th access point the last scan heard: true, or false when there are not that many */
++bool     hakios_sta_heard(unsigned index, struct hakios_sta_bss *bss);
++void     hakios_sta_state(struct hakios_sta_state *state);
++unsigned hakios_sta_channels(struct hakios_sta_channel *channels, unsigned most);
++bool     hakios_sta_address(uint8_t *address);
++/* the USB console's "wifi scan": the radio on if it is off, a scan of every channel, what it heard said (on a thread) */
++void     hakios_sta_console_scan(void);
++
++/* ---- the listener: drivers/wifi/hakios.apple80211.c ---- */
++void     hakios_apple80211_event(enum hakios_sta_event event, int status);
++void     hakios_apple80211_quality(const struct hakios_sta_quality *quality);
++void     hakios_apple80211_summary(void);                              /* what was asked in this run, to the log */
++#endif
++
++#endif
+diff --git a/bsd/sys/hakios.version.h b/bsd/sys/hakios.version.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f8d274ead0015720d65dbcb591728e3ee2c64f3b
+--- /dev/null
++++ b/bsd/sys/hakios.version.h
+@@ -0,0 +1,12 @@
++/*
++ * The version of this kernel (drivers/core/hakios.version.c): sysctl kern.hakios.version and a line of the boot log.
++ */
++#ifndef _SYS_HAKIOS_VERSION_H_
++#define _SYS_HAKIOS_VERSION_H_
++
++#ifdef KERNEL
++/* Read the boot-arg hakios_kver, keep it as kern.hakios.version and say it in the log. Called from bsd_init(). */
++void hakios_version_init(void);
++#endif /* KERNEL */
++
++#endif /* _SYS_HAKIOS_VERSION_H_ */
+diff --git a/bsd/sys/hakios.vgpu.h b/bsd/sys/hakios.vgpu.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..061202fcadf9edc8582f70daac437fed755a14bf
+--- /dev/null
++++ b/bsd/sys/hakios.vgpu.h
+@@ -0,0 +1,54 @@
++/*
++ * virtio-gpu, 2D: a scanout the kernel draws into, for hosts that show one (QEMU with
++ * -device virtio-gpu-pci, crosvm with a display). Under the Android Virtualization Framework a
++ * sideloaded app cannot see crosvm's display, so there the boot framebuffer is the Scion shared
++ * framebuffer instead (avfboot, scfb.*); this is the other way to the screen.
++ *
++ * MiniIOMobileFramebuffer uses it when the loader left no framebuffer: hakios_vgpu_display()
++ * makes resource 1 (B8G8R8X8, what iOS draws) backed by contiguous guest memory and puts it on
++ * scanout 0, and after every frame hakios_vgpu_flush() sends TRANSFER_TO_HOST_2D and
++ * RESOURCE_FLUSH.
++ *
++ * For 3D on top (bsd/dev/hakios.vgpu3d.c): the 2D driver negotiates VIRTIO_GPU_F_VIRGL and
++ * VIRTIO_GPU_F_CONTEXT_INIT when offered (it doesn't change 2D), keeps resource IDs below
++ * HAKIOS_VGPU_3D_FIRST_ID, and lets anyone put one command at a time on the control queue
++ * through hakios_vgpu_ctrl().
++ */
++#ifndef _SYS_HAKIOS_VGPU_H_
++#define _SYS_HAKIOS_VGPU_H_
++
++#include <stdint.h>
++#include <sys/cdefs.h>
++
++__BEGIN_DECLS
++
++#define VIRTIO_GPU_F_VIRGL              0
++#define VIRTIO_GPU_F_EDID               1
++#define VIRTIO_GPU_F_RESOURCE_UUID      2
++#define VIRTIO_GPU_F_RESOURCE_BLOB      3
++#define VIRTIO_GPU_F_CONTEXT_INIT       4
++
++#define HAKIOS_VGPU_2D_RESOURCE        1               /* the scanout's */
++#define HAKIOS_VGPU_3D_FIRST_ID        0x10000         /* 3D allocates from here up */
++#define HAKIOS_VGPU_CTRL_MAX           65536           /* largest command for hakios_vgpu_ctrl */
++#define HAKIOS_VGPU_RESP_MAX           4096            /* largest response */
++
++/*
++ * The scanout, set up on first call: its memory (kernel address), size and bytes per row.
++ * 0, ENODEV (no virtio-gpu or no virtio core), ENOMEM, or EIO (the device said no).
++ */
++int hakios_vgpu_display(void **fb, uint32_t *width, uint32_t *height, uint32_t *stride);
++/* The rectangle changed: copy it to the host's resource and show it. 0 or EIO. */
++int hakios_vgpu_flush(uint32_t x, uint32_t y, uint32_t width, uint32_t height);
++/*
++ * One command on the control queue, waited for: cmd (starting with struct virtio_gpu_ctrl_hdr)
++ * is copied to device-visible memory, the response (resp_len bytes at most) back. Serialized
++ * with the 2D driver's own commands; may sleep. 0, EINVAL (too long), ENODEV, or ETIMEDOUT.
++ */
++int hakios_vgpu_ctrl(const void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len);
++/* Device features negotiated (VIRTIO_GPU_F_* bits); 0 before the device is set up. */
++uint64_t hakios_vgpu_features(void);
++
++__END_DECLS
++
++#endif /* _SYS_HAKIOS_VGPU_H_ */
+diff --git a/bsd/sys/hakios.vgpu3d.h b/bsd/sys/hakios.vgpu3d.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..66b5cdc8b7bc67e0beb134c68c92d28f38510ce3
+--- /dev/null
++++ b/bsd/sys/hakios.vgpu3d.h
+@@ -0,0 +1,349 @@
++/*
++ * virtio-gpu 3D for the window server: the guest half of the paravirtual GPU path
++ * (scion docs/GPU.md, path B). The host half is crosvm's virtio-gpu with the gfxstream
++ * renderer, which is what the Android Virtualization Framework ships on the Pixel 10. It
++ * draws with the phone's own GPU driver (the PowerVR's OpenGL ES through EGL, or Vulkan).
++ *
++ * This layer covers:
++ *   - the virtio-gpu 3D commands (capsets, CTX_CREATE, RESOURCE_CREATE_3D, ATTACH_BACKING,
++ *     CTX_ATTACH_RESOURCE, TRANSFER_{TO,FROM}_HOST_3D, SET_SCANOUT, RESOURCE_FLUSH);
++ *   - gfxstream's "pipe" transport: a PIPE_BUFFER resource with bind VIRGL_BIND_CUSTOM is a
++ *     byte stream to a render thread on the host. The first write names the service
++ *     ("pipe:opengles"), and replies come back through TRANSFER_FROM_HOST_3D;
++ *   - the wire encoding of the renderControl (rc*, EGL-ish) and OpenGL ES 2 calls this needs.
++ *     These are the encodings of gfxstream's generated encoders (guest/renderControl_enc,
++ *     guest/GLESv2_enc): [opcode u32][packet size u32][arguments]. A buffer the host fills
++ *     is sent as its size only, and replies are the out-buffers, then the return value.
++ *
++ * It sits on one function, ops->ctrl, which submits one control-queue command and waits for
++ * the reply. The device and its queues belong to the virtio-gpu driver (2D display, agent D's
++ * hakios_virtio_gpu), and this file never touches them. The bare-metal AVF test guest
++ * (avf/gpu3d/probe) provides its own ctrl. Plain C with no allocation and no floating point
++ * (GL floats are passed as IEEE-754 bit patterns, VGPU3D_F_*), so it builds into the kernel
++ * and into the freestanding probe alike.
++ *
++ * Resource IDs 0x10000 and up belong to this layer; the 2D driver keeps those below.
++ */
++#ifndef _SYS_HAKIOS_VGPU3D_H_
++#define _SYS_HAKIOS_VGPU3D_H_
++
++#include <stdint.h>
++#include <stddef.h>
++#include <stdbool.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* ---- virtio-gpu (virtio 1.2, section 5.7) ---------------------------------------------- */
++
++#define VIRTIO_GPU_F_VIRGL              0
++#define VIRTIO_GPU_F_EDID               1
++#define VIRTIO_GPU_F_RESOURCE_UUID      2
++#define VIRTIO_GPU_F_RESOURCE_BLOB      3
++#define VIRTIO_GPU_F_CONTEXT_INIT       4
++
++enum {
++	VIRTIO_GPU_CMD_GET_DISPLAY_INFO = 0x0100,
++	VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
++	VIRTIO_GPU_CMD_RESOURCE_UNREF,
++	VIRTIO_GPU_CMD_SET_SCANOUT,
++	VIRTIO_GPU_CMD_RESOURCE_FLUSH,
++	VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
++	VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
++	VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING,
++	VIRTIO_GPU_CMD_GET_CAPSET_INFO,
++	VIRTIO_GPU_CMD_GET_CAPSET,
++	VIRTIO_GPU_CMD_GET_EDID,
++	VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID,
++	VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB,
++	VIRTIO_GPU_CMD_SET_SCANOUT_BLOB,
++
++	VIRTIO_GPU_CMD_CTX_CREATE = 0x0200,
++	VIRTIO_GPU_CMD_CTX_DESTROY,
++	VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE,
++	VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE,
++	VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
++	VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D,
++	VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
++	VIRTIO_GPU_CMD_SUBMIT_3D,
++	VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB,
++	VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB,
++
++	VIRTIO_GPU_RESP_OK_NODATA = 0x1100,
++	VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
++	VIRTIO_GPU_RESP_OK_CAPSET_INFO,
++	VIRTIO_GPU_RESP_OK_CAPSET,
++	VIRTIO_GPU_RESP_OK_EDID,
++	VIRTIO_GPU_RESP_OK_RESOURCE_UUID,
++	VIRTIO_GPU_RESP_OK_MAP_INFO,
++
++	VIRTIO_GPU_RESP_ERR_UNSPEC = 0x1200,
++};
++
++#define VIRTIO_GPU_FLAG_FENCE           (1u << 0)
++#define VIRTIO_GPU_FLAG_INFO_RING_IDX   (1u << 1)
++
++struct virtio_gpu_ctrl_hdr {
++	uint32_t type;
++	uint32_t flags;
++	uint64_t fence_id;
++	uint32_t ctx_id;
++	uint8_t  ring_idx;
++	uint8_t  padding[3];
++};
++
++struct virtio_gpu_config {
++	uint32_t events_read;
++	uint32_t events_clear;
++	uint32_t num_scanouts;
++	uint32_t num_capsets;
++};
++
++struct virtio_gpu_rect { uint32_t x, y, width, height; };
++struct virtio_gpu_box { uint32_t x, y, z, w, h, d; };
++
++#define VIRTIO_GPU_MAX_SCANOUTS 16
++struct virtio_gpu_resp_display_info {
++	struct virtio_gpu_ctrl_hdr hdr;
++	struct { struct virtio_gpu_rect r; uint32_t enabled, flags; } pmodes[VIRTIO_GPU_MAX_SCANOUTS];
++};
++
++struct virtio_gpu_get_capset_info { struct virtio_gpu_ctrl_hdr hdr; uint32_t capset_index, padding; };
++struct virtio_gpu_resp_capset_info {
++	struct virtio_gpu_ctrl_hdr hdr;
++	uint32_t capset_id, capset_max_version, capset_max_size, padding;
++};
++struct virtio_gpu_get_capset { struct virtio_gpu_ctrl_hdr hdr; uint32_t capset_id, capset_version; };
++
++/* context_init: low 8 bits are the capset ID (VIRTIO_GPU_F_CONTEXT_INIT) */
++struct virtio_gpu_ctx_create {
++	struct virtio_gpu_ctrl_hdr hdr;
++	uint32_t nlen, context_init;
++	char debug_name[64];
++};
++struct virtio_gpu_ctx_resource { struct virtio_gpu_ctrl_hdr hdr; uint32_t resource_id, padding; };
++
++struct virtio_gpu_resource_create_3d {
++	struct virtio_gpu_ctrl_hdr hdr;
++	uint32_t resource_id, target, format, bind, width, height, depth;
++	uint32_t array_size, last_level, nr_samples, flags, padding;
++};
++struct virtio_gpu_mem_entry { uint64_t addr; uint32_t length, padding; };
++struct virtio_gpu_resource_attach_backing {
++	struct virtio_gpu_ctrl_hdr hdr;
++	uint32_t resource_id, nr_entries;
++	struct virtio_gpu_mem_entry entry[1];   /* one physically contiguous range here */
++};
++struct virtio_gpu_resource_unref { struct virtio_gpu_ctrl_hdr hdr; uint32_t resource_id, padding; };
++struct virtio_gpu_transfer_host_3d {
++	struct virtio_gpu_ctrl_hdr hdr;
++	struct virtio_gpu_box box;
++	uint64_t offset;
++	uint32_t resource_id, level, stride, layer_stride;
++};
++struct virtio_gpu_set_scanout {
++	struct virtio_gpu_ctrl_hdr hdr;
++	struct virtio_gpu_rect r;
++	uint32_t scanout_id, resource_id;
++};
++struct virtio_gpu_resource_flush {
++	struct virtio_gpu_ctrl_hdr hdr;
++	struct virtio_gpu_rect r;
++	uint32_t resource_id, padding;
++};
++
++/* capset IDs (rutabaga_gfx_ffi.h) */
++#define VIRTIO_GPU_CAPSET_VIRGL                 1
++#define VIRTIO_GPU_CAPSET_VIRGL2                2
++#define VIRTIO_GPU_CAPSET_GFXSTREAM_VULKAN      3
++#define VIRTIO_GPU_CAPSET_VENUS                 4
++#define VIRTIO_GPU_CAPSET_CROSS_DOMAIN          5
++#define VIRTIO_GPU_CAPSET_DRM                   6
++#define VIRTIO_GPU_CAPSET_GFXSTREAM_MAGMA       7
++#define VIRTIO_GPU_CAPSET_GFXSTREAM_GLES        8
++#define VIRTIO_GPU_CAPSET_GFXSTREAM_COMPOSER    9
++
++/* gallium targets, virgl formats and binds as gfxstream reads them */
++#define VGPU3D_PIPE_BUFFER              0
++#define VGPU3D_PIPE_TEXTURE_2D          2
++#define VIRGL_FORMAT_B8G8R8A8_UNORM     1
++#define VIRGL_FORMAT_R8_UNORM           64
++#define VIRGL_FORMAT_R8G8B8A8_UNORM     67
++#define VIRGL_BIND_RENDER_TARGET        (1u << 1)
++#define VIRGL_BIND_SAMPLER_VIEW         (1u << 3)
++#define VIRGL_BIND_CUSTOM               (1u << 17)
++#define VIRGL_BIND_SCANOUT              (1u << 18)
++
++/* ---- what the layer needs from its host ------------------------------------------------ */
++
++struct vgpu3d_ops {
++	void *arg;
++	/*
++	 * Submit cmd on the control queue and wait for the device's reply in resp. 0 when the
++	 * device answered (the reply type is checked here), an errno when the transport failed or
++	 * timed out. Must serialize with every other user of the control queue.
++	 */
++	int (*ctrl)(void *arg, const void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len);
++	/* Zeroed, physically contiguous, CPU-visible memory the device can read and write. */
++	void *(*dma_alloc)(void *arg, size_t size, uint64_t *pa);
++	/* One line of log, without the newline. */
++	void (*log)(void *arg, const char *line);
++	/* A monotonic clock, for the self-test's timings. */
++	uint64_t (*now_ns)(void *arg);
++	/*
++	 * Optional: send cmd without waiting for its reply, in order with everything sent before and
++	 * after (SCGPU's ring). 0 when it was sent; anything else and ctrl() is used instead.
++	 */
++	int (*post)(void *arg, const void *cmd, uint32_t cmd_len);
++};
++
++#define VGPU3D_MAX_CAPSETS      16
++#define VGPU3D_FIRST_RESOURCE   0x10000u
++
++struct vgpu3d {
++	struct vgpu3d_ops ops;
++	uint64_t features;                      /* negotiated virtio-gpu features */
++	uint32_t num_capsets;
++	struct { uint32_t id, max_version, max_size; } capset[VGPU3D_MAX_CAPSETS];
++	uint32_t gles_capset[4];                /* gfxstream glesCapset: version, ring, buffer, align */
++
++	uint32_t ctx_id;                        /* virtio-gpu context of the pipe, 0 = none */
++	uint32_t ctx_capset;
++	uint32_t next_resource;
++	uint32_t pipe_res;                      /* the PIPE_BUFFER resource */
++	uint8_t *pipe_va;                       /* its backing: the staging buffer of both directions */
++	uint64_t pipe_pa;
++	uint32_t pipe_size;
++	uint32_t wpos;                          /* bytes encoded and not yet sent */
++	int err;                                /* first error; every later call is a no-op */
++	uint64_t bytes_out, bytes_in, transfers;
++};
++
++/* ---- the layer ------------------------------------------------------------------------- */
++
++/* printf-like line through ops->log (%s %c %d %u %x %p with l/ll and a 0-padded width) */
++void vgpu3d_log(struct vgpu3d *g, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
++
++/*
++ * Lists the capsets (GET_CAPSET_INFO 0..num_capsets-1; VGPU3D_PROBE_CAPSETS: until the device
++ * refuses one) and reads gfxstream-gles's. 0 or errno.
++ */
++#define VGPU3D_PROBE_CAPSETS    0xffffffffu
++int vgpu3d_query(struct vgpu3d *g, uint64_t features, uint32_t num_capsets);
++/* The capset is offered (by ID). */
++bool vgpu3d_has_capset(const struct vgpu3d *g, uint32_t id);
++/*
++ * Creates a context of this capset (0 = the host's default) and the pipe, and connects it
++ * to "pipe:opengles": a render thread on the host, decoding renderControl and GLES. 0 or errno.
++ */
++int vgpu3d_open(struct vgpu3d *g, uint32_t capset, uint32_t pipe_size);
++/* A 2D RGBA host colour buffer as a resource (RESOURCE_CREATE_3D), for scanout; 0 on failure. */
++uint32_t vgpu3d_create_scanout_resource(struct vgpu3d *g, uint32_t width, uint32_t height);
++/* SET_SCANOUT + RESOURCE_FLUSH of a whole resource. */
++int vgpu3d_present(struct vgpu3d *g, uint32_t scanout, uint32_t res, uint32_t width, uint32_t height);
++
++/*
++ * A 2D resource of this context (RESOURCE_CREATE_3D + ATTACH_BACKING + CTX_ATTACH_RESOURCE) with
++ * the given backing pages; gfxstream makes it a colour buffer whose handle is `res`. scratch
++ * holds the ATTACH_BACKING command. 0 or errno.
++ */
++int vgpu3d_resource_create(struct vgpu3d *g, uint32_t res, uint32_t width, uint32_t height, uint32_t format,
++    uint32_t bind, const struct virtio_gpu_mem_entry *entries, uint32_t nentries, void *scratch, uint32_t scratch_size);
++int vgpu3d_resource_unref(struct vgpu3d *g, uint32_t res);
++/* TRANSFER_{TO,FROM}_HOST_3D of a box; the backing is width * 4 bytes a row (gfxstream's layout). */
++int vgpu3d_transfer_box(struct vgpu3d *g, uint32_t res, bool to_host, uint32_t x, uint32_t y, uint32_t w,
++    uint32_t h, uint64_t offset);
++/* The pipe and the context away. */
++void vgpu3d_close(struct vgpu3d *g);
++
++/* The stream: space for n bytes of encoded calls, sending what is queued when it is full. */
++uint8_t *vgpu3d_alloc(struct vgpu3d *g, uint32_t n);
++/* Send what is queued (TRANSFER_TO_HOST_3D). */
++int vgpu3d_flush(struct vgpu3d *g);
++/* Send, then read exactly n bytes of replies (TRANSFER_FROM_HOST_3D, in pipe-sized pieces). */
++int vgpu3d_read(struct vgpu3d *g, void *buf, uint32_t n);
++
++/* ---- renderControl and GLES 2, as gfxstream encodes them (return 0 / the host's value) -- */
++
++uint32_t rc_get_renderer_version(struct vgpu3d *g);
++int32_t  rc_get_gl_string(struct vgpu3d *g, uint32_t name, char *buf, uint32_t size);
++int32_t  rc_choose_config(struct vgpu3d *g, const int32_t *attribs, uint32_t attribs_bytes,
++			  uint32_t *configs, uint32_t nconfigs);
++uint32_t rc_create_context(struct vgpu3d *g, uint32_t config, uint32_t share, uint32_t gles_api);
++uint32_t rc_create_window_surface(struct vgpu3d *g, uint32_t config, uint32_t w, uint32_t h);
++uint32_t rc_create_color_buffer(struct vgpu3d *g, uint32_t w, uint32_t h, uint32_t internal_format);
++void     rc_set_window_color_buffer(struct vgpu3d *g, uint32_t surface, uint32_t color_buffer);
++int32_t  rc_make_current(struct vgpu3d *g, uint32_t ctx, uint32_t draw, uint32_t read);
++int32_t  rc_flush_window_color_buffer(struct vgpu3d *g, uint32_t surface);
++int      rc_read_color_buffer(struct vgpu3d *g, uint32_t cb, uint32_t x, uint32_t y, uint32_t w,
++			      uint32_t h, void *pixels);   /* GL_RGBA, GL_UNSIGNED_BYTE */
++
++void gl_viewport(struct vgpu3d *g, int32_t x, int32_t y, int32_t w, int32_t h);
++void gl_clear_color(struct vgpu3d *g, uint32_t r, uint32_t gr, uint32_t b, uint32_t a); /* VGPU3D_F_* */
++void gl_clear(struct vgpu3d *g, uint32_t mask);
++void gl_enable(struct vgpu3d *g, uint32_t cap);
++void gl_disable(struct vgpu3d *g, uint32_t cap);
++void gl_scissor(struct vgpu3d *g, int32_t x, int32_t y, int32_t w, int32_t h);
++void gl_finish(struct vgpu3d *g);
++uint32_t gl_get_error(struct vgpu3d *g);
++uint32_t gl_create_shader(struct vgpu3d *g, uint32_t type);
++void gl_shader_string(struct vgpu3d *g, uint32_t shader, const char *src);
++void gl_compile_shader(struct vgpu3d *g, uint32_t shader);
++int32_t gl_get_shaderiv(struct vgpu3d *g, uint32_t shader, uint32_t pname);
++uint32_t gl_create_program(struct vgpu3d *g);
++void gl_attach_shader(struct vgpu3d *g, uint32_t program, uint32_t shader);
++void gl_bind_attrib_location(struct vgpu3d *g, uint32_t program, uint32_t index, const char *name);
++void gl_link_program(struct vgpu3d *g, uint32_t program);
++int32_t gl_get_programiv(struct vgpu3d *g, uint32_t program, uint32_t pname);
++void gl_use_program(struct vgpu3d *g, uint32_t program);
++void gl_vertex_attrib_pointer_data(struct vgpu3d *g, uint32_t index, int32_t size, uint32_t type,
++				   bool normalized, int32_t stride, const void *data, uint32_t len);
++void gl_enable_vertex_attrib_array(struct vgpu3d *g, uint32_t index);
++void gl_draw_arrays(struct vgpu3d *g, uint32_t mode, int32_t first, int32_t count);
++void gl_gen_textures(struct vgpu3d *g, uint32_t n, uint32_t *textures);
++void gl_bind_texture(struct vgpu3d *g, uint32_t target, uint32_t texture);
++void gl_tex_parameteri(struct vgpu3d *g, uint32_t target, uint32_t pname, int32_t param);
++/* GL_RGBA / GL_UNSIGNED_BYTE, rows packed (width * 4 bytes, the default unpack alignment) */
++void gl_tex_image_2d_rgba(struct vgpu3d *g, uint32_t target, int32_t level, int32_t w, int32_t h,
++			  const void *pixels);
++void gl_blend_func(struct vgpu3d *g, uint32_t sfactor, uint32_t dfactor);
++void gl_active_texture(struct vgpu3d *g, uint32_t unit);
++
++/* ---- the self-test: bring-up, a picture drawn by the host GPU, timings ----------------- */
++
++struct vgpu3d_selftest {
++	uint32_t width, height;                 /* in: the picture's size */
++	uint8_t *pixels;                        /* in: width * height * 4 bytes, for the readback */
++	uint32_t scanout_res;                   /* in: draw into this resource as well (0 = none) */
++	/* out */
++	uint32_t context, surface, color_buffer;        /* left current, for more drawing */
++	char vendor[96], renderer[160], version[96];
++	uint32_t renderer_version;
++	uint32_t checks_passed, checks_total;
++	uint32_t fnv;                           /* FNV-1a of the readback */
++	bool rows_top_down;                     /* readback row 0 is the top of the picture */
++	uint64_t rtt_ns;                        /* one round trip (rcGetRendererVersion) */
++	uint64_t frame_ns;                      /* clear + 3 scissor clears + a triangle + flush */
++	uint64_t readback_ns;                   /* the whole picture back into the guest */
++};
++int vgpu3d_selftest(struct vgpu3d *g, struct vgpu3d_selftest *t);
++
++/* IEEE-754 single bit patterns for GL calls */
++#define VGPU3D_F_0      0x00000000u
++#define VGPU3D_F_0_1    0x3dcccccdu
++#define VGPU3D_F_0_2    0x3e4ccccdu
++#define VGPU3D_F_0_25   0x3e800000u
++#define VGPU3D_F_0_5    0x3f000000u
++#define VGPU3D_F_0_75   0x3f400000u
++#define VGPU3D_F_0_8    0x3f4ccccdu
++#define VGPU3D_F_1      0x3f800000u
++#define VGPU3D_F_M0_5   0xbf000000u
++#define VGPU3D_F_M0_75  0xbf400000u
++#define VGPU3D_F_M1     0xbf800000u
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* _SYS_HAKIOS_VGPU3D_H_ */
+diff --git a/bsd/sys/hakios.virtio.h b/bsd/sys/hakios.virtio.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5c3d16d0508239e5c4cd1e6141df3f0fb92f3ba6
+--- /dev/null
++++ b/bsd/sys/hakios.virtio.h
+@@ -0,0 +1,197 @@
++/*
++ * Virtio for the kernel's own drivers, over either transport:
++ *
++ *   - virtio-pci 1.x ("modern"), on the PCI host bridge of sys/hakios.pci.h: what crosvm
++ *     (the Android Virtualization Framework) offers, and QEMU with -device virtio-*-pci;
++ *   - virtio-mmio version 2, QEMU virt's 32 transports at 0x0a000000 (-device virtio-*-device,
++ *     -global virtio-mmio.force-legacy=false). That bus address means nothing anywhere else, so
++ *     it is only looked at with boot-arg virtio_mmio=1 (or one of the old per-driver boot-args
++ *     virtio_blk=1, virtio_input=1, virtio_net=1, virtio_sound=1).
++ *
++ * The drivers (hakios_virtio_{blk,net,input,sound,console}.c) see one interface: feature
++ * negotiation, split virtqueues, the device's configuration space, and interrupts or polling.
++ * Implementation: bsd/dev/hakios.virtio.c.
++ *
++ * A driver, in short (hakios.virtio_blk.c is a complete one):
++ *
++ *   vio_dev_t *d = vio_find(VIRTIO_ID_BLOCK, 0);          // the first block device, any transport
++ *   uint64_t features;
++ *   vio_init(d, WANTED_FEATURES, &features);              // reset, ACK, DRIVER, FEATURES_OK
++ *   vio_queue_t *q;
++ *   vio_queue_setup(d, 0, 0, &q);                         // rings in contiguous kernel memory
++ *   vio_intr_enable(d);                                   // optional: wakes vio_intr_wait
++ *   vio_driver_ok(d);
++ *   ...
++ *   struct vio_sg sg[] = { { hdr_pa, 16, false }, { data_pa, n, true }, { status_pa, 1, true } };
++ *   uint32_t seq = vio_intr_seq(d);
++ *   vio_queue_add(q, sg, 3, cookie);
++ *   vio_queue_kick(q);
++ *   while ((c = vio_queue_get(q, &len)) == NULL) {
++ *           vio_intr_wait(d, seq, 10 * NSEC_PER_MSEC);     // sleeps; polls when it cannot
++ *           seq = vio_intr_seq(d);
++ *   }
++ *
++ * Devices whose events come on their own (input, a GPU's cursor and fence completions) can
++ * have vio_service_start() call them back from a kernel thread after every interrupt and at
++ * least every poll_ns, never in interrupt context.
++ *
++ * Locking: queues are not locked here. A driver serializes all use of one queue (one mutex
++ * per queue, or a single thread). Everything up to vio_driver_ok and the queue operations
++ * work before the VM is up when the rings come from vio_queue_setup_mem (the console does that
++ * from serial_init); vio_queue_setup, vio_dma_alloc, interrupts and sleeping waits need a
++ * running kernel.
++ *
++ * DMA: guest physical addresses, no IOMMU. VIRTIO_F_ACCESS_PLATFORM is accepted when offered
++ * (crosvm offers it for protected VMs), on the assumption that the platform's mapping is the
++ * identity. Memory is normal cacheable memory: virtio devices of QEMU and crosvm are coherent.
++ */
++#ifndef _SYS_HAKIOS_VIRTIO_H_
++#define _SYS_HAKIOS_VIRTIO_H_
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <sys/cdefs.h>
++
++__BEGIN_DECLS
++
++/* Device types (virtio 1.2, section 5) */
++#define VIRTIO_ID_NET           1
++#define VIRTIO_ID_BLOCK         2
++#define VIRTIO_ID_CONSOLE       3
++#define VIRTIO_ID_RNG           4
++#define VIRTIO_ID_GPU           16
++#define VIRTIO_ID_INPUT         18
++#define VIRTIO_ID_VSOCK         19
++#define VIRTIO_ID_SOUND         25
++
++/* Transport feature bits; the device's own are below 24 */
++#define VIRTIO_F_INDIRECT_DESC  28
++#define VIRTIO_F_EVENT_IDX      29
++#define VIRTIO_F_VERSION_1      32      /* always negotiated: legacy devices are not driven */
++#define VIRTIO_F_ACCESS_PLATFORM 33     /* accepted when offered */
++#define VIRTIO_F_RING_PACKED    34
++#define VIRTIO_BIT(b)           (1ull << (b))
++
++/* device_status */
++#define VIRTIO_STATUS_ACKNOWLEDGE       0x01
++#define VIRTIO_STATUS_DRIVER            0x02
++#define VIRTIO_STATUS_DRIVER_OK         0x04
++#define VIRTIO_STATUS_FEATURES_OK       0x08
++#define VIRTIO_STATUS_NEEDS_RESET       0x40
++#define VIRTIO_STATUS_FAILED            0x80
++
++/* interrupt status bits */
++#define VIRTIO_ISR_QUEUE        0x1
++#define VIRTIO_ISR_CONFIG       0x2
++
++#define VIO_TRANSPORT_PCI       1
++#define VIO_TRANSPORT_MMIO      2
++
++typedef struct vio_dev vio_dev_t;
++typedef struct vio_queue vio_queue_t;
++
++/* One buffer of a descriptor chain: read by the device (write = false) or written by it. */
++struct vio_sg {
++	uint64_t        pa;
++	uint32_t        len;
++	bool            write;
++};
++
++/*
++ * The nth (from 0) device of this type: PCI devices first, in enumeration order, then
++ * virtio-mmio slots if that bus is enabled. A device the firmware still uses (the loader's own
++ * disk under UEFI) is skipped. NULL if there is none. The first call enumerates.
++ */
++vio_dev_t *vio_find(uint32_t type, unsigned nth);
++uint32_t vio_type(vio_dev_t *d);
++int vio_transport(vio_dev_t *d);
++/* "pci 00:02.0" or "mmio slot 31", for messages */
++const char *vio_name(vio_dev_t *d);
++/* The PCI function, NULL for virtio-mmio. */
++const struct hakios_pci_dev *vio_pci(vio_dev_t *d);
++
++/*
++ * Reset, ACKNOWLEDGE | DRIVER, accept offered & (want | VERSION_1 | ACCESS_PLATFORM),
++ * FEATURES_OK. 0, or ENOTSUP when the device lacks VERSION_1 or refuses FEATURES_OK.
++ */
++int vio_init(vio_dev_t *d, uint64_t want, uint64_t *negotiated);
++uint64_t vio_device_features(vio_dev_t *d);
++uint64_t vio_features(vio_dev_t *d);   /* negotiated */
++void vio_driver_ok(vio_dev_t *d);
++void vio_fail(vio_dev_t *d);
++void vio_reset(vio_dev_t *d);
++uint8_t vio_status(vio_dev_t *d);
++uint16_t vio_num_queues(vio_dev_t *d);         /* PCI: num_queues; mmio: probed, at most 16 */
++
++/* The device-specific configuration space; a read is consistent (config generation). */
++uint8_t  vio_cfg_read8(vio_dev_t *d, uint32_t off);
++uint16_t vio_cfg_read16(vio_dev_t *d, uint32_t off);
++uint32_t vio_cfg_read32(vio_dev_t *d, uint32_t off);
++uint64_t vio_cfg_read64(vio_dev_t *d, uint32_t off);
++void vio_cfg_read(vio_dev_t *d, uint32_t off, void *buf, uint32_t len);
++void vio_cfg_write8(vio_dev_t *d, uint32_t off, uint8_t v);
++void vio_cfg_write16(vio_dev_t *d, uint32_t off, uint16_t v);
++void vio_cfg_write32(vio_dev_t *d, uint32_t off, uint32_t v);
++
++/*
++ * Queue 'index', between vio_init and vio_driver_ok. size 0 = the device's maximum, at most
++ * 256; otherwise the largest power of two <= min(size, maximum). vio_queue_setup allocates the
++ * rings (vio_dma_alloc); vio_queue_setup_mem takes vio_queue_mem_size(size) bytes of zeroed,
++ * 4 KB-aligned memory at physical address pa (static memory for early users).
++ * 0, ENOENT (no such queue) or ENOMEM.
++ */
++int vio_queue_setup(vio_dev_t *d, uint16_t index, uint16_t size, vio_queue_t **out);
++size_t vio_queue_mem_size(uint16_t size);
++int vio_queue_setup_mem(vio_dev_t *d, uint16_t index, uint16_t size, void *mem, uint64_t pa, vio_queue_t **out);
++uint16_t vio_queue_size(vio_queue_t *q);
++uint16_t vio_queue_num_free(vio_queue_t *q);
++vio_dev_t *vio_queue_dev(vio_queue_t *q);
++
++/*
++ * Put a chain of n buffers (the device-readable ones first) on the queue under a non-NULL
++ * cookie. The device sees it after vio_queue_kick. 0, or ENOSPC with fewer than n free
++ * descriptors.
++ */
++int vio_queue_add(vio_queue_t *q, const struct vio_sg *sg, unsigned n, void *cookie);
++/* Publish what was added and notify the device, unless it asked not to be. */
++void vio_queue_kick(vio_queue_t *q);
++/* The cookie of the next chain the device is done with (and the bytes it wrote), or NULL. */
++void *vio_queue_get(vio_queue_t *q, uint32_t *len);
++/* Ask the device not to interrupt for this queue (a hint: VIRTQ_AVAIL_F_NO_INTERRUPT). */
++void vio_queue_intr(vio_queue_t *q, bool enable);
++
++/*
++ * Interrupts: the device's INTx line (PCI) or its SPI (virtio-mmio) through
++ * gic_v3_spi_attach(). The handler reads and acknowledges the interrupt status, adds it to the
++ * device's pending bits, bumps vio_intr_seq and wakes vio_intr_wait. ENXIO when there is no
++ * line, ENOTSUP with boot-arg virtio_poll=1: the driver then polls (vio_intr_wait still works,
++ * it just sleeps out its timeout).
++ */
++int vio_intr_enable(vio_dev_t *d);
++bool vio_intr_active(vio_dev_t *d);
++uint32_t vio_intr_seq(vio_dev_t *d);
++uint8_t vio_intr_isr(vio_dev_t *d);    /* take and clear the pending bits */
++/*
++ * Until vio_intr_seq(d) != seq or timeout_ns has passed; true if an interrupt came. Where it
++ * cannot block (interrupts off, preemption disabled, before threads) it spins.
++ */
++bool vio_intr_wait(vio_dev_t *d, uint32_t seq, uint64_t timeout_ns);
++
++/* A kernel thread calling cb(arg, isr) after each interrupt and at least every poll_ns (isr 0). */
++typedef void (*vio_service_fn)(void *arg, uint8_t isr);
++int vio_service_start(vio_dev_t *d, vio_service_fn cb, void *arg, uint64_t poll_ns);
++
++/*
++ * A shared memory region of the device (virtio-pci capability type 8, e.g. virtio-gpu's
++ * host-visible memory, shmid 1): its CPU physical address and length. ENOENT when the device
++ * has none with that id (and always on virtio-mmio, which is not looked at for them).
++ */
++int vio_shm_region(vio_dev_t *d, uint8_t id, uint64_t *pa, uint64_t *len);
++
++/* Physically contiguous, zeroed, page-aligned wired memory; NULL on failure. Never freed. */
++void *vio_dma_alloc(size_t size, uint64_t *pa);
++
++__END_DECLS
++
++#endif /* _SYS_HAKIOS_VIRTIO_H_ */
+diff --git a/bsd/sys/hakios.virtio_blk.h b/bsd/sys/hakios.virtio_blk.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b0a7e914fc4c97f6c194553be2edc4d68ef0e3f4
+--- /dev/null
++++ b/bsd/sys/hakios.virtio_blk.h
+@@ -0,0 +1,22 @@
++/*
++ * Virtio block devices: disk images of the host become /dev/rvblkN (and the character
++ * devices /dev/rrvblkN) in the guest, over virtio-pci or virtio-mmio (sys/hakios.virtio.h).
++ * See bsd/dev/hakios.virtio_blk.c.
++ */
++#ifndef _SYS_HAKIOS_VIRTIO_BLK_H_
++#define _SYS_HAKIOS_VIRTIO_BLK_H_
++
++#include <stdbool.h>
++#include <sys/types.h>
++#include <sys/cdefs.h>
++
++__BEGIN_DECLS
++void hakios_virtio_blk_init(void);       /* idempotent */
++bool hakios_virtio_blk_dev(dev_t dev);    /* one of its devices */
++/* rd=rvblkN: the block device of that disk (initializing the driver), or an errno */
++int hakios_virtio_blk_rootdev(const char *name, dev_t *dev);
++/* /dev/NAME and /dev/rNAME for disk rvblkN as well */
++int hakios_virtio_blk_alias(const char *disk, const char *name);
++__END_DECLS
++
++#endif /* _SYS_HAKIOS_VIRTIO_BLK_H_ */
+diff --git a/bsd/sys/hakios.xnu.h b/bsd/sys/hakios.xnu.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..2cf28c565ad1bb42bfefa0c6b5d7ddb662c2a871
+--- /dev/null
++++ b/bsd/sys/hakios.xnu.h
+@@ -0,0 +1,33 @@
++/*
++ * What the drivers use of XNU and of the port's kernel code that no public header declares. One place, so that a move to
++ * another XNU has one list to check (docs/modular-kernel.md, "The seam").
++ */
++#ifndef _SYS_HAKIOS_XNU_H_
++#define _SYS_HAKIOS_XNU_H_
++
++#include <mach/mach_types.h>
++#include <stdint.h>
++
++/* osfmk/arm64: MMIO and cache maintenance */
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
++extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
++extern void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
++extern uint64_t kvtophys(vm_offset_t va);
++extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);
++
++/* threads and time */
++extern kern_return_t thread_terminate(thread_t thread);
++extern void thread_set_thread_name(thread_t thread, const char *name);
++extern void delay(int usec);
++extern void IOSleep(unsigned int milliseconds);
++
++/* pexpert and BSD */
++extern vm_offset_t pe_arm_get_soc_base_phys(void);
++extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
++
++/* the port: the loader's log, and handing the phone back to it */
++extern void loader_log_line(const char *line);
++extern void loader_return(void);
++
++#endif /* _SYS_HAKIOS_XNU_H_ */
+diff --git a/bsd/sys/uio_internal.h b/bsd/sys/uio_internal.h
+index 74a2036cf69e15e4f1671677896be360fa3aeb28..a68b79ce48fa60c2d4942161f2cee3d151debb3e 100644
+--- a/bsd/sys/uio_internal.h
++++ b/bsd/sys/uio_internal.h
+@@ -170,7 +170,7 @@ __END_DECLS
+ #define UIO_SIZEOF( a_iovcount ) \
+ 	( sizeof(struct uio) + UIO_SIZEOF_IOVS(a_iovcount) )
+ 
+-typedef char __attribute__((aligned(_Alignof(union iovecs)))) uio_stackbuf_t;
++typedef uint64_t uio_stackbuf_t; /* was over-aligned char; array of those is rejected by clang >= 16 */
+ 
+ #define UIO_IS_USER_SPACE32( a_uio_t )  \
+ 	( (a_uio_t)->uio_segflg == UIO_USERSPACE32 || (a_uio_t)->uio_segflg == UIO_PHYS_USERSPACE32 || \

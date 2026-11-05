@@ -1,0 +1,115 @@
+diff --git a/makedefs/MakeInc.cmd b/makedefs/MakeInc.cmd
+index bc39e19b3b8ebac2eaa6273feabba8bfbfcd661c..0a72a2d439082db651196ebe02e0fd04d5a2cba9 100644
+--- a/makedefs/MakeInc.cmd
++++ b/makedefs/MakeInc.cmd
+@@ -100,12 +100,12 @@ ifeq ($(VERBOSE),YES)
+ 	_v =
+ 	_vstdout =
+ 	_vstderr =
+-	XCRUN = /usr/bin/xcrun -verbose
++	XCRUN = xcrun -verbose
+ else
+ 	_v = @
+ 	_vstdout = > /dev/null
+ 	_vstderr = 2> /dev/null
+-	XCRUN = /usr/bin/xcrun
++	XCRUN = xcrun
+ endif
+ 
+ VERBOSE_GENERATED_MAKE_FRAGMENTS = NO
+@@ -275,27 +275,27 @@ REPLACECONTENTS = $(OBJROOT)/SETUP/replacecontents/replacecontents
+ JSONCOMPILATIONDB = $(OBJROOT)/SETUP/json_compilation_db/json_compilation_db
+ 
+ # Standard BSD tools
+-RM = /bin/rm -f
+-RMDIR = /bin/rmdir
+-CP = /bin/cp
+-MV = /bin/mv
+-LN = /bin/ln -fs
+-CAT = /bin/cat
+-MKDIR = /bin/mkdir -p
+-CHMOD = /bin/chmod
+-FIND = /usr/bin/find
+-XARGS = /usr/bin/xargs
+-PAX = /bin/pax
+-BASENAME = /usr/bin/basename
+-DIRNAME = /usr/bin/dirname
+-TR = /usr/bin/tr
+-TOUCH = /usr/bin/touch
+-SLEEP = /bin/sleep
+-AWK = /usr/bin/awk
+-SED = /usr/bin/sed
+-PLUTIL = /usr/bin/plutil
+-PATCH = /usr/bin/patch
+-GREP = /usr/bin/grep
++RM = rm -f
++RMDIR = rmdir
++CP = cp
++MV = mv
++LN = ln -fs
++CAT = cat
++MKDIR = mkdir -p
++CHMOD = chmod
++FIND = find
++XARGS = xargs
++PAX = pax
++BASENAME = basename
++DIRNAME = dirname
++TR = tr
++TOUCH = touch
++SLEEP = sleep
++AWK = awk
++SED = sed
++PLUTIL = plutil
++PATCH = patch
++GREP = grep
+ 
+ #
+ # Command to generate host binaries. Intentionally not
+@@ -317,7 +317,7 @@ ifeq ($(origin HOST_GM4),undefined)
+ 	export HOST_GM4		:= $(shell $(XCRUN) -sdk $(HOST_SDKROOT) -find gm4)
+ endif
+ ifeq ($(origin HOST_CODESIGN),undefined)
+-	export HOST_CODESIGN	:= /usr/bin/codesign
++	export HOST_CODESIGN	:= codesign
+ endif
+ ifeq ($(origin HOST_CODESIGN_ALLOCATE),undefined)
+ 	export HOST_CODESIGN_ALLOCATE	:= $(shell $(XCRUN) -sdk $(HOST_SDKROOT) -find codesign_allocate)
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index 5bd6f23dd10c3316ba0ac3ca5a1515256753975e..252d50062da496d221af69dd4737f09ec6bf5da9 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -60,7 +60,7 @@ MACHINE_FLAGS_ARM64_T8101 = -DARM64_BOARD_CONFIG_T8101			-mcpu=apple-a14
+ MACHINE_FLAGS_ARM64_T8103 = -DARM64_BOARD_CONFIG_T8103                  -mcpu=apple-a14
+ MACHINE_FLAGS_ARM64_T6000 = -DARM64_BOARD_CONFIG_T6000 		-mcpu=apple-a14
+ MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
+-MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
++MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837 -Xclang -target-feature -Xclang +pan
+ 
+ 
+ #
+@@ -857,7 +857,10 @@ LDFILES_KERNEL_ONLY = $(TARGET)/all-kpi.exp $(TARGET)/all-alias.exp $(TARGET)/sy
+ # Default runtime libraries to be linked with the kernel
+ #
+ LD_KERNEL_LIBS	   = -lcc_kext
+-LD_KERNEL_ARCHIVES = $(LDFLAGS_KERNEL_SDK) -lfirehose_kernel
++LD_KERNEL_ARCHIVES = $(LDFLAGS_KERNEL_SDK) -lfirehose_kernel -lpthread_kext
++# Darwin-on-hakios: objects made outside this tree, linked when the build is given any (the
++# Wi-Fi driver, see bsd/dev/hakios.lx.c)
++LD_KERNEL_ARCHIVES += $(HAKIOS_OBJECTS)
+ # Link opensource binary library
+ ifneq ($(filter T6000 T8101 VMAPPLE T6000 T8101 VMAPPLE,$(CURRENT_MACHINE_CONFIG)),)
+ 	LDFLAGS_KERNEL_ONLY += -rdynamic -Wl,-force_load,$(KDKROOT)/System/Library/KernelSupport/lib$(CURRENT_MACHINE_CONFIG).os.$(CURRENT_KERNEL_CONFIG).a
+diff --git a/makedefs/MakeInc.top b/makedefs/MakeInc.top
+index 0316792a3f4257c2de157fad5f1d5d9f6a6f033e..b9c195b09cd1868939573b5908c3e02791967137 100644
+--- a/makedefs/MakeInc.top
++++ b/makedefs/MakeInc.top
+@@ -285,7 +285,7 @@ endif
+ # $(warning PRIMARY_KERNEL_CONFIGS is $(PRIMARY_KERNEL_CONFIGS))
+ # $(warning VARIANT_CONFIGS is $(VARIANT_CONFIGS))
+ 
+-MEMORY_SIZE := $(shell /usr/sbin/sysctl -n hw.memsize)
++MEMORY_SIZE := $(shell if [ -r /proc/meminfo ]; then awk '/MemTotal/{printf "%d", $$2*1024}' /proc/meminfo; else sysctl -n hw.memsize; fi)
+ 
+ # Assume LTO scaling by default, unless it is being explicitly passed on the command-line
+ LARGE_BUILD_FOOTPRINT := $(if $(BUILD_LTO),$(BUILD_LTO),1)
