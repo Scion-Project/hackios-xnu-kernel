@@ -73,8 +73,8 @@
 #include <sys/systm.h>
 #include <sys/hakios.exynos9810_mem.h>
 #include <sys/hakios.exynos_soc.h>
+#include <sys/hakios.log.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void loader_log_line(const char *line);
 extern void IOSleep(unsigned milliseconds);
 
 /* the display driver's side (MiniIOMobileFramebuffer.cpp); stand-ins in drivers/core/hakios.stubs.c */
@@ -90,21 +90,6 @@ int hakios_scanout_carve(uint64_t bytes, uint64_t *phys);
 void hakios_scanout_uncarve(uint64_t phys);
 int hakios_scanout_carved(uint64_t phys);
 int hakios_scanout_show(uint64_t phys, uint32_t rowbytes);
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[320];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 #define DECON_PA                EXYNOS_DECON_PA
 #define DPP_PA                  EXYNOS_DPP_PA

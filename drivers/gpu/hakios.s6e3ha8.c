@@ -111,28 +111,13 @@
 #include <sys/systm.h>
 #include <sys/hakios.exynos_soc.h>
 #include "hakios.s6e3ha8_gamma.h"
+#include <sys/hakios.log.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void delay(int usec);
-extern void loader_log_line(const char *line);
 extern int hakios_panel_register(const char *name, int (*set)(int level));     /* hakios.backlight.cpp */
 
 SYSCTL_DECL(_kern_hakios);
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[300];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 #define DSIM_PA         EXYNOS_DSIM0_PA
 #define DSIM_CONFIG     0x4C

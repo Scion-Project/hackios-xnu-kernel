@@ -165,6 +165,7 @@
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
 #include <sys/hakios.exynos_soc.h>
+#include <sys/hakios.log.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 #ifndef VM_WIMG_WCOMB
@@ -174,22 +175,6 @@ extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern uint64_t kvtophys(vm_offset_t va);                               /* pmap_paddr_t */
 extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);       /* osfmk/arm64/caches_asm.s */
 extern kern_return_t thread_terminate(thread_t thread);
-extern void loader_log_line(const char *line);
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[400];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 #define STARLTE_SOC_BASE        EXYNOS_SOC_BASE_PA
 #define STEPS                   8

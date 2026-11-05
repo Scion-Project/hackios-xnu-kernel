@@ -100,6 +100,7 @@
 #include <sys/stat.h>
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
+#include <sys/hakios.log.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
@@ -118,22 +119,7 @@ static bool quiet;                      /* repeating accesses that have been ann
  * while it runs (loader_return.c; xl keeps it with XL_FOLLOW): every line said here goes there
  * as well, before the next register is touched.
  */
-extern void loader_log_line(const char *line);
 
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[400];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 #define printf say
 
 static void

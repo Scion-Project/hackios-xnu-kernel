@@ -151,6 +151,7 @@
 #include <vm/memory_types.h>
 #include <console/video_console.h>
 #include <sys/hakios.input.h>
+#include <sys/hakios.log.h>
 
 #include "hakios.usb_acm.h"
 #include "hakios.usb_glue.h"
@@ -405,21 +406,6 @@ SYSCTL_QUAD(_kern_hakios_usb, OID_AUTO, bytes_out, CTLFLAG_RD | CTLFLAG_LOCKED, 
 SYSCTL_QUAD(_kern_hakios_usb, OID_AUTO, resets, CTLFLAG_RD | CTLFLAG_LOCKED, &n_resets, "bus resets");
 SYSCTL_UINT(_kern_hakios_usb, OID_AUTO, dropped, CTLFLAG_RD | CTLFLAG_LOCKED, &ring_dropped, 0, "log bytes dropped: the host did not read fast enough");
 SYSCTL_QUAD(_kern_hakios_usb, OID_AUTO, restarts, CTLFLAG_RD | CTLFLAG_LOCKED, &n_restarts, "the link restarted: a replug, or a host that got no answer");
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[600];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 /* the console's answers: into the log (and so to the host) as whole lines, not onto the screen */
 static void con(const char *format, ...) __printflike(1, 2);

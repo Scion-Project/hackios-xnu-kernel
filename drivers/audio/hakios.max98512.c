@@ -107,25 +107,10 @@
 #include <sys/systm.h>
 #include <sys/hakios.exynos_soc.h>
 #include "hakios.drivers.h"      /* HAKIOS_EXYNOS_ABOX: ABOX's driver in this kernel */
+#include <sys/hakios.log.h>
 
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern kern_return_t thread_terminate(thread_t thread);
-extern void loader_log_line(const char *line);
-
-static int say(const char *format, ...) __printflike(1, 2);
-
-static int
-say(const char *format, ...)
-{
-	char line[300];
-	va_list list;
-
-	va_start(list, format);
-	vsnprintf(line, sizeof(line), format, list);
-	va_end(list);
-	loader_log_line(line);
-	return printf("%s", line);
-}
 
 /* the registers, in the first revision's numbering (a B's: address()) */
 #define INT_EN1                 0x0A
