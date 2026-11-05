@@ -522,6 +522,7 @@ virtio_net_ssid	k
 virtio_net_wifi	k
 virtio_poll	k
 virtio_sound	k
+wallpaper_freeze	u
 wdt	l
 wifi	ku
 wifi_again	k
