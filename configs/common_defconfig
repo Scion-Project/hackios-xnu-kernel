@@ -1920,28 +1920,28 @@ CONFIG_MODEM_AGAIN=y
 # read by hakios.ssp.c (kernel)
 # CONFIG_SHUB is not set
 
-# read by hakios.ssp.c (kernel)
+# at step 2, power the CHUB domain on if step 1 found it off, using the PMU's chub_on sequence
 # CONFIG_SHUB_CHUB_ON is not set
 
 # read by hakios.ssp.c (kernel)
 # CONFIG_SHUB_DIV is not set
 
-# read by hakios.ssp.c (kernel)
+# wait for MCU_RESP before every exchange, as Samsung's driver does
 # CONFIG_SHUB_HELLO is not set
 
-# at the end of the steps, or when one fails, power the hub off again (NSTDBY low); default 1
+# power the hub off again (NSTDBY low) when the steps end or one fails
 # CONFIG_SHUB_KEEP is not set
 
-# every SPI frame's first bytes in the log (very loud; the first 40 frames are always logged)
+# log the first bytes of every SPI frame (very loud)
 # CONFIG_SHUB_LOG is not set
 
-# their period in ms (default 20; light, proximity and pressure 200)
+# sample period in ms (default 20; light, proximity and pressure use 200)
 # CONFIG_SHUB_MS is not set
 
 # read by hakios.ssp.c (kernel)
 # CONFIG_SHUB_REQ_LEN is not set
 
-# read by hakios.ssp.c (kernel)
+# RPC that carries SSP to the hub
 # CONFIG_SHUB_REQ_RPC is not set
 
 # read by hakios.ssp.c (kernel)

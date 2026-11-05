@@ -383,14 +383,14 @@ SCSND_SIZE	arg	scsnd.size	User space	k	hakios.scsnd.c
 SECURITY	arg	security	User space	k	1002-avf-security-level.patch	
 SERIAL	arg	serial	Loader	l	loader.c	
 SHUB	arg	shub	Sensors	k	hakios.ssp.c	
-SHUB_CHUB_ON	arg	shub_chub_on	Sensors	k	hakios.ssp.c	
+SHUB_CHUB_ON	arg	shub_chub_on	Sensors	k	hakios.ssp.c	at step 2, power the CHUB domain on if step 1 found it off, using the PMU's chub_on sequence
 SHUB_DIV	arg	shub_div	Sensors	k	hakios.ssp.c	
-SHUB_HELLO	arg	shub_hello	Sensors	k	hakios.ssp.c	
-SHUB_KEEP	arg	shub_keep	Sensors	k	hakios.ssp.c	at the end of the steps, or when one fails, power the hub off again (NSTDBY low); default 1
-SHUB_LOG	arg	shub_log	Sensors	k	hakios.ssp.c	every SPI frame's first bytes in the log (very loud; the first 40 frames are always logged)
-SHUB_MS	arg	shub_ms	Sensors	k	hakios.ssp.c	their period in ms (default 20; light, proximity and pressure 200)
+SHUB_HELLO	arg	shub_hello	Sensors	k	hakios.ssp.c	wait for MCU_RESP before every exchange, as Samsung's driver does
+SHUB_KEEP	arg	shub_keep	Sensors	k	hakios.ssp.c	power the hub off again (NSTDBY low) when the steps end or one fails
+SHUB_LOG	arg	shub_log	Sensors	k	hakios.ssp.c	log the first bytes of every SPI frame (very loud)
+SHUB_MS	arg	shub_ms	Sensors	k	hakios.ssp.c	sample period in ms (default 20; light, proximity and pressure use 200)
 SHUB_REQ_LEN	arg	shub_req_len	Sensors	k	hakios.ssp.c	
-SHUB_REQ_RPC	arg	shub_req_rpc	Sensors	k	hakios.ssp.c	
+SHUB_REQ_RPC	arg	shub_req_rpc	Sensors	k	hakios.ssp.c	RPC that carries SSP to the hub
 SHUB_SENSORS	arg	shub_sensors	Sensors	k	hakios.ssp.c	
 SMALL_CORES	arg	small_cores	CPU, memory and boot	k	(patch)	
 SMALL_CORES_AFTER	arg	small_cores_after	CPU, memory and boot	k	GenericARMPE.cpp	
