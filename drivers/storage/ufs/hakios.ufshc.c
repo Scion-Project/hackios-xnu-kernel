@@ -238,12 +238,8 @@
 #include <vm/memory_types.h>
 #include "hakios.ufshc.h"
 #include <sys/hakios.exynos_soc.h>
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
-extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
+#include <sys/hakios.xnu.h>
 extern boolean_t pmap_valid_address(uint64_t addr);
-extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);
-extern void IOSleep(unsigned int milliseconds);
 extern boolean_t ml_set_interrupts_enabled(boolean_t enable);
 
 #define UFSHC_SIZE          0x3000
@@ -510,7 +506,6 @@ SYSCTL_QUAD(_kern_hakios, OID_AUTO, ufs_native_write_bytes, CTLFLAG_RD | CTLFLAG
  * run's log does not come back to the loader (the buffer wraps), so they are said again at the
  * end, into the loader's log directly (hakios_ufs_quiesce; printf is not for that moment).
  */
-extern void loader_log_line(const char *line);
 #define KEPT_LINES          64
 #define LINE                320
 static char hc_kept[KEPT_LINES][LINE];

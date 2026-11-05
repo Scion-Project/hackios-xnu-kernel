@@ -101,10 +101,8 @@
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
-extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
 
 static uint32_t last_step, skip_steps, pause_ms = 2200, fine, watch_seconds = 20;
 static uint32_t step;                   /* the one being performed */
@@ -1187,7 +1185,6 @@ step_gmu_memory(void)
 #define SMMU_MAIR0              0xf404ff44      /* Linux's: 0 uncached, 1 cached, 2 device */
 #define SMMU_FSR_ALL            0xc00001fe      /* every kind of fault, and "several" */
 
-extern void loader_return(void);
 
 /* Until every write to memory so far has been carried out. */
 static void
@@ -3976,7 +3973,6 @@ out:
  */
 #define HAKIOS_SOC_BASE        0x00400000ul    /* where the loader says the phone's peripherals begin (its "redwood") */
 
-extern vm_offset_t pe_arm_get_soc_base_phys(void);
 
 static bool
 start_by_itself(void)

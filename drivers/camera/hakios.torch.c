@@ -60,10 +60,8 @@
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern kern_return_t thread_terminate(thread_t thread);
-extern void loader_log_line(const char *line);
 
 static uint32_t level;
 static bool broken, leaving;

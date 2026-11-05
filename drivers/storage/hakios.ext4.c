@@ -26,8 +26,8 @@
 #include <sys/hakios.ext4.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
+#include <sys/hakios.xnu.h>
 
-extern void loader_log_line(const char *line);
 
 #define PARTITION_FILES         24
 

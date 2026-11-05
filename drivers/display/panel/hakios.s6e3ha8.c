@@ -112,9 +112,8 @@
 #include <sys/hakios.exynos_soc.h>
 #include "hakios.s6e3ha8_gamma.h"
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void delay(int usec);
 extern int hakios_panel_register(const char *name, int (*set)(int level));     /* hakios.backlight.cpp */
 
 SYSCTL_DECL(_kern_hakios);

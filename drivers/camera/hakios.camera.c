@@ -84,10 +84,8 @@
 #include <sys/hakios.audio.h>
 #include <sys/hakios.camera.h>
 #include <sys/hakios.input.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern kern_return_t thread_terminate(thread_t thread);
-extern void loader_log_line(const char *line);
 
 static uint32_t level;
 static bool broken, leaving;
@@ -1523,7 +1521,6 @@ struct cmd_db_entry {
 	uint16_t length, offset;
 };
 
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 static const struct cmd_db_header *cmd_db;
 static vm_offset_t rsc;
 
@@ -2066,7 +2063,6 @@ struct cam_header {
 };
 
 extern uint64_t loader_recording[3];
-extern uint64_t kvtophys(vm_offset_t va);
 extern lck_mtx_t hakios_smmu_lock;
 
 static vm_offset_t frames, smmu_second, smmu_context, page_tables;

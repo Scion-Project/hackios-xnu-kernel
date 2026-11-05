@@ -70,7 +70,7 @@
 #include <sys/hakios.exynos9810_mem.h>
 #include <sys/hakios.exynos_soc.h>
 #include <sys/hakios.log.h>
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+#include <sys/hakios.xnu.h>
 extern void IOSleep(unsigned milliseconds);
 
 /* the display driver's side (MiniIOMobileFramebuffer.cpp); stand-ins in drivers/core/hakios.stubs.c */

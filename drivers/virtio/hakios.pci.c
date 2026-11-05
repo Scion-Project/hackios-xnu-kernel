@@ -37,8 +37,8 @@
 #include <sys/errno.h>
 #include <sys/systm.h>
 #include <sys/hakios.pci.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 #define PCI_VENDOR_ID           0x00
 #define PCI_DEVICE_ID           0x02

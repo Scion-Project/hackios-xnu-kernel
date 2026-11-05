@@ -58,12 +58,9 @@
 #include <sys/systm.h>
 #include <sys/hakios.exynos_soc.h>
 #include <sys/hakios.log.h>
-extern kern_return_t thread_terminate(thread_t thread);
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void delay(int usec);
+#include <sys/hakios.xnu.h>
 
 /* (every line to the loader's log as well, as the other drivers do: see hakios.buttons.c) */
-extern void loader_log_line(const char *line);
 
 #define PMIC            0x66
 #define CHARGER         0x69

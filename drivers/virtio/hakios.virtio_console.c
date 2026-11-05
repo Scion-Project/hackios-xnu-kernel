@@ -23,8 +23,8 @@
 #include <pexpert/pexpert.h>
 #include <sys/param.h>
 #include <sys/hakios.virtio.h>
+#include <sys/hakios.xnu.h>
 
-extern uint64_t kvtophys(vm_offset_t va);
 
 #define VCON_RX                 0               /* port 0 receiveq */
 #define VCON_TX                 1               /* port 0 transmitq */

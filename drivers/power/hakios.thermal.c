@@ -56,12 +56,10 @@
 #include <pexpert/pexpert.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
+#include <sys/hakios.xnu.h>
 
 #include "hakios.thermal_provider.h"
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern void loader_log_line(const char *line);
-extern void loader_return(void);
 extern void hakios_var_save_on_return(void);
 extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);

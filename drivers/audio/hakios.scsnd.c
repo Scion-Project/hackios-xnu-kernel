@@ -16,8 +16,8 @@
 #include <vm/memory_types.h>
 #include <sys/hakios.audio.h>
 #include <sys/hakios.scsnd.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 
 static volatile struct scsnd_header *scsnd;
 static uint8_t *scsnd_ring;
