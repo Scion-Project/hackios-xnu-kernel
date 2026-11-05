@@ -333,9 +333,9 @@ used by `hakios.exynos_dpu.c`. DPP and IDMA were not compared. Tensor's DPU is a
 | Kernel base and memory map | loader's `payload_home`, `keep_out`; `hakios.exynos9810_mem.h` | per phone: a table the loader chooses from |
 | Boot chain | S-Boot and a Silicium UEFI against ABL and a shim | two images per family: **separate installers** for Samsung and Tensor, at least |
 | Early UART | the loader's `.uart` is PL011 only | none on any of these today |
-| CPU build flags | `+pan` in `MACHINE_FLAGS_ARM64_BCM2837`; no CPU here lacks PAN but the M3 (`pan=0` on the S9 today) | one build, the floor of all of them |
+| CPU build flags | `+pan` in `MACHINE_FLAGS_ARM64_BCM2837`; the S9 runs with `pan=0` on its M3s, and the 8895's cores are ARMv8.0 as well | one build, at the floor of all of them |
 | Boot arguments | each phone's defconfig turns its drivers on | per phone, or a table of its own |
-| Chip ids | not read for G2, G3, G4; G5 not at that address by what was read | separate build until found |
+| Chip ids | not read for Tensor G2, G3, G4 or G5 | those SoCs cannot be picked until they are |
 
 **Identifying the SoC.** A chip id block at 0x10000000 on every Samsung row and on Tensor G1 to G4, by their device trees; the Tensor
 G5's was not read. Linux's `exynos-chipid.c` gives the value for the 8895, 9810, 990, 850, 2200 and gs101. The values for the 9820,
