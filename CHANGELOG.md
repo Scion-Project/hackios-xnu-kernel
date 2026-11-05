@@ -18,6 +18,7 @@ changes to it; the scripts named fetch the release and put the changes on.
 
 ## 2026-11-05
 
+- Galaxy S9: the front camera's stream (`cam_s9=7`) starts when something reads `/dev/hakios-camera` or a camshot is asked for, and the camera is powered down again at the last close or 2 s after the last read; it was streaming at 30 frames a second from boot to power off with nobody using it. `cam_s9_always=1` keeps the old behaviour
 - repositories: renamed, and the old URLs redirect: `scion-kernel` (this one), `scion-starlte`, `scion-star2lte`, `scion-crownlte`, `scion-installer`; names in the code stay HakiOS's
 - README: starts with what a phone's owner needs; issue templates for a bug and a tester's report
 

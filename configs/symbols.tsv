@@ -108,6 +108,7 @@ CAM_S9	arg	cam_s9	Cameras	k	hakios.exynos_camera.c,hakios.exynos_iris.c,hakios.s
 CAM_S9_ADDR	hex	cam_s9_addr	Cameras	k	hakios.exynos_camera.c	the sensor's 7-bit I2C address, if not 0x35 (the device tree's) and not found by the scan
 CAM_S9_AE	arg	cam_s9_ae	Cameras	k	hakios.exynos_camera.c	no auto-exposure: the frames as cam_s9_exp and cam_s9_gain have them (default 1: on)
 CAM_S9_AE_FRAMES	arg	cam_s9_ae_frames	Cameras	k	hakios.exynos_camera.c	
+CAM_S9_ALWAYS	arg	cam_s9_always	Cameras	k	hakios.exynos_camera.c	with 7: the stream from the boot to the run's end, wanted or not (the old behaviour, for debugging)
 CAM_S9_BAYER	arg	cam_s9_bayer	Cameras	k	hakios.exynos_camera.c	camshot's Bayer order: 0 RGGB, 1 GRBG (the default, the sensor's), 2 GBRG, 3 BGGR
 CAM_S9_DGAIN	arg	cam_s9_dgain	Cameras	k	hakios.exynos_camera.c	the most digital gain the auto-exposure may use, 0x100 being 1x (default 0x400, at most 0x1000)
 CAM_S9_EXP	arg	cam_s9_exp	Cameras	k	hakios.exynos_camera.c	the first exposure of step 5's frame in lines of 26.3 us (default 1000, at most 1262)
