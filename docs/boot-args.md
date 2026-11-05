@@ -2,13 +2,13 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **570 arguments**: 502 read by the kernel, 21 by the loader, 62 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **572 arguments**: 503 read by the kernel, 21 by the loader, 63 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
 Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl kern.bootargs`).
 
-## GPU and display (105)
+## GPU and display (106)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -46,6 +46,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `fb_zc_hold` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FB_ZC_HOLD` |  |
 | `fbheight` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FBHEIGHT` |  |
 | `fbscale` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FBSCALE` |  |
+| `fbsubtype` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FBSUBTYPE` |  |
 | `fbtrace` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FBTRACE` |  |
 | `fbwidth` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_FBWIDTH` |  |
 | `fps_log` | K | `MiniIOMobileFramebuffer.cpp`, `hakios.ufs.c` | `CONFIG_FPS_LOG` |  |
@@ -558,7 +559,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `serial` | L | `loader.c` | `CONFIG_SERIAL` |  |
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 
-## User space (105)
+## User space (106)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -666,4 +667,5 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `virtio_console` | K | `hakios.virtio_console.c` | `CONFIG_VIRTIO_CONSOLE` |  |
 | `virtio_mmio` | K | `hakios.virtio.c` | `CONFIG_VIRTIO_MMIO` |  |
 | `virtio_poll` | K | `hakios.virtio.c` | `CONFIG_VIRTIO_POLL` |  |
+| `wallpaper_freeze` | U | `inject_sb.c` | `CONFIG_WALLPAPER_FREEZE` |  |
 | `wdt` | L | `wdt_exynos.c` | `CONFIG_WDT` |  |

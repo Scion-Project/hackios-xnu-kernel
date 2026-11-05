@@ -173,6 +173,7 @@ FB_ZC	arg	fb_zc	GPU and display	k	MiniIOMobileFramebuffer.cpp	the surface VGF0 s
 FB_ZC_HOLD	arg	fb_zc_hold	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FBHEIGHT	arg	fbheight	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FBSCALE	arg	fbscale	GPU and display	k	MiniIOMobileFramebuffer.cpp	the same points (375 x 812, or fb_native's) drawn at two pixels a point instead of three
+FBSUBTYPE	arg	fbsubtype	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FBTRACE	arg	fbtrace	GPU and display	k	MiniIOMobileFramebuffer.cpp	log the first N calls of every selector (default 3)
 FBWIDTH	arg	fbwidth	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FP_S9	arg	fp_s9	User space	k	hakios.exynos_iris.c	the rear fingerprint sensor's SPI1, whose it is (1 read; 2 also one write each, read back, put back)
@@ -489,6 +490,7 @@ VIRTIO_NET_SSID	arg	virtio_net_ssid	Network	k	hakios.virtio_net.c
 VIRTIO_NET_WIFI	arg	virtio_net_wifi	Network	k	hakios.virtio_net.c	iOS is told that en0 is a radio, the way the phone's is (hakios.net.c, hakios.wlan.cpp, hakios.apple80211.c), and a station of this file's stands
 VIRTIO_POLL	arg	virtio_poll	User space	k	hakios.virtio.c	
 VIRTIO_SOUND	arg	virtio_sound	Audio and battery	k	hakios.virtio_sound.c	
+WALLPAPER_FREEZE	arg	wallpaper_freeze	User space	u	inject_sb.c	the wallpaper as one still picture
 WDT	arg	wdt	User space	l	wdt_exynos.c	the Galaxy S9's hardware watchdog is not armed (a restart still goes to recovery: INFORM3 is written)
 WIFI_AGAIN	arg	wifi_again	Wi-Fi	k	hakios.wifi.c	start the DSP although the one before it was shut down without having acknowledged a stop: THAT HAS RESET THE PHONE, twice of two
 WIFI_ASK	arg	wifi_ask	Wi-Fi	k	hakios.wifi.c	step 14 also asks that service a question (its capabilities) and writes down the beginning of an answer

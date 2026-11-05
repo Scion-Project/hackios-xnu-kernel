@@ -29,8 +29,9 @@
 0280-osfmk-minicrypto.patch
 0290-pexpert-arm.patch
 0300-pexpert-conf.patch
-0310-pexpert-pexpert.patch
-0320-san-conf.patch
-0330-security.patch
-0340-security-conf.patch
-0350-tools-lldbmacros.patch
+0310-pexpert-gen.patch
+0320-pexpert-pexpert.patch
+0330-san-conf.patch
+0340-security.patch
+0350-security-conf.patch
+0360-tools-lldbmacros.patch

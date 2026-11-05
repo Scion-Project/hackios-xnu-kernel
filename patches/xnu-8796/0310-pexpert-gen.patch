@@ -1,0 +1,26 @@
+diff --git a/pexpert/gen/bootargs.c b/pexpert/gen/bootargs.c
+index c94c0ebe122438f0701fd4d595abd09c60c931e3..82973f0689c5b8f375b7d17e7602696aa8ebbbbe 100644
+--- a/pexpert/gen/bootargs.c
++++ b/pexpert/gen/bootargs.c
+@@ -193,7 +193,9 @@ PE_parse_boot_argn(
+ 	void            *arg_ptr,
+ 	int                     max_len)
+ {
+-	return PE_parse_boot_argn_internal(PE_boot_args(), arg_string, arg_ptr, max_len, FALSE);
++	extern const char hakios_builtin_args[];
++	return PE_parse_boot_argn_internal(PE_boot_args(), arg_string, arg_ptr, max_len, FALSE) ||
++	       PE_parse_boot_argn_internal(__DECONST(char *, hakios_builtin_args), arg_string, arg_ptr, max_len, FALSE);
+ }
+ 
+ boolean_t
+@@ -202,7 +204,9 @@ PE_parse_boot_arg_str(
+ 	char            *arg_ptr,
+ 	int                     strlen)
+ {
+-	return PE_parse_boot_argn_internal(PE_boot_args(), arg_string, arg_ptr, strlen, TRUE);
++	extern const char hakios_builtin_args[];
++	return PE_parse_boot_argn_internal(PE_boot_args(), arg_string, arg_ptr, strlen, TRUE) ||
++	       PE_parse_boot_argn_internal(__DECONST(char *, hakios_builtin_args), arg_string, arg_ptr, strlen, TRUE);
+ }
+ 
+ #if defined(CONFIG_XNUPOST)

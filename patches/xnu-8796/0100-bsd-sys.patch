@@ -1528,13 +1528,15 @@ index 0000000000000000000000000000000000000000..1d603a9691bac6137941b835ed2e0579
 +#endif
 diff --git a/bsd/sys/hakios.exynos_soc.h b/bsd/sys/hakios.exynos_soc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ee0fdca9f3020e35f4dceddb1846b707be09ebd
+index 0000000000000000000000000000000000000000..5597e637f4d56d0eb4e22649f950edff83522058
 --- /dev/null
 +++ b/bsd/sys/hakios.exynos_soc.h
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,33 @@
 +/*
 + * The numbers of the Exynos this kernel is built for: EXYNOS_* from socs/<soc>/include/hakios.<soc>_soc.h, chosen by CONFIG_SOC
 + * (tools/hakios-config.py writes HAKIOS_SOC_HEADER into hakios.drivers.h; xnu/apply.sh lays the header into sys/).
++ *
++ * With SOC_RUNTIME the same names read the table hakios_soc_select() picked at boot (hakios.soc_runtime.h).
 + *
 + * Exynos drivers are also built into kernels for other SoCs, where they check the SoC's base at run time and do nothing;
 + * those kernels take the 9810's numbers to compile.
@@ -1544,10 +1546,22 @@ index 0000000000000000000000000000000000000000..4ee0fdca9f3020e35f4dceddb1846b70
 +
 +#include "../dev/hakios.drivers.h"
 +
-+#ifdef HAKIOS_SOC_HEADER
++#if HAKIOS_SOC_RUNTIME && !defined(HAKIOS_SOC_FIXED)
++#include <sys/hakios.soc_runtime.h>
++#elif HAKIOS_SOC_RUNTIME
++/* a driver of the 9810's phones alone: its numbers stay compile time, and its check of the SoC's base fails on any other chip */
++#include <sys/hakios.exynos9810_soc.h>
++int hakios_soc_is_9810(void);
++#undef EXYNOS_SOC_BASE_PA
++#define EXYNOS_SOC_BASE_PA      (hakios_soc_is_9810() ? 0x10000000UL : ~0UL)
++#elif defined(HAKIOS_SOC_HEADER)
 +#include HAKIOS_SOC_HEADER
 +#else
 +#include <sys/hakios.exynos9810_soc.h>
++#endif
++
++#ifndef HAKIOS_SOC_HAS
++#define HAKIOS_SOC_HAS(name)    1
 +#endif
 +
 +#endif /* _SYS_HAKIOS_EXYNOS_SOC_H_ */
@@ -2381,10 +2395,10 @@ index 0000000000000000000000000000000000000000..ebfb6c2e1a7218232e5c6fa254bfc125
 +#endif /* _SYS_HAKIOS_PCI_H_ */
 diff --git a/bsd/sys/hakios.physmap.h b/bsd/sys/hakios.physmap.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f50609b200e27409b82b259bc55462eb2c6916d3
+index 0000000000000000000000000000000000000000..2651de8c2b96d48a11defb537b3c0d021effde5c
 --- /dev/null
 +++ b/bsd/sys/hakios.physmap.h
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,28 @@
 +/*
 + * Physical memory that XNU does not manage, mapped into the kernel: hakios_physmap_wc(pa, bytes) (iokit/Kernel/
 + * hakios.physmap.cpp, built into every kernel). For the DMA buffers the Galaxy S9's drivers keep below 4 GB in the
@@ -2394,6 +2408,8 @@ index 0000000000000000000000000000000000000000..f50609b200e27409b82b259bc55462eb
 + * registers no room: a panic). Mapped once and kept for the run: the descriptor and its map are never released.
 + * The virtual address, or 0 if it cannot be mapped. The camera's frames and UFS's own mode use it; the display's
 + * scan-out buffers (MiniIOMobileFramebuffer.cpp) still map theirs themselves, the same way.
++ * hakios_physmap_cached(pa, bytes): the same, cached: a buffer read in bulk, whose owner does the cache maintenance
++ * around each DMA. A range is mapped one way only.
 + */
 +#ifndef _SYS_HAKIOS_PHYSMAP_H_
 +#define _SYS_HAKIOS_PHYSMAP_H_
@@ -2405,6 +2421,10 @@ index 0000000000000000000000000000000000000000..f50609b200e27409b82b259bc55462eb
 +extern "C"
 +#endif
 +vm_offset_t hakios_physmap_wc(uint64_t pa, uint64_t bytes);
++#ifdef __cplusplus
++extern "C"
++#endif
++vm_offset_t hakios_physmap_cached(uint64_t pa, uint64_t bytes);
 +
 +#endif /* _SYS_HAKIOS_PHYSMAP_H_ */
 diff --git a/bsd/sys/hakios.qmi.h b/bsd/sys/hakios.qmi.h
@@ -2837,6 +2857,65 @@ index 0000000000000000000000000000000000000000..1fcdd04915be9a5e1238aae60c3e36aa
 +};
 +
 +#endif /* _SYS_HAKIOS_SCGPU_H_ */
+diff --git a/bsd/sys/hakios.scion_gov.h b/bsd/sys/hakios.scion_gov.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d13cedc8c702ad9d07a02769b233cf63665fbdf0
+--- /dev/null
++++ b/bsd/sys/hakios.scion_gov.h
+@@ -0,0 +1,53 @@
++/*
++ * The scion CPU governor's control law (bsd/dev/hakios.scion_gov.c) and what a SoC gives it: its limits, as data.
++ */
++#ifndef _SYS_HAKIOS_SCION_GOV_H_
++#define _SYS_HAKIOS_SCION_GOV_H_
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#define SCION_BIG_CORES         4
++
++struct scion_soc {
++	struct {
++		uint32_t cores, khz;
++	} big_limit[2];                 /* the fastest rate for at most this many big cores, few cores first */
++	uint32_t big_floor, big_touch, big_frame, big_safe;     /* kHz */
++	uint32_t lit_floor, lit_touch, lit_safe;
++	uint32_t heavy_pct, idle_pct, lit_heavy_pct;            /* a big core's load that is heavy, is idle; a little core's that is heavy */
++	uint32_t change_ms;             /* how long the load must ask before cores are parked */
++	int32_t park_under_mc, unpark_at_mc;    /* the big zone, read each window: parked only below the first, back at the second */
++};
++
++struct scion_rate {
++	uint32_t low_ms, peak;          /* how long the load has wanted less, and the most it wanted meanwhile */
++};
++
++struct scion_park {
++	uint32_t asked_ms;
++};
++
++struct scion_pace {
++	uint32_t floor, calm_ms;        /* the floor now (0: start over), how long only on-time frames have come at it */
++};
++
++/* a temperature to trust: read, plausible and recent */
++bool scion_temp_ok(int32_t mc, uint64_t age_ms);
++
++/* the rate for this window: levels fastest first, a rate from them, kHz */
++uint32_t scion_rate(struct scion_rate *s, const uint32_t *levels, uint32_t n, uint32_t cur, uint32_t load, uint32_t floor,
++    uint32_t ceiling, uint32_t window_ms);
++
++/* the floor for this window from the frames since the last: levels fastest first, a kHz floor at or above low; a fresh s starts at start */
++uint32_t scion_pace(struct scion_pace *s, const uint32_t *levels, uint32_t n, uint32_t late, uint32_t on_time, uint32_t low,
++    uint32_t start, uint32_t window_ms);
++
++/* how many big cores may run: load[] the big cores' loads, busiest first; mc the big zone now (a temperature scion_temp_ok() took) */
++uint32_t scion_cores(struct scion_park *s, const struct scion_soc *soc, uint32_t cores, const uint32_t *load, uint32_t lit_load,
++    uint32_t cur, int32_t mc, uint32_t window_ms);
++
++/* the fastest rate for this many big cores */
++uint32_t scion_limit(const struct scion_soc *soc, uint32_t cores);
++
++#endif /* _SYS_HAKIOS_SCION_GOV_H_ */
 diff --git a/bsd/sys/hakios.scsnd.h b/bsd/sys/hakios.scsnd.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..e9bc383f6083bccb983af1c5e203e152bb6383a8
@@ -2939,6 +3018,83 @@ index 0000000000000000000000000000000000000000..a5fc5a9b5c0d7cd91d9184b1b4da3021
 +#endif
 +
 +#endif /* _SYS_HAKIOS_SENSORS_H_ */
+diff --git a/bsd/sys/hakios.soc_runtime.h b/bsd/sys/hakios.soc_runtime.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..8e43f55db3166808e7dc7f054caab4beaf08b8e8
+--- /dev/null
++++ b/bsd/sys/hakios.soc_runtime.h
+@@ -0,0 +1,71 @@
++/* Made by tools/soc-runtime.py from the tables in socs/. Do not edit. */
++
++#ifndef _SYS_HAKIOS_SOC_RUNTIME_H_
++#define _SYS_HAKIOS_SOC_RUNTIME_H_
++
++#include <sys/types.h>
++
++struct hakios_soc {
++	const char *name;
++	uint32_t product_id;
++	uint32_t acpm_fvmap_offset;
++	uint32_t acpm_initdata;
++	uint32_t acpm_sram_first;
++	uint32_t acpm_sram_size;
++	uint32_t apm_mbox_pa;
++	uint32_t apm_sram_pa;
++	uint32_t decon_pa;
++	uint32_t dpp_pa;
++	uint32_t dpu_dma_pa;
++	uint32_t ufs_exy_sysreg_coh_bits;
++	uint32_t ufs_hci_pa;
++	uint32_t ufs_pma_pa;
++	uint32_t ufs_pmu_phy_pa;
++	uint32_t ufs_sysreg_coh_pa;
++	uint32_t ufs_unipro_pa;
++	uint32_t ufs_vs_pa;
++};
++
++/* The table of the chip the kernel is on, picked at first use; all zero, every block absent, when no table has its chip id */
++extern const struct hakios_soc *hakios_soc_table;
++const struct hakios_soc *hakios_soc_select(void);
++int hakios_soc_is_9810(void);
++
++static inline const struct hakios_soc *
++hakios_soc(void)
++{
++	return __builtin_expect(hakios_soc_table != 0, 1) ? hakios_soc_table : hakios_soc_select();
++}
++
++#define HAKIOS_SOC_HAS(name)	(EXYNOS_##name != 0)
++
++#define EXYNOS_ACPM_FVMAP_OFFSET	(hakios_soc()->acpm_fvmap_offset)
++#define EXYNOS_ACPM_INITDATA	(hakios_soc()->acpm_initdata)
++#define EXYNOS_ACPM_SRAM_FIRST	(hakios_soc()->acpm_sram_first)
++#define EXYNOS_ACPM_SRAM_SIZE	(hakios_soc()->acpm_sram_size)
++#define EXYNOS_APM_MBOX_PA	(hakios_soc()->apm_mbox_pa)
++#define EXYNOS_APM_SRAM_PA	(hakios_soc()->apm_sram_pa)
++#define EXYNOS_DECON_PA	(hakios_soc()->decon_pa)
++#define EXYNOS_DPP_PA	(hakios_soc()->dpp_pa)
++#define EXYNOS_DPU_DMA_PA	(hakios_soc()->dpu_dma_pa)
++#define EXYNOS_UFS_EXY_SYSREG_COH_BITS	(hakios_soc()->ufs_exy_sysreg_coh_bits)
++#define EXYNOS_UFS_HCI_PA	(hakios_soc()->ufs_hci_pa)
++#define EXYNOS_UFS_PMA_PA	(hakios_soc()->ufs_pma_pa)
++#define EXYNOS_UFS_PMU_PHY_PA	(hakios_soc()->ufs_pmu_phy_pa)
++#define EXYNOS_UFS_SYSREG_COH_PA	(hakios_soc()->ufs_sysreg_coh_pa)
++#define EXYNOS_UFS_UNIPRO_PA	(hakios_soc()->ufs_unipro_pa)
++#define EXYNOS_UFS_VS_PA	(hakios_soc()->ufs_vs_pa)
++
++#define EXYNOS_M3_PMU_CL1_CPU_CONFIG(n)         (0x2000 + 8 * (n))
++#define EXYNOS_M3_PMU_CL1_CPU_STATUS(n)         (0x2004 + 8 * (n))
++#define EXYNOS_M3_PMU_CL0_CPU_STATUS(n)         (0x2024 + 8 * (n))
++#define EXYNOS_SCION_GOV { \
++	.big_limit = { { 2, 2314000 }, { 4, 1794000 } }, \
++	.big_floor = 650000, .big_touch = 1469000, .big_frame = 1261000, .big_safe = 1261000, \
++	.lit_floor = 1053000, .lit_touch = 1248000, .lit_safe = 1248000, \
++	.heavy_pct = 62, .idle_pct = 11, .lit_heavy_pct = 20, \
++	.change_ms = 100, \
++	.park_under_mc = 70000, .unpark_at_mc = 78000, \
++}
++
++#endif /* _SYS_HAKIOS_SOC_RUNTIME_H_ */
 diff --git a/bsd/sys/hakios.sparse.h b/bsd/sys/hakios.sparse.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..7257dd0d0cbc24e34f858127351f25b40e53c8bb

@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 626 symbols in 20 groups; 54 are set, 45 of them drivers built in.
+# 628 symbols in 20 groups; 54 are set, 45 of them drivers built in.
 #
 
 #
@@ -482,7 +482,7 @@ CONFIG_TOUCHSCREEN=y
 # CONFIG_VIRTIO_INPUT is not set
 
 #
-# GPU and display (105)
+# GPU and display (106)
 #
 
 # rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone) [needs fw-gpu/ from the phone]
@@ -589,6 +589,9 @@ CONFIG_GPU=y
 
 # the same points (375 x 812, or fb_native's) drawn at two pixels a point instead of three
 # CONFIG_FBSCALE is not set
+
+# read by MiniIOMobileFramebuffer.cpp (kernel)
+# CONFIG_FBSUBTYPE is not set
 
 # log the first N calls of every selector (default 3)
 # CONFIG_FBTRACE is not set
@@ -1302,7 +1305,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_SOC_SMEM is not set
 
 #
-# Cameras (28)
+# Cameras (33)
 #
 
 # the cameras (5 is what the README uses) [needs fw-camera/ from the phone]
@@ -1388,6 +1391,21 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakios.camera.c (kernel)
 # CONFIG_CAM_VBLANK is not set
+
+# the app's camera (above), whatever cam= says
+# CONFIG_SCCAM_ADDR is not set
+
+# read by hakios.camera.c (kernel)
+# CONFIG_SCCAM_H is not set
+
+# read by hakios.camera.c (kernel)
+# CONFIG_SCCAM_SIZE is not set
+
+# turn the back camera's (1) or the front camera's (2) frames half round
+# CONFIG_SCCAM_TURN is not set
+
+# read by hakios.camera.c (kernel)
+# CONFIG_SCCAM_W is not set
 
 #
 # Haptics and torch (5)
@@ -1558,7 +1576,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_UFS_PROBE is not set
 
 #
-# User space (109)
+# User space (105)
 #
 
 # arguments only the kernel reads built into the kernel (HAKIOS_BUILTIN_ARGS); given on the line, an argument goes ...
@@ -1816,21 +1834,6 @@ CONFIG_MODEM_AGAIN=y
 # read by inject_sb.c (user space)
 # CONFIG_SB_FPS is not set
 
-# read by hakios.sccam_torch.c, hakios.camera.c (kernel)
-# CONFIG_SCCAM_ADDR is not set
-
-# read by hakios.camera.c (kernel)
-# CONFIG_SCCAM_H is not set
-
-# read by hakios.camera.c (kernel)
-# CONFIG_SCCAM_SIZE is not set
-
-# read by hakios.camera.c (kernel)
-# CONFIG_SCCAM_TURN is not set
-
-# read by hakios.camera.c (kernel)
-# CONFIG_SCCAM_W is not set
-
 # read by 1200-avf-scfb-display.patch, 1202-virtio-gpu-2d.patch, hakios.scfb_battery.c (kernel)
 # CONFIG_SCFB_ADDR is not set
 
@@ -1884,6 +1887,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakios.virtio.c (kernel)
 # CONFIG_VIRTIO_POLL is not set
+
+# the wallpaper as one still picture
+# CONFIG_WALLPAPER_FREEZE is not set
 
 # the Galaxy S9's hardware watchdog is not armed (a restart still goes to recovery: INFORM3 is written)
 # CONFIG_WDT is not set

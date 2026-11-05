@@ -4002,10 +4002,10 @@ index 0000000000000000000000000000000000000000..82454176598c456f5290179ce39d1776
 +}
 diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2cad86d3a70aedd3fcb1b6f765ca72874a16ebdc
+index 0000000000000000000000000000000000000000..55322024a4173a717496bfa6977b0e5513555072
 --- /dev/null
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-@@ -0,0 +1,3410 @@
+@@ -0,0 +1,3433 @@
 +/*
 + * MiniIOMobileFramebuffer: a stand-in for Apple's display driver family, as seen by
 + * IOMobileFramebuffer.framework (and through it by CoreAnimation's window server).
@@ -4266,6 +4266,15 @@ index 0000000000000000000000000000000000000000..2cad86d3a70aedd3fcb1b6f765ca7287
 +#define kFBPointsHigh           812
 +#define kFBDefaultScale         3
 +static TUNABLE(uint32_t, gFBScale, "fbscale", 0);
++/*
++ * Boot-arg fbsubtype=N with fbscale and fbwidth/fbheight: a screen of another iPhone's class -- its pixels (fbwidth x
++ * fbheight, as given, not 375 x 812 points at fbscale), its scale and its artwork-device-subtype (the device tree's
++ * /product, what MobileGestalt's screen class, corner radius and artwork come from). UIKit picks the status bar's look
++ * by width, scale and corner radius together and has none for the iPhone X's 375 points at 2 ("No status bar visual
++ * provider ... rdar://45025538", a red bar), and PosterBoard drew no wallpaper there (2 November). fbwidth=828
++ * fbheight=1792 fbscale=2 fbsubtype=1792 is the iPhone XR's: 1.85 times fewer pixels than this one's to draw.
++ */
++static TUNABLE(uint32_t, gFBSubtype, "fbsubtype", 0);
 +/* Boot-arg fbtrace=N: log the first N calls of every selector (default 3). */
 +static TUNABLE(uint32_t, gFBTrace, "fbtrace", 3);
 +
@@ -4473,6 +4482,9 @@ index 0000000000000000000000000000000000000000..2cad86d3a70aedd3fcb1b6f765ca7287
 + */
 +static uint32_t gSwapWait = 0;
 +SYSCTL_DECL(_kern_hakios);
++/* kern.hakios.fb_surface: the IOSurface last shown, for a picture of what is on the panel (SpringBoard's wallpaper_freeze=1) */
++static uint32_t gShownSurface;
++SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_surface, CTLFLAG_RD | CTLFLAG_LOCKED, &gShownSurface, 0, "the IOSurface last put on the panel");
 +SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_zc_hold, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gZcHold, 0,
 +    "fb_zc: 1 surfaces in use from SwapEnd on, 2 let go at the refresh and not copied when drawn into again (3: both)");
 +SYSCTL_UINT(_kern_hakios, OID_AUTO, fb_swapwait, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gSwapWait, 0,
@@ -5035,8 +5047,18 @@ index 0000000000000000000000000000000000000000..2cad86d3a70aedd3fcb1b6f765ca7287
 +		static const char * const places[][2] = { { "/chosen", "display-scale" }, { "/product", "artwork-scale-factor" } };
 +		uint32_t scale = gFBScale;
 +
-+		fWidth = fPointsWide * scale;
-+		fHeight = fPointsHigh * scale;
++		if (gFBSubtype == 0) {
++			fWidth = fPointsWide * scale;
++			fHeight = fPointsHigh * scale;
++		} else {
++			IORegistryEntry * product = IORegistryEntry::fromPath("/product", gIODTPlane);
++			uint32_t subtype = gFBSubtype;
++
++			if (product != NULL) {
++				product->setProperty("artwork-device-subtype", &subtype, sizeof(subtype));
++				product->release();
++			}
++		}
 +		/* what the loader's device tree says about the scale is where MobileGestalt has it from */
 +		for (unsigned i = 0; i < sizeof(places) / sizeof(places[0]); i++) {
 +			IORegistryEntry * node = IORegistryEntry::fromPath(places[i][0], gIODTPlane);
@@ -6684,6 +6706,7 @@ index 0000000000000000000000000000000000000000..2cad86d3a70aedd3fcb1b6f765ca7287
 +	if (swapWord(swap, SWAP_SURFACE(0)) != 0) {
 +		fFpsSameSurface += swapWord(swap, SWAP_SURFACE(0)) == fLastSurface;
 +		fLastSurface = swapWord(swap, SWAP_SURFACE(0));
++		gShownSurface = fLastSurface;
 +	}
 +	/* (fb_flip/fb_dpp: into a buffer of its own, from the second picture on: the first is the console's end) */
 +	inPlace = fGraphics && zcShow(swap, surfaces);

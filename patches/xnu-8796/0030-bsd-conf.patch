@@ -47,10 +47,10 @@ index 4b83160780c3eb2b1cea6e73b123da8d6e9c3150..8997af1f0e1b5946dda89103c974f021
  include $(MakeInc_rule)
  include $(MakeInc_dir)
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 44274016a4cffa90c32189a2c3e6750916837bc3..331ca3fe9c4feece10279a41f0dd86ffc66427fe 100644
+index 44274016a4cffa90c32189a2c3e6750916837bc3..8ccfdd2434a9a1331c8d4e6567ba1d5f3ba170fd 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -109,6 +109,91 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
+@@ -109,6 +109,94 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
  
  bsd/dev/monotonic.c optional monotonic
@@ -110,11 +110,13 @@ index 44274016a4cffa90c32189a2c3e6750916837bc3..331ca3fe9c4feece10279a41f0dd86ff
 +bsd/dev/hakios.ipa.c                     optional hakios_modem
 +bsd/dev/hakios.battery.c                 optional hakios_battery
 +bsd/dev/hakios.cpufreq.c                 optional hakios_cpufreq
++bsd/dev/hakios.perfctl.c                 optional hakios_perfctl
 +bsd/dev/hakios.thermal.c                 optional hakios_thermal
 +bsd/dev/hakios.pmic.c                    optional hakios_pmic
 +bsd/dev/hakios.s2mps18_rtc.c             optional hakios_s2mps18_rtc
 +bsd/dev/hakios.battguard.c               optional hakios_battguard
 +bsd/dev/hakios.exynos_cpufreq.c          optional hakios_exynos_cpufreq
++bsd/dev/hakios.scion_gov.c               optional hakios_exynos_cpufreq
 +bsd/dev/hakios.max77705.c                optional hakios_max77705
 +bsd/dev/hakios.exynos_tmu.c              optional hakios_exynos_tmu
 +bsd/dev/hakios.exynos_poweroff.c         optional hakios_exynos_poweroff
@@ -123,6 +125,7 @@ index 44274016a4cffa90c32189a2c3e6750916837bc3..331ca3fe9c4feece10279a41f0dd86ff
 +bsd/dev/hakios.exynos_acpm.c             optional hakios_exynos_acpm
 +bsd/dev/hakios.exynos_tee.c              optional hakios_exynos_tee
 +bsd/dev/hakios.exynos_m3.c               optional hakios_exynos_m3
++bsd/dev/hakios.soc_runtime.c             optional hakios_soc_runtime
 +bsd/dev/hakios.ufs.c                     optional hakios_ufs
 +bsd/dev/hakios.ufshc.c                   optional hakios_ufs
 +bsd/dev/hakios.ext4.c                    optional hakios_ufs
@@ -142,7 +145,7 @@ index 44274016a4cffa90c32189a2c3e6750916837bc3..331ca3fe9c4feece10279a41f0dd86ff
  bsd/dev/dev_perfmon.c optional config_perfmon
  
  bsd/libkern/crc32.c			standard
-@@ -155,6 +240,52 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
+@@ -155,6 +243,52 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
  bsd/miscfs/mockfs/mockfs_fsnode.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vfsops.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vnops.c	optional mockfs
@@ -195,7 +198,7 @@ index 44274016a4cffa90c32189a2c3e6750916837bc3..331ca3fe9c4feece10279a41f0dd86ff
  
  bsd/miscfs/routefs/routefs_ops.c	optional routefs
  
-@@ -361,6 +492,7 @@ bsd/security/audit/audit_syscalls.c		standard
+@@ -361,6 +495,7 @@ bsd/security/audit/audit_syscalls.c		standard
  bsd/security/audit/audit_worker.c		optional config_audit
  
  bsd/pthread/pthread_shims.c		standard
@@ -203,7 +206,7 @@ index 44274016a4cffa90c32189a2c3e6750916837bc3..331ca3fe9c4feece10279a41f0dd86ff
  bsd/pthread/pthread_priority.c		standard
  bsd/pthread/pthread_workqueue.c		standard
  
-@@ -383,6 +515,7 @@ bsd/kern/kern_debug.c			standard
+@@ -383,6 +518,7 @@ bsd/kern/kern_debug.c			standard
  bsd/kern/kern_symfile.c			standard
  bsd/kern/kern_descrip.c			standard
  bsd/kern/kern_guarded.c			standard
