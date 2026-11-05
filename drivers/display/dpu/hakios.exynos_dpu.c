@@ -29,6 +29,10 @@
  *               are waited for and the configuration errors of its IDMA and DPP read: any error, or the DECON not taking
  *               the change, and the window goes back to the boot loader's channel and the boot buffer.
  *
+ *   fb_psr=<ms> the panel has its own memory in command mode, so on a screen unchanged for this long (50 to 5000; 0 off, the
+ *               default) the TE trigger is masked (HW_TRIG_MASKED): no refresh, no read of DRAM over DSI. A new frame unmasks it.
+ *               Samsung's decon_reg_set_trigger() masks it after every frame.
+ *
  * The scaler's coefficients are not Samsung's: they are Catmull-Rom (a cubic through the four nearest pixels, sharp and
  * without ringing to speak of), worked out here at start for each of the nine phases the registers take (the other
  * seven are the mirror of these: the hardware mirrors them), in units of 1/512, each row summing to 512.
@@ -63,6 +67,7 @@
  */
 #include <stdarg.h>
 #include <kern/clock.h>
+#include <kern/thread_call.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
@@ -398,6 +403,50 @@ hakios_scanout_carved(uint64_t phys)
  * fb_zc: VGF0 to scan out a surface of the pool from the next refresh on, `rowbytes` a row (its size stays the
  * display's, as attached). As hakios_scanout_flip(): the caller has waited for the flip before to be taken.
  */
+static uint32_t psr_ms;
+static thread_call_t psr_call;
+static uint64_t psr_last_frame;
+static bool psr_masked;
+
+/* a frame is coming: the trigger on before the shadow update is asked for, or it would never be taken */
+static void
+psr_wake(void)
+{
+	if (psr_ms == 0) {
+		return;
+	}
+	__atomic_store_n(&psr_last_frame, mach_absolute_time(), __ATOMIC_RELEASE);
+	if (__atomic_exchange_n(&psr_masked, false, __ATOMIC_ACQ_REL)) {
+		wr(decon, TRIG_CONTROL, rd(decon, TRIG_CONTROL) & ~HW_TRIG_MASKED);
+		__asm__ volatile ("dsb sy" ::: "memory");
+	}
+}
+
+static void
+psr_tick(thread_call_param_t p0 __unused, thread_call_param_t p1 __unused)
+{
+	uint64_t now = mach_absolute_time(), idle, deadline, ns;
+
+	if (psr_ms == 0) {
+		return;
+	}
+	idle = now - __atomic_load_n(&psr_last_frame, __ATOMIC_ACQUIRE);
+	absolutetime_to_nanoseconds(idle, &ns);
+	if (mode == 2 && !__atomic_load_n(&psr_masked, __ATOMIC_ACQUIRE) && ns >= (uint64_t)psr_ms * NSEC_PER_MSEC &&
+	    rd(decon, SHADOW_REQ) == 0) {
+		__atomic_store_n(&psr_masked, true, __ATOMIC_RELEASE);
+		wr(decon, TRIG_CONTROL, rd(decon, TRIG_CONTROL) | HW_TRIG_MASKED);
+		__asm__ volatile ("dsb sy" ::: "memory");
+		/* a frame that came while masking may have seen it unmasked already: back on, and its update goes out */
+		if (rd(decon, SHADOW_REQ) != 0) {
+			__atomic_store_n(&psr_masked, false, __ATOMIC_RELEASE);
+			wr(decon, TRIG_CONTROL, rd(decon, TRIG_CONTROL) & ~HW_TRIG_MASKED);
+		}
+	}
+	clock_interval_to_deadline(psr_ms < 500 ? psr_ms : 500, NSEC_PER_MSEC, &deadline);
+	thread_call_enter_delayed(psr_call, deadline);
+}
+
 int
 hakios_scanout_show(uint64_t phys, uint32_t rowbytes)
 {
@@ -407,6 +456,7 @@ hakios_scanout_show(uint64_t phys, uint32_t rowbytes)
 	    rowbytes / 4 < (rd(idma(channel_type), IDMA_IMG_SIZE) & 0x3fff) || rowbytes / 4 > 0xffff) {
 		return -1;
 	}
+	psr_wake();
 	i = idma(channel_type);
 	if (rowbytes != shown_rowbytes) {
 		wr(i, IDMA_SRC_SIZE, (rd(i, IDMA_SRC_SIZE) & 0xffff0000u) | (rowbytes / 4));
@@ -439,6 +489,7 @@ hakios_scanout_flip(unsigned index)
 	if (mode == 0 || index >= nbuffers) {
 		return -1;
 	}
+	psr_wake();
 	i = idma(channel_type);
 	if (mode == 2 && shown_rowbytes != scan_rowbytes) {
 		/* (back from a surface of fb_zc's, whose rows may be shorter) */
@@ -525,6 +576,8 @@ hakios_scanout_detach(const char *why)
 		return;
 	}
 	say("exynos_dpu: back to the boot loader's window (%s)\n", why);
+	psr_wake();
+	psr_ms = 0;
 	if (mode == 2) {
 		wr(decon, DATA_PATH_1, boot_data_path_1);
 	}
@@ -666,6 +719,14 @@ hakios_scanout_attach(int want, const uint64_t *phys, unsigned count, uint32_t w
 	if (want == 2 && attach_vgf0(phys[shown], width, height, rowbytes) == 0) {
 		scan_rowbytes = shown_rowbytes = rowbytes;
 		say("exynos_dpu: VGF0 scales %ux%u to the panel; flips between %u buffers\n", width, height, count);
+		if (PE_parse_boot_argn("fb_psr", &psr_ms, sizeof(psr_ms)) && psr_ms >= 50 && psr_ms <= 5000) {
+			psr_last_frame = mach_absolute_time();
+			psr_call = thread_call_allocate(psr_tick, NULL);
+			psr_tick(NULL, NULL);
+			say("exynos_dpu: fb_psr: the panel left to itself after %u ms without a frame\n", psr_ms);
+		} else {
+			psr_ms = 0;
+		}
 		return 0;
 	}
 	say("exynos_dpu: attach: %s not taken: the boot loader's window and buffer stay\n",

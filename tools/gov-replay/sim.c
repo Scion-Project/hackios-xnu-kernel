@@ -40,6 +40,7 @@ typedef struct { uint64_t at; int kind; double cycles; int core; int touched; } 
 static ev_t *evs; static int nev, ev_next;
 static int cmpev(const void*a,const void*b){ uint64_t x=((ev_t*)a)->at,y=((ev_t*)b)->at; return x<y?-1:x>y; }
 static jmp_buf done; static uint64_t end_at;
+void hakios_mali_frame(void) {}
 extern void hakios_exynos_cpufreq_touch(void); extern void hakios_exynos_cpufreq_frame(void); extern void hakios_exynos_cpufreq_fingers(uint32_t);
 /* frame jobs: a queue per frame on the render core, measured to their finish */
 typedef struct { uint64_t began; double cycles; int touched; } fj_t;

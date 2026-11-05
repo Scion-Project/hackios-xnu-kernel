@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 628 symbols in 20 groups; 54 are set, 45 of them drivers built in.
+# 630 symbols in 20 groups; 54 are set, 45 of them drivers built in.
 #
 
 #
@@ -1576,7 +1576,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_UFS_PROBE is not set
 
 #
-# User space (105)
+# User space (107)
 #
 
 # arguments only the kernel reads built into the kernel (HAKIOS_BUILTIN_ARGS); given on the line, an argument goes ...
@@ -1684,6 +1684,9 @@ CONFIG_MODEM_AGAIN=y
 # read by 1507-esslog-exynos-snapshot.patch, 1509-m3-diag-and-pan-off.patch (kernel)
 # CONFIG_ESSLOG is not set
 
+# read by hakios.exynos_dpu.c (kernel)
+# CONFIG_FB_PSR is not set
+
 # the rear fingerprint sensor's SPI1, whose it is (1 read; 2 also one write each, read back, put back)
 # CONFIG_FP_S9 is not set
 
@@ -1728,6 +1731,9 @@ CONFIG_MODEM_AGAIN=y
 
 # the busiest core's share wanted at the new rate (60; 30 to 95)
 # CONFIG_GOV_TARGET is not set
+
+# a finger coming down asks for the GPU's frame floor at once, before the first frame needs it (off)
+# CONFIG_GOV_WAKE is not set
 
 # read by hakios.vgpu3d_xnu.c (kernel)
 # CONFIG_GPU3D is not set

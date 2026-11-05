@@ -163,6 +163,7 @@ FB_HZ	arg	fb_hz	GPU and display	k	MiniIOMobileFramebuffer.cpp
 FB_MEASURE	arg	fb_measure	GPU and display	k	MiniIOMobileFramebuffer.cpp	how often the panel is really refreshed
 FB_NATIVE	arg	fb_native	GPU and display	k	MiniIOMobileFramebuffer.cpp	the iPhone's 1125 x 2436 on every panel, as before (the picture stretched to the panel's shape)
 FB_PRI	arg	fb_pri	GPU and display	k	MiniIOMobileFramebuffer.cpp	
+FB_PSR	arg	fb_psr	User space	k	hakios.exynos_dpu.c	
 FB_QUEUE	arg	fb_queue	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FB_RT	arg	fb_rt	GPU and display	k	MiniIOMobileFramebuffer.cpp	the thread handing the swaps over made real-time, once for each such thread: a period of a refresh, fb_rt_us
 FB_RT_US	arg	fb_rt_us	GPU and display	k	MiniIOMobileFramebuffer.cpp	
@@ -228,6 +229,7 @@ GOV_FRAME_MS	arg	gov_frame_ms	User space	k	hakios.exynos_cpufreq.c	a frame this 
 GOV_POLICY	arg	gov_policy	User space	k	hakios.exynos_cpufreq.c	
 GOV_STAT	arg	gov_stat	User space	k	hakios.exynos_cpufreq.c	the line of numbers to compare by (1; 0: none)
 GOV_TARGET	arg	gov_target	User space	k	hakios.exynos_cpufreq.c	the busiest core's share wanted at the new rate (60; 30 to 95)
+GOV_WAKE	arg	gov_wake	User space	k	hakios.exynos_cpufreq.c	a finger coming down asks for the GPU's frame floor at once, before the first frame needs it (off)
 GPU3D	arg	gpu3d	User space	k	hakios.vgpu3d_xnu.c	
 GPU3D_SIZE	arg	gpu3d_size	User space	k	hakios.vgpu3d_xnu.c	
 GPU_CACHED	arg	gpu_cached	GPU and display	k	hakios.gpu.cpp	
