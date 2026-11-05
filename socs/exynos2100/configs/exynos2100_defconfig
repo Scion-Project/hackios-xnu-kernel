@@ -1,0 +1,6 @@
+# The compile target of the Samsung Exynos 2100 (S5E9840): make exynos2100_defconfig kernel. Compile-tested at most; never booted.
+#include qemu_defconfig
+#include exynos2100.config
+CONFIG_HAKIOS_EXYNOS_ACPM=y
+CONFIG_HAKIOS_EXYNOS_HSI2C=y
+CONFIG_HAKIOS_EXYNOS_SPI=y

@@ -1,0 +1,3 @@
+# The compile target of the Samsung Exynos 850 (S5E3830): make exynos850_defconfig kernel. Compile-tested at most; never booted.
+#include qemu_defconfig
+#include exynos850.config

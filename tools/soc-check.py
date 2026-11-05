@@ -57,7 +57,7 @@ def device_tool():
 
 def header(soc):
     path = os.path.join(ROOT, "socs", soc, "include", "hakios.%s_soc.h" % soc)
-    return path, open(path, encoding="utf-8").read()
+    return path, open(path, encoding="utf-8").read() if os.path.isfile(path) else ""
 
 
 def macros(soc):
@@ -109,9 +109,9 @@ def check_soc(soc, fields, sources, blocks, have, verdict):
             errors.append("%s: block %s: nothing but the %s has run" % (soc, block, REFERENCE))
         if b["state"] != "unknown" and soc != REFERENCE and not all(k in sources for k in b["src"].split(",")):
             errors.append("%s: block %s: source %s is not one of soc.conf's %s" % (soc, block, b["src"], sorted(sources)))
-    if soc == REFERENCE:
-        return errors
     path, text = header(soc)
+    if soc == REFERENCE or not text:
+        return errors
     for line in text.splitlines():
         if line.startswith("#define EXYNOS_"):
             m = SOURCED.search(line)
@@ -137,6 +137,8 @@ def check_soc(soc, fields, sources, blocks, have, verdict):
 def compile_header(soc):
     """The table as C: every address fits the 32 bits the blocks are in. Skipped, and said so, with no C compiler."""
     cc = shutil.which("cc")
+    if not header(soc)[1]:
+        return []
     if not cc:
         print("soc-check: %s: no cc, the header was not compiled" % soc)
         return []
@@ -200,8 +202,8 @@ def main():
     hd = device_tool()
     reference = macros(REFERENCE)
     names = sorted(n for n in os.listdir(os.path.join(ROOT, "socs"))
-                   if os.path.isfile(os.path.join(ROOT, "socs", n, "soc.conf"))
-                   and os.path.isfile(os.path.join(ROOT, "socs", n, "include", "hakios.%s_soc.h" % n)))
+                   if os.path.isfile(os.path.join(ROOT, "socs", n, "soc.conf")) and hd.describe("soc", n).get("block"))
+    absent = [n for kind, n, f, _l in hd.manifest() if kind == "soc" and n not in names and hd.describe("soc", n) is None]
     rows, errors = [], []
     for soc in names:
         fields, sources, blocks = read_soc(hd, soc)
@@ -218,7 +220,9 @@ def main():
     head, rest = text.split(BEGIN)
     _old, tail = rest.split(END)
     made = "%s%s\n%s\n\n%s\n%s%s" % (head, BEGIN, matrix(rows), notes(rows), END, tail)
-    if a.write:
+    if absent:
+        print("soc-check: %s not checked out: the matrix was neither compared nor written" % " ".join(absent))
+    elif a.write:
         open(doc, "w", encoding="utf-8", newline="\n").write(made)
     elif made != text:
         errors.append("docs/soc-support.md: not what soc.conf makes: run tools/soc-check.py --write")

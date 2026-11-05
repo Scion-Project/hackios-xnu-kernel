@@ -1,0 +1,7 @@
+# The compile target of the Samsung Exynos 9820 (S5E9820): make exynos9820_defconfig kernel. Compile-tested at most; never booted.
+#include qemu_defconfig
+#include exynos9820.config
+CONFIG_HAKIOS_EXYNOS_ACPM=y
+CONFIG_HAKIOS_EXYNOS_DPU=y
+CONFIG_HAKIOS_EXYNOS_HSI2C=y
+CONFIG_HAKIOS_EXYNOS_SPI=y

@@ -1,0 +1,3 @@
+# The compile target of the Google Tensor G4 (zumapro): make zumapro_defconfig kernel. Compile-tested at most; never booted.
+#include qemu_defconfig
+#include zumapro.config

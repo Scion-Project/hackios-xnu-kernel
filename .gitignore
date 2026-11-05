@@ -122,6 +122,15 @@ __pycache__/
 # The SoC, device and UEFI repositories that tools/hakios-device.py sync clones into place (devices/manifest.conf) are their own:
 /socs/*
 !/socs/README.md
+!/socs/exynos2100/
+!/socs/exynos850/
+!/socs/exynos8895/
+!/socs/exynos9820/
+!/socs/exynos990/
+!/socs/gs101/
+!/socs/gs201/
+!/socs/zuma/
+!/socs/zumapro/
 !/socs/exynos9810/
 /devices/*
 !/devices/manifest.conf
