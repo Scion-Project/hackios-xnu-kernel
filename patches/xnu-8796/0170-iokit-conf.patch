@@ -1,0 +1,41 @@
+diff --git a/iokit/conf/Makefile b/iokit/conf/Makefile
+index 83259ebf983592de88c17e800071a3bd61b66435..8864e5c7cc419c727ce0eda4d680cad56a4153fb 100644
+--- a/iokit/conf/Makefile
++++ b/iokit/conf/Makefile
+@@ -16,6 +16,9 @@ endif
+ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
+diff --git a/iokit/conf/files b/iokit/conf/files
+index 5fb0a52062e04b3794e92eda1bb548d83b96178b..19ae7b93e9be17c666ca5e13b08b36ef08c88238 100644
+--- a/iokit/conf/files
++++ b/iokit/conf/files
+@@ -79,6 +79,22 @@ iokit/Kernel/IOSubMemoryDescriptor.cpp			optional iokitcpp
+ iokit/Kernel/IOGuardPageMemoryDescriptor.cpp		optional iokitcpp
+ 
+ iokit/Kernel/IOPlatformExpert.cpp			optional iokitcpp
++iokit/Kernel/GenericARMPE.cpp			optional iokitcpp
++iokit/Kernel/MiniIOSurface.cpp			optional iokitcpp
++iokit/Kernel/MiniIOMobileFramebuffer.cpp		optional iokitcpp
++# HakiOS drivers: made by tools/hakios-config.py kernel from drivers/*/conf. Edit those, not these lines.
++iokit/Kernel/hakios.stubs.cpp            optional iokitcpp
++iokit/Kernel/hakios.physmap.cpp          optional iokitcpp
++iokit/Kernel/hakios.backlight.cpp        optional iokitcpp
++iokit/Kernel/hakios.bt_node.cpp          optional hakios_bcm4361_bt iokitcpp
++iokit/Kernel/hakios.gpu.cpp              optional hakios_adreno iokitcpp
++iokit/Kernel/hakios.mali.cpp             optional hakios_mali iokitcpp
++iokit/Kernel/hakios.battery.cpp          optional hakios_battery iokitcpp
++iokit/Kernel/hakios.wlan.cpp             optional hakios_wifi_sta iokitcpp
++# end of the HakiOS drivers
++iokit/Kernel/MiniAppleKeyStore.cpp			optional iokitcpp
++iokit/Kernel/MiniIONetworkStack.cpp			optional iokitcpp
++iokit/Kernel/MiniIOAESAccelerator.cpp			optional iokitcpp
+ iokit/Kernel/IOPlatformIO.cpp				optional iokitcpp
+ 
+ iokit/Kernel/IOCPU.cpp					optional iokitcpp

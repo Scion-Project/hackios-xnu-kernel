@@ -1,0 +1,69 @@
+diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
+index 404b50bd86e469561a38996e855741c0b8324e25..9799b05c6265de5095918f3483503dd7cb841173 100644
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -47,7 +47,8 @@ typedef enum serial_device {
+ 	SERIAL_DOCKCHANNEL=0x2,
+ 	SERIAL_PI3_UART=0x4,
+ 	SERIAL_VMAPPLE_UART=0x8,
+-	SERIAL_DCC_UART=0x10
++	SERIAL_DCC_UART=0x10,
++	SERIAL_VIRTIO_CONSOLE=0x100     /* bsd/dev/hakios.virtio_console.c */
+ } serial_device_t;
+ 
+ kern_return_t serial_irq_enable(serial_device_t device);
+diff --git a/pexpert/pexpert/arm64/BCM2837.h b/pexpert/pexpert/arm64/BCM2837.h
+index d9f0723244e5772153b0521b34b3475be35a56bc..53fe4f371d7f3a4270ca6c22fc4652723ee9119e 100644
+--- a/pexpert/pexpert/arm64/BCM2837.h
++++ b/pexpert/pexpert/arm64/BCM2837.h
+@@ -11,6 +11,15 @@
+ #define BCM2837
+ #define BCM2837_BRINGUP
+ #define ARM_ARCH_TIMER
++#define GENERIC_GIC_V3_IRQ                 1 /* interrupts via GICv3 Group 1, see osfmk/arm64/gic_v3_irq.c */
++#define GENERIC_PSCI_SMP                  1 /* more cores are started through PSCI, see osfmk/arm64/psci_smp.c */
++
++/*
++ * The cores this kernel really runs on (Cortex-A55/A78, QEMU cortex-a76) are
++ * ARMv8.2: they set PSTATE.PAN on every exception entry, so the kernel must
++ * know to lift it around user memory accesses.
++ */
++#define __ARM_PAN_AVAILABLE__     1
+ 
+ #define __ARM_ARCH__              8
+ #define __ARM_VMSA__              8
+@@ -22,6 +31,7 @@
+ #ifndef ASSEMBLER
+ 
+ #define PI3_UART
++#define VMAPPLE_UART                    /* PL011, as found on QEMU virt */
+ 
+ #define PI3_BREAK                               asm volatile("brk #0");
+ 
+@@ -60,8 +70,11 @@
+ #define BCM2837_PUT32(addr, value) do { *((volatile uint32_t *) addr) = value; } while(0)
+ #define BCM2837_GET32(addr) *((volatile uint32_t *) addr)
+ 
+-#define PLATFORM_PANIC_LOG_PADDR        0x3c0fc000
+-#define PLATFORM_PANIC_LOG_SIZE         16384        // 16kb
++/*
++ * No fixed PLATFORM_PANIC_LOG_PADDR: the Raspberry Pi address (0x3c0fc000) is
++ * not RAM on other boards. The panic log region comes from the device tree
++ * instead (/pram and /chosen/embedded-panic-log-size), like on Apple devices.
++ */
+ #endif /* ! ASSEMBLER */
+ 
+ #endif /* ! _PEXPERT_ARM_BCM2837_H */
+diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
+index c84b2100bc19a76fa35f97ba520ee99a11b59cc5..aaad5cd2e8c629be679eee966fbe3fb215f1857f 100644
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -91,7 +91,7 @@
+ #include <pexpert/arm64/BCM2837.h>
+ 
+ #define MAX_L2_CLINE                   6
+-#define MAX_CPUS                       4
++#define MAX_CPUS                       8 /* the Raspberry Pi has four; the boards this runs on now have up to eight */
+ #define MAX_CPU_CLUSTERS               1
+ 
+ #define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */

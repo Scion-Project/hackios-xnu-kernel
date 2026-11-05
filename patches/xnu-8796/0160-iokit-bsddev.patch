@@ -1,0 +1,98 @@
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index 5219fb0d9ed6a4704c6e9a7ecf9944a9df9abc3e..249343aff4830e1ea85f7c3bd3431a69c17d9dad 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -683,7 +683,15 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 	assert(matching);
+ 	matching->setObject(gIOResourceMatchedKey, gIOBSDKey);
+ 
+-	if ((service = IOService::waitForMatchingService(matching, 30ULL * kSecondScale))) {
++	// A memory-device root needs no filesystem kext, so do not sit out the timeout for one
++	char rdEarly[kMaxBootVar];
++	uint64_t bsdWait = 30ULL * kSecondScale;
++	if (PE_parse_boot_argn("rd", rdEarly, sizeof(rdEarly)) &&
++	    ((rdEarly[0] == 'm' && rdEarly[1] == 'd') || strncmp(rdEarly, "rvblk", 5) == 0)) {
++		bsdWait = kSecondScale / 10;
++	}
++
++	if ((service = IOService::waitForMatchingService(matching, bsdWait))) {
+ 		OSSafeReleaseNULL(service);
+ 	} else {
+ 		IOLog("!BSD\n");
+@@ -747,6 +755,15 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ //	It will become /dev/mdx, where x is 0-f.
+ //
+ 
++	/*
++	 * md0=rvblkN: the system volume, which HakiOS's user space knows as md0 (the root, and the
++	 * container its cryptexes are mounted from: "/dev/md0,c=N"), is that virtio disk instead of a
++	 * RAM disk: under crosvm the host serves the 2.5 GB image from its own storage. The RAM
++	 * disks then start at md1, where stage0 looks for the small image (root.apfs).
++	 */
++	char md0Disk[16] = "";
++	bool md0Virtio = PE_parse_boot_argn("md0", md0Disk, sizeof(md0Disk)) && strncmp(md0Disk, "rvblk", 5) == 0;
++
+ 	if (!didRam) {                                                                                           /* Have we already build this ram disk? */
+ 		didRam = 1;                                                                                             /* Remember we did this */
+ 		if ((regEntry = IORegistryEntry::fromPath( "/chosen/memory-map", gIODTPlane ))) {        /* Find the map node */
+@@ -760,12 +777,59 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 					panic("ramdisk params");
+ 				}
+ #endif /* __LP64__ */
+-				(void)mdevadd(-1, ml_static_ptovirt(ramdParms[0]) >> 12, (unsigned int) (ramdParms[1] >> 12), 0);        /* Initialize it and pass back the device number */
++				(void)mdevadd(md0Virtio ? 1 : -1, ml_static_ptovirt(ramdParms[0]) >> 12, (unsigned int) (ramdParms[1] >> 12), 0);        /* Initialize it and pass back the device number */
++			}
++			/*
++			 * A second image the loader may have left in memory (it becomes
++			 * /dev/md1): a volume for user space to mount, never the root.
++			 */
++			data = (OSData *)regEntry->getProperty("RAMDisk1");
++			if (data && data->getLength() >= 2 * sizeof(uintptr_t)) {
++				uintptr_t *ramdParms = (uintptr_t *)data->getBytesNoCopy();
++				if (ramdParms[1] <= (((uint64_t)UINT_MAX) << 12)) {
++					(void)mdevadd(md0Virtio ? 2 : -1, ml_static_ptovirt(ramdParms[0]) >> 12, (unsigned int) (ramdParms[1] >> 12), 0);
++				}
+ 			}
+ 			regEntry->release();                                                            /* Toss the entry */
+ 		}
+ 	}
+ 
++//
++//	A virtio disk (bsd/dev/hakios.virtio_blk.c): rd=rvblk0 roots on the first one
++//
++	if (strncmp(rdBootVar, "rvblk", 5) == 0) {
++		extern int hakios_virtio_blk_rootdev(const char *name, dev_t *dev);
++		int vblk_error;
++
++		OSSafeReleaseNULL(matching);
++		if ((vblk_error = hakios_virtio_blk_rootdev(rdBootVar, root)) != 0) {
++			panic("IOFindBSDRoot: virtio root %s unavailable: %d", rdBootVar, vblk_error);
++		}
++		strlcpy(rootName, rdBootVar, rootNameSize);
++		IOLog("BSD root: %s, major %d, minor %d\n", rootName, major(*root), minor(*root));
++		*oflags = 0;
++		goto iofrootx;
++	}
++
++//
++//	rd=md0 with md0=rvblkN: the root is that virtio disk, also reachable as /dev/md0
++//
++	if (md0Virtio && strcmp(rdBootVar, "md0") == 0) {
++		extern int hakios_virtio_blk_rootdev(const char *name, dev_t *dev);
++		extern int hakios_virtio_blk_alias(const char *disk, const char *name);
++		int vblk_error;
++
++		OSSafeReleaseNULL(matching);
++		if ((vblk_error = hakios_virtio_blk_rootdev(md0Disk, root)) != 0) {
++			panic("IOFindBSDRoot: md0=%s: no such virtio disk: %d", md0Disk, vblk_error);
++		}
++		(void)hakios_virtio_blk_alias(md0Disk, "md0");
++		strlcpy(rootName, "md0", rootNameSize);
++		IOLog("BSD root: md0 = %s, major %d, minor %d\n", md0Disk, major(*root), minor(*root));
++		*oflags = 0;
++		goto iofrootx;
++	}
++
+ //
+ //	Now check if we are trying to root on a memory device
+ //

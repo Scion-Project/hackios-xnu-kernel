@@ -1,0 +1,213 @@
+diff --git a/bsd/conf/Makefile b/bsd/conf/Makefile
+index 050f34a53c49673de3af7d3633bb534e6c0e77c7..c58ff62cd41966a348e8489a9543c0de689b7b93 100644
+--- a/bsd/conf/Makefile
++++ b/bsd/conf/Makefile
+@@ -17,6 +17,9 @@ MASTERCONFDIR = $(SRCROOT)/config
+ DOCONFDEPS = $(addprefix $(MASTERCONFDIR)/, MASTER MASTER.$(DOCONF_ARCH_CONFIG_LC)) \
+ 	$(addprefix $(SOURCE)/, Makefile.template Makefile.$(DOCONF_ARCH_CONFIG_LC) files files.$(DOCONF_ARCH_CONFIG_LC))
+ 
++# HakiOS: the drivers' choice (tools/hakios-config.py kernel); a new choice makes the configuration again
++DOCONFDEPS += $(wildcard $(MASTERCONFDIR)/MASTER.hakios)
++
+ ifneq (,$(wildcard $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)))
+ DOCONFDEPS += $(MASTERCONFDIR)/MASTER.$(DOCONF_ARCH_CONFIG_LC).$(CURRENT_MACHINE_CONFIG_LC)
+ endif
+diff --git a/bsd/conf/Makefile.arm64 b/bsd/conf/Makefile.arm64
+index a4d25040f38f80993b9d43d83aa74f2d191b1513..aad72993d139c587dbc8988e3635916449ee8db4 100644
+--- a/bsd/conf/Makefile.arm64
++++ b/bsd/conf/Makefile.arm64
+@@ -5,6 +5,11 @@
+ # Inline assembly doesn't interact well with LTO
+ fbt_arm.o_CFLAGS_ADD += $(CFLAGS_NOLTO_FLAG)
+ 
++# libdeflate's arm headers (bsd/miscfs/apfs/libdeflate) include the compiler's own <arm_acle.h>
++# and <arm_neon.h>, which the kernel's include paths do not have: they come after those paths,
++# so the kernel's <stdint.h> and the rest are still the ones found.
++apfs_deflate.o_CFLAGS_ADD += -idirafter $(shell $(CC) -print-resource-dir)/include
++
+ kern_csr.o_INCFLAGS += -I$(SRCROOT)/osfmk
+ kern_debug.o_INCFLAGS += -I$(SRCROOT)/osfmk
+ 
+diff --git a/bsd/conf/Makefile.template b/bsd/conf/Makefile.template
+index 4b83160780c3eb2b1cea6e73b123da8d6e9c3150..8997af1f0e1b5946dda89103c974f021b44c956a 100644
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -588,5 +588,13 @@ do_build_all:: do_all
+ 
+ %RULES
+ 
++# HakiOS: HFS Plus built in (bsd/hfs, Apple's hfs-627.100.6), compiled as its kext was: against the kernel's KPI,
++# not its insides (no XNU/BSD/MACH_KERNEL_PRIVATE), kext-config.h first, its own headers beside it, and its warnings
++# its own (it is Apple's code as it was published, not this kernel's)
++HFS_OBJS = $(patsubst %.c,%.o,$(notdir $(wildcard $(SRCROOT)/bsd/hfs/*.c)))
++$(foreach o,$(HFS_OBJS),$(eval $(o)_CFLAGS_ADD += -UXNU_KERNEL_PRIVATE -UBSD_KERNEL_PRIVATE -UMACH_KERNEL_PRIVATE \
++	-include $(SRCROOT)/bsd/hfs/kext-config.h -I$(SRCROOT)/bsd/hfs -idirafter $(SDKROOT)/usr/include))
++$(foreach o,$(HFS_OBJS),$(eval $(o)_CWARNFLAGS_ADD += -w))
++
+ include $(MakeInc_rule)
+ include $(MakeInc_dir)
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 44274016a4cffa90c32189a2c3e6750916837bc3..331ca3fe9c4feece10279a41f0dd86ffc66427fe 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -109,6 +109,91 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+ 
+ bsd/dev/monotonic.c optional monotonic
++# HakiOS drivers: made by tools/hakios-config.py kernel from drivers/*/conf. Edit those, not these lines.
++bsd/dev/hakios.audio.c                   standard
++bsd/dev/hakios.scsnd.c                   standard
++bsd/dev/hakios.sccam_torch.c             standard
++bsd/dev/hakios.version.c                 standard
++bsd/dev/hakios.platform.c                standard
++bsd/dev/hakios.cryptobench.c             standard
++bsd/dev/hakios.stubs.c                   standard
++bsd/dev/hakios.vgpu.c                    standard
++bsd/dev/hakios.vgpu3d.c                  standard
++bsd/dev/hakios.vgpu3d_xnu.c              standard
++bsd/dev/hakios.input.c                   standard
++bsd/dev/hakios.net.c                     standard
++bsd/dev/hakios.thermal_provider.c        standard
++bsd/dev/hakios.scfb_battery.c            standard
++bsd/dev/hakios.image.c                   standard
++bsd/dev/hakios.sparse.c                  standard
++bsd/dev/hakios.apfs_check.c              optional apfs
++bsd/dev/hakios.pci.c                     standard
++bsd/dev/hakios.virtio.c                  standard
++bsd/dev/hakios.virtio_console.c          standard
++bsd/dev/hakios.lx.c                      standard
++bsd/dev/hakios.adsp.c                    optional hakios_adsp
++bsd/dev/hakios.speaker.c                 optional hakios_speaker
++bsd/dev/hakios.guard.c                   optional hakios_guard
++bsd/dev/hakios.sound.c                   optional hakios_sound
++bsd/dev/hakios.mic.c                     optional hakios_mic
++bsd/dev/hakios.max98512.c                optional hakios_max98512
++bsd/dev/hakios.exynos_abox.c             optional hakios_exynos_abox
++bsd/dev/hakios.cs47l93.c                 optional hakios_cs47l93
++bsd/dev/hakios.bt.c                      optional hakios_bt
++bsd/dev/hakios.bcm4361_bt.c              optional hakios_bcm4361_bt
++bsd/dev/hakios.camera.c                  optional hakios_camera
++bsd/dev/hakios.torch.c                   optional hakios_torch
++bsd/dev/hakios.s2mpb02_torch.c           optional hakios_s2mpb02_torch
++bsd/dev/hakios.exynos_camera.c           optional hakios_exynos_camera
++bsd/dev/hakios.exynos_iris.c             optional hakios_exynos_iris
++bsd/dev/hakios.socinfo.c                 optional hakios_socinfo
++bsd/dev/hakios.exynos_dpu.c              optional hakios_exynos_dpu
++bsd/dev/hakios.s6e3ha8.c                 optional hakios_s6e3ha8
++bsd/dev/hakios.adreno.c                  optional hakios_adreno
++bsd/dev/hakios.mali.c                    optional hakios_mali
++bsd/dev/hakios.haptic.c                  optional hakios_haptic
++bsd/dev/hakios.goodix.c                  optional hakios_goodix
++bsd/dev/hakios.buttons.c                 optional hakios_buttons
++bsd/dev/hakios.exynos_keys.c             optional hakios_exynos_keys
++bsd/dev/hakios.s6sy761.c                 optional hakios_s6sy761
++bsd/dev/hakios.ssp.c                     optional hakios_ssp
++bsd/dev/hakios.exynos_mfc.c              optional hakios_exynos_mfc
++bsd/dev/hakios.qmi.c                     optional hakios_qmi
++bsd/dev/hakios.mpss.c                    optional hakios_modem
++bsd/dev/hakios.cell.c                    optional hakios_modem
++bsd/dev/hakios.nas.c                     optional hakios_modem
++bsd/dev/hakios.ipa.c                     optional hakios_modem
++bsd/dev/hakios.battery.c                 optional hakios_battery
++bsd/dev/hakios.cpufreq.c                 optional hakios_cpufreq
++bsd/dev/hakios.thermal.c                 optional hakios_thermal
++bsd/dev/hakios.pmic.c                    optional hakios_pmic
++bsd/dev/hakios.s2mps18_rtc.c             optional hakios_s2mps18_rtc
++bsd/dev/hakios.battguard.c               optional hakios_battguard
++bsd/dev/hakios.exynos_cpufreq.c          optional hakios_exynos_cpufreq
++bsd/dev/hakios.max77705.c                optional hakios_max77705
++bsd/dev/hakios.exynos_tmu.c              optional hakios_exynos_tmu
++bsd/dev/hakios.exynos_poweroff.c         optional hakios_exynos_poweroff
++bsd/dev/hakios.exynos_hsi2c.c            optional hakios_exynos_hsi2c
++bsd/dev/hakios.exynos_spi.c              optional hakios_exynos_spi
++bsd/dev/hakios.exynos_acpm.c             optional hakios_exynos_acpm
++bsd/dev/hakios.exynos_tee.c              optional hakios_exynos_tee
++bsd/dev/hakios.exynos_m3.c               optional hakios_exynos_m3
++bsd/dev/hakios.ufs.c                     optional hakios_ufs
++bsd/dev/hakios.ufshc.c                   optional hakios_ufs
++bsd/dev/hakios.ext4.c                    optional hakios_ufs
++bsd/dev/hakios.dwc3.c                    optional hakios_usb_gadget
++bsd/dev/hakios.exynos_usb.c              optional hakios_exynos_usb
++bsd/dev/hakios.virtio_sound.c            optional hakios_virtio_sound
++bsd/dev/hakios.virtio_input.c            optional hakios_virtio_input
++bsd/dev/hakios.virtio_net.c              optional hakios_virtio_net
++bsd/dev/hakios.virtio_blk.c              optional hakios_virtio_blk
++bsd/dev/hakios.wifi.c                    optional hakios_wifi
++bsd/dev/hakios.wlfw.c                    optional hakios_wifi
++bsd/dev/hakios.sta.c                     optional hakios_wifi_sta
++bsd/dev/hakios.apple80211.c              optional hakios_wifi_sta
++bsd/dev/hakios.exynos_pcie.c             optional hakios_exynos_pcie
++bsd/dev/hakios.brcmfmac.c                optional hakios_brcmfmac
++# end of the HakiOS drivers
+ bsd/dev/dev_perfmon.c optional config_perfmon
+ 
+ bsd/libkern/crc32.c			standard
+@@ -155,6 +240,52 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
+ bsd/miscfs/mockfs/mockfs_fsnode.c	optional mockfs
+ bsd/miscfs/mockfs/mockfs_vfsops.c	optional mockfs
+ bsd/miscfs/mockfs/mockfs_vnops.c	optional mockfs
++bsd/miscfs/apfs/apfs_deflate.c		optional apfs
++bsd/miscfs/apfs/apfs_zbitmap.c		optional apfs
++bsd/miscfs/apfs/apfs_lib.c		optional apfs
++bsd/miscfs/apfs/apfs_write.c		optional apfs
++bsd/miscfs/apfs/apfs_store.c		optional apfs
++bsd/miscfs/apfs/apfs_vfsops.c		optional apfs
++bsd/miscfs/apfs/apfs_vnops.c		optional apfs
++bsd/miscfs/ramfs/ramfs.c			optional ramfs
++bsd/hfs/BTree.c		optional hfs
++bsd/hfs/BTreeAllocate.c		optional hfs
++bsd/hfs/BTreeMiscOps.c		optional hfs
++bsd/hfs/BTreeNodeOps.c		optional hfs
++bsd/hfs/BTreeNodeReserve.c		optional hfs
++bsd/hfs/BTreeScanner.c		optional hfs
++bsd/hfs/BTreeTreeOps.c		optional hfs
++bsd/hfs/BTreeWrapper.c		optional hfs
++bsd/hfs/CatalogUtilities.c		optional hfs
++bsd/hfs/FileExtentMapping.c		optional hfs
++bsd/hfs/FileIDsServices.c		optional hfs
++bsd/hfs/MacOSStubs.c		optional hfs
++bsd/hfs/UnicodeWrappers.c		optional hfs
++bsd/hfs/VolumeAllocation.c		optional hfs
++bsd/hfs/hfs_attrlist.c		optional hfs
++bsd/hfs/hfs_btreeio.c		optional hfs
++bsd/hfs/hfs_builtin.c		optional hfs
++bsd/hfs/hfs_catalog.c		optional hfs
++bsd/hfs/hfs_chash.c		optional hfs
++bsd/hfs/hfs_cnode.c		optional hfs
++bsd/hfs/hfs_cprotect.c		optional hfs
++bsd/hfs/hfs_endian.c		optional hfs
++bsd/hfs/hfs_extents.c		optional hfs
++bsd/hfs/hfs_fsinfo.c		optional hfs
++bsd/hfs/hfs_hotfiles.c		optional hfs
++bsd/hfs/hfs_journal.c		optional hfs
++bsd/hfs/hfs_link.c		optional hfs
++bsd/hfs/hfs_lookup.c		optional hfs
++bsd/hfs/hfs_notification.c		optional hfs
++bsd/hfs/hfs_quota.c		optional hfs
++bsd/hfs/hfs_readwrite.c		optional hfs
++bsd/hfs/hfs_resize.c		optional hfs
++bsd/hfs/hfs_search.c		optional hfs
++bsd/hfs/hfs_vfsops.c		optional hfs
++bsd/hfs/hfs_vfsutils.c		optional hfs
++bsd/hfs/hfs_vnops.c		optional hfs
++bsd/hfs/hfs_xattr.c		optional hfs
++bsd/hfs/rangelist.c		optional hfs
+ 
+ bsd/miscfs/routefs/routefs_ops.c	optional routefs
+ 
+@@ -361,6 +492,7 @@ bsd/security/audit/audit_syscalls.c		standard
+ bsd/security/audit/audit_worker.c		optional config_audit
+ 
+ bsd/pthread/pthread_shims.c		standard
++bsd/pthread/pthread_kext_static.c    standard
+ bsd/pthread/pthread_priority.c		standard
+ bsd/pthread/pthread_workqueue.c		standard
+ 
+@@ -383,6 +515,7 @@ bsd/kern/kern_debug.c			standard
+ bsd/kern/kern_symfile.c			standard
+ bsd/kern/kern_descrip.c			standard
+ bsd/kern/kern_guarded.c			standard
++bsd/kern/kern_minimac.c			optional config_macf
+ bsd/kern/kern_event.c			standard
+ bsd/kern/kern_control.c			optional networking
+ bsd/kern/kern_exec.c			standard
