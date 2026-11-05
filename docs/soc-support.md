@@ -277,8 +277,8 @@ It is a job manager Mali, as ours expects. Linux's `panfrost_gpu.c` has 0x9001, 
 no such row, so `panfrost_open_device` would refuse it; PixOS's research (doc 32) calls it a one-row fix, untried. `hakios.mali.c` refuses
 everything but 0x6221 at step 4 and carries the 9810's PLL, PMU, and S2MPS18 rail. On gs101 ABL leaves the GPU powered and clocked (doc 27),
 the rails are S2MPG11's BUCK2S and BUCK8S through ACPM, the clock comes from an ACPM fvmap, and the G3D S2MPU is reported open after ABL
-(doc 30, a question PixOS still lists). So: fewer steps than the 9810, not the same ones. The MMU and job registers it needs were read there
-and match what `hakios.mali.c` writes for 0x000-0x100; that is a reading of two sources, not a run.
+(docs 28 and 30, still an open question for XNU's time). So: fewer steps than the 9810, not the same ones. The feature registers PixOS lists sit at
+the offsets `hakios.mali.c` uses (GPU_ID, MMU_FEATURES, AS_PRESENT, JS_PRESENT, THREAD_MAX_THREADS); that is a reading of two sources, not a run.
 
 **The route on a Pixel.** `fastboot boot` of an Android image with an AVB footer, from RAM, on an unlocked phone: PixOS and `devices/frankel/README.md`
 both use it, and PixOS found the 6a refuses an unsigned one. Nothing is written, and Power + Volume Down still reaches fastboot. PixOS also
