@@ -1,60 +1,32 @@
 /*
- * The phone's microphones, through the audio DSP. Every address and number below belongs to the
- * POCO X5 Pro (redwood), from Android's own live device tree, its mixer paths (fw-audio/android/)
- * and Xiaomi's kernel (hakios-s-oss, techpack/audio: asoc/codecs/bolero/, asoc/codecs/wcd938x/,
- * soc/swr-mstr-ctrl.c, soc/pinctrl-lpi.c, dsp/q6afe.c, asoc/codecs/audio-ext-clk-up.c). Nothing
- * here happens unless boot-arg mic=N asks for it, with adsp=1 (hakios.adsp.c), which calls
- * hakios_mic_dsp_up() once the DSP's audio services are up.
+ * Microphone input through the audio DSP, for the POCO X5 Pro (redwood). Addresses and constants
+ * come from Android's device tree and mixer paths (fw-audio/android/) and from Xiaomi's kernel
+ * (hakios-s-oss, techpack/audio: asoc/codecs/bolero/, asoc/codecs/wcd938x/, soc/swr-mstr-ctrl.c,
+ * soc/pinctrl-lpi.c, dsp/q6afe.c, asoc/codecs/audio-ext-clk-up.c).
  *
- * The main microphone under Android (mixer paths "handset-mic" = "amic1", "audio-record"): the
- * analog microphone at ADC1 of the WCD938x codec, whose samples go over SoundWire (the TX master
- * of the LPASS's digital codec, "bolero") into decimator 1 of the TX macro, out of it through the
- * codec DMA interface TX_CDC_DMA_TX_3, the AFE's port, into a stream that is read (ASM). Before any
- * of it: the LPASS's own clocks, which the DSP gives out (Android's audio-ref-clk nodes):
- *   lpass_core_hw_vote   AFE_CMD_REMOTE_LPASS_CORE_HW_VOTE_REQUEST, block 3 ("LPASS_HW_MACRO")
- *   lpass_audio_hw_vote  the same, block 4 ("LPASS_HW_DCODEC")
- *   tx_core_clk          AFE clock 0x30c at 19.2 MHz (qcom,codec-lpass-clk-id, -ext-clk-freq)
- *   tx_npl_clk           AFE clock 0x30d at 19.2 MHz
- * Without them the macros' registers are not to be touched at all: an access to a block without
- * its clock may hang the bus.
+ * Depends on the DSP's audio services (hakios.adsp.c, boot-arg adsp=1), which call
+ * hakios_mic_dsp_up() once they are up. Nothing runs without boot-arg mic. hakios_mic_dsp_down()
+ * undoes whatever was set.
  *
- *   mic=1    a look: the votes and the two clocks asked for, then -- only if all four were given --
- *            the registers of the TX and VA macros, of the TX SoundWire master, of the LPASS pins
- *            the master uses and of the codec's reset pin read (nothing written to any of them);
- *            then the clocks and the votes given back
- *   mic=2    ... and the codec brought up far enough to answer on SoundWire, nothing of it set:
- *            its supplies as the boot chain leaves them (L18B and BoB are on: the codec answers; nothing
- *            of the PMICs is touched), its reset released (GPIO83 low 20 us, then high, 16 mA:
- *            msm-cdc-pinctrl's two states), the master's pins to their active state (LPASS GPIOs
- *            0, 1, 2, 14: function 1, 2 mA, slew rate 1; the clock without a pull, the data with a
- *            keeper), the TX macro's clocks as tx_macro_tx_va_mclk_enable() starts them (bolero's
- *            "fs-gen-sequence" in the VA macro, FREQ_MCLK, MCLK_CONTROL, FS_CNT_CONTROL, the
- *            SoundWire clock with a reset), the master started as swrm_runtime_resume() and
- *            swrm_master_init() start it (the frame 50 rows x 2 columns, auto-enumeration, its
- *            interrupts' masks), the codec's TX device waited for (ID 0x000d01170223, the tree's
- *            wcd938x-tx-slave) and its chip ID read over SoundWire. Then all of it undone, in reverse:
- *            the codec back in reset, the pins and registers as they were found
- *   mic=3    ... and the main microphone listened to for mic_secs seconds (default 10, at most 600)
- *            the way Android records from it: the codec set up as wcd938x_bind() and
- *            wcd938x_init_reg() set it up (its interrupts as edges, the mic biases' 2750 mV, its
- *            bias and sleep registers); the DSP's side (a stream read through our memory, ASM
- *            session 2; a device path for recording, ADM; the codec DMA port TX_CDC_DMA_TX_3, AFE
- *            port 0xB037, 48 kHz, 16 bits, one channel: decimator 1); the TX macro's decimator 1 fed
- *            from SWR_MIC0 (the mixer controls "TX DEC1 MUX" SWR_MIC, "TX SMIC MUX1" SWR_MIC0, and
- *            tx_macro_enable_dec()); "MIC BIAS1" and ADC1 in "low power" mode, "ADC1 Volume" 6 (Xiaomi's
- *            mixer paths); the SoundWire port with the bus as Android has it for its handset
- *            microphones (see datapath_on()); then the decimator unmuted after 200 ms and its
- *            filter settled after 300 ms, as tx-macro's delayed work does. Each second's level goes
- *            to the log; with rec_sound=N rec_sound_mic=1 the samples go into the recording that
- *            ./xl sound fetches. Every register write is read back (a few registers that read 0
- *            whatever is written, as on Android, are said so); any mismatch or a DSP command
- *            refused stops it all. Tests: mic_input=0 (decimator 1 fed from ZERO: exact silence),
- *            mic_adc=0 (ADC1 left off), mic_test=1 (no mic bias), mic_test=2 (ADC1's input held),
- *            mic_main=1 (the bus and ports of Android's one-microphone tables: a tone, not the room),
- *            mic_tap=1 with haptic=5 (the vibration motor from 2 s to 3 s of listening: the motor's
- *            175.5 Hz in the samples)
+ * Signal path, as Android records the handset microphone (mixer paths "handset-mic" = "amic1",
+ * "audio-record"): the analog mic on ADC1 of the WCD938x codec, over SoundWire (the TX master of
+ * the LPASS digital codec, "bolero"), into decimator 1 of the TX macro, out through the codec DMA
+ * port TX_CDC_DMA_TX_3 (AFE port 0xb037) to an ASM read stream.
  *
- * What is asked for is given back at the end, and before the DSP is shut down (hakios_mic_dsp_down()).
+ * Boot args:
+ *   mic=1    look only: read the LPASS votes and clocks and the registers. Nothing is written.
+ *   mic=2    also bring the codec up far enough to answer on SoundWire, then undo it.
+ *   mic=3    also listen for mic_secs seconds, logging the level every second.
+ *   mic=4    serve /dev/hakios-mic to Darwin while Darwin is recording (see for_darwin()).
+ *   mic_secs=N           listen time for mic=3, 1..600 s (default 10).
+ *   rec_sound=N, rec_sound_mic=1
+ *                        put the samples into the recording that ./xl sound fetches.
+ *   mic_input, mic_adc, mic_main, mic_test, mic_tap
+ *                        test switches, described where they are declared.
+ *
+ * The LPASS votes and clocks must be given before any macro register is touched: an access to a
+ * block without its clock may hang the bus. Writes are read back and checked, except registers
+ * that clear their own bits. Everything written is undone, in reverse order, before the run ends.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -74,7 +46,7 @@
 
 
 static LCK_GRP_DECLARE(mic_lock_group, "hakios-mic");
-static LCK_MTX_DECLARE(mic_lock, &mic_lock_group);      /* what is asked for, and given back */
+static LCK_MTX_DECLARE(mic_lock, &mic_lock_group);      /* protects the bring-up and undo paths */
 
 static uint32_t level;
 static bool running;
@@ -82,8 +54,8 @@ static bool running;
 static int say(const char *format, ...) __printflike(1, 2);
 
 /*
- * Every line is kept as well, and all of them said again at the run's end (hakios_mic_quiesce()):
- * the log of a run keeps its beginning and its end, and this happens in between.
+ * Each line is also kept in a ring. hakios_mic_quiesce() prints the last KEPT_LINES again at the
+ * end of the run, for a log that only keeps the start and the end.
  */
 #define KEPT_LINES              400
 static char kept[KEPT_LINES][168];
@@ -105,7 +77,7 @@ say(const char *format, ...)
 	return length;
 }
 
-/* A line that says all went as it should: not said again in Darwin's later recordings (mic=4), where it is the same each time. */
+/* Set after the first Darwin recording (mic=4): success lines are then not printed. */
 static bool quiet;
 #define note(...)       do { if (!quiet) { say(__VA_ARGS__); } } while (0)
 
@@ -120,7 +92,7 @@ hakios_mic_quiesce(void)
 		const char *kept_line = kept[i % KEPT_LINES];
 		char line[sizeof(kept[0]) + 3];
 
-		/* "> ", the line, and its end where the kept copy was cut short */
+		/* Prefix "> ", and add a newline where the kept copy was cut short. */
 		snprintf(line, sizeof(line), "> %s%s", kept_line,
 		    kept_line[strlen(kept_line) - 1] != '\n' ? "\n" : "");
 		loader_log_line(line);
@@ -159,7 +131,7 @@ spin_us(uint32_t us)
 	}
 }
 
-static bool broken;                     /* a write that did not read back: nothing more is written, all is undone */
+static bool broken;                     /* set by a write that did not read back; cleared by the undo paths */
 static char last_write[120] = "nothing written";
 
 struct block {
@@ -182,8 +154,8 @@ get(struct block *b, const char *name, uint32_t offset)
 }
 
 /*
- * A register written (and read back, unless `check' is 0: some bits clear themselves). A write that
- * does not read back as written (in the bits of `check') stops the bring-up.
+ * Writes a register and reads it back, comparing the bits in `check'. check 0 skips the read-back,
+ * for registers with self-clearing bits. A mismatch sets broken, which stops the bring-up.
  */
 static bool
 put(struct block *b, const char *name, uint32_t offset, uint32_t value, uint32_t check)
@@ -208,7 +180,7 @@ put(struct block *b, const char *name, uint32_t offset, uint32_t value, uint32_t
 	return true;
 }
 
-/* only the bits of `mask' changed */
+/* Read-modify-write: only the bits in `mask' change. */
 static bool
 put_bits(struct block *b, const char *name, uint32_t offset, uint32_t mask, uint32_t value)
 {
@@ -221,9 +193,7 @@ put_bits(struct block *b, const char *name, uint32_t offset, uint32_t mask, uint
 	return put(b, name, offset, (now & ~mask) | (value & mask), mask);
 }
 
-/* ---- the DSP: votes and clocks ------------------------------------------------------------------- */
-
-#define APR_SVC_AFE                             4
+#define APR_SVC_AFE                            4
 #define APR_BASIC_RSP_RESULT                    0x000110e8u
 #define APR_WAIT_MS                             1000
 #define AFE_SVC_CMD_SET_PARAM                   0x000100f3u
@@ -298,7 +268,7 @@ afe_service_param(const char *what, uint32_t module, uint32_t param, const void 
 	struct afe_param *p = (struct afe_param *)(packet + 16);
 
 	bzero(packet, sizeof(packet));
-	head[0] = (uint32_t)sizeof(*p) + size;          /* payload size; address 0 and handle 0: in band */
+	head[0] = (uint32_t)sizeof(*p) + size;          /* payload size; address and handle 0: in-band */
 	p->module = module;
 	p->param = param;
 	p->size = size;
@@ -382,8 +352,6 @@ clocks_off(void)
 	devote(LPASS_HW_MACRO_BLOCK);
 }
 
-/* ---- the blocks, read ------------------------------------------------------------------------------ */
-
 static struct block tx_macro = { "the TX macro", 0x03220000, 0x1000 };
 static struct block va_macro = { "the VA macro", 0x03370000, 0x1000 };
 static struct block tx_swr = { "the TX SoundWire master", 0x03230000, 0x2000 };
@@ -426,16 +394,14 @@ look(void)
 	(void)get(&lpi_high, "gpio14 in/out", 4);
 	(void)get(&tlmm, "gpio83 config (the codec's reset)", 0x1000 * 83);
 	(void)get(&tlmm, "gpio83 in/out", 0x1000 * 83 + 4);
-	/* (last: the master is a block of its own, and not yet known; with its version above 1.5.1 the votes are all it needs) */
+	/* Read last. The master is its own block; with its version above 1.5.1, the votes alone are enough. */
 	for (size_t i = 0; i < sizeof(swr) / sizeof(swr[0]); i++) {
 		(void)get(&tx_swr, swr[i].name, swr[i].offset);
 	}
 	(void)get(&tx_hctl, "HCTL (0x32a90a8)", 0x0a8);
 }
 
-/* ---- the codec's reset, the master's pins ------------------------------------------------------------ */
-
-#define TLMM_CFG_83             (0x1000 * 83)
+#define TLMM_CFG_83            (0x1000 * 83)
 #define TLMM_IO_83              (0x1000 * 83 + 4)
 static uint32_t found_reset_cfg, found_reset_io;
 static bool reset_taken;
@@ -449,7 +415,7 @@ reset_release(void)
 	found_reset_cfg = rd(tlmm.base + TLMM_CFG_83);
 	found_reset_io = rd(tlmm.base + TLMM_IO_83);
 	reset_taken = true;
-	/* the sleep state: gpio, 16 mA, no pull, output low; 20 us; the active state: output high */
+	/* Reset asserted (output low) for 30 us, then released (output high). Config 0x3c0: gpio, 16 mA, no pull. */
 	if (!put(&tlmm, "gpio83 out (the codec's reset)", TLMM_IO_83, 0, 2) ||
 	    !put(&tlmm, "gpio83 config: gpio, 16 mA, no pull, output", TLMM_CFG_83, 0x3c0, 0x3ff)) {
 		return false;
@@ -468,7 +434,7 @@ reset_restore(void)
 	if (!reset_taken) {
 		return;
 	}
-	broken = false;         /* (putting back is done whatever went before) */
+	broken = false;         /* undo runs even after a failure */
 	(void)put(&tlmm, "gpio83 out: low (the codec in reset)", TLMM_IO_83, 0, 2);
 	(void)put(&tlmm, "gpio83 config, as it was found", TLMM_CFG_83, found_reset_cfg, 0x3ff);
 	(void)put(&tlmm, "gpio83 out, as it was found", TLMM_IO_83, found_reset_io & 2, 2);
@@ -535,9 +501,7 @@ pins_restore(void)
 	pins_taken = false;
 }
 
-/* ---- the TX macro's clocks, the SoundWire master ----------------------------------------------------- */
-
-#define TX_MCLK_CONTROL         0x000
+#define TX_MCLK_CONTROL        0x000
 #define TX_FS_CNT_CONTROL       0x004
 #define TX_SWR_CONTROL          0x008
 #define TX_FREQ_MCLK            0x090
@@ -580,19 +544,19 @@ static bool
 tx_clocks_on(void)
 {
 	tx_clocks_taken = true;
-	/* bolero_clk_rsc_fs_gen_request(): the tree's qcom,fs-gen-sequence, register, mask, value */
+	/* bolero_clk_rsc_fs_gen_request(): the device tree's qcom,fs-gen-sequence (register, mask, value) */
 	return put_bits(&va_macro, "MCLK_CONTROL (fs-gen)", VA_MCLK_CONTROL, 0x01, 0x01) &&
 	       put_bits(&va_macro, "FS_CNT_CONTROL (fs-gen)", VA_FS_CNT_CONTROL, 0x03, 0x03) &&
 	       put_bits(&va_macro, "FS_CNT_CONTROL (fs-gen)", VA_FS_CNT_CONTROL, 0x03, 0x01) &&
 	       put_bits(&va_macro, "TOP_CFG0 (fs-gen)", VA_TOP_CFG0, 0x02, 0x02) &&
 	       /*
-	        * tx_macro_mclk_enable(): "9.6 MHz MCLK" -- written as Android writes it; on the phone it reads
-	        * 0 back whether the macro's clock runs or not (Android never reads it)
+	        * tx_macro_mclk_enable(): the 9.6 MHz MCLK. Android writes FREQ_MCLK and never reads it, and
+	        * on this phone it reads 0 whatever is written, so there is no read-back.
 	        */
 	       put(&tx_macro, "FREQ_MCLK: 9.6 MHz (it reads 0 back whatever is written)", TX_FREQ_MCLK, 1, 0) &&
 	       put_bits(&tx_macro, "MCLK_CONTROL: on", TX_MCLK_CONTROL, 0x01, 0x01) &&
 	       put_bits(&tx_macro, "FS_CNT_CONTROL: on", TX_FS_CNT_CONTROL, 0x01, 0x01) &&
-	       /* tx_macro_tx_va_mclk_enable(): the SoundWire clock, with the first reset */
+	       /* tx_macro_tx_va_mclk_enable(): SoundWire clock, reset asserted then released */
 	       put_bits(&tx_macro, "SWR_CONTROL: reset", TX_SWR_CONTROL, 0x02, 0x02) &&
 	       put_bits(&tx_macro, "SWR_CONTROL: clock on", TX_SWR_CONTROL, 0x01, 0x01) &&
 	       put_bits(&tx_macro, "SWR_CONTROL: reset over", TX_SWR_CONTROL, 0x02, 0x00);
@@ -635,7 +599,7 @@ master_on(void)
 	}
 	found_hctl = rd(tx_hctl.base + 0x0a8);
 	master_taken = true;
-	/* "SW workaround to gate hw_ctl for SWR version >= 1.6" */
+	/* Workaround from the kernel: gate hw_ctl (HCTL bit 1) for SWR version >= 1.6. */
 	if (!put(&tx_hctl, "HCTL: bit 1 cleared", 0x0a8, found_hctl & ~2u, 0x3)) {
 		return false;
 	}
@@ -688,7 +652,7 @@ master_off(void)
 	master_taken = false;
 }
 
-/* A command to a device on the bus (SWR_REG_VAL_PACK): a register written. */
+/* Queue a register write to a device on the bus (SWR_REG_VAL_PACK). */
 static bool
 swr_write(uint8_t device, uint16_t reg, uint8_t value, uint8_t id)
 {
@@ -703,7 +667,7 @@ swr_write(uint8_t device, uint16_t reg, uint8_t value, uint8_t id)
 	return true;
 }
 
-/* ... and one read: false if the answer does not come (or is not this command's) */
+/* Queue a register read. False if no answer with this read's id comes back. */
 static bool
 swr_read(uint8_t device, uint16_t reg, uint8_t *value)
 {
@@ -776,9 +740,9 @@ codec_look(void)
 	}
 }
 
-/* ---- mic=3: the codec set up as Android sets it up for the main microphone ----------------------------- */
+/* WCD938x codec and SoundWire register offsets used by the codec and bus setup. */
 
-#define WCD_ANA_BIAS                    0x3001
+#define WCD_ANA_BIAS                   0x3001
 #define WCD_ANA_TX_CH1                  0x300e
 #define WCD_ANA_TX_CH2                  0x300f
 #define WCD_ANA_MICB1                   0x3022
@@ -832,7 +796,7 @@ codec_look(void)
 
 static uint8_t write_id;
 
-/* a register of the codec's (device codec_device on the bus) written and, unless `check' is 0, read back */
+/* Write one codec register over SoundWire; read it back and compare the bits in `check' unless it is 0. */
 static bool
 codec_put(uint16_t reg, uint8_t value, uint8_t check)
 {
@@ -868,16 +832,16 @@ codec_bits(uint16_t reg, uint8_t mask, uint8_t value)
 	return (now & mask) == (value & mask) || codec_put(reg, (uint8_t)((now & ~mask) | (value & mask)), mask);
 }
 
-/* a command to all devices on the bus (device 15, command id 15: Android's broadcasts) */
+/* Broadcast to all devices (device 15, command id 15), as Android does. */
 static void
 broadcast(uint16_t reg, uint8_t value)
 {
 	swr_write(0xf, reg, value, 0xf);
 	note("mic: SoundWire, to all: %#06x <- %#04x\n", reg, value);
-	sleep_ms(10);           /* ("10 ms for the broadcast to complete", swrm_cmd_fifo_wr_cmd()) */
+	sleep_ms(10);           /* 10 ms for the broadcast to complete (swrm_cmd_fifo_wr_cmd()) */
 }
 
-/* to all devices, with an ordinary command id (swrm_cmd_fifo_wr_cmd(..., 0xF, 0x00, ...)) */
+/* Write to all devices with a rotating command id (swrm_cmd_fifo_wr_cmd(..., 0xF, 0x00, ...)). */
 static void
 to_all(uint16_t reg, uint8_t value)
 {
@@ -886,7 +850,7 @@ to_all(uint16_t reg, uint8_t value)
 	note("mic: SoundWire, to all: %#06x <- %#04x\n", reg, value);
 }
 
-/* wcd938x_bind(), wcd938x_set_micbias_data(), wcd938x_init_reg() */
+/* Codec setup, as wcd938x_bind(), wcd938x_set_micbias_data() and wcd938x_init_reg() do it. */
 static bool
 codec_init(void)
 {
@@ -930,21 +894,17 @@ codec_init(void)
 }
 
 /*
- * The bus and ADC1's data port as Android has them while the phone records from its handset
- * microphones (the HAL's "handset-mic" = "handset-dmic-endfire": ADC1, the main microphone, and
- * ADC4, the top one, both in "low power" mode). With two ADCs on, wcd938x_codec_enable_adc() asks
- * for twice an ADC's 4.8 MHz, 9.6 MHz, and swr-mstr-ctrl adds its ports' rates up to the same: the
- * bus at 9.6 MHz (MCLK / 1), the frame 50 rows x 16 columns, the codec's TX clock rate "9.6 MHz".
- * The ports then come from the 9.6 MHz tables: the codec's (the tree's qcom,swr-phy-dev-addr makes
- * swrm_get_device_frame_shape() use swrdev_frame_params_9p6MHz: tx_wcd_9p6MHz TX1 { si 3, offsets
- * 0 0, lane 1 }) and the master's (sm_port_map_shima, usecase 0: tx_frame_params_shima TX1 { si 7,
- * offsets 0 0, lane 1 }). ADC1 alone is all that is on here; its port is the codec's port 0 (its
- * DP1), channel 1, to the master's port 1, channel 1. Written into the bank not in use, then the
- * banks switched, then the other bank.
+ * Bus and port setup. Android's handset-mic path ("handset-dmic-endfire": ADC1, the main microphone,
+ * and ADC4, both in "low power" mode) asks for twice an ADC's 4.8 MHz, which makes the bus 9.6 MHz
+ * (MCLK / 1), the frame 50 rows x 16 columns and the codec TX clock rate 9.6 MHz. The port
+ * shapes come from the 9.6 MHz tables: codec, swrdev_frame_params_9p6MHz (tx_wcd_9p6MHz TX1: sample
+ * interval 3, offsets 0 0, lane 1), and master, tx_frame_params_shima (TX1: interval 7, offsets 0 0,
+ * lane 1). Only ADC1 is on here: codec port 0 (DP1) channel 1, to master port 1 channel 1. Ports are
+ * written to the bank not in use, the banks are switched, then the other bank is written.
  *
- * Android's tables for ADC1 alone (the "main-mic" path: a 4.8 MHz bus, si 7 on both sides) carry
- * half of what ADC1 makes in "low power" mode: what comes out of the decimator is then a loud,
- * clipped tone at about the bus clock / 560, whatever the microphone hears (mic_main=1 shows it).
+ * Android's tables for ADC1 alone (a 4.8 MHz bus, interval 7 on both sides) pass only half of what
+ * ADC1 makes in "low power" mode. The decimator then outputs a loud, clipped tone at about the bus
+ * clock / 560, whatever the microphone hears. mic_main=1 reproduces this for testing.
  */
 static uint8_t bank_now;
 static uint32_t adc_on = 1;             /* boot-arg mic_adc=0 (a test): ADC1 and its mic bias left off, the port alone */
@@ -957,7 +917,7 @@ port_config(uint8_t bank, bool first)
 {
 	uint8_t codec_interval = main_timing ? 7 : 3, master_interval = 7;
 
-	/* the codec's side (swrm_apply_port_config() first: the devices' clock halved in that bank) */
+	/* Codec side. The first call halves the devices' clock in this bank (swrm_apply_port_config()). */
 	if (first) {
 		to_all(SWRS_SCP_HOST_CLK_DIV2_CTL_BANK(bank), 0x01);
 	}
@@ -979,7 +939,7 @@ port_config(uint8_t bank, bool first)
 	           0x01u << 24 | 0u << 16 | 0u << 8 | master_interval, 0xffffffff) &&
 	       put(&tx_swr, "DP_SAMPLECTRL2 (port 1)", SWRM_DP_SAMPLECTRL2_BANK(1, bank), 0, 0xff) &&
 	       put(&tx_swr, "DP_PORT_CTRL_2 (port 1): lane 1", SWRM_DP_PORT_CTRL_2_BANK(1, bank), 1, 0xff) &&
-	       /* (it reads 0 back on the phone whatever is written; Android writes it and never reads it) */
+	       /* Reads 0 on this phone whatever is written, and Android never reads it: no read-back. */
 	       put(&tx_swr, "DP_PORT_HCTRL (port 1): hstop 15, hstart 0", SWRM_DP_PORT_HCTRL_BANK(1, bank), 0xf0, 0);
 }
 
@@ -990,7 +950,7 @@ datapath_on(void)
 	uint8_t current = 0, bank, rate = main_timing ? 1 : 0;
 	uint32_t frame;
 
-	/* wcd938x_codec_enable_adc(): the codec's TX clock rate in the bank about to be used */
+	/* Codec TX clock rate, in the bank about to be used (wcd938x_codec_enable_adc()). */
 	if (!swr_read(codec_device, SWRS_SCP_CONTROL, &current)) {
 		return false;
 	}
@@ -1023,7 +983,7 @@ datapath_on(void)
 	if (!codec_bits(WCD_SWR_TX_CLK_RATE, bank ? 0x0f : 0xf0, (uint8_t)(bank ? rate : rate << 4))) {
 		return false;
 	}
-	/* (what the codec's port says it is set to, both banks; its interrupts) */
+	/* Read back the codec's port and interrupt state in both banks, for the log. */
 	for (uint8_t b = 0; b < 2; b++) {
 		uint8_t v[6] = { 0 };
 
@@ -1065,8 +1025,6 @@ adc1_on(void)
 	       codec_bits(WCD_CDC_DIG_CLK_CTL, 0x10, 0x10) && codec_bits(WCD_ANA_TX_CH2, 0x40, (test_bits & 2) ? 0x40 : 0x00);
 }
 
-/* ---- the TX macro's decimator 1 ------------------------------------------------------------------------- */
-
 #define TX_TOP_CSR_SWR_CTRL             0x088
 #define TX_SWR_MIC0_CTL                 0x0d0
 #define TX_SWR_MIC1_CTL                 0x0d4
@@ -1096,10 +1054,10 @@ static const uint32_t dec_regs[] = {
 };
 
 /*
- * Which bolero this is: its core ID, as bolero_soc_codec_probe() reads it (01 0F: 2.0, 02 0E: 2.1),
- * whatever the tree says ("qcom,bolero-version" 4). 2.1 has the SoundWire mics' clock dividers in
- * the VA macro, which va_macro_init() sets (SWR_MIC_CTL0..2: 0xEE, 0xCC); 2.0 in the TX macro,
- * which tx_macro_enable_dec() sets.
+ * Bolero version, from its core ID as bolero_soc_codec_probe() reads it (01 0F: 2.0, 02 0E: 2.1).
+ * The ID decides, not the tree's qcom,bolero-version 4. In 2.1 the SoundWire mics' clock dividers
+ * are in the VA macro, set by va_macro_init() (SWR_MIC_CTL0..2: mask 0xee, value 0xcc). In 2.0 they
+ * are in the TX macro, set by tx_macro_enable_dec().
  */
 static bool
 bolero_look(void)
@@ -1120,7 +1078,10 @@ bolero_look(void)
 	       put_bits(&va_macro, "SWR_MIC_CTL2", VA_SWR_MIC_CTL2, 0xee, 0xcc);
 }
 
-/* the mixer controls' writes ("TX SMIC MUX1" SWR_MIC0, "TX DEC1 MUX" SWR_MIC), hw_params' rate, and the decimator's PMU */
+/*
+ * Decimator 1 setup: the mixer controls ("TX SMIC MUX1" SWR_MIC0, "TX DEC1 MUX" SWR_MIC), the
+ * hw_params rate, and the PRE/POST PMU steps.
+ */
 static bool
 dec1_on(void)
 {
@@ -1156,7 +1117,7 @@ dec1_on(void)
 			return false;
 		}
 	}
-	/* the gain, written again after the decimator is on ("TX_DEC1 Volume" 84: 0 dB) */
+	/* Gain written back as read, after the decimator is on. Mixer "TX_DEC1 Volume" 84 is 0 dB. */
 	if (!put(&tx_macro, "TX1_TX_VOL_CTL: 0 dB", TX1_VOL_CTL, get(&tx_macro, "TX1_TX_VOL_CTL", TX1_VOL_CTL), 0xff)) {
 		return false;
 	}
@@ -1180,7 +1141,7 @@ dec1_unmute(void)
 	return put_bits(&tx_macro, "TX1_TX_PATH_CTL: unmuted", TX1_PATH_CTL, 0x10, 0x00);
 }
 
-/* after TX_MACRO_AMIC_HPF_DELAY_MS: the codec's hold on ADC1 let go, the filter back to where it was */
+/* After TX_MACRO_AMIC_HPF_DELAY_MS: release the codec's hold on ADC1 and restore the filter's cut-off. */
 static bool
 dec1_settled(void)
 {
@@ -1217,8 +1178,6 @@ va_mic_off(void)
 	}
 	va_mic_taken = false;
 }
-
-/* ---- the DSP: the codec DMA port, a device path for recording, a stream that is read ------------------ */
 
 #define APR_SVC_ASM                             7
 #define APR_SVC_ADM                             8
@@ -1313,7 +1272,10 @@ afe_port_param(uint32_t module, uint32_t param, const void *data, uint16_t size,
 	return command(what, APR_SVC_AFE, AFE_PORT_CMD_SET_PARAM_V2, packet, 16 + (uint32_t)sizeof(*p) + size, 0, NULL);
 }
 
-/* the stream and the path, opened, mapped and routed (msm-pcm-q6 and q6adm/q6asm at a recording's open and prepare) */
+/*
+ * Map memory and open the ASM read stream, then the ADM device path, and route the path to the
+ * stream. The order follows msm-pcm-q6 and q6adm/q6asm at record open and prepare.
+ */
 static bool
 dsp_path_on(void)
 {
@@ -1440,25 +1402,23 @@ dsp_off(void)
 	}
 }
 
-/* ---- mic=4: the microphone for Darwin ------------------------------------------------------------------- */
-
 /*
- * What the microphone hears goes to /dev/hakios-mic, which gives it to Darwin's audio server (HakiosAudio.driver's
- * device "Codec", userland/src/audio_plugin.c): 16-bit samples, one channel, 48 kHz. The device, its ring and its
- * reader's pace are hakios.audio.c's (hakios_audio_input_*()), shared with the Galaxy S9's microphone; the path here is
- * up only while the device is open (the audio server opens it when its input starts and closes it when it stops).
+ * mic=4: samples go to /dev/hakios-mic, which Darwin's audio server reads (HakiosAudio.driver's
+ * "Codec" device, userland/src/audio_plugin.c): 16-bit, one channel, 48 kHz. The device, its ring
+ * and its pacing are in hakios.audio.c (hakios_audio_input_*()), shared with the Galaxy S9
+ * microphone. The path is up only while the device is open: the audio server opens it when its
+ * input starts and closes it when the input stops.
  */
 static volatile bool stopping;                  /* the run ends (hakios_mic_dsp_down()) */
-
-/* ---- listening ---------------------------------------------------------------------------------------------- */
 
 static uint32_t mic_secs = 10;
 
 /*
- * The stream run, read for mic_secs (for_darwin: while Darwin has the device open): how loud it is, every
- * second (for Darwin: the first three, then every 30th); into the recording with rec_sound_mic=1; for
- * Darwin into the ring. False if it could not get going (the run refused, a read not sent, no read ever came
- * back): not a failure that sets `broken', so for_darwin() counts it from this.
+ * Runs the stream and reads it until mic_secs have passed (mic=3), or until Darwin closes the device
+ * (mic=4). Logs the level every second (for Darwin: the first three seconds, then every 30th). Feeds
+ * the recording when rec_sound_mic=1, and the ring for Darwin. Returns false if the run cannot start,
+ * a read cannot be sent, or no read comes back. That does not set `broken', so for_darwin() counts
+ * it as a failure itself.
  */
 static bool
 listen(bool for_darwin)
@@ -1506,7 +1466,10 @@ listen(bool for_darwin)
 			hakios_haptic_pretend(0);
 			tap = 2;
 		}
-		/* (`stopping' ends every kind of run: hakios_mic_dsp_down() waits for mic_lock, which is held until this returns) */
+		/*
+		 * `stopping' ends any run. hakios_mic_dsp_down() takes mic_lock, which this function
+		 * holds until it returns.
+		 */
 		if ((for_darwin ? !hakios_audio_input_wanted() : elapsed_ms >= mic_secs * 1000ull) || stopping || broken) {
 			break;
 		}
@@ -1603,7 +1566,18 @@ undo(void)
 	clocks_off();
 }
 
-/* Everything up to the stream's run, in a recording's order; false (and `broken') if any of it fails. */
+/*
+ * Bring-up for levels 2 to 4, in order: the LPASS votes and clocks, the codec's reset released, the
+ * SoundWire master's pins, the TX macro's clocks, the SoundWire master, then the codec's TX device
+ * waited for. Level 2 also reads the codec's chip ID and returns. Level 3 adds the codec setup,
+ * the stream and its port, decimator 1, ADC1 and the datapath. Returns false if a step fails.
+ *
+ * Level 2 leaves the codec's supplies as the boot chain has them (L18B and BoB on; the PMICs are
+ * not touched). The reset pin, gpio83, is low for 30 us and then high, 16 mA. The master's pins
+ * are LPASS gpio 0, 1, 2 and 14, set to function 1, 2 mA, slew rate 1. The clock pin has no pull,
+ * the data pins have a keeper. The frame is 50 rows x 2 columns, with auto-enumeration. Everything
+ * is undone in reverse order, with the registers put back as they were found.
+ */
 static bool
 path_up(void)
 {
@@ -1632,8 +1606,8 @@ path_up(void)
 }
 
 /*
- * mic=4: the path up whenever Darwin opens /dev/hakios-mic, down when it closes it; after three
- * recordings that broke off, no more until the run ends.
+ * mic=4: the path comes up when Darwin opens /dev/hakios-mic and goes down when it closes. After
+ * three recordings that broke off, nothing more is done until the run ends.
  */
 static void
 for_darwin(void)
@@ -1666,8 +1640,8 @@ for_darwin(void)
 		say("mic: Darwin records (%u): the path up%s\n", recordings, quiet ? " (the lines that say all went well are not said again)" :
 		    "");
 		/*
-		 * (a bring-up or a start that fails without setting `broken' counts as a failure too: otherwise the three-recordings
-		 * limit below never applies and, while Darwin keeps the device open, the path is brought up and undone for ever)
+		 * A failure that does not set `broken' still counts. Otherwise the three-failure limit never
+		 * applies, and the path is brought up and undone for as long as Darwin keeps the device open.
 		 */
 		up = path_up() && listen(true);
 		failed = broken || !up;
@@ -1684,7 +1658,7 @@ for_darwin(void)
 				say("mic: three recordings broke off: the microphone stays off until the run ends\n");
 				break;
 			}
-			/* (not again until Darwin has closed the device and opened it again) */
+			/* Wait until Darwin closes the device and opens it again. */
 			while (hakios_audio_input_wanted() && !stopping) {
 				sleep_ms(20);
 			}
