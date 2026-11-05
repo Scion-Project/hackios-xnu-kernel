@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 621 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 622 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -255,7 +255,7 @@ CONFIG_HAKIOS_BRCMFMAC=y
 # CONFIG_XPCPROXY_IDVERSION is not set
 
 #
-# Storage and APFS (53)
+# Storage and APFS (54)
 #
 
 # the phone's storage: 1 a survey, read only; 2 the loader's block service, through which the kernel reads it (the ...
@@ -368,6 +368,9 @@ CONFIG_UFS=2
 
 # read by hakios.ufshc.c (kernel)
 # CONFIG_UFS_NATIVE_BUFFER is not set
+
+# read by hakios.ufshc.c (kernel)
+# CONFIG_UFS_NATIVE_CACHED is not set
 
 # what this kernel's own driver reads is what the loader reads, byte for byte
 # CONFIG_UFS_NATIVE_CHECK is not set

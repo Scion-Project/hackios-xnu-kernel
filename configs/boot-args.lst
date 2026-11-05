@@ -472,6 +472,7 @@ ufs_check	k
 ufs_native	kl
 ufs_native_bench	k
 ufs_native_buffer	k
+ufs_native_cached	k
 ufs_native_check	k
 ufs_native_hang	k
 ufs_native_leave	k

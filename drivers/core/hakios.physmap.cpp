@@ -8,9 +8,10 @@
 
 /* (declared for C in sys/hakios.physmap.h, which the IOKit side of the build does not see) */
 extern "C" vm_offset_t hakios_physmap_wc(uint64_t pa, uint64_t bytes);
+extern "C" vm_offset_t hakios_physmap_cached(uint64_t pa, uint64_t bytes);
 
-extern "C" vm_offset_t
-hakios_physmap_wc(uint64_t pa, uint64_t bytes)
+static vm_offset_t
+physmap(uint64_t pa, uint64_t bytes, IOOptionBits cache)
 {
 	IOMemoryDescriptor * memory;
 	IOMemoryMap * map;
@@ -19,11 +20,23 @@ hakios_physmap_wc(uint64_t pa, uint64_t bytes)
 	if (memory == NULL) {
 		return 0;
 	}
-	map = memory->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapWriteCombineCache);
+	map = memory->createMappingInTask(kernel_task, 0, kIOMapAnywhere | cache);
 	if (map == NULL) {
 		memory->release();
 		return 0;
 	}
 	/* kept for the rest of the run: the descriptor and its map are never released (mapped once) */
 	return (vm_offset_t) map->getVirtualAddress();
+}
+
+extern "C" vm_offset_t
+hakios_physmap_wc(uint64_t pa, uint64_t bytes)
+{
+	return physmap(pa, bytes, kIOMapWriteCombineCache);
+}
+
+extern "C" vm_offset_t
+hakios_physmap_cached(uint64_t pa, uint64_t bytes)
+{
+	return physmap(pa, bytes, kIOMapCopybackCache);
 }
