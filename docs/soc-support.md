@@ -20,7 +20,7 @@ different one from Tensor G2 on. The verdicts:
 | `gs201` Tensor G2 | Pixel 7 | No | The above, and a CSF GPU |
 | `zuma` Tensor G3 | Pixel 8 | No | The above; ARMv9 cores never tried under this kernel |
 | `zumapro` Tensor G4 | Pixel 9 | No | The above; fewest numbers: no UFS, GPU or display table read |
-| `lga` Tensor G5 | Pixel 10 | No | `scion-soc-lga` holds its layer. Another UART, another UFS host, another GPU vendor. Written, not yet seen on a phone |
+| `lga` Tensor G5 | Pixel 10 | No | `scion-soc-lga` holds its layer. Another UART, UFS host and display, a Volcanic PowerVR. Written, not yet seen on a phone |
 
 No table has been made for the Exynos 2200 (GICv3 and Cortex-X2 in mainline, Xclipse GPU: different IP), the 8855, 7885, 7870 or
 the Auto SoCs: mainline has trees for them, nobody has read further.
@@ -247,7 +247,7 @@ table. Cells that are not `built` are not stubbed: the driver is off in the SoC'
 is exactly that: `ACPM_SRAM_FIRST` is the 9810's measured value, assumed for its relatives.
 
 The Tensor G5 is not a row: `scion-soc-lga` is another repository and has no `block` lines. By the same words: GIC and timer table
-only, UART different IP (DesignWare 16550), UFS different IP (Google's host), GPU different IP.
+only, UART different IP (DesignWare 16550), UFS different IP (Google's host), GPU different IP (Volcanic PowerVR), DPU different IP (Verisilicon DC9x00).
 
 ## Findings that cross the table
 
@@ -281,20 +281,25 @@ not per SoC, so each phone needs its own.
 The driver here speaks the job manager interface and Panfrost's ioctls. A CSF Mali needs firmware loaded, its queues scheduled and
 Panthor's ioctls: a new driver. Every Mali also needs its SoC's rail, PLL and PMU sequence, which is 9810 code in `hakios.mali.c`.
 
-**PowerVR on the Tensor G5, DXT-48-1536.** Facts and an estimate only; no GPU driver work has been done.
+**PowerVR on the Tensor G5, DXT-48-1536.** Facts and an estimate only; no GPU driver work has been done. Mostly from a read-only
+inspection of Google's public factory image for the Pixel 10 (cp3a.261005.005), of strings and headers; nothing of it is in this
+repository beyond these facts.
 
 | Question | Known | Source |
 |---|---|---|
-| Kernel driver | mainline `drivers/gpu/drm/imagination`; compatibles `img,img-rogue`, `img,img-axe`, `thead,th1520-gpu` | `pvr_drv.c` |
-| Vulkan driver | Mesa's PowerVR: AXE-1-16M, BXM-4-64, BXS-4-64 in active work, GX6250 next, others listed unsupported. No D-Series listed | Mesa `docs/drivers/powervr.rst` |
-| BVNC of DXT-48-1536 | not found in the open sources read | `pvr_device_info.c` knows it not |
-| Firmware | the open driver loads `powervr/rogue_<b.v.n.c>_v1.fw`, from Imagination's linux-firmware. None for a D-Series is declared | `pvr_drv.c`, Mesa's docs |
-| Stock Pixel firmware under the open driver | unknown; **guess**: refused, the closed DDK's firmware interface is its own | no source: `pvr_fw.c` checks a header, the DDK's was not read |
-| OpenGL ES | Mesa's driver is Vulkan only, so Zink or similar over it | Mesa's docs |
-| Metal | `tools/metal/mk-metal2vulkan.sh` already builds metal2vulkan for iOS 16; how far it fits this Vulkan is untried | this tree |
+| BVNC | 71.2.2448.1212 | factory image: the firmware's name and header, the kernel module's strings |
+| Generation | Volcanic, not Rogue | factory image: source paths in the module and firmware strings |
+| Kernel driver | mainline `drivers/gpu/drm/imagination` is Rogue's: `img,img-rogue`, `img,img-axe`, `thead,th1520-gpu` | `pvr_drv.c` |
+| Vulkan driver | Mesa's PowerVR: AXE-1-16M, BXM-4-64, BXS-4-64 in active work, GX6250 next, others listed unsupported. No D-Series, no Volcanic | Mesa `docs/drivers/powervr.rst` |
+| Firmware | Google's build of Imagination's closed DDK (25.3), RISC-V, signed, handed over through a Trusty app. No open firmware for this core | factory image |
+| Stock firmware under the open driver | refused: not flagged open source, major version 25 where the driver takes 1, and another interface per DDK version | header read against `pvr_fw.c` |
+| OpenGL ES | Mesa's driver is Vulkan only, so Zink or similar over it, once a Vulkan exists | Mesa's docs |
+| Metal | `tools/metal/mk-metal2vulkan.sh` builds metal2vulkan for iOS 16; it needs a Vulkan driver under it, and there is none | this tree |
+| Display | not PowerVR: a Verisilicon DC9x00 DPU, another driver again | factory image |
 
-**Guess, unmeasured:** with Imagination publishing firmware and device data for the core, months of one person's time for a
-kernel service plus Mesa bring-up; without them, no practical path but the closed user-space driver, which iOS cannot host.
+**Guess, unmeasured:** no practical path today. It would take Imagination publishing Volcanic firmware and device data; then a year
+or more of one person's time for a kernel service and a Mesa port, since neither Linux's nor Mesa's Rogue code covers it. Without
+that, only the closed user-space driver would drive it, and it does not run under iOS.
 
 **Display.** Register maps compared by name and value against the 9810's `regs-decon.h`, 71 registers: 9820 71 named the same, 70
 same value; 990 70 and 69; 8895 40 and 37; 2100 5 and 2. The differing value on the 9820 and 990 is `INTERRUPT_ENABLE_MASK`, not
