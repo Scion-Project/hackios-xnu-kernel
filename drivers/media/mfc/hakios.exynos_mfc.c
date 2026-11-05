@@ -1,53 +1,30 @@
 #define HAKIOS_SOC_FIXED
 /*
- * The Exynos 9810's video codec block, MFC v10 (Multi Format Codec): hardware H.264 and HEVC decoding for iOS.
+ * Hardware H.264 and HEVC decoding on the Exynos 9810 video codec block (MFC v10), for the iOS side. VideoToolbox keeps its
+ * software decoder when this driver is absent or has failed. Nothing else depends on this driver.
  *
- * Boot-arg mfc=N, N of these steps, one a flash; off by default (the kernel then neither touches nor knows the block):
+ * Depends on: the PMU power domain, the CMU_TOP, CMU_BUSC and CMU_MFC clocks, the two SysMMUs, SMC for the DTZPC protection,
+ * ACPM for the optional rate requests, the firmware file (step 3), 128 MB the boot loader keeps out of XNU's memory, and
+ * SPI 356 when mfc_irq=1.
  *
- *   1  a look       the domain's and the clocks' state, read only
- *   2  the block    pd-mfc on, the clocks, the Q-channels; the IP's version and the SysMMUs' state read
- *   3  firmware     mfc_fw.bin from the phone's VENDOR partition (or fw/) into mfc's memory, the RISC started, SYS_INIT: its date
- *   4  a decode     the stream below, 6 frames of 176 x 144 H.264, decoded at boot; each frame's CRC against ffmpeg's
- *   5  the device   /dev/hakios-mfc for user space (sys/hakios.mfc.h), one client at a time
+ * Boot args. mfc=N runs steps 1 through N; without it nothing is touched.
+ *   mfc=1  look: the domain's and the clocks' state, read only
+ *   mfc=2  block: power domain, clocks and Q-channels on; the IP version and SysMMU state read
+ *   mfc=3  firmware: mfc_fw.bin from the VENDOR partition (or mfc_fw_part=) into the block's memory; RISC started; SYS_INIT
+ *   mfc=4  self-test: a stream decoded at boot, each frame's CRC checked against ffmpeg's
+ *   mfc=5  device: /dev/hakios-mfc for user space (sys/hakios.mfc.h), one client at a time
+ *   mfc_zc=1        with 5: frames decoded straight into the client's IOSurfaces (property HakiosMFCFrame, set by mediaserverd's
+ *                   MiniIOSurface.cpp). Surfaces are carved from the top of the 128 MB, the instance's own buffers from the bottom.
+ *   mfc_irq=1       with 4 or more: wait for the block's interrupt instead of polling
+ *   mfc_int_khz=N, mfc_mif_khz=N   ask ACPM for the INT and MIF rates, in kHz
+ *   mfc_fw_part=    the partition holding mfc_fw.bin (default VENDOR)
  *
- * mfc_zc=1 (with 5): frames are decoded straight into IOSurfaces of the block's memory, as fb_zc's are of the display's (MiniIOSurface.cpp: the surface
- * property HakiosMFCFrame, from mediaserverd). Nothing is copied. Surfaces are carved from the top of the 128 MB, the instance's own from the bottom.
+ * Any failed step leaves the block alone for the rest of the boot: /dev/hakios-mfc is not created, or open returns EIO.
  *
- * Any step that fails leaves the block alone from then on: /dev/hakios-mfc is not made or answers EIO, and VideoToolbox keeps
- * its software decoder. Nothing else depends on this driver.
- *
- * The block, from Samsung's GPL BSP for the S9 (Scion-Project/android_kernel_samsung_exynos9810, drivers/media/platform/exynos/
- * mfc: s5p_mfc_regs_v10.h, s5p_mfc_cal.c, s5p_mfc_cmd.c, s5p_mfc_inst.c, s5p_mfc_reg.c, s5p_mfc_irq.c; drivers/soc/samsung/cal-if/
- * exynos9810: flexpmu_cal_local, cmucal-sfr, cmucal-node; the device tree's mfc0@178D0000, pd-mfc@14064068, sysmmu@17880000 and
- * @178A0000). GPL: read for these facts, nothing copied. This file is new, under the APSL as the kernel's are.
- *
- *   registers     0x178D0000, 64 KB; SPI 356 (mfc_irq=1; otherwise the driver polls RISC2HOST_INT, spinning 20 ms and then sleeping a millisecond at a time)
- *   the domain    pd-mfc: the PMU's MFC_CONFIGURATION 0x14064068 [3:0] = 0xF, MFC_STATUS 0x1406406C. need_smc 0x17810204: after
- *                 the power comes, SMC 0x82000410 (1, 0x17810204, 0), the DTZPC restore (as the G3D's, ISPPRE's and AUD's)
- *   its clocks    CMU_TOP 0x1A240000: CLKCMU_MFC_BUS's mux 0x109C [2:0], divider 0x1898 [3:0], gate 0x20A4 (bit 20 manual, 21 on);
- *                 CMU_MFC 0x17800000: PLL_CON0_MUX_CLKCMU_MFC_BUS_USER +0x100 (bit 4: CMU_TOP's, not the oscillator's; bit 7
- *                 busy), its Q-channels +0x300C to +0x3058 (bit 1: clock requested), the same at +0x4000 for their state. The bus
- *                 side's in CMU_BUSC 0x1A200000: +0x30EC, +0x30F8, +0x314C (read for the log).
- *   the rate      not a DVFS domain of its own; what the boot leaves is logged, and mfc_int_khz= / mfc_mif_khz= ask ACPM's INT and MIF
- *   the SysMMUs   0x17880000 and 0x178A0000. MMU_CTRL +0 (bit 0: translating), +0x14 VERSION. Taken as off, pass-through, after a
- *                 power-up (read to be sure): the addresses below are physical, and 32 bits wide
- *   the firmware  a 1 MB image at RISC_BASE_ADDRESS, the device's context (32 KB) right after it. The normal path in the BSP
- *                 copies it there and starts the RISC, with no SMC and no signature check: only the DRM path has them, not used
- *   memory        128 MB of the low bank that XNU does not get when mfc= is on the command line (the loader's extra_ram_claim;
- *                 sys/hakios.exynos9810_mem.h), mapped write-combined: no cache maintenance. Layout: mfc_alloc below.
- *
- * The protocol (HOST2RISC_CMD + HOST2RISC_INT = 1; RISC2HOST_INT nonzero when done, RISC2HOST_CMD the answer, ERROR_CODE):
- *   after RISC_ON  FW_STATUS_RET; then CONTEXT_MEM_ADDR/SIZE and SYS_INIT.
- *   an instance    CODEC_TYPE, CONTEXT_MEM_ADDR/SIZE (2 MB for H.264 and HEVC), OPEN_INSTANCE; RET_INSTANCE_ID its number.
- *   the header     D_DEC_OPTIONS, PIXEL_FORMAT 0 (NV12), D_SEI_ENABLE; the stream (D_STREAM_DATA_SIZE, D_CPB_BUFFER_ADDR, _SIZE, _OFFSET);
- *                  SEQ_HEADER; SEQ_DONE_RET: the size, D_MIN_NUM_DPB, D_MIN_NUM_MV, D_MIN_SCRATCH_BUFFER_SIZE, D_MIN_*_PLANE_DPB_SIZE,
- *                  D_DECODED_NAL_SIZE how much of the stream it took.
- *   the buffers    D_NUM_DPB, plane sizes and strides, scratch, D_MV_BUFFER_SIZE and D_NUM_MV, a MV buffer each;
- *                  D_INIT_BUFFER_OPTIONS bit 3: frame buffers given one per frame ("dynamic DPB"); INIT_BUFFERS; INIT_BUFFERS_RET.
- *   a frame        the stream; a free slot's plane addresses at D_FIRST_PLANE_DPB0 + 0x100 x plane + 4 x slot, its bit in
- *                  D_DYNAMIC_DPB_FLAG_LOWER, it and those still referenced in D_AVAILABLE_DPB_FLAG_LOWER; D_PICTURE_TAG; NAL_START.
- *                  FRAME_DONE_RET: D_DISPLAY_STATUS [2:0] (1 decoded and shown, 2 shown only), D_DISPLAY_FIRST_PLANE_ADDR, the tag
- *                  back at D_RET_PICTURE_TAG_TOP, D_USED_DPB_FLAG_LOWER the slots it still references. LAST_FRAME drains.
+ * Hardware facts come from Samsung's GPL BSP for the S9 (Scion-Project/android_kernel_samsung_exynos9810, drivers/media/platform/
+ * exynos/mfc: s5p_mfc_regs_v10.h, s5p_mfc_cal.c, s5p_mfc_cmd.c, s5p_mfc_inst.c, s5p_mfc_reg.c, s5p_mfc_irq.c; drivers/soc/samsung/
+ * cal-if/exynos9810: flexpmu_cal_local, cmucal-sfr, cmucal-node; device tree nodes mfc0@178D0000, pd-mfc@14064068, sysmmu@17880000
+ * and @178A0000). Those sources were read for these facts; no code was copied. Licensed under the APSL, as the kernel's are.
  *
  * Copyright (c) 2026 the HakiOS contributors. APSL 2.0.
  */
@@ -83,7 +60,7 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 extern boolean_t pmap_valid_page(ppnum_t);
 
 
-/* (into the log the boot loader keeps across a return as well: what a run has done is read in TWRP) */
+/* say() output also goes to the log the boot loader keeps across a return to it; TWRP shows a run's log from there */
 #define MFC_PA                  EXYNOS_MFC_PA
 #define MFC_SIZE                0x10000UL
 #define PMU_PA                  EXYNOS_PMU_PA
@@ -114,7 +91,10 @@ extern boolean_t pmap_valid_page(ppnum_t);
 #define DTZPC_RESTORE           1
 #define DTZPC_MFC               EXYNOS_MFC_DTZPC_MFC
 
-/* the block's registers (s5p_mfc_regs_v10.h) */
+/*
+ * Register offsets from MFC_PA, names and values as in s5p_mfc_regs_v10.h. The 0xF000 range is the firmware's
+ * command and context area; the commands and their answers are described before the H2R_ and R2H_ values below.
+ */
 #define RISC_ON                 0x0000
 #define RISC2HOST_INT           0x003C
 #define HOST2RISC_INT           0x0044
@@ -178,6 +158,23 @@ extern boolean_t pmap_valid_page(ppnum_t);
 #define D_RET_TAG_TOP           0xF674
 #define D_USED_LOWER            0xF724
 
+/*
+ * Command protocol. The host writes a command to HOST2RISC_CMD and sets HOST2RISC_INT to 1. The RISC sets RISC2HOST_INT when it
+ * is done, leaves its answer in RISC2HOST_CMD and any error in ERROR_CODE.
+ *
+ *   start       after RISC_ON, FW_STATUS_RET; then CONTEXT_MEM_ADDR and _SIZE, then SYS_INIT.
+ *   instance    CODEC_TYPE, CONTEXT_MEM_ADDR and _SIZE (2 MB for H.264 and HEVC), OPEN_INSTANCE. RET_INSTANCE_ID is its number.
+ *   header      D_DEC_OPTIONS, PIXEL_FORMAT 0 (NV12), D_SEI_ENABLE, the stream (D_STREAM_SIZE, D_CPB_ADDR, D_CPB_SIZE,
+ *               D_CPB_OFFSET), SEQ_HEADER. SEQ_DONE_RET gives the size, D_MIN_NUM_DPB, D_MIN_NUM_MV, D_MIN_SCRATCH, the
+ *               D_MIN_*_PLANE sizes, and D_DECODED_NAL_SIZE: how much of the stream was used.
+ *   buffers     D_NUM_DPB, plane sizes and strides, scratch, D_MV_SIZE and D_NUM_MV, one MV buffer each. D_INIT_OPTIONS bit 3
+ *               gives frame buffers one per frame ("dynamic DPB"). INIT_BUFFERS, then INIT_BUFFERS_RET.
+ *   frame       the stream. A free slot's planes are at D_FIRST_DPB0 + 4 x slot and D_SECOND_DPB0 + 4 x slot, its bit in
+ *               D_DYNAMIC_LOWER; the slot and those still referenced are in D_AVAILABLE_LOWER; the picture tag in
+ *               D_PICTURE_TAG; NAL_START. FRAME_DONE_RET: D_DISPLAY_STATUS bits 2:0 (1 decoded and shown, 2 shown only),
+ *               D_DISPLAY_FIRST and _SECOND hold the planes shown, the tag comes back at D_RET_TAG_TOP, and D_USED_LOWER has
+ *               the slots still referenced. LAST_FRAME drains the decoder.
+ */
 #define H2R_SYS_INIT            1
 #define H2R_OPEN_INSTANCE       2
 #define H2R_SEQ_HEADER          3
@@ -208,10 +205,33 @@ extern boolean_t pmap_valid_page(ppnum_t);
 #define MAX_SLOTS               32
 #define ROUND_UP(x, a)          (((x) + (uint32_t)(a) - 1) & ~((uint32_t)(a) - 1))
 
+/*
+ * Hardware facts (see the source list at the top of the file).
+ *
+ *   registers   0x178D0000, 64 KB. SPI 356 is the interrupt (MFC_INTID). Without mfc_irq the driver polls RISC2HOST_INT for up
+ *               to 2 s: 100 reads 200 us apart, then 1 ms sleeps.
+ *   domain      pd-mfc. PMU MFC_CONFIGURATION (0x14064068) bits 3:0 = 0xF turn it on; MFC_STATUS is 0x1406406C. After power-up,
+ *               the DTZPC protection is restored with SMC 0x82000410 (1, 0x17810204, 0), as the BSP does for G3D, ISPPRE and AUD.
+ *   clocks      CMU_TOP at 0x1A240000: the CLKCMU_MFC_BUS mux at 0x109C bits 2:0, divider at 0x1898 bits 3:0, gate at 0x20A4
+ *               (bit 20 manual, bit 21 on). CMU_MFC at 0x17800000: PLL_CON0_MUX_CLKCMU_MFC_BUS_USER at +0x100 (bit 4 selects
+ *               CMU_TOP's clock rather than the oscillator's; bit 7 is busy), Q-channels at +0x300C to +0x3058 (bit 1 requests
+ *               the clock), their state at +0x4000 more. The bus side is in CMU_BUSC at 0x1A200000: +0x30EC, +0x30F8, +0x314C.
+ *   rate        not a DVFS domain of its own. The boot's rate is logged; mfc_int_khz and mfc_mif_khz ask ACPM for the INT and
+ *               MIF rates.
+ *   SysMMUs     0x17880000 and 0x178A0000. MMU_CTRL +0 (bit 0: translating), version at +0x14. After a power-up they are taken
+ *               as off (pass-through) and read to confirm. The addresses below are physical and 32 bits wide.
+ *   firmware    a 1 MB image at RISC_BASE_ADDRESS, the device context (32 KB) right after it. The BSP's normal path copies the
+ *               image and starts the RISC with no SMC and no signature check. Only its DRM path has those; this driver does not
+ *               use that path.
+ *   memory      128 MB of the low bank, which XNU does not get when mfc= is on the command line (the loader's extra_ram_claim,
+ *               sys/hakios.exynos9810_mem.h). Mapped write-combined, so no cache maintenance. Layout: see mfc_alloc and carve.
+ */
+
+/* Writes are followed by a full data synchronization barrier. PA() gives the physical address of a pointer into mem. */
 static volatile uint8_t *regs, *pmu, *cmu_top, *cmu_busc, *cmu_mfc, *mmu0, *mmu1;
 static uint8_t *mem;                    /* the 128 MB, write-combined */
 static uint32_t steps;
-static int dead;                        /* something failed: no more of the block */
+static int dead;                        /* a step failed: the block is not used again this boot */
 static int fw_up;
 static lck_mtx_t *mfc_lock;
 
@@ -246,11 +266,14 @@ wait_bits(volatile uint8_t *b, uint32_t off, uint32_t mask, uint32_t want, uint3
 	return (rd(b, off) & mask) == want;
 }
 
-/* ---- memory: a simple stack in the 128 MB; an instance's is given back whole when it closes ------------------------------- */
+/* Memory: a bump allocator over the 128 MB. An instance's allocations are released together when it closes. */
 
 static uint32_t mem_used, mem_base_used;
 
-/* frames for fb_zc-style surfaces: from the top down, sorted, highest first (an IOSurface's lifetime is its own: mediaserverd's pool's) */
+/*
+ * Zero-copy frames are carved from the top of the 128 MB, for client surfaces. carved[] is kept sorted by address, highest
+ * first. A surface's lifetime belongs to the client's pool, not to this driver.
+ */
 #define CARVE_MAX 64
 static struct { uint32_t at, bytes; } carved[CARVE_MAX];
 static uint32_t n_carved;
@@ -340,13 +363,13 @@ mfc_alloc(uint32_t bytes)
 	return mem + at;
 }
 
-/* ---- the firmware's commands ------------------------------------------------------------------------------------------------ */
+/* Firmware commands. */
 
-static uint32_t last_error;
+static uint32_t last_error;             /* ERROR_CODE as read with the last answer */
 
 /*
- * mfc_irq=1: the block's interrupt instead of polling: its handler takes the answer and quiets the block, this waits on a wake-up. The register is still
- * looked at every 10 ms of waiting, so an interrupt that does not come costs time and is counted, not a dead session.
+ * mfc_irq=1: the block's interrupt instead of polling. The handler takes the answer and clears the block's interrupt. The waiter
+ * still reads RISC2HOST_INT every 10 ms, so an interrupt that never arrives is counted in irq_missed, not treated as a dead session.
  */
 #define MFC_INTID       EXYNOS_MFC_MFC_INTID      /* the device tree's SPI 356 */
 extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid), void *context);
@@ -368,7 +391,7 @@ mfc_interrupt(void *context __unused, uint32_t intid __unused)
 	}
 }
 
-/* what the RISC answers, or 0 after `ms` */
+/* What the RISC answers, or 0 after `ms`. */
 static uint32_t
 wait_answer(uint32_t ms)
 {
@@ -397,7 +420,7 @@ wait_answer(uint32_t ms)
 				last_error = R(ERROR_CODE);
 				W(RISC2HOST_CMD, 0);
 				W(RISC2HOST_INT, 0);
-				/* (the handler may have run between the look and these writes: an answer of its is the same answer) */
+				/* The handler may have run between the check above and these writes; its answer is the same answer. */
 				irq_answer = 0;
 				return answer;
 			}
@@ -450,17 +473,17 @@ expect(uint32_t cmd, uint32_t want, const char *what)
 	return 0;
 }
 
-/* ---- an instance ------------------------------------------------------------------------------------------------------------ */
+/* An instance. */
 
 static struct {
 	int open;
 	uint32_t codec, inst, width, height, crop_x, crop_y, crop_w, crop_h, stride, plane0, plane1, slots, mv_count, mv_size, scratch;
 	uint8_t *cpb, *slot[MAX_SLOTS];
-	bool zc;                        /* frames in the client's surfaces */
-	uint32_t rows;                  /* zero copy: what those must have */
-	uint32_t slot_y[MAX_SLOTS], slot_uv[MAX_SLOTS]; /* each slot's latest addresses */
-	uint32_t used;                  /* the slots the firmware still references */
-	uint32_t pending;               /* the slots of frames decoded and not yet shown: D_USED says nothing of those */
+	bool zc;                        /* frames are in the client's surfaces */
+	uint32_t rows;                  /* zero copy: the rows the client's surfaces must have */
+	uint32_t slot_y[MAX_SLOTS], slot_uv[MAX_SLOTS]; /* each slot's latest plane addresses */
+	uint32_t used;                  /* slots the firmware still references */
+	uint32_t pending;               /* slots of frames decoded but not yet shown; D_USED_LOWER does not report these */
 	bool buffers;
 	uint32_t pending_offset;
 	uint32_t mem_mark;
@@ -519,14 +542,14 @@ inst_close(void)
 	mem_used = I.mem_mark;
 }
 
-/* the stream at I.cpb: the header; the size and the buffers wanted; how much it took in *consumed */
+/* Decode the header at I.cpb: the stream size and the buffers wanted. How much of the stream it took is returned in *consumed. */
 static int
 inst_header(uint32_t bytes, uint32_t *consumed)
 {
 	uint32_t options;
 	int error;
 
-	/* concealment 4 (<< 8), realloc (<< 13), parse everything including the PPS (<< 15) */
+	/* D_DEC_OPTIONS: concealment mode 4 at bit 8, realloc at bit 13, parse everything including the PPS at bit 15 */
 	options = (0x4u << 8) | (1u << 13) | (1u << 15);
 	W(D_DEC_OPTIONS, options);
 	W(PIXEL_FORMAT, 0);
@@ -543,7 +566,7 @@ inst_header(uint32_t bytes, uint32_t *consumed)
 		say("exynos_mfc: the header gives %ux%u, error %#x\n", I.width, I.height, last_error);
 		return EINVAL;
 	}
-	/* crop: CROP1 right<<16 | left, CROP2 bottom<<16 | top */
+	/* Crop: CROP1 holds right << 16 | left, CROP2 holds bottom << 16 | top. */
 	uint32_t c1 = R(D_DISPLAY_CROP1), c2 = R(D_DISPLAY_CROP2);
 	I.crop_x = c1 & 0xFFFF;
 	I.crop_w = I.width - (c1 & 0xFFFF) - (c1 >> 16);
@@ -586,14 +609,14 @@ inst_buffers(void)
 		return ENOMEM;
 	}
 	if (I.zc) {
-		/* the frames are the client's: only whether they will fit */
+		/* Zero copy: the frames are the client's surfaces, so only check that enough of them fit. */
 		uint32_t frame = ROUND_UP(I.stride * I.rows + I.stride * (I.rows / 2), 4096);
 
 		lck_mtx_lock(carve_lock);
 		uint32_t room = carve_floor() - ROUND_UP(mem_used, 4096);
 		lck_mtx_unlock(carve_lock);
 		if (room / frame < I.slots + 2) {
-			/* (4K: the client's pool would want more of these than the 128 MB holds; the instance's own frames, fewer, do fit) */
+			/* Not enough room for the client's frame pool in the 128 MB; decode into the instance's own frames and copy out. */
 			say("exynos_mfc: no room for %u frames of %u bytes in %u: copies\n", I.slots + 2, frame, room);
 			I.zc = false;
 		}
@@ -615,7 +638,7 @@ inst_buffers(void)
 	W(D_SCRATCH_ADDR, PA(codec));
 	W(D_SCRATCH_SIZE, I.scratch);
 	W(D_MV_SIZE, I.mv_size);
-	W(D_INIT_OPTIONS, 1u << 3);     /* dynamic DPB */
+	W(D_INIT_OPTIONS, 1u << 3);     /* bit 3: dynamic DPB, a frame buffer per frame */
 	W(D_FIRST_STRIDE, I.stride);
 	W(D_SECOND_STRIDE, I.stride);
 	W(D_NUM_MV, I.mv_count);
@@ -635,8 +658,8 @@ inst_buffers(void)
 }
 
 /*
- * One access unit (at I.cpb + offset) or, with bytes == 0 and last, the drain. Answers in *r: whether a frame is to be shown, its
- * slot's memory and tag.
+ * Decode one access unit at I.cpb + offset, or with bytes == 0 and last set, drain the decoder. The result goes in *r:
+ * whether a frame is to be shown, its planes and its picture tag.
  */
 struct mfc_result {
 	bool shown, finished;
@@ -655,7 +678,7 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, uint32_t y_
 	for (slot = 0; slot < I.slots && ((I.used | I.pending) & (1u << slot)); slot++) {
 	}
 	if (slot == I.slots) {
-		/* (frames the firmware will never show, after an error: given up, or the stream stops here for good) */
+		/* Frames the firmware may never show (after an error) are given up here. If no slot is free even then, the decoder is out of buffers. */
 		say("exynos_mfc: every frame buffer is in use (referenced %#x, to be shown %#x): those to be shown are given up\n", I.used, I.pending);
 		I.pending = 0;
 		for (slot = 0; slot < I.slots && (I.used & (1u << slot)); slot++) {
@@ -703,8 +726,8 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, uint32_t y_
 	I.used = R(D_USED_LOWER);
 	r->status = R(D_DISPLAY_STATUS);
 	/*
-	 * A frame the firmware has decoded and not shown yet may no longer be referenced. The BSP never gives such a buffer back before it is shown, so neither does this
-	 * (not seen to matter: no test has caught it without this).
+	 * A decoded frame that is not yet shown can drop out of D_USED_LOWER. The Samsung BSP never releases such a slot before it
+	 * is shown, so this driver keeps it in I.pending as well. Not verified to matter: no test run failed without this.
 	 */
 	{
 		uint32_t decoded = R(D_DECODED_STATUS) & 7, at = R(D_DECODED_FIRST);
@@ -719,7 +742,7 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, uint32_t y_
 		}
 	}
 	if ((r->status >> 4) & 3) {
-		/* the stream changed size in-band: its buffers are the old size's; this instance can go no further */
+		/* The stream changed size in-band (D_DISPLAY_STATUS bits 5:4). The buffers are the old size's, so the client must open again. */
 		say("exynos_mfc: the stream changes size in-band (status %#x): for the client to open again\n", r->status);
 		return ESTALE;
 	}
@@ -746,7 +769,7 @@ inst_frame(uint32_t bytes, uint32_t offset, uint32_t tag, bool last, uint32_t y_
 	return 0;
 }
 
-/* ---- the steps ---------------------------------------------------------------------------------------------------------------- */
+/* Steps. */
 
 static void
 look(const char *when)
@@ -779,6 +802,7 @@ block_on(void)
 	}
 	wr(cmu_top, TOP_GATE, rd(cmu_top, TOP_GATE) | GATE_MANUAL | GATE_ON);
 	cmu_mfc = (volatile uint8_t *)ml_io_map(CMU_MFC_PA, CMU_SIZE);
+	/* Select CMU_TOP's clock (bit 4) for the bus mux, then wait until it is no longer busy (bit 7). */
 	wr(cmu_mfc, MFC_BUS_USER, rd(cmu_mfc, MFC_BUS_USER) | (1u << 4));
 	if (!wait_bits(cmu_mfc, MFC_BUS_USER, 1u << 7, 0, 1000)) {
 		say("exynos_mfc: 2: the bus's mux stays busy (%#x)\n", rd(cmu_mfc, MFC_BUS_USER));
@@ -788,7 +812,7 @@ block_on(void)
 		wr(cmu_mfc, q, rd(cmu_mfc, q) | QCH_REQ);
 	}
 	IODelay(100);
-	/* the bus's rate: asked of ACPM only if a run says so (the INT domain has CLKCMU_MFC_BUS in it) */
+	/* Rates are left alone unless a boot arg asks; CLKCMU_MFC_BUS is in the INT domain. */
 	if (PE_parse_boot_argn("mfc_int_khz", &want, sizeof(want)) && want != 0) {
 		int e = hakios_acpm_dvfs_set(1, want);
 		say("exynos_mfc: 2: INT asked for %u kHz: %d\n", want, e);
@@ -812,7 +836,7 @@ block_on(void)
 	say("exynos_mfc: 2: the SysMMUs: CTRL %#x (version %#x) and %#x (version %#x)\n", rd(mmu0, MMU_CTRL), rd(mmu0, MMU_VERSION),
 	    rd(mmu1, MMU_CTRL), rd(mmu1, MMU_VERSION));
 	if ((rd(mmu0, MMU_CTRL) | rd(mmu1, MMU_CTRL)) & 5) {
-		/* (ABOX's was found the same way: CTRL 0 lets addresses through) */
+		/* CTRL 0 lets addresses through. ABOX's SysMMU needed the same. */
 		wr(mmu0, MMU_CTRL, 0);
 		wr(mmu1, MMU_CTRL, 0);
 		say("exynos_mfc: 2: they were not passing addresses through: now CTRL %#x, %#x\n", rd(mmu0, MMU_CTRL), rd(mmu1, MMU_CTRL));
@@ -831,7 +855,10 @@ firmware_start(void)
 	char partition[24] = "VENDOR";
 
 	PE_parse_boot_arg_str("mfc_fw_part", partition, sizeof(partition));
-	/* the loader keeps this memory out of XNU's when it sees mfc= among the arguments: if it did not, it is XNU's RAM, and left alone */
+	/*
+	 * The loader keeps this range out of XNU's memory when mfc= is on the command line. If XNU owns a page in it, the range is
+	 * not ours and is left alone.
+	 */
 	if (pmap_valid_page((ppnum_t)atop_64(EXYNOS9810_MEM_MFC_PA)) || pmap_valid_page((ppnum_t)atop_64(EXYNOS9810_MEM_MFC_END - 4096))) {
 		say("exynos_mfc: 3: %#llx-%#llx is XNU's RAM (a loader without mfc='s keep-out?): not taken\n", EXYNOS9810_MEM_MFC_PA,
 		    EXYNOS9810_MEM_MFC_END);
@@ -847,7 +874,10 @@ firmware_start(void)
 		say("exynos_mfc: 3: mfc's memory does not read back\n");
 		return false;
 	}
-	/* the storage may not be up yet, and hakios_partition_file keeps a failure for the rest of the run: first the partition answers */
+	/*
+	 * The storage may come up late, and hakios_partition_file remembers a failure for the rest of the run. So first wait (up to 60 s)
+	 * until the partition answers a read.
+	 */
 	static uint8_t probe[4096];
 	uint64_t got = 0;
 	int waited;
@@ -865,7 +895,7 @@ firmware_start(void)
 	memcpy(code, data, size);
 	__builtin_arm_dsb(15);
 	say("exynos_mfc: 3: mfc_fw.bin, %llu bytes, at %#x\n", size, PA(code));
-	/* the reset */
+	/* Reset: clear the firmware-register window, pulse MFC_RESET, then point RISC_BASE_ADDRESS at the image. */
 	W(RISC2HOST_CMD, 0);
 	W(HOST2RISC_CMD, 0);
 	W(FW_VERSION, 0);
@@ -896,14 +926,17 @@ firmware_start(void)
 	return true;
 }
 
-/* ---- step 4: a stream, ffmpeg's testsrc2, 176 x 144, 6 frames of H.264 baseline, encoded with x264 for this test ---------------- */
-
+/*
+ * Step 4: self-test. test_stream is 6 frames of H.264 baseline, 176 x 144 (ffmpeg's testsrc2, encoded with x264 for this test).
+ * test_units are the access unit boundaries in test_stream. test_crc holds each frame's CRC as ffmpeg decodes it, tags 100 to 105.
+ */
 static const uint8_t test_stream[] = {
 #include "hakios.exynos_mfc_test.h"
 };
 static const uint32_t test_units[] = { 0, 2629, 3245, 4002, 4640, 5258, sizeof(test_stream) };
 static const uint32_t test_crc[6] = { 0xd1ffb670, 0xc0a84809, 0x4c045182, 0xbbd7939f, 0x82230b84, 0xcd52fb70 };
 
+/* CRC32 over the cropped luma rows, then the cropped chroma rows. */
 static uint32_t
 frame_crc(const uint8_t *y, const uint8_t *uv)
 {
@@ -987,7 +1020,7 @@ self_test(void)
 	}
 }
 
-/* ---- step 5: /dev/hakios-mfc ----------------------------------------------------------------------------------------------------- */
+/* Step 5: the device node for user space. */
 
 static int mfc_opens;
 
@@ -1000,7 +1033,7 @@ mfc_open(dev_t dev __unused, int flags __unused, int type __unused, proc_t p __u
 	if (dead || !fw_up) {
 		error = EIO;
 	} else if (mfc_opens != 0) {
-		error = EBUSY;                  /* one client: VideoToolbox's next session stays in software */
+		error = EBUSY;                  /* one client at a time; VideoToolbox's next session stays in software */
 	} else {
 		mfc_opens = 1;
 	}
@@ -1023,7 +1056,7 @@ mfc_close(dev_t dev __unused, int flags __unused, int type __unused, proc_t p __
 	return 0;
 }
 
-/* a shown frame's picture into the client's NV12 planes */
+/* Copy the cropped picture out to the client's NV12 planes. */
 static int
 frame_out(const struct mfc_result *r, struct hakios_mfc_decode *d)
 {
@@ -1061,7 +1094,8 @@ mfc_ioctl(dev_t dev __unused, u_long cmd, caddr_t data, int flag __unused, proc_
 		uint32_t consumed = 0;
 
 		I.zc = false;
-		inst_close();           /* (a client's second open: after a drain, the firmware's instance has finished) */
+		/* A second open from the client. After a drain the firmware's instance has finished, so closing it is safe. */
+		inst_close();
 		if (dead) {
 			error = EIO;
 			break;
@@ -1084,7 +1118,8 @@ mfc_ioctl(dev_t dev __unused, u_long cmd, caddr_t data, int flag __unused, proc_
 			inst_close();
 			break;
 		}
-		I.zc = I.zc && I.crop_x == 0 && I.crop_y == 0;  /* (a surface's picture starts at its first byte) */
+		/* Zero copy needs the picture to start at the surface's first byte, so no crop offset. */
+		I.zc = I.zc && I.crop_x == 0 && I.crop_y == 0;
 		if ((error = inst_buffers()) != 0) {
 			inst_close();
 			break;
@@ -1118,7 +1153,10 @@ mfc_ioctl(dev_t dev __unused, u_long cmd, caddr_t data, int flag __unused, proc_
 		if (I.zc) {
 			uint32_t y_stride = 0, uv_stride = 0, y_bytes = 0, uv_bytes = 0;
 
-			/* ENXIO: not a surface of this memory, or not of the shape asked for; the client can open again, for copies */
+			/*
+			 * Zero copy: the surface must be a frame of this memory, with the strides and sizes the instance expects. Otherwise
+			 * ENXIO; the client can open again for copies.
+			 */
 			if (hakios_surface_mfc_frame(d->surface, &y, &uv, &y_stride, &uv_stride, &y_bytes, &uv_bytes) != 0 || y_stride != I.stride ||
 			    uv_stride != I.stride || y_bytes < I.plane0 || uv_bytes < I.plane1 || (y & 0xFF) != 0 || (uv & 0xFF) != 0 ||
 			    y < EXYNOS9810_MEM_MFC_PA || uv + uv_bytes > EXYNOS9810_MEM_MFC_END) {
@@ -1170,7 +1208,7 @@ static const struct cdevsw mfc_cdevsw = {
 static void
 mfc_thread(void *arg __unused, wait_result_t w __unused)
 {
-	/* the VENDOR partition comes up with the storage, a little after the kernel's drivers start */
+	/* The VENDOR partition comes up with the storage, a little after the kernel's drivers start. */
 	IOSleep(3000);
 	if (steps >= 2 && !block_on()) {
 		dead = 1;
