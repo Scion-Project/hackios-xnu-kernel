@@ -1693,7 +1693,7 @@ pll_mhz(void)
 }
 
 /*
- * mali_gov=1: the GPU's clock after its load, as drivers/power/hakios.exynos_cpufreq.c sets the cores': every window of
+ * mali_gov=1: the GPU's clock after its load, as drivers/power/exynos/hakios.exynos_cpufreq.c sets the cores': every window of
  * GOV_WINDOW_MS, the share of it the GPU ran jobs; the lowest of the three rates at which that would have been
  * GOV_TARGET% at most, at once if higher, after GOV_DOWN windows in a row if lower; never above what the G3D's
  * temperature allows. The switch is pll_switch(), between two jobs (this thread runs them, one at a time) and under

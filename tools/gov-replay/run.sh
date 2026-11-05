@@ -1,5 +1,5 @@
 #!/bin/bash
-# The S9 CPU governor's real source (drivers/power/hakios.exynos_cpufreq.c) run on the host against a model of the M3s, for
+# The S9 CPU governor's real source (drivers/power/exynos/hakios.exynos_cpufreq.c) run on the host against a model of the M3s, for
 # comparing gov_policy=1 and gov_policy=2 before a phone is free. Not a phone: see README.md.
 #   tools/gov-replay/run.sh CONSOLE.log          the log's cpufreq_gov lines replayed, both policies
 #   tools/gov-replay/run.sh scen:scroll|tap|hold synthetic gestures, both policies

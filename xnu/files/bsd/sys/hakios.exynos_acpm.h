@@ -37,7 +37,7 @@ int hakios_acpm_dvfs_set(uint32_t index, uint32_t khz);
  */
 uint32_t hakios_acpm_dvfs_table(uint32_t index, uint32_t *khz, uint32_t *uv, uint32_t most, int (*say)(const char *, ...));
 /*
- * The Galaxy S9's CPU frequency governor (drivers/power/hakios.exynos_cpufreq.c): started with cpufreq_gov=1, in place of
+ * The Galaxy S9's CPU frequency governor (drivers/power/exynos/hakios.exynos_cpufreq.c): started with cpufreq_gov=1, in place of
  * the fixed cpufreq_lit= and cpufreq_big= rates. True when it runs (it then owns both clusters' rates).
  */
 bool hakios_exynos_cpufreq_gov_start(void);

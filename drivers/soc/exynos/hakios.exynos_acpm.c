@@ -574,7 +574,7 @@ hakios_acpm_stop(void)
  * The Galaxy S9's CPU clocks through ACPM's DVFS (Samsung's cal_dfs_set_rate -> exynos_acpm_set_rate: domain index,
  * kHz, FREQ_REQ). acpm_dvfs_exynos9810.h: dvfs_cpucl0 (the A55s) is index 2, dvfs_cpucl1 (the M3s) index 3.
  * boot-args cpufreq_lit=kHz, cpufreq_big=kHz; nothing without them. With cpufreq_gov=1 the governor
- * (drivers/power/hakios.exynos_cpufreq.c) sets both clusters' rates instead, and these two are not used.
+ * (drivers/power/exynos/hakios.exynos_cpufreq.c) sets both clusters' rates instead, and these two are not used.
  */
 void hakios_exynos_dvfs_start(void);
 void

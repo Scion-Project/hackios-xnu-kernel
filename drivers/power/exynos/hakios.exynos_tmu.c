@@ -131,7 +131,7 @@ SYSCTL_INT(_kern_hakios_temp, OID_AUTO, battery_c, CTLFLAG_RD | CTLFLAG_LOCKED, 
     "the battery's temperature as the battery driver says it (-273: not known)");
 
 /*
- * Every zone's last reading for other drivers (the CPU governor, drivers/power/hakios.exynos_cpufreq.c), whatever the step:
+ * Every zone's last reading for other drivers (the CPU governor, drivers/power/exynos/hakios.exynos_cpufreq.c), whatever the step:
  * the zones in tmu_zones' order (0 BIG, 1 LITTLE, 2 G3D, 3 ISP), millidegrees, NOT_READ_MC before the first reading.
  * Asked directly: the governor read kern.hakios.temp.* through kernel_sysctlbyname at first, and got nothing on the phone.
  */
