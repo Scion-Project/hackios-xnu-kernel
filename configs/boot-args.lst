@@ -227,17 +227,12 @@ gltrace_shaders	u
 gltrace_uniforms	u
 glwait	u
 glyes	u
-gov2_boost_lit	k
-gov2_down_ms	k
-gov2_win_ms	k
 gov_boost_big	k
 gov_boost_lit	k
 gov_boost_ms	k
-gov_burst_ms	k
 gov_down	k
 gov_frame_big	k
 gov_frame_ms	k
-gov_hold_ms	k
 gov_policy	k
 gov_stat	k
 gov_target	k

@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 626 symbols in 20 groups; 53 are set, 44 of them drivers built in.
+# 621 symbols in 20 groups; 53 are set, 44 of them drivers built in.
 #
 
 #
@@ -127,7 +127,7 @@ CONFIG_HAKIOS_PMIC=y
 # the run handed back to the loader before the battery is flat (battery_stop=<percent>) [hakios.battguard.c]
 CONFIG_HAKIOS_BATTGUARD=y
 
-# the Galaxy S9's CPU frequency governor (cpufreq_gov=1): both clusters' rates moved with the load through ACPM's ... [hakios.exynos_cpufreq.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
+# the Galaxy S9's CPU frequency governor (cpufreq_gov=1): both clusters' rates moved with the load through ACPM's ... [hakios.exynos_cpufreq.c, hakios.scion_gov.c; requires CONFIG_HAKIOS_EXYNOS_ACPM]
 # CONFIG_HAKIOS_EXYNOS_CPUFREQ is not set
 
 # the Galaxy S9's battery: the fuel gauge and charger of its MAX77705, read (never written) over CMGP's HSI2C and ... [hakios.max77705.c; requires CONFIG_HAKIOS_EXYNOS_HSI2C, CONFIG_HAKIOS_BATTERY]
@@ -1549,7 +1549,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_UFS_PROBE is not set
 
 #
-# User space (112)
+# User space (107)
 #
 
 # read by inject_sb.c (user space)
@@ -1672,15 +1672,6 @@ CONFIG_MODEM_AGAIN=y
 # the renderer is made to answer that it has those functions after all
 # CONFIG_GLYES is not set
 
-# policy 2: the A55s' floor while touched (1248000; 0: none)
-# CONFIG_GOV2_BOOST_LIT is not set
-
-# policy 2: how long a rate wants less before it comes down (300; 40 to 2000)
-# CONFIG_GOV2_DOWN_MS is not set
-
-# policy 2: the load window while a boost holds (20; 10 to 200)
-# CONFIG_GOV2_WIN_MS is not set
-
 # the M3s' floor while touched (1469000; 0: no touch boost for them)
 # CONFIG_GOV_BOOST_BIG is not set
 
@@ -1690,9 +1681,6 @@ CONFIG_MODEM_AGAIN=y
 # how long the touch boost holds after the last finger event (300; 0: no touch boost)
 # CONFIG_GOV_BOOST_MS is not set
 
-# policy 2: the M3s at their ceiling after a finger comes down (120; 0: none; at most 1000)
-# CONFIG_GOV_BURST_MS is not set
-
 # windows in a row that want less before the rate comes down (5; 1 to 50)
 # CONFIG_GOV_DOWN is not set
 
@@ -1701,9 +1689,6 @@ CONFIG_MODEM_AGAIN=y
 
 # a frame this recent keeps the frame boost on (100; 20 to 1000)
 # CONFIG_GOV_FRAME_MS is not set
-
-# policy 2: a finger held still keeps the touch floor this long after its last event (5000; at most 30000)
-# CONFIG_GOV_HOLD_MS is not set
 
 # read by hakios.exynos_cpufreq.c (kernel)
 # CONFIG_GOV_POLICY is not set
