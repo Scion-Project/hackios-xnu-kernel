@@ -81,40 +81,29 @@
  * "touch", "frames", both, or "off" -- so boosts are said once a second at most, never one line each)
  * to the loader's log (loader_log_line), which printf does not reach.
  *
- * The second policy (gov_policy=2; gov_policy=1 or none: all of the above unchanged; kern.hakios.gov_policy changes it while
- * the system runs, to compare the two in one run). What usb-1104.log said (a second per line, 12,000 seconds of use):
- *   - with a finger moving the M3s are at their ceiling already (93% of the seconds, the busiest core 78% busy at it), so
- *     a gesture's first moments are what a governor can still change: from 650 MHz a burst takes three windows to reach the
- *     ceiling (a window partly seen, then 650 -> 1469 -> 1794, the second step only once 1469 proves too little);
- *   - a finger held still sends no events, and its boost ends 300 ms after the last;
- *   - the A55s are not where the interface runs (the busiest of them 2% busy at the median second of touching, 24% at the
- *     90th; the scheduler uses them after the M3s, ml_pair_slow_processors()), yet a touch lifted them to 1690000;
- *   - a rate comes down to what the last of its low windows wanted, however much the four before wanted: 26 of the 55
- *     logged falls from 1794000 went straight to 650000 (the first changes of each run: boot's, mostly).
- * So, with gov_policy=2:
- *   touch  a finger coming down (hakios_exynos_cpufreq_fingers()) puts the M3s at their ceiling now, for gov_burst_ms (120);
- *          then the touch floor holds while a finger is down, however still (at most gov_hold_ms, 5000, after its last event:
- *          a palm in a pocket does not hold it for good), and gov_boost_ms after the last event as before;
- *   A55s   their touch floor is gov2_boost_lit (1248000), no burst; their load still takes them as far as it needs;
- *   load   the window is gov2_win_ms (20) while a boost holds, cpufreq_gov_ms otherwise;
- *   down   after gov2_down_ms (300) of wanting less: to the highest any of those windows wanted. A rate raised again within
- *          300 ms of falling doubles the wait, up to four times, until two seconds pass with no such bounce.
- * Everything here is a floor or a wait: ceiling_now() clamps it as it clamps the load's rate -- the online count's limit,
- * the thermal ceiling, the lowest level at 96 C -- and no level, voltage or temperature limit changes.
+ * The scion governor (gov_policy=3; hakios.scion_gov.c has its control law, EXYNOS_SCION_GOV in the SoC's table its numbers):
+ * what usb-1104.log said (a second per line, 12,000 seconds of use) is that with a finger moving the M3s are at 1794000
+ * already, 93% of the seconds, the busiest core 78% busy there, and that heat never moved that ceiling (78 C at most). So what
+ * is left is the first moments of a gesture and what stock allows above 1794000: 2314000 with at most two M3s running. Here
+ * the other two are parked (no longer recommended to the scheduler, in WFI: stock powers them off, which this kernel cannot do
+ * yet, so their leakage stays and the temperature has the last word). gov_policy=2 is the same law without parking.
+ * A finger coming down (hakios_exynos_cpufreq_fingers()) puts the M3s at their ceiling for 120 ms; the touch floor holds while
+ * a finger is down, however still, at most 5 s after its last event. The frame floor is for frames under 50 ms apart: an idle
+ * screen presents ten a second, and policy 1 held the M3s at 1261000 for them. The window is 20 ms while a boost holds.
  *
- * The numbers to compare the two by, under either policy (gov_stat=0: none), a line after any second with something to say,
+ * The numbers to compare the policies by, under any of them (gov_stat=0: none), a line after any second with something to say,
  * counted since the line before:
- *   (the log's prefix, then) stat 12 s: policy 2 | big ms 310 40 90 560, lit ms 900 100 | sat big 3 lit 0 of 41 | rev big 1 lit 0 | sum big
- *       140% lit 6% | raise 1 avg 410 us max 410 | top 1 avg 2 ms max 2, 0 missed | acpm 6 avg 180 us max 310 | fingers 420 ms
- * "big ms": time below 1261 MHz, below 1469, below 1794, at 1794 or more; "lit ms": at 1053 MHz or below, above. "sat": windows
+ *   (the log's prefix, then) stat 12 s: policy 2 | big ms 310 40 90 560 0, lit ms 900 100 | sat big 3 lit 0 of 41 | rev big 1 lit 0 | sum big
+ *       140% lit 6% | raise 1 avg 410 us max 410 | top 1 avg 2 ms max 2, 0 missed | acpm 6 avg 180 us max 310 | fingers 420 ms | few 0 ms | cooled 0
+ * "big ms": time below 1261 MHz, below 1469, below 1794, at 1794, above it; "lit ms": at 1053 MHz or below, above. "sat": windows
  * with a core 90% busy or more while the cluster was below its ceiling, of all windows (the governor behind the load).
  * "rev": rates raised within 300 ms of falling. "sum": the cores' busy shares added up (a thread moving among the cores shows
  * less on the busiest than it needs). "raise": from a gesture's first event to the M3s at its floor; "top": to their ceiling
- * ("missed": not within a second). "acpm": time in each change's requests. "fingers": time with a finger down.
+ * ("missed": not within a second). "acpm": time in each change's requests. "fingers": time with a finger down. "few": with M3s parked. "cooled": thermal ceiling moves.
  *
  * Status: the load governor run on the phone (ACPM takes the requests, the measured MHz match them, the temperatures are
  * read), with the touch and frame boosts, the 60% target and the five down windows (kernel PR 158): the S9's default,
- * cpufreq_gov=1. gov_policy=2 has not run on the phone yet: replayed against the log only.
+ * cpufreq_gov=1.
  *
  * Boot-args:
  *   cpufreq_gov=1            run it (0, or none: the fixed rates of cpufreq_lit= and cpufreq_big=)
@@ -129,13 +118,8 @@
  *   gov_frame_ms=<ms>        a frame this recent keeps the frame boost on (100; 20 to 1000)
  *   gov_target=<percent>     the busiest core's share wanted at the new rate (60; 30 to 95)
  *   gov_down=<windows>       windows in a row that want less before the rate comes down (5; 1 to 50)
- *   gov_policy=<n>           1 the policy above; 2 the second policy (1 for now: not yet run on the phone)
+ *   gov_policy=<n>           1 the policy above; 3 the scion governor; 2 scion without parking (1 for now)
  *   gov_stat=<n>             the line of numbers to compare by (1; 0: none)
- *   gov_burst_ms=<ms>        policy 2: the M3s at their ceiling after a finger comes down (120; 0: none; at most 1000)
- *   gov_hold_ms=<ms>         policy 2: a finger held still keeps the touch floor this long after its last event (5000; at most 30000)
- *   gov2_boost_lit=<kHz>     policy 2: the A55s' floor while touched (1248000; 0: none)
- *   gov2_win_ms=<ms>         policy 2: the load window while a boost holds (20; 10 to 200)
- *   gov2_down_ms=<ms>        policy 2: how long a rate wants less before it comes down (300; 40 to 2000)
  *
  * Sources (Samsung's kernel for the S9, Scion-Project/android_kernel_samsung_exynos9810, lineage-24.0 at e5906667068e,
  * and Silicium's Resources/DTBs/starlte.dts, the phone's own tree): arch/arm64/boot/dts/exynos/
@@ -156,6 +140,8 @@
 #include <machine/machine_routines.h>
 #include <pexpert/pexpert.h>
 #include <sys/hakios.exynos_acpm.h>
+#include <sys/hakios.exynos_soc.h>
+#include <sys/hakios.scion_gov.h>
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/sysctl.h>
@@ -166,6 +152,9 @@ extern bool ml_cpu_idle_time(int cpu_id, uint64_t *idle);
 extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 /* the TMU driver's last reading of a zone (0 BIG, 1 LITTLE), millidegrees; -273000 before one or without the driver */
 extern int32_t hakios_exynos_tmu_zone_mc(unsigned zone);
+extern uint64_t hakios_exynos_tmu_age_ms(void);       /* since its last reading */
+extern int32_t hakios_exynos_tmu_zone_now_mc(unsigned zone);
+extern void sched_perfcontrol_update_recommended_cores(uint32_t recommended_cores);
 extern void *cpu_to_processor(int cpu);
 extern void *thread_bind(void *processor);
 extern int thread_block(void *continuation);
@@ -184,9 +173,11 @@ extern kern_return_t thread_wakeup_prim(event_t event, boolean_t one_thread, wai
 #define ANSWERS_LOGGED  8       /* changes whose APM answer is logged, per cluster */
 #define SPIN_LOOPS      8192    /* measure_mhz(): 32 additions each, 262144 cycles (0.1 to 0.6 ms) */
 #define BOUNCE_MS       300     /* a rate raised within this of falling has bounced */
-#define CALM_MS         2000    /* policy 2: no bounce for this long and the wait to come down is back to its shortest */
-#define HOLD_SCALE_MOST 4
-#define RES_BUCKETS     4
+#define RES_BUCKETS     5
+#define BURST_MS        120     /* the M3s at their ceiling after a finger comes down */
+#define HOLD_MS         5000    /* a finger held still keeps the touch floor this long after its last event */
+#define BOOST_WINDOW_MS 20      /* the load window while a boost holds */
+#define MOVING_MS       50      /* frames closer than this are moving something */
 
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -227,19 +218,16 @@ static struct cluster {
 	int32_t temp_mc;
 	uint32_t touch_khz, frame_khz;  /* the boosts' floors (0: none), before the ceiling clamps them */
 	uint32_t boost_floor;           /* the last boost_floor() (kHz; 0: no boost on) */
-	/* policy 2 */
-	uint32_t touch2_khz;            /* the touch floor (the A55s': gov2_boost_lit; the M3s': touch_khz) */
+	/* scion */
+	uint32_t scion_touch, scion_safe;       /* the touch floor, the rate with no temperature to trust */
 	bool burst;                     /* to the ceiling when a finger comes down */
-	uint32_t low_ms;                /* how long it has wanted less */
-	uint32_t hold_want;             /* the most any of those windows wanted (kHz) */
-	uint32_t hold_scale;            /* the wait to come down, times this: 1 to HOLD_SCALE_MOST */
-	uint64_t last_bounce;
-	bool bounced;                   /* since decide2() looked */
-	/* the numbers to compare by, under either policy (the stat line) */
+	struct scion_rate rate;
+	/* the numbers to compare by, under any policy (the stat line) */
 	uint32_t res_khz[RES_BUCKETS - 1]; /* the buckets' upper ends */
 	uint64_t res[RES_BUCKETS], rate_since; /* time at each, since the last change or line */
 	uint64_t last_down;
-	uint32_t sat, stat_windows, reversals, sum_now;
+	uint32_t sat, stat_windows, reversals, sum_now, cooled;
+	uint32_t core_load[SCION_BIG_CORES];    /* the window's, busiest first */
 	uint64_t sum_sum;
 } clusters[2];
 
@@ -259,6 +247,7 @@ static uint32_t window_ms = 40, log_seconds = 1, target_load = TARGET_LOAD, down
  */
 static uint32_t boost_ms = 300, frame_ms = 100;
 static uint64_t boost_span, frame_span;         /* the same in mach_absolute_time units */
+static uint64_t frame_gap, moving_span;         /* the last two frames apart; scion's frame floor is for frames closer than moving_span */
 static uint64_t touch_last, frame_last;         /* the last finger event's and frame's time (0: none yet) */
 static uint32_t touch_count, frame_count;       /* this second's, for the summary */
 static uint32_t boost_raises;                   /* this second's: times a boost raised a cluster's rate */
@@ -268,8 +257,11 @@ static int boost_event;
 /* the policy (see the head): written by the boot-arg and kern.hakios.gov_policy, read by this file's thread */
 static uint32_t gov_policy = 1;
 static uint32_t gov_stat = 1;
-static uint32_t burst_ms = 120, hold_ms = 5000, active_window_ms = 20, down_ms = 300;
 static uint64_t burst_span, hold_span;
+static uint32_t big_cores = SCION_BIG_CORES;    /* the M3s the scheduler may use */
+static struct scion_park park;
+static uint64_t few_since, few_time;
+static const struct scion_soc scion_soc = EXYNOS_SCION_GOV;
 static uint32_t fingers;                        /* how many are down (hakios_exynos_cpufreq_fingers()) */
 static uint64_t finger_edge;                    /* when one last came down */
 static uint64_t ramp_began;                     /* a gesture's first event, until the M3s reach their ceiling or a second passes */
@@ -346,6 +338,7 @@ hakios_exynos_cpufreq_frame(void)
 	}
 	now = mach_absolute_time();
 	before = __atomic_exchange_n(&frame_last, now, __ATOMIC_RELEASE);
+	__atomic_store_n(&frame_gap, now - before, __ATOMIC_RELAXED);
 	__atomic_fetch_add(&frame_count, 1, __ATOMIC_RELAXED);
 	if (!boost_on(before, frame_span, now)) {
 		(void)thread_wakeup_prim((event_t)&boost_event, FALSE, THREAD_AWAKENED);
@@ -390,7 +383,7 @@ policy_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused in
 	if (error != 0 || req->newptr == 0) {
 		return error;
 	}
-	if (value != 1 && value != 2) {
+	if (value < 1 || value > 3) {
 		return EINVAL;
 	}
 	gov_policy = (uint32_t)value;
@@ -398,7 +391,7 @@ policy_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused in
 	return 0;
 }
 SYSCTL_PROC(_kern_hakios, OID_AUTO, gov_policy, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, NULL, 0,
-    policy_sysctl, "I", "the governor's policy: 1 as first, 2 held boosts and stepped falls (gov_policy=)");
+    policy_sysctl, "I", "the governor's policy: 1 as first, 3 scion, 2 scion without parking (gov_policy=)");
 
 static uint64_t idle_before[MAX_CPUS];
 static bool ever_idle[MAX_CPUS];
@@ -440,12 +433,25 @@ level_at_most(const struct cluster *c, uint32_t khz)
 	return c->n - 1;
 }
 
+/* the zone's temperature, to be trusted (a scion policy's fall-back to the safe rate: the TMU driver has stopped, or reads nonsense) */
+static bool
+temp_fresh(const struct cluster *c)
+{
+	return scion_temp_ok(hakios_exynos_tmu_zone_mc(c->tmu_zone), hakios_exynos_tmu_age_ms());
+}
+
 static uint32_t
 ceiling_now(struct cluster *c)
 {
 	uint32_t max = c->ceiling;
 
-	if (c == &clusters[1]) {
+	if (gov_policy != 1) {
+		if (!temp_fresh(c)) {
+			max = MIN(max, c->scion_safe);
+		} else if (c == &clusters[1] && gov_policy == 3) {
+			max = scion_limit(&scion_soc, big_cores);
+		}
+	} else if (c == &clusters[1]) {
 		max = MIN(max, big_online_limit(c->online));
 		if (c->temp_mc == NOT_READ_MC) {
 			max = MIN(max, NO_TEMP_BIG_MAX);
@@ -457,7 +463,7 @@ ceiling_now(struct cluster *c)
 	return c->levels[level_at_most(c, max)];
 }
 
-/* policy 2: a finger holds the touch floor: an event just now, or one down and not silent for too long */
+/* scion: a finger holds the touch floor: an event just now, or one down and not silent for too long */
 static bool
 touch_held(uint64_t now)
 {
@@ -469,11 +475,19 @@ touch_held(uint64_t now)
 	return last != 0 && boost_span != 0 && __atomic_load_n(&fingers, __ATOMIC_ACQUIRE) != 0 && now - last <= hold_span;
 }
 
-/* policy 2: a boost holds: the shorter window */
+/* scion: frames that are moving something. An idle screen presents ten a second all day (fb_tcoal's comment in the framebuffer). */
+static bool
+frames_moving(uint64_t now)
+{
+	return boost_on(__atomic_load_n(&frame_last, __ATOMIC_ACQUIRE), frame_span, now) &&
+	       __atomic_load_n(&frame_gap, __ATOMIC_RELAXED) <= moving_span;
+}
+
+/* scion: a boost holds: the shorter window */
 static bool
 interactive(uint64_t now)
 {
-	return touch_held(now) || boost_on(__atomic_load_n(&frame_last, __ATOMIC_ACQUIRE), frame_span, now);
+	return touch_held(now) || frames_moving(now);
 }
 
 /* the window now, in mach_absolute_time units */
@@ -482,7 +496,7 @@ window_span(uint64_t now)
 {
 	uint64_t span;
 
-	nanoseconds_to_absolutetime((uint64_t)(gov_policy == 2 && interactive(now) ? active_window_ms : window_ms) * NSEC_PER_MSEC,
+	nanoseconds_to_absolutetime((uint64_t)(gov_policy != 1 && interactive(now) ? BOOST_WINDOW_MS : window_ms) * NSEC_PER_MSEC,
 	    &span);
 	return span;
 }
@@ -493,14 +507,14 @@ boost_floor(struct cluster *c, uint64_t now)
 {
 	uint32_t khz = 0;
 
-	if (gov_policy == 2) {
+	if (gov_policy != 1) {
 		if (c->burst && boost_on(__atomic_load_n(&finger_edge, __ATOMIC_ACQUIRE), burst_span, now)) {
 			return ceiling_now(c);
 		}
 		if (touch_held(now)) {
-			khz = c->touch2_khz;
+			khz = c->scion_touch;
 		}
-		if (boost_on(__atomic_load_n(&frame_last, __ATOMIC_ACQUIRE), frame_span, now)) {
+		if (frames_moving(now)) {
 			khz = MAX(khz, c->frame_khz);
 		}
 		return khz == 0 ? 0 : MIN(c->levels[level_at_least(c, khz)], ceiling_now(c));
@@ -546,8 +560,7 @@ boost(uint64_t now)
 		if (c->cur != 0 && c->online != 0 && floor > c->cur) {
 			set_rate(c, floor, ceiling_now(c));
 			c->low_windows = 0;
-			c->low_ms = 0;
-			c->hold_want = 0;
+			c->rate = (struct scion_rate){ 0 };
 			if (i == 1) {
 				ramp_raise(mach_absolute_time());
 			}
@@ -591,8 +604,8 @@ read_back(struct cluster *c, uint32_t asked)
 	uint32_t got = 0;
 	int e;
 
-	/* policy 2: the APM has said it does not say (every run so far): no second request for each change */
-	if (gov_policy == 2 && c->asked) {
+	/* the APM has said it does not say (every run so far): no second request for each change */
+	if (gov_policy != 1 && c->asked) {
 		c->cur = asked;
 		return;
 	}
@@ -636,8 +649,6 @@ set_rate(struct cluster *c, uint32_t khz, uint32_t max)
 	nanoseconds_to_absolutetime((uint64_t)BOUNCE_MS * NSEC_PER_MSEC, &bounce);
 	if (e == 0 && khz > c->cur && c->last_down != 0 && began - c->last_down <= bounce) {
 		c->reversals++;
-		c->bounced = true;
-		c->last_bounce = began;
 	} else if (e == 0 && khz < c->cur) {
 		c->last_down = began;
 	}
@@ -723,6 +734,7 @@ measure(uint64_t span)
 	clusters[0].load = clusters[1].load = 0;
 	clusters[0].online = clusters[1].online = 0;
 	clusters[0].sum_now = clusters[1].sum_now = 0;
+	memset(clusters[1].core_load, 0, sizeof(clusters[1].core_load));
 	for (unsigned int i = 0; i < topology->num_cpus && i < MAX_CPUS; i++) {
 		uint32_t aff = (topology->cpus[i].phys_id >> 8) & 0xff;
 		uint64_t idle = 0, busy;
@@ -743,54 +755,67 @@ measure(uint64_t span)
 		c->online++;
 		c->load = MAX(c->load, (uint32_t)(100 * busy / span));
 		c->sum_now += (uint32_t)(100 * busy / span);
+		if (c == &clusters[1]) {
+			uint32_t load = (uint32_t)(100 * busy / span), at = MIN(c->online - 1, SCION_BIG_CORES - 1);
+
+			for (; at > 0 && c->core_load[at - 1] < load; at--) {
+				c->core_load[at] = c->core_load[at - 1];
+			}
+			c->core_load[at] = load;
+		}
 	}
 }
 
 /*
- * Policy 2 (see the head): as decide() going up; coming down, the highest of the rates wanted during the wait, and a longer
- * wait for a rate that keeps bouncing.
+ * This many M3s for the scheduler. To fewer: the rate is raised only afterwards. To more: the rate first, down to what that many
+ * may run at, and no core comes back while the APM has not taken it. The last M3s of the topology are the ones parked.
  */
 static void
-decide2(struct cluster *c, uint64_t now, uint32_t window)
+cores_set(uint32_t cores, uint64_t now)
 {
-	uint32_t max = ceiling_now(c), want, target, wait;
-	uint64_t calm;
+	const ml_topology_info_t *topology = ml_get_topology_info();
+	struct cluster *b = &clusters[1];
+	uint32_t mask = ~0u, m3 = 0;
 
-	want = c->levels[level_at_least(c, (uint64_t)c->cur * c->load / target_load)];
-	if (c->load >= SATURATED && c->touch_khz != 0) {
-		want = MAX(want, c->levels[level_at_least(c, c->touch_khz)]);
+	if (cores == big_cores) {
+		return;
 	}
-	target = MAX(want, c->floor);
-	target = MAX(target, c->boost_floor);
-	target = MIN(target, max);
-	if (target >= c->cur || c->cur > max) {
-		c->low_ms = 0;
-		c->hold_want = 0;
-		if (target != c->cur) {
-			set_rate(c, target, max);
+	if (cores > big_cores && b->cur > scion_limit(&scion_soc, cores)) {
+		set_rate(b, scion_limit(&scion_soc, cores), scion_limit(&scion_soc, cores));
+		if (b->cur > scion_limit(&scion_soc, cores)) {
+			return;
 		}
+	}
+	for (unsigned int i = 0; i < topology->num_cpus && i < MAX_CPUS; i++) {
+		if (((topology->cpus[i].phys_id >> 8) & 0xff) == b->affinity && ++m3 > cores) {
+			mask &= ~(1u << topology->cpus[i].cpu_id);
+		}
+	}
+	sched_perfcontrol_update_recommended_cores(mask);
+	if (cores < big_cores) {
+		few_since = now;
 	} else {
-		c->hold_want = MAX(c->hold_want, target);
-		c->low_ms += window;
-		if (c->hold_scale == 0) {
-			c->hold_scale = 1;
-		}
-		wait = down_ms * c->hold_scale;
-		if (c->low_ms >= wait) {
-			target = MIN(c->hold_want, max);
-			c->hold_want = 0;
-			c->low_ms = 0;
-			if (target < c->cur) {
-				set_rate(c, target, max);
-			}
-		}
+		few_time += now - few_since;
 	}
-	nanoseconds_to_absolutetime((uint64_t)CALM_MS * NSEC_PER_MSEC, &calm);
-	if (c->bounced) {
-		c->bounced = false;
-		c->hold_scale = MIN(MAX(c->hold_scale, 1) * 2, HOLD_SCALE_MOST);
-	} else if (c->hold_scale > 1 && now - c->last_bounce > calm) {
-		c->hold_scale = 1;
+	big_cores = cores;
+}
+
+/* scion's window for a cluster: the M3s' count, then the rate, under the ceiling that count allows */
+static void
+decide_scion(struct cluster *c, uint64_t now, uint32_t window)
+{
+	uint32_t max, target;
+
+	if (c == &clusters[1]) {
+		int32_t mc = hakios_exynos_tmu_zone_now_mc(c->tmu_zone);
+
+		cores_set(gov_policy != 3 || !temp_fresh(c) || !scion_temp_ok(mc, 0) || c->thermal != 0 ? SCION_BIG_CORES :
+		    scion_cores(&park, &scion_soc, big_cores, c->core_load, clusters[0].load, c->cur, mc, window), now);
+	}
+	max = ceiling_now(c);
+	target = scion_rate(&c->rate, c->levels, c->n, c->cur, c->load, MAX(c->floor, c->boost_floor), max, window);
+	if (target != c->cur) {
+		set_rate(c, target, max);
 	}
 }
 
@@ -810,9 +835,12 @@ decide(struct cluster *c, uint64_t now, uint32_t window)
 	if (c->online == 0 || c->cur == 0) {
 		return;
 	}
-	if (gov_policy == 2) {
-		decide2(c, now, window);
+	if (gov_policy != 1) {
+		decide_scion(c, now, window);
 		return;
+	}
+	if (c == &clusters[1]) {
+		cores_set(SCION_BIG_CORES, now);
 	}
 	want = c->levels[level_at_least(c, (uint64_t)c->cur * c->load / target_load)];
 	if (c->load >= SATURATED && c->touch_khz != 0) {
@@ -872,6 +900,7 @@ cool(struct cluster *c)
 		c->thermal = c->thermal > 1 && c->levels[c->thermal - 1] < c->ceiling ? c->thermal - 1 : 0;
 	}
 	if (c->thermal != before) {
+		c->cooled++;
 		say("cpufreq_gov: %s at %d.%d C: its ceiling %s %u kHz\n", c->name, c->temp_mc / 1000,
 		    (c->temp_mc < 0 ? -c->temp_mc : c->temp_mc) % 1000 / 100, c->thermal ? "now" : "back to",
 		    c->thermal ? c->levels[c->thermal] : c->ceiling);
@@ -939,22 +968,25 @@ stat_line(uint64_t seconds, uint64_t now, bool active)
 	if (since != 0 && __atomic_compare_exchange_n(&finger_since, &since, now, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 		fingered += now - since;
 	}
-	say("cpufreq_gov: stat %llu s: policy %u | big ms %llu %llu %llu %llu, lit ms %llu %llu | sat big %u lit %u of %u | rev big "
+	say("cpufreq_gov: stat %llu s: policy %u | big ms %llu %llu %llu %llu %llu, lit ms %llu %llu | sat big %u lit %u of %u | rev big "
 	    "%u lit %u | sum big %llu%% lit %llu%% | raise %u avg %llu us max %llu | top %u avg %llu ms max %llu, %u missed | acpm %u "
-	    "avg %llu us max %llu | fingers %llu ms\n", seconds, gov_policy, to_us(b->res[0]) / 1000, to_us(b->res[1]) / 1000,
-	    to_us(b->res[2]) / 1000, to_us(b->res[3]) / 1000, to_us(l->res[0]) / 1000, to_us(l->res[1] + l->res[2] + l->res[3]) / 1000,
+	    "avg %llu us max %llu | fingers %llu ms | few %llu ms | cooled %u\n", seconds, gov_policy, to_us(b->res[0]) / 1000,
+	    to_us(b->res[1]) / 1000, to_us(b->res[2]) / 1000, to_us(b->res[3]) / 1000, to_us(b->res[4]) / 1000, to_us(l->res[0]) / 1000,
+	    to_us(l->res[1] + l->res[2] + l->res[3] + l->res[4]) / 1000,
 	    b->sat, l->sat, b->stat_windows, b->reversals, l->reversals, b->stat_windows ? b->sum_sum / b->stat_windows : 0,
 	    l->stat_windows ? l->sum_sum / l->stat_windows : 0, nums.raise_n, nums.raise_n ? to_us(nums.raise_sum) / nums.raise_n : 0,
 	    to_us(nums.raise_max), nums.top_n, nums.top_n ? to_us(nums.top_sum) / nums.top_n / 1000 : 0, to_us(nums.top_max) / 1000,
 	    nums.top_missed, nums.acpm_n, nums.acpm_n ? to_us(nums.acpm_sum) / nums.acpm_n : 0, to_us(nums.acpm_max),
-	    to_us(fingered) / 1000);
+	    to_us(fingered) / 1000, to_us(few_time + (big_cores < SCION_BIG_CORES ? now - few_since : 0)) / 1000, b->cooled + l->cooled);
+	few_time = 0;
+	few_since = now;
 	for (int i = 0; i < 2; i++) {
 		struct cluster *c = &clusters[i];
 
 		for (int r = 0; r < RES_BUCKETS; r++) {
 			c->res[r] = 0;
 		}
-		c->sat = c->stat_windows = c->reversals = 0;
+		c->sat = c->stat_windows = c->reversals = c->cooled = 0;
 		c->sum_sum = 0;
 	}
 	nums = (typeof(nums)){ 0 };
@@ -1010,7 +1042,7 @@ gov_thread(void *arg __unused, wait_result_t wr __unused)
 		 */
 		for (;;) {
 			now = mach_absolute_time();
-			deadline = then + window_span(now);     /* (a boost starting shortens it, under policy 2) */
+			deadline = then + window_span(now);     /* (a boost starting shortens it, under scion) */
 			if (now >= deadline) {
 				break;
 			}
@@ -1081,7 +1113,7 @@ bool
 hakios_exynos_cpufreq_gov_start(void)
 {
 	uint32_t on = 0, value = 0, lit_max = 0, lit_min = 0, big_max = 0, big_min = 0;
-	uint32_t touch_big = 1469000, touch_lit = 1690000, frame_big = 1261000, touch2_lit = 1248000;
+	uint32_t touch_big = 1469000, touch_lit = 1690000, frame_big = 1261000;
 	thread_t thread;
 
 	if (!PE_parse_boot_argn("cpufreq_gov", &on, sizeof(on)) || on == 0) {
@@ -1113,23 +1145,10 @@ hakios_exynos_cpufreq_gov_start(void)
 	if (PE_parse_boot_argn("gov_down", &value, sizeof(value)) && value >= 1 && value <= 50) {
 		down_windows = value;
 	}
-	if (PE_parse_boot_argn("gov_policy", &value, sizeof(value)) && (value == 1 || value == 2)) {
+	if (PE_parse_boot_argn("gov_policy", &value, sizeof(value)) && value >= 1 && value <= 3) {
 		gov_policy = value;
 	}
 	(void)PE_parse_boot_argn("gov_stat", &gov_stat, sizeof(gov_stat));
-	if (PE_parse_boot_argn("gov_burst_ms", &value, sizeof(value)) && value <= 1000) {
-		burst_ms = value;
-	}
-	if (PE_parse_boot_argn("gov_hold_ms", &value, sizeof(value)) && value <= 30000) {
-		hold_ms = value;
-	}
-	(void)PE_parse_boot_argn("gov2_boost_lit", &touch2_lit, sizeof(touch2_lit));
-	if (PE_parse_boot_argn("gov2_win_ms", &value, sizeof(value)) && value >= 10 && value <= 200) {
-		active_window_ms = value;
-	}
-	if (PE_parse_boot_argn("gov2_down_ms", &value, sizeof(value)) && value >= 40 && value <= 2000) {
-		down_ms = value;
-	}
 	if (boost_ms == 0) {
 		touch_big = touch_lit = 0;
 	}
@@ -1141,11 +1160,9 @@ hakios_exynos_cpufreq_gov_start(void)
 	}
 	nanoseconds_to_absolutetime((uint64_t)boost_ms * NSEC_PER_MSEC, &boost_span);
 	nanoseconds_to_absolutetime((uint64_t)frame_ms * NSEC_PER_MSEC, &frame_span);
-	if (boost_ms == 0) {
-		burst_ms = hold_ms = 0;
-	}
-	nanoseconds_to_absolutetime((uint64_t)burst_ms * NSEC_PER_MSEC, &burst_span);
-	nanoseconds_to_absolutetime((uint64_t)hold_ms * NSEC_PER_MSEC, &hold_span);
+	nanoseconds_to_absolutetime((uint64_t)BURST_MS * NSEC_PER_MSEC, &burst_span);
+	nanoseconds_to_absolutetime((uint64_t)MOVING_MS * NSEC_PER_MSEC, &moving_span);
+	nanoseconds_to_absolutetime((uint64_t)HOLD_MS * NSEC_PER_MSEC, &hold_span);
 	if (!hakios_acpm_init(say)) {
 		say("cpufreq_gov: no ACPM: not started (and the fixed rates not set either)\n");
 		return true;
@@ -1161,13 +1178,16 @@ hakios_exynos_cpufreq_gov_start(void)
 	clusters[0].touch_khz = touch_lit;
 	clusters[1].touch_khz = touch_big;
 	clusters[1].frame_khz = frame_big;
-	clusters[0].touch2_khz = boost_ms ? touch2_lit : 0;
-	clusters[1].touch2_khz = touch_big;
-	clusters[1].burst = burst_ms != 0 && touch_big != 0;
-	clusters[0].res_khz[0] = clusters[0].res_khz[1] = clusters[0].res_khz[2] = 1053001;
+	clusters[0].scion_touch = scion_soc.lit_touch;
+	clusters[1].scion_touch = scion_soc.big_touch;
+	clusters[0].scion_safe = scion_soc.lit_safe;
+	clusters[1].scion_safe = scion_soc.big_safe;
+	clusters[1].burst = true;
+	clusters[0].res_khz[0] = clusters[0].res_khz[1] = clusters[0].res_khz[2] = clusters[0].res_khz[3] = 1053001;
 	clusters[1].res_khz[0] = 1261000;
 	clusters[1].res_khz[1] = 1469000;
 	clusters[1].res_khz[2] = 1794000;
+	clusters[1].res_khz[3] = 1794001;
 	for (int i = 0; i < 2; i++) {
 		struct cluster *c = &clusters[i];
 		uint32_t found = 0;
@@ -1187,9 +1207,7 @@ hakios_exynos_cpufreq_gov_start(void)
 	say("cpufreq_gov: boosts: touch big %u lit %u kHz for %u ms after the last finger event; frames big %u kHz while one "
 	    "came in the last %u ms; %u%% busy or more: the touch-boost rate at once; all within the ceilings above\n",
 	    boost_ms ? touch_big : 0, boost_ms ? touch_lit : 0, boost_ms, frame_ms ? frame_big : 0, frame_ms, SATURATED);
-	say("cpufreq_gov: policy %u (kern.hakios.gov_policy); policy 2: M3s to the ceiling for %u ms when a finger comes down; the "
-	    "touch floor (A55s %u kHz) held %u ms at most; %u ms windows while boosted; down after %u ms\n", gov_policy, burst_ms,
-	    clusters[0].touch2_khz, hold_ms, active_window_ms, down_ms);
+	say("cpufreq_gov: policy %u (kern.hakios.gov_policy; 3 scion, 2 scion without parking)\n", gov_policy);
 	if (kernel_thread_start(gov_thread, NULL, &thread) != KERN_SUCCESS) {
 		say("cpufreq_gov: no thread: the rates stay as they are\n");
 		return true;
