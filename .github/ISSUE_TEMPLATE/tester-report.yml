@@ -1,0 +1,65 @@
+name: Tester report
+description: You ran Scion on a phone. Tell us how it went, even if everything worked.
+labels: [tester-report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports from a Galaxy S9+ or Note9 are especially useful: nobody has run those yet.
+        **Never attach the installer, the system image or your IPSW.** They contain Apple's files.
+  - type: dropdown
+    id: model
+    attributes:
+      label: Phone model
+      options:
+        - Galaxy S9 (SM-G960F)
+        - Galaxy S9+ (SM-G965F)
+        - Galaxy Note9 (SM-N960F)
+        - Pixel 10 (VM)
+        - Other (say below)
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The two commit lines build-installer.sh prints at the end (scion-kernel and scion-installer), or the date you built it.
+  - type: dropdown
+    id: result
+    attributes:
+      label: How far did it get?
+      options:
+        - The installer failed
+        - Nothing on screen, or stuck before iOS
+        - "S9+/Note9 first run: came back to TWRP by itself"
+        - Lock screen or home screen
+        - Used it for a while
+    validations:
+      required: true
+  - type: checkboxes
+    id: worked
+    attributes:
+      label: What did you see working?
+      description: Leave a box empty if it failed or you didn't try it, and say which in the notes.
+      options:
+        - label: Touch and buttons
+        - label: Wi-Fi
+        - label: Speakers
+        - label: Microphone
+        - label: Front camera
+        - label: Bluetooth
+        - label: Battery level and charging
+        - label: Settings kept after a restart
+        - label: Sileo
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything else, such as unexpected restarts, heat, battery life or how long it ran.
+  - type: textarea
+    id: last_kmsg
+    attributes:
+      label: last_kmsg and logs
+      description: |
+        In TWRP: `cp /sys/fs/pstore/* /sdcard/ 2>/dev/null; cat /proc/last_kmsg > /sdcard/last_kmsg.txt`
+        Drag the files here. On an S9+ or Note9 this log is what we most need.
