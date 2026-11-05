@@ -536,7 +536,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ustacks_threads` | K | `user_exception_trace.c` | `CONFIG_USTACKS_THREADS` |  |
 | `ustacks_tname` | K | `user_exception_trace.c` | `CONFIG_USTACKS_TNAME` |  |
 
-## Loader (12)
+## Loader (11)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -548,12 +548,11 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `gamut` | L | `loader.c` | `CONFIG_GAMUT` |  |
 | `loader_platform` | L | `loader.c` | `CONFIG_LOADER_PLATFORM` |  |
 | `mfc` | KL | `hakios.exynos_mfc.c`, `loader.c` | `CONFIG_MFC` |  |
-| `recovery` | L | `loader.c` | `CONFIG_RECOVERY` |  |
+| `recovery` | L | `loader.c`, `wdt_exynos.c` | `CONFIG_RECOVERY` |  |
 | `serial` | L | `loader.c` | `CONFIG_SERIAL` |  |
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
-| `wdt` | L | `loader.c` | `CONFIG_WDT` |  |
 
-## User space (106)
+## User space (107)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -663,3 +662,4 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `virtio_console` | K | `hakios.virtio_console.c` | `CONFIG_VIRTIO_CONSOLE` |  |
 | `virtio_mmio` | K | `hakios.virtio.c` | `CONFIG_VIRTIO_MMIO` |  |
 | `virtio_poll` | K | `hakios.virtio.c` | `CONFIG_VIRTIO_POLL` |  |
+| `wdt` | L | `wdt_exynos.c` | `CONFIG_WDT` |  |

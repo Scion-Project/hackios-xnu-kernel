@@ -15,7 +15,8 @@ cp $K prebuilt/hakios-kernel
 if command -v lld-link >/dev/null && command -v clang >/dev/null; then
 	T=$(mktemp -d)
 	mkdir "$T/xnuloader"
-	cp xnuloader/loader.c xnuloader/efi.h xnuloader/build.sh xnuloader/mkidentity.sh xnuloader/mkidentity.py xnuloader/im4p.py "$T/xnuloader/"
+	cp xnuloader/*.c xnuloader/platform.h xnuloader/efi.h xnuloader/build.sh xnuloader/mkidentity.sh xnuloader/mkidentity.py xnuloader/im4p.py "$T/xnuloader/"
+	cp -R xnuloader/platforms "$T/xnuloader/"
 	( cd "$T/xnuloader" && PLACEHOLDER=1 ./mkidentity.sh >/dev/null && ./build.sh >/dev/null ) && cp "$T/xnuloader/loader.efi" prebuilt/loader.efi ||
 		echo "update-prebuilt.sh: the placeholder loader did not build; prebuilt/loader.efi kept"
 	rm -rf "$T"
