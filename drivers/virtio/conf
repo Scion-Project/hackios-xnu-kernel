@@ -1,0 +1,28 @@
+# drivers/virtio/conf: virtio over PCI and MMIO, and its devices, for QEMU and AVF.
+# docs/drivers-config.md says what each word means.
+
+driver VIRTIO_SOUND
+	file    bsd/dev/hakios.virtio_sound.c
+	help    QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only
+
+standard bsd/dev/hakios.pci.c
+	help    the AVF guest's PCI bus: crosvm's virtio devices are found on it (patch 1100)
+
+standard bsd/dev/hakios.virtio.c
+	help    the virtio transport (PCI and MMIO) every virtio driver goes through: queues, interrupts, configuration
+
+standard bsd/dev/hakios.virtio_console.c
+	help    the virtio console, the AVF guest's boot log to the host
+
+driver VIRTIO_INPUT
+	file    bsd/dev/hakios.virtio_input.c
+	help    QEMU's virtio tablet and keyboard as the touch screen and the buttons (virtio_input=1). QEMU only
+
+driver VIRTIO_NET
+	file    bsd/dev/hakios.virtio_net.c
+	requires WIFI_STA
+	help    QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only
+
+driver VIRTIO_BLK
+	file    bsd/dev/hakios.virtio_blk.c
+	help    a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only

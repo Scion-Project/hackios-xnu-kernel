@@ -1,0 +1,9 @@
+# drivers/media/conf: the Exynos video codec.
+# docs/drivers-config.md says what each word means.
+
+driver EXYNOS_MFC
+	file    bsd/dev/hakios.exynos_mfc.c
+	requires EXYNOS_ACPM
+	default n
+	help    the Exynos 9810's hardware video decoder, MFC v10 (mfc=N: 1 a look, 2 the block, 3 the firmware from the phone's
+	help    VENDOR partition, 4 a test stream decoded at boot and checked against ffmpeg's CRCs, 5 /dev/hakios-mfc). Off by default

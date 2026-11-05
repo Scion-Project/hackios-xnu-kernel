@@ -31,10 +31,6 @@ driver MIC
 	requires ADSP SOUND
 	help    the microphones, through the audio DSP (mic=N)
 
-driver VIRTIO_SOUND
-	file    bsd/dev/hakios.virtio_sound.c
-	help    QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only
-
 driver MAX98512
 	file    bsd/dev/hakios.max98512.c
 	requires EXYNOS_HSI2C

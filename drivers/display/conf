@@ -1,0 +1,20 @@
+# drivers/display/conf: the Exynos display path and the S9's panel, and the backlight service.
+# docs/drivers-config.md says what each word means.
+
+standard iokit/Kernel/hakios.backlight.cpp iokitcpp
+	help    the panel's brightness, whichever phone: panel drivers register (hakios_panel_register), the display service's
+	help    "brightness" reaches them; boot-arg backlight=1 publishes AppleARMBacklight and says what iOS sets on it,
+	help    backlight=2 also takes its brightness
+
+driver EXYNOS_DPU
+	file    bsd/dev/hakios.exynos_dpu.c
+	help    the Galaxy S9's display controller as the display's scan-out: frames flipped between buffers at the DECON's
+	help    refresh, no tearing (fb_flip=1), and the iPhone's picture enlarged to the panel by the DPP's VGF0 scaler
+	help    instead of the processor (fb_dpp=1); with fb_zc=1 the window server's display surfaces are made of its
+	help    pool and scanned out as they are, nothing copied; fps_log=1 reads its refresh count. Off unless asked for
+
+driver S6E3HA8
+	file    bsd/dev/hakios.s6e3ha8.c
+	help    the Galaxy S9's panel brightness through DSIM0's command FIFO: the gamma worked out from the panel's MTP as
+	help    Samsung's kernel does (hakios.s6e3ha8_gamma.h) and the AOR, Samsung's tables for each level (panel=1;
+	help    kern.hakios.brightness 0-255, panel_brightness=N at start; panel_gamma=0 the AOR alone)

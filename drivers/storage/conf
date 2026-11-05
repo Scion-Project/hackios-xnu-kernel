@@ -26,7 +26,3 @@ driver UFS
 	help    (USERDATA only, with ufs_write=1; never EFS, RADIO, BOOT, the GPTs, LBA 0-5, a boot unit); ufs_native_ro=1 all read only.
 	help    And a file of one of its ext4 partitions, read only (hakios.ext4.c: the S9's
 	help    VENDOR, where its Wi-Fi and Bluetooth firmware is, read at run time; tools/ext4-test.py)
-
-driver VIRTIO_BLK
-	file    bsd/dev/hakios.virtio_blk.c
-	help    a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only
