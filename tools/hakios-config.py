@@ -962,11 +962,19 @@ def master_hakios(built, sources):
     return "\n".join(lines) + "\n"
 
 
-def drivers_header(built, sources, device=""):
+def soc_header(root, soc):
+    """The SoC's numbers for sys/hakios.exynos_soc.h: '#define HAKIOS_SOC_HEADER ...' if a layer has them (<soc layer>/include/)."""
+    for kind, name, top in layers(root):
+        if kind == "soc" and name == soc and os.path.isfile(os.path.join(top, "include", "hakios.%s_soc.h" % soc)):
+            return "#define HAKIOS_SOC_HEADER       <sys/hakios.%s_soc.h>\n" % soc
+    return ""
+
+
+def drivers_header(built, sources, device="", soc=""):
     on = [d.name.lower() for d in DRIVERS if built[d.symbol]]
     return ("/* The drivers this kernel is built with: made by tools/hakios-config.py kernel from %s. Not part of the patch. */\n"
             "#define HAKIOS_DRIVERS_LIST     \"%s\"\n#define HAKIOS_DRIVERS_COUNT    %d\n#define HAKIOS_DRIVERS_CONFIG   \"%s\"\n"
-            "#define HAKIOS_DEVICE           \"%s\"\n" % (sources, " ".join(on), len(on), sources, device))
+            "#define HAKIOS_DEVICE           \"%s\"\n" % (sources, " ".join(on), len(on), sources, device)) + soc
 
 
 def write_if_changed(path, text):
@@ -1047,7 +1055,8 @@ def cmd_kernel(a):
     choice_changed = write_if_changed(os.path.join(tree, "config", "MASTER.hakios"), master_hakios(built, sources))
     if choice_changed:
         changed.append("config/MASTER.hakios")
-    if write_if_changed(os.path.join(tree, "bsd", "dev", "hakios.drivers.h"), drivers_header(built, sources, str(config.get("DEVICE", "")).strip('"'))):
+    if write_if_changed(os.path.join(tree, "bsd", "dev", "hakios.drivers.h"), drivers_header(built, sources, str(config.get("DEVICE", "")).strip('"'),
+                                                                                         soc_header(a.root, str(config.get("SOC", "")).strip('"')))):
         changed.append("bsd/dev/hakios.drivers.h")
     removed = stale_objects(tree) if choice_changed and os.path.isdir(os.path.join(tree, "BUILD", "obj")) else 0
     on = [d.name.lower() for d in DRIVERS if built[d.symbol]]
@@ -1068,6 +1077,16 @@ def cmd_external(a):
         if d.origin:
             for path, _tags in d.files:
                 print("%s\t%s" % (d.source(path), path))
+    # a SoC's numbers (<soc layer>/include/hakios.<soc>_*.h), which any layer's driver includes as <sys/...>
+    seen = set()
+    for kind, _name, top in layers(a.root):
+        where = os.path.join(top, "include")
+        if kind != "soc" or not os.path.isdir(where):
+            continue
+        for name in sorted(os.listdir(where)):
+            if name.endswith(".h") and name not in seen:
+                seen.add(name)
+                print("%s\tbsd/sys/%s" % (os.path.join(where, name), name))
     return 0
 
 

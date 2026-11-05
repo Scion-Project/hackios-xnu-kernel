@@ -34,7 +34,7 @@
 #include <pexpert/pexpert.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern kern_return_t thread_terminate(thread_t thread);
 
@@ -56,10 +56,10 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define ALIVE_PA        0x14050000UL    /* pinctrl@14050000: the ALIVE GPIO block */
+#define ALIVE_PA        EXYNOS_GPIO_ALIVE_PA    /* pinctrl@14050000: the ALIVE GPIO block */
 #define ALIVE_SIZE      0x1000
-#define BANK_GPA0       0x020
-#define BANK_GPA2       0x060
+#define BANK_GPA0       EXYNOS_KEYS_BANK_GPA0
+#define BANK_GPA2       EXYNOS_KEYS_BANK_GPA2
 #define BANK_CON        0x00
 #define BANK_DAT        0x04
 

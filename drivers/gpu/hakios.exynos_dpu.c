@@ -72,7 +72,7 @@
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
 #include <sys/hakios.exynos9810_mem.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_line(const char *line);
 extern void IOSleep(unsigned milliseconds);
@@ -106,9 +106,9 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define DECON_PA                0x16030000UL
-#define DPP_PA                  0x16020000UL
-#define DMA_PA                  0x16070000UL
+#define DECON_PA                EXYNOS_DECON_PA
+#define DPP_PA                  EXYNOS_DPP_PA
+#define DMA_PA                  EXYNOS_DPU_DMA_PA
 #define BLOCK_SIZE              0x7000          /* the common block and the six channels' */
 
 #define GLOBAL_CONTROL          0x000

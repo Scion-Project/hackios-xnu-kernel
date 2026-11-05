@@ -67,36 +67,36 @@
 #include <sys/errno.h>
 #include <sys/systm.h>
 #include <sys/hakios.exynos_acpm.h>
-
+#include <sys/hakios.exynos_soc.h>
 #include "hakios.usb_glue.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void delay(int usec);
 
-#define DWC3_PA                 0x10C00000u
+#define DWC3_PA                 ((uint32_t)EXYNOS_USB_DWC3_PA)
 #define DWC3_SIZE               0x10000u
-#define USBCON_PA               0x11100000u
+#define USBCON_PA               ((uint32_t)EXYNOS_USB_CON_PA)
 #define USBCON_SIZE             0x1000u         /* the dt's 0x200, mapped as a page */
-#define PMU_PA                  0x14060000u
-#define PMU_USB_PHY             0x072Cu         /* bit 0: out of isolation */
-#define PMU_USB_DP_PHY          0x0704u
+#define PMU_PA                  ((uint32_t)EXYNOS_PMU_PA)
+#define PMU_USB_PHY             EXYNOS_USB_PMU_USB_PHY         /* bit 0: out of isolation */
+#define PMU_USB_DP_PHY          EXYNOS_USB_PMU_USB_DP_PHY
 #define PMU_ISOL_BIT            (1u << 0)
-#define CMU_TOP_PA              0x1A240000u
-#define TOP_MUX_USB30DRD        0x1060u
-#define TOP_DIV_USB30DRD        0x1858u
-#define TOP_GATE_USB30DRD       0x2064u
-#define CMU_FSYS0_PA            0x11000000u
-#define FSYS0_USER_MUX          0x01E0u         /* MUX_SEL bit 4: 0 OSCCLK, 1 CMU_TOP's CLKCMU_FSYS0_USB30DRD */
-#define FSYS0_REFCLK_GATE       0x206Cu
-#define FSYS0_QCH_CTRL          0x304Cu
-#define FSYS0_QCH_LINK          0x3050u
-#define FSYS0_QCH_DPPHY         0x3054u
-#define FSYS0_QCH_PCS           0x3058u
+#define CMU_TOP_PA              ((uint32_t)EXYNOS_CMU_TOP_PA)
+#define TOP_MUX_USB30DRD        EXYNOS_USB_TOP_MUX_USB30DRD
+#define TOP_DIV_USB30DRD        EXYNOS_USB_TOP_DIV_USB30DRD
+#define TOP_GATE_USB30DRD       EXYNOS_USB_TOP_GATE_USB30DRD
+#define CMU_FSYS0_PA            ((uint32_t)EXYNOS_CMU_FSYS0_PA)
+#define FSYS0_USER_MUX          EXYNOS_USB_FSYS0_USER_MUX         /* MUX_SEL bit 4: 0 OSCCLK, 1 CMU_TOP's CLKCMU_FSYS0_USB30DRD */
+#define FSYS0_REFCLK_GATE       EXYNOS_USB_FSYS0_REFCLK_GATE
+#define FSYS0_QCH_CTRL          EXYNOS_USB_FSYS0_QCH_CTRL
+#define FSYS0_QCH_LINK          EXYNOS_USB_FSYS0_QCH_LINK
+#define FSYS0_QCH_DPPHY         EXYNOS_USB_FSYS0_QCH_DPPHY
+#define FSYS0_QCH_PCS           EXYNOS_USB_FSYS0_QCH_PCS
 #define GATE_MANUAL             (1u << 20)
 #define GATE_CG_VAL             (1u << 21)
 #define USER_MUX_SEL            (1u << 4)
-#define ANDROID_TOP_MUX         1u              /* DIV_PLL_SHARED0_DIV4 */
-#define ANDROID_TOP_DIV         7u
+#define ANDROID_TOP_MUX         EXYNOS_USB_ANDROID_TOP_MUX              /* DIV_PLL_SHARED0_DIV4 */
+#define ANDROID_TOP_DIV         EXYNOS_USB_ANDROID_TOP_DIV
 
 /* USBCON (phy-exynos-usb3p1-reg.h) */
 #define CTRL_VER                0x00u

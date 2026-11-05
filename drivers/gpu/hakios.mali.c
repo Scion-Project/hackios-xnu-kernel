@@ -162,7 +162,7 @@
 #include <stdarg.h>
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
-
+#include <sys/hakios.exynos_soc.h>
 #include "hakios.mali_va.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -195,9 +195,9 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define STARLTE_SOC_BASE        0x10000000UL    /* where the loader's platform "starlte" says the SoC's registers begin */
+#define STARLTE_SOC_BASE        EXYNOS_SOC_BASE_PA    /* where the loader's platform "starlte" says the SoC's registers begin */
 
-#define PMU_PHYS                0x14060000UL    /* the PMU */
+#define PMU_PHYS                EXYNOS_PMU_PA    /* the PMU */
 #define PMU_SIZE                0x5000
 #define PMU_G3D_CONFIGURATION   0x4040          /* 0x14064040: [3:0] = 0xF asks for pd-embedded_g3d on, 0 off */
 #define PMU_G3D_STATUS          0x4044          /* 0x14064044: [3:0] = 0xF when it is on */
@@ -212,7 +212,7 @@ static const struct { uint32_t at, mask, value; const char *name; } g3d_lpm[] = 
 	{ 0x15ac, 0x1u, 0x1u, "PWR_EMBEDDED_G3D" },
 };
 
-#define CMU_G3D_PHYS            0x17400000UL
+#define CMU_G3D_PHYS            EXYNOS_CMU_G3D_PA
 #define CMU_G3D_SIZE            0x2000          /* the bus dividers are at +0x1800 */
 #define PLL_LOCKTIME            0x000
 #define MUX_G3D_USER            0x100           /* PLL_CON0_MUX_CLKCMU_EMBEDDED_G3D_USER: MUX_SEL set on, cleared off */
@@ -249,9 +249,9 @@ static uint32_t mali_pll = 1;                   /* mali_pll=0: PLL_G3D as the bo
 #define DTZPC_SMC               0x82000410u     /* Samsung's SiP call, SMC_CMD_PREPARE_PD_ONOFF */
 #define DTZPC_SAVE              0u              /* before the domain's power goes */
 #define DTZPC_RESTORE           1u              /* after it has come */
-#define DTZPC_G3D               0x17410204u
+#define DTZPC_G3D               EXYNOS_MALI_DTZPC_G3D
 
-#define MALI_PHYS               0x17500000UL
+#define MALI_PHYS               EXYNOS_MALI_PA
 #define MALI_SIZE               0x5000
 #define MALI_G72                0x6221u         /* GPU_ID >> 16 */
 

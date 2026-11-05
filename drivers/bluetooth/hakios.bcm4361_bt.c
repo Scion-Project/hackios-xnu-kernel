@@ -144,7 +144,7 @@
 #include <sys/kpi_mbuf.h>
 #include <sys/sys_domain.h>
 #include <sys/sysctl.h>
-
+#include <sys/hakios.exynos_soc.h>
 #include "hakios.bcm_hci.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -172,12 +172,12 @@ say(const char *format, ...)
 
 /* ---- where ---------------------------------------------------------------------------------------------------- */
 
-#define UART_PA                 0x10840000UL
-#define CMU_PERIC1_PA           0x10800000UL
+#define UART_PA                 EXYNOS_UART_BT_PA
+#define CMU_PERIC1_PA           EXYNOS_CMU_PERIC1_PA
 #define CMU_PERIC1_SIZE         0x4000UL
-#define GPIO_ALIVE_PA           0x14050000UL
-#define GPIO_PERIC0_PA          0x10430000UL
-#define GPIO_PERIC1_PA          0x10830000UL
+#define GPIO_ALIVE_PA           EXYNOS_GPIO_ALIVE_PA
+#define GPIO_PERIC0_PA          EXYNOS_GPIO_PERIC0_PA
+#define GPIO_PERIC1_PA          EXYNOS_GPIO_PERIC1_PA
 
 /* UART_BT's clocks in CMU_PERIC1 */
 #define GATE_MANUAL             (1u << 20)
@@ -248,8 +248,8 @@ static const struct { uint16_t off; const char *name; } uart_gates[] = {
 
 static struct hakios_hsi2c bus = {
 	.name = "bt-i2c",
-	.regs_pa = 0x10930000,                  /* hsi2c@10930000: USI10_I2C of PERIC1 */
-	.usi_mode_pa = 0x1081103C,              /* USI10's mode word: I2C, as Android leaves it (the header) */
+	.regs_pa = EXYNOS_PERIC1_USI10_HSI2C1_PA,                  /* hsi2c@10930000: USI10_I2C of PERIC1 */
+	.usi_mode_pa = EXYNOS_PERIC1_USI10_MODE_PA,              /* USI10's mode word: I2C, as Android leaves it (the header) */
 	.cmu_pa = CMU_PERIC1_PA, .cmu_size = CMU_PERIC1_SIZE,
 	.gates = { 0x2050, 0x20A8, 0x210C, 0x2110 }, .ngates = 4,
 	.qch = 0x304C, .div = 0x1830, .mux = 0x0120,
@@ -1911,7 +1911,7 @@ hakios_bcm4361_bt_init(void)
 	if (!PE_parse_boot_argn("bt", &steps, sizeof(steps)) || steps == 0) {
 		return;
 	}
-	if (pe_arm_get_soc_base_phys() != 0x10000000) {
+	if (pe_arm_get_soc_base_phys() != EXYNOS_SOC_BASE_PA) {
 		return;                 /* not the Exynos 9810's (the POCO's bt=N is hakios.bt.c's) */
 	}
 	if (steps > 7) {

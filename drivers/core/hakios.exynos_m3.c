@@ -70,28 +70,28 @@ extern void hakios_esslog_start(void);
 #include <pexpert/pexpert.h>
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/systm.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_line(const char *line);
 
 int hakios_psci_cpu_on_prepare(int cpu, uint32_t mpidr);
 
-#define PMU_PA                  0x14060000UL
+#define PMU_PA                  EXYNOS_PMU_PA
 #define PMU_SIZE                0x3000
 
-#define PMU_RESET_DIS_WDT       0x0414          /* CPU_RESET_DISABLE_FROM_WDTRESET */
-#define PMU_RESET_DIS_SOFT      0x041C          /* CPU_RESET_DISABLE_FROM_SOFTRESET */
-#define PMU_RESET_SEQ_CONFIG    0x0500          /* RESET_SEQUENCER_CONFIGURATION */
-#define PMU_CL1_CPU_CONFIG(n)   (0x2000 + 8 * (n))
-#define PMU_CL1_CPU_STATUS(n)   (0x2004 + 8 * (n))
-#define PMU_CL0_CPU_STATUS(n)   (0x2024 + 8 * (n))
-#define PMU_CL1_NONCPU_CONFIG   0x2040
-#define PMU_CL1_NONCPU_STATUS   0x2044
-#define PMU_CL0_NONCPU_STATUS   0x204C
-#define PMU_CL1_L2_STATUS       0x2380          /* MEMORY_CLUSTER1_NONCPU_STATUS */
+#define PMU_RESET_DIS_WDT       EXYNOS_M3_PMU_RESET_DIS_WDT          /* CPU_RESET_DISABLE_FROM_WDTRESET */
+#define PMU_RESET_DIS_SOFT      EXYNOS_M3_PMU_RESET_DIS_SOFT          /* CPU_RESET_DISABLE_FROM_SOFTRESET */
+#define PMU_RESET_SEQ_CONFIG    EXYNOS_M3_PMU_RESET_SEQ_CONFIG          /* RESET_SEQUENCER_CONFIGURATION */
+#define PMU_CL1_CPU_CONFIG(n)   EXYNOS_M3_PMU_CL1_CPU_CONFIG(n)
+#define PMU_CL1_CPU_STATUS(n)   EXYNOS_M3_PMU_CL1_CPU_STATUS(n)
+#define PMU_CL0_CPU_STATUS(n)   EXYNOS_M3_PMU_CL0_CPU_STATUS(n)
+#define PMU_CL1_NONCPU_CONFIG   EXYNOS_M3_PMU_CL1_NONCPU_CONFIG
+#define PMU_CL1_NONCPU_STATUS   EXYNOS_M3_PMU_CL1_NONCPU_STATUS
+#define PMU_CL0_NONCPU_STATUS   EXYNOS_M3_PMU_CL0_NONCPU_STATUS
+#define PMU_CL1_L2_STATUS       EXYNOS_M3_PMU_CL1_L2_STATUS          /* MEMORY_CLUSTER1_NONCPU_STATUS */
 
-#define ACPM_DVFS_CPUCL0        2u
-#define ACPM_DVFS_CPUCL1        3u
+#define ACPM_DVFS_CPUCL0        EXYNOS_M3_ACPM_DVFS_CPUCL0
+#define ACPM_DVFS_CPUCL1        EXYNOS_M3_ACPM_DVFS_CPUCL1
 #define S2MPS18_PMIC            1u              /* the PMIC's block: ACPM's "type" */
 #define S2MPS18_B2CTRL          0x1F
 #define S2MPS18_B2OUT1          0x20

@@ -67,7 +67,7 @@
 #include <sys/hakios.exynos_pcie.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern kern_return_t thread_terminate(thread_t thread);
@@ -90,25 +90,25 @@ say(const char *format, ...)
 
 /* ---- where ---------------------------------------------------------------------------------------------------- */
 
-#define ELBI_PA         0x116A0000UL
-#define PHY_PA          0x116D0000UL
-#define PCS_PA          0x116C0000UL
-#define SYSREG_PA       0x11411000UL    /* the page; channel 0's words are +0x44 and +0x50 */
-#define DBI_PA          0x11700000UL
-#define CFG_PA          0x127FE000UL    /* the first half of "config": type 0 requests (cfg0) */
+#define ELBI_PA         EXYNOS_PCIE_ELBI_PA
+#define PHY_PA          EXYNOS_PCIE_PHY_PA
+#define PCS_PA          EXYNOS_PCIE_PCS_PA
+#define SYSREG_PA       EXYNOS_SYSREG_FSYS1_PAGE2_PA    /* the page; channel 0's words are +0x44 and +0x50 */
+#define DBI_PA          EXYNOS_PCIE_DBI_PA
+#define CFG_PA          EXYNOS_PCIE_CFG_PA    /* the first half of "config": type 0 requests (cfg0) */
 #define CFG_SIZE        0x1000UL
-#define MEM_PA          0x11800000UL    /* "ranges": 32-bit memory, bus address = CPU address */
+#define MEM_PA          EXYNOS_PCIE_MEM_PA    /* "ranges": 32-bit memory, bus address = CPU address */
 #define MEM_SIZE        0x00FF0000UL
-#define PMU_PA          0x14060000UL
-#define CMU_FSYS1_PA    0x11400000UL
-#define CMU_TOP_PA      0x1A242000UL    /* the page of CMU_TOP (0x1A240000) with GATE_CLKCMU_FSYS1_PCIE at +0x74 */
-#define GPIO_PERIC0_PA  0x10430000UL
-#define GPIO_FSYS1_PA   0x11430000UL
-#define GPIO_ALIVE_PA   0x14050000UL
+#define PMU_PA          EXYNOS_PMU_PA
+#define CMU_FSYS1_PA    EXYNOS_CMU_FSYS1_PA
+#define CMU_TOP_PA      EXYNOS_CMU_TOP_PAGE2_PA    /* the page of CMU_TOP (0x1A240000) with GATE_CLKCMU_FSYS1_PCIE at +0x74 */
+#define GPIO_PERIC0_PA  EXYNOS_GPIO_PERIC0_PA
+#define GPIO_FSYS1_PA   EXYNOS_GPIO_FSYS1_PA
+#define GPIO_ALIVE_PA   EXYNOS_GPIO_ALIVE_PA
 
 /* the PMU */
-#define PMU_PCIE_PHY_CONTROL    0x71C   /* channel 0; bit 0: 1 = the PHY out of isolation */
-#define PMU_WAKEUP_MASK         0x610   /* bit 5: channel 0's wake-up masked (read only here) */
+#define PMU_PCIE_PHY_CONTROL    EXYNOS_PCIE_PMU_PCIE_PHY_CONTROL   /* channel 0; bit 0: 1 = the PHY out of isolation */
+#define PMU_WAKEUP_MASK         EXYNOS_PCIE_PMU_WAKEUP_MASK   /* bit 5: channel 0's wake-up masked (read only here) */
 
 /* ELBI (pci-exynos.h) */
 #define ELBI_IRQ_PULSE          0x000   /* the latch: INTA bit 0, INTB 2, INTC 4, INTD 6 (asserts); one clears */
@@ -723,11 +723,11 @@ hakios_exynos_pcie_intx(bool on)
  * target abort received, bit 27 one signalled, bit 30 SERR, bit 31 a parity error) and the PCIe device status of both
  * (bits 0-3: correctable, non-fatal, fatal, unsupported request).
  */
-#define SYSMMU_PA       0x11420000UL
-#define SYSREG_FSYS1_PA 0x11410000UL
+#define SYSMMU_PA       EXYNOS_PCIE_SYSMMU_PA
+#define SYSREG_FSYS1_PA EXYNOS_SYSREG_FSYS1_PA
 #define SHARABILITY     0x700
 #define SHARABLE_CH0    (3u << 8)
-#define GATE_SYSMMU     0x2098
+#define GATE_SYSMMU     EXYNOS_PCIE_GATE_SYSMMU
 static const struct { uint16_t gate, qch; const char *name; } dma_path[] = {
 	{ 0x2040, 0x3034, "PCIE_GEN2 MSTR_ACLK" }, { 0x20ac, 0, "XIU_D_FSYS1" }, { GATE_SYSMMU, 0x306c, "SYSMMU_FSYS1" },
 	{ 0x2078, 0x3060, "PPMU_FSYS1" }, { 0x2018, 0x3014, "BTM_FSYS1" }, { 0x202c, 0x3024, "LHS_ACEL_D_FSYS1" },
@@ -1006,7 +1006,7 @@ hakios_exynos_pcie_init(void)
 	if (!PE_parse_boot_argn("wifi_pcie", &steps, sizeof(steps)) || steps == 0) {
 		return;
 	}
-	if (pe_arm_get_soc_base_phys() != 0x10000000) {
+	if (pe_arm_get_soc_base_phys() != EXYNOS_SOC_BASE_PA) {
 		return;                 /* not the Exynos 9810 */
 	}
 	if (kernel_thread_start(wifi_pcie_thread, (void *)(uintptr_t)steps, &thread) == KERN_SUCCESS) {

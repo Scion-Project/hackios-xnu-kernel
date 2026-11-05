@@ -75,7 +75,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <mach/vm_param.h>
-
+#include <sys/hakios.exynos_soc.h>
 #include <sys/hakios.exynos9810_mem.h>
 #include <sys/hakios.exynos_acpm.h>
 #include <sys/hakios.input.h>
@@ -103,35 +103,35 @@ say(const char *format, ...)
 	return printf("%s", line);
 }
 
-#define MFC_PA                  0x178D0000UL
+#define MFC_PA                  EXYNOS_MFC_PA
 #define MFC_SIZE                0x10000UL
-#define PMU_PA                  0x14060000UL
+#define PMU_PA                  EXYNOS_PMU_PA
 #define PMU_SIZE                0x5000UL
-#define PMU_CONFIG              0x4068
-#define PMU_STATUS              0x406C
+#define PMU_CONFIG              EXYNOS_MFC_PMU_CONFIG
+#define PMU_STATUS              EXYNOS_MFC_PMU_STATUS
 #define PD_ON                   0xFu
-#define CMU_TOP_PA              0x1A240000UL
-#define CMU_BUSC_PA             0x1A200000UL
-#define CMU_MFC_PA              0x17800000UL
+#define CMU_TOP_PA              EXYNOS_CMU_TOP_PA
+#define CMU_BUSC_PA             EXYNOS_CMU_BUSC_PA
+#define CMU_MFC_PA              EXYNOS_CMU_MFC_PA
 #define CMU_SIZE                0x8000UL
-#define TOP_MUX                 0x109C
-#define TOP_DIV                 0x1898
-#define TOP_GATE                0x20A4
+#define TOP_MUX                 EXYNOS_MFC_TOP_MUX
+#define TOP_DIV                 EXYNOS_MFC_TOP_DIV
+#define TOP_GATE                EXYNOS_MFC_TOP_GATE
 #define TOP_BUSY                (1u << 16)
 #define GATE_MANUAL             (1u << 20)
 #define GATE_ON                 (1u << 21)
 #define MFC_BUS_USER            0x0100
-#define MFC_QCH_FIRST           0x300C
-#define MFC_QCH_LAST            0x3058
+#define MFC_QCH_FIRST           EXYNOS_MFC_MFC_QCH_FIRST
+#define MFC_QCH_LAST            EXYNOS_MFC_MFC_QCH_LAST
 #define QCH_REQ                 (1u << 1)
-#define SYSMMU0_PA              0x17880000UL
-#define SYSMMU1_PA              0x178A0000UL
+#define SYSMMU0_PA              EXYNOS_MFC_SYSMMU0_PA
+#define SYSMMU1_PA              EXYNOS_MFC_SYSMMU1_PA
 #define SYSMMU_SIZE             0x9000UL
 #define MMU_CTRL                0x0000
 #define MMU_VERSION             0x0014
 #define DTZPC_SMC               0x82000410u
 #define DTZPC_RESTORE           1
-#define DTZPC_MFC               0x17810204u
+#define DTZPC_MFC               EXYNOS_MFC_DTZPC_MFC
 
 /* the block's registers (s5p_mfc_regs_v10.h) */
 #define RISC_ON                 0x0000
@@ -367,7 +367,7 @@ static uint32_t last_error;
  * mfc_irq=1: the block's interrupt instead of polling: its handler takes the answer and quiets the block, this waits on a wake-up. The register is still
  * looked at every 10 ms of waiting, so an interrupt that does not come costs time and is counted, not a dead session.
  */
-#define MFC_INTID       (356 + 32)      /* the device tree's SPI 356 */
+#define MFC_INTID       EXYNOS_MFC_MFC_INTID      /* the device tree's SPI 356 */
 extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid), void *context);
 static uint32_t irq_wanted;
 static bool irq_on;

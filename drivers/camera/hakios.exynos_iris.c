@@ -175,7 +175,7 @@
 #include <sys/hakios.input.h>
 #include <sys/hakios.physmap.h>
 #include <sys/systm.h>
-
+#include <sys/hakios.exynos_soc.h>
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern kern_return_t thread_terminate(thread_t thread);
@@ -271,33 +271,33 @@ cache_flush(vm_offset_t start, uint32_t bytes)
 
 static struct hakios_hsi2c sensor_bus = {
 	.name = "iris-5f1",
-	.regs_pa = 0x108D0000,                  /* hsi2c@108D0000: USI07_I2C of PERIC1 (hsi2c19) */
-	.usi_mode_pa = 0x10811024,              /* usi@10811024: its mode word ("i2c") */
-	.cmu_pa = 0x10800000, .cmu_size = 0x4000,       /* CMU_PERIC1 */
+	.regs_pa = EXYNOS_PERIC1_USI07_HSI2C1_PA,                  /* hsi2c@108D0000: USI07_I2C of PERIC1 (hsi2c19) */
+	.usi_mode_pa = EXYNOS_PERIC1_USI07_MODE_PA,              /* usi@10811024: its mode word ("i2c") */
+	.cmu_pa = EXYNOS_CMU_PERIC1_PA, .cmu_size = 0x4000,       /* CMU_PERIC1 */
 	/* GATE_CLK_PERIC1_USI_I2C, RSTNSYNC_CLK_PERIC1_USI07_I2C, USI07_I2C IPCLK, USI07_I2C PCLK */
 	.gates = { 0x2050, 0x2090, 0x20DC, 0x20E0 }, .ngates = 4,
 	.qch = 0x3034, .div = 0x1830, .mux = 0x0120,       /* QCH_CON_USI07_I2C_QCH; DIV_CLK_PERIC1_USI_I2C */
-	.pins_pa = 0x10830000,                  /* gpp4: SCL pin 6, SDA pin 7, function 3 */
+	.pins_pa = EXYNOS_GPIO_PERIC1_PA,                  /* gpp4: SCL pin 6, SDA pin 7, function 3 */
 	.pins_mask = 0xff000000u, .pins_want = 0x33000000u,
 	.ipclk_mhz = 400, .bus_hz = 400000,     /* clock-frequency = <400000> */
 };
 
 static struct hakios_hsi2c pb02_bus = {
 	.name = "iris-s2mpb02",
-	.regs_pa = 0x10920000,                  /* hsi2c@10920000: USI10 of PERIC1 (as hakios.exynos_camera.c) */
-	.usi_mode_pa = 0x1081103C,
-	.cmu_pa = 0x10800000, .cmu_size = 0x4000,
+	.regs_pa = EXYNOS_PERIC1_USI10_HSI2C0_PA,                  /* hsi2c@10920000: USI10 of PERIC1 (as hakios.exynos_camera.c) */
+	.usi_mode_pa = EXYNOS_PERIC1_USI10_MODE_PA,
+	.cmu_pa = EXYNOS_CMU_PERIC1_PA, .cmu_size = 0x4000,
 	.gates = { 0x2048, 0x20AC, 0x2114, 0x2118 }, .ngates = 4,
 	.qch = 0x3050, .div = 0x1828, .mux = 0x0120,
-	.pins_pa = 0x10830040,                  /* gpp6: SCL pin 0, SDA pin 1, function 2 */
+	.pins_pa = EXYNOS_GPIO_PERIC1_PA + 0x40,                  /* gpp6: SCL pin 0, SDA pin 1, function 2 */
 	.pins_mask = 0xffu, .pins_want = 0x22u,
 	.ipclk_mhz = 400, .bus_hz = 100000,
 };
 
 /* ---- pins and the clock ---- */
 
-#define GPIO_PERIC0_PA  0x10430000UL
-#define GPIO_PERIC1_PA  0x10830000UL
+#define GPIO_PERIC0_PA  EXYNOS_GPIO_PERIC0_PA
+#define GPIO_PERIC1_PA  EXYNOS_GPIO_PERIC1_PA
 #define GPG0            0x080           /* PERIC0: iris_en, pin 7 */
 #define GPG2            0x0C0           /* PERIC0: the reset, pin 3 */
 #define GPC1            0x080           /* PERIC1: MCLK2, pin 6 */
@@ -307,11 +307,11 @@ static struct hakios_hsi2c pb02_bus = {
 #define MCLK_PIN        6
 #define PIN_DRV         0x10            /* CON, DAT, PUD, then DRV: 2 bits a pin (MCLK2's function state: drive 1) */
 
-#define CMU_TOP_PA      0x1A240000UL
-#define CIS2_MUX        0x1020
-#define CIS2_DIV        0x181C
-#define CIS2_GATE       0x2020
-#define CIS2_QCH        0x300C
+#define CMU_TOP_PA      EXYNOS_CMU_TOP_PA
+#define CIS2_MUX        EXYNOS_IRIS_CIS2_MUX
+#define CIS2_DIV        EXYNOS_IRIS_CIS2_DIV
+#define CIS2_GATE       EXYNOS_IRIS_CIS2_GATE
+#define CIS2_QCH        EXYNOS_IRIS_CIS2_QCH
 #define GATE_MANUAL     (1u << 20)
 #define GATE_ON         (1u << 21)
 
@@ -705,38 +705,38 @@ sensor_otp(void)
 
 /* ---- the ISPPRE domain, CSIS3, its D-PHY, its WDMA (as hakios.exynos_camera.c, with CSIS3's addresses) ---- */
 
-#define PMU_PA                  0x14060000UL
+#define PMU_PA                  EXYNOS_PMU_PA
 #define PMU_SIZE                0x5000
-#define PMU_DPHY_ISO            0x0730          /* bit 0: the M0S4S2's isolation bypassed (CSIS1's and CSIS3's) */
-#define PMU_DPU_STATUS          0x4024
-#define PMU_ISPPRE_CONFIG       0x4048
-#define PMU_ISPPRE_STATUS       0x404C
-#define PMU_ISPPRE_MEMORY       0x4730
+#define PMU_DPHY_ISO            EXYNOS_IRIS_PMU_DPHY_ISO          /* bit 0: the M0S4S2's isolation bypassed (CSIS1's and CSIS3's) */
+#define PMU_DPU_STATUS          EXYNOS_IRIS_PMU_DPU_STATUS
+#define PMU_ISPPRE_CONFIG       EXYNOS_IRIS_PMU_ISPPRE_CONFIG
+#define PMU_ISPPRE_STATUS       EXYNOS_IRIS_PMU_ISPPRE_STATUS
+#define PMU_ISPPRE_MEMORY       EXYNOS_IRIS_PMU_ISPPRE_MEMORY
 #define PD_ON                   0xfu
 #define PD_WAIT_US              10000u
 #define ISO_BYPASS              1u
 #define DTZPC_SMC               0x82000410u
 #define DTZPC_SAVE              0u
 #define DTZPC_RESTORE           1u
-#define DTZPC_ISPPRE            0x16210004u
+#define DTZPC_ISPPRE            EXYNOS_IRIS_DTZPC_ISPPRE
 
-#define CMU_ISPPRE_PA           0x16200000UL
+#define CMU_ISPPRE_PA           EXYNOS_CMU_ISPPRE_PA
 #define ISPPRE_BUS_USER         0x0100
 static const uint32_t qchs[] = { 0x3020, 0x3024, 0x3028, 0x302C, 0x3038, 0x305C };     /* CSIS0-3, PDP DMA, SysMMU */
 #define NQCHS                   (sizeof(qchs) / sizeof(qchs[0]))
-#define QCH_CSIS3               0x302C
+#define QCH_CSIS3               EXYNOS_IRIS_QCH_CSIS3
 #define QCH_REQ                 (1u << 1)
-#define TOP_ISPPRE_MUX          0x1094
-#define TOP_ISPPRE_DIV          0x1890
-#define TOP_ISPPRE_GATE         0x209C
+#define TOP_ISPPRE_MUX          EXYNOS_IRIS_TOP_ISPPRE_MUX
+#define TOP_ISPPRE_DIV          EXYNOS_IRIS_TOP_ISPPRE_DIV
+#define TOP_ISPPRE_GATE         EXYNOS_IRIS_TOP_ISPPRE_GATE
 #define TOP_BUSY                (1u << 16)
 #define ISPPRE_MUX_SHARED1_DIV4 1u
 
-#define SYSREG_ISPPRE_PA        0x16210000UL
+#define SYSREG_ISPPRE_PA        EXYNOS_SYSREG_ISPPRE_PA
 #define DPHY_RESET              0x0500
 #define DPHY_RESET_CSIS3        (1u << 3)
 
-#define CSIS3_PA                0x16260000UL
+#define CSIS3_PA                EXYNOS_CSIS3_PA
 #define CSIS_VERSION            0x000
 #define CSIS_CMN_CTRL           0x004
 #define CSIS_INT_MSK0           0x010
@@ -762,7 +762,7 @@ static const uint32_t qchs[] = { 0x3020, 0x3024, 0x3028, 0x302C, 0x3038, 0x305C 
 #define HW_FORMAT_RAW8          0x2A
 #define HW_FORMAT_UNKNOWN       0x3F
 
-#define CSIS3_PHY_PA            0x16190000UL
+#define CSIS3_PHY_PA            EXYNOS_CSIS3_PHY_PA
 #define DPHY_DCTRL_SC_02        0x1084          /* [7:0] CLKSETTLECTL */
 #define DPHY_ACTRL_SC_06        0x1018
 #define DPHY_LANE(n)            (0x400u * (n))
@@ -773,7 +773,7 @@ static const uint32_t qchs[] = { 0x3020, 0x3024, 0x3028, 0x302C, 0x3038, 0x305C 
 #define SETTLE_2041             10
 #define SKEW_DLYSEL_2G          2
 
-#define CSIS3_WDMA_PA           0x162E0000UL
+#define CSIS3_WDMA_PA           EXYNOS_CSIS3_WDMA_PA
 #define DMA_CTRL                0x000
 #define DMA_FMT                 0x004
 #define DMA_ADDR(n)             (0x010 + 4 * (n))
@@ -795,7 +795,7 @@ static const uint32_t qchs[] = { 0x3020, 0x3024, 0x3028, 0x302C, 0x3038, 0x305C 
 #define DMA_FRM_END0            (1u << 8)
 #define DMA_ERROR               (1u << 12)
 
-#define CSIS_DMA_PA             0x162F0000UL
+#define CSIS_DMA_PA             EXYNOS_CSIS_DMA_PA
 #define CDMA_ARB_PRI            0x00
 #define CDMA_CTRL               0x08
 #define CDMA_SRAM_SPLIT         0x0C
@@ -1419,10 +1419,10 @@ smc_end(void)
 
 /* ---- fp_s9=N: whose is the rear fingerprint sensor's SPI1 (the head: THE FINGERPRINT'S BUS) ---- */
 
-#define CMU_PERIC0_PA           0x10400000UL
-#define SYSREG_PERIC0_PA        0x10410000UL
+#define CMU_PERIC0_PA           EXYNOS_CMU_PERIC0_PA
+#define SYSREG_PERIC0_PA        EXYNOS_SYSREG_PERIC0_PA
 #define USI00_SW_CONF           0x1004          /* usi@10411004: 1 UART, 2 SPI, 4 I2C */
-#define FP_SPI_PA               0x10450000UL    /* spi@10450000, SPI1 */
+#define FP_SPI_PA               EXYNOS_PERIC0_USI00_SPI_PA    /* spi@10450000, SPI1 */
 #define SPI_CH_CFG              0x00
 #define SPI_MODE_CFG            0x08
 #define SPI_STATUS              0x14
@@ -1688,7 +1688,7 @@ hakios_exynos_iris_init(void)
 	if (steps == 0 && fp_level == 0) {
 		return;
 	}
-	if (pe_arm_get_soc_base_phys() != 0x10000000) {
+	if (pe_arm_get_soc_base_phys() != EXYNOS_SOC_BASE_PA) {
 		say("exynos_iris: not an Exynos 9810 (the SoC's registers are not at 0x10000000): nothing done\n");
 		return;
 	}

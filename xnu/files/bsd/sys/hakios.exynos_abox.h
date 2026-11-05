@@ -28,7 +28,7 @@
 #define _SYS_HAKIOS_EXYNOS_ABOX_H_
 
 #include <stdint.h>
-
+#include <sys/hakios.exynos_soc.h>
 #define HAKIOS_ABOX_RATE                48000u
 #define HAKIOS_ABOX_SLOT_BITS           16u
 #define HAKIOS_ABOX_CHANNELS            2u
@@ -62,34 +62,34 @@ bool hakios_abox_headphones(bool on);
 /*
  * ---- Where things are (FACT: the S9's device tree, exynos9810-starlte_eur_open_26.dts) ----------------------------------
  */
-#define ABOX_SFR_PA             0x17C50000u     /* abox@17c50000 "sfr", 64 KB */
-#define ABOX_SYSREG_PA          0x17C10000u     /* ... "sysreg": SYSREG_AUD */
-#define ABOX_SRAM_PA            0x17D00000u     /* ... "sram", 0x31000 bytes: the CPU's memory (unused in bypass) */
-#define ABOX_GICD_PA            0x17CF1000u     /* abox_gic: ABOX's own GIC-400 (unused in bypass) */
-#define ABOX_CMU_PA             0x17C00000u     /* CMU_AUD (cal-if/exynos9810/cmucal-sfr.c: SFR_BLOCK(AUD), 0x8000) */
-#define ABOX_GPIO_PA            0x17C60000u     /* pinctrl@17C60000: gpb0, gpb1, gpb2 (GPIO_AUD) */
-#define ABOX_SYSMMU_PA          0x17E00000u     /* sysmmu@17E00000, "Abox", ABOX's iommus */
-#define ABOX_PMU_PA             0x14060000u     /* the PMU (system-controller@14060000) */
+#define ABOX_SFR_PA             ((uint32_t)EXYNOS_ABOX_SFR_PA)     /* abox@17c50000 "sfr", 64 KB */
+#define ABOX_SYSREG_PA          ((uint32_t)EXYNOS_ABOX_SYSREG_PA)     /* ... "sysreg": SYSREG_AUD */
+#define ABOX_SRAM_PA            ((uint32_t)EXYNOS_ABOX_SRAM_PA)     /* ... "sram", 0x31000 bytes: the CPU's memory (unused in bypass) */
+#define ABOX_GICD_PA            ((uint32_t)EXYNOS_ABOX_GICD_PA)     /* abox_gic: ABOX's own GIC-400 (unused in bypass) */
+#define ABOX_CMU_PA             ((uint32_t)EXYNOS_CMU_AUD_PA)     /* CMU_AUD (cal-if/exynos9810/cmucal-sfr.c: SFR_BLOCK(AUD), 0x8000) */
+#define ABOX_GPIO_PA            ((uint32_t)EXYNOS_GPIO_AUD_PA)     /* pinctrl@17C60000: gpb0, gpb1, gpb2 (GPIO_AUD) */
+#define ABOX_SYSMMU_PA          ((uint32_t)EXYNOS_ABOX_SYSMMU_PA)     /* sysmmu@17E00000, "Abox", ABOX's iommus */
+#define ABOX_PMU_PA             ((uint32_t)EXYNOS_PMU_PA)     /* the PMU (system-controller@14060000) */
 /* abox_rmem (the device tree's reserved-memory for ABOX, 0xFB200000 + 0x2800000): below 4 GB, kept out of UEFI and XNU
  * by the loader (starlte's keep_out); the ring goes at its start when no RAM below 4 GB is the kernel's */
 #define ABOX_RMEM_PA            0xFB200000u
 #define ABOX_RMEM_SIZE          0x02800000u
-#define ABOX_DTZPC_ARG          0x17C10204u     /* pd-aud's need_smc: the DTZPC restore's argument */
+#define ABOX_DTZPC_ARG          EXYNOS_ABOX_ABOX_DTZPC_ARG     /* pd-aud's need_smc: the DTZPC restore's argument */
 
 /*
  * ---- PMU (FACT) -----------------------------------------------------------------------------------------------------------
  * cal-if/exynos9810/flexpmu_cal_local_exynos9810.h (aud_on, aud_off) and abox.c (the CONFIG_SOC_EXYNOS9810 block)
  */
-#define PMU_AUD_CONFIGURATION   0x4000          /* [3:0] = 0xF on, 0 off */
-#define PMU_AUD_STATUS          0x4004          /* [3:0] == 0xF when on, 0 when off */
-#define PMU_GPIO_MODE_ABOX      0x1424          /* GPIO_MODE_ABOX_SYS_PWR_REG: bit 0, set by abox_pad_retention() both ways */
-#define PMU_PAD_RETENTION_ABOX  0x4170          /* PAD_RETENTION_ABOX_OPTION: bit 28 set releases the pads' retention */
+#define PMU_AUD_CONFIGURATION   EXYNOS_ABOX_PMU_AUD_CONFIGURATION          /* [3:0] = 0xF on, 0 off */
+#define PMU_AUD_STATUS          EXYNOS_ABOX_PMU_AUD_STATUS          /* [3:0] == 0xF when on, 0 when off */
+#define PMU_GPIO_MODE_ABOX      EXYNOS_ABOX_PMU_GPIO_MODE_ABOX          /* GPIO_MODE_ABOX_SYS_PWR_REG: bit 0, set by abox_pad_retention() both ways */
+#define PMU_PAD_RETENTION_ABOX  EXYNOS_ABOX_PMU_PAD_RETENTION_ABOX          /* PAD_RETENTION_ABOX_OPTION: bit 28 set releases the pads' retention */
 #define PMU_PAD_RELEASE         (1u << 28)
-#define PMU_ABOX_CPU_CONFIG     0x415C          /* ABOX_CPU_CONFIGURATION: bit 0 the CPU's local power */
-#define PMU_ABOX_CPU_STATUS     0x4160          /* bit 0: the CPU's power is on */
-#define PMU_ABOX_CPU_OPTION     0x4164          /* bit 28: the CPU released (ENABLE_CPU) */
-#define PMU_ABOX_CPU_ENABLE     (1u << 28)
-#define PMU_ABOX_CPU_STANDBY    0x3804          /* bit 29 WFE, bit 28 WFI */
+#define PMU_ABOX_CPU_CONFIG     EXYNOS_ABOX_PMU_ABOX_CPU_CONFIG          /* ABOX_CPU_CONFIGURATION: bit 0 the CPU's local power */
+#define PMU_ABOX_CPU_STATUS     EXYNOS_ABOX_PMU_ABOX_CPU_STATUS          /* bit 0: the CPU's power is on */
+#define PMU_ABOX_CPU_OPTION     EXYNOS_ABOX_PMU_ABOX_CPU_OPTION          /* bit 28: the CPU released (ENABLE_CPU) */
+#define PMU_ABOX_CPU_ENABLE     EXYNOS_ABOX_PMU_ABOX_CPU_ENABLE
+#define PMU_ABOX_CPU_STANDBY    EXYNOS_ABOX_PMU_ABOX_CPU_STANDBY          /* bit 29 WFE, bit 28 WFI */
 /* After AUD_STATUS reads on, the CAL makes SMC 0x82000410 (SMC_CMD_PREAPRE_PD_ONOFF, linux/smc.h) with (1, 0x17C10204):
  * the DTZPC restore (exynos-el3_mon.c, exynos_pd_tz_restore), before any of the block's registers is touched. */
 #define ABOX_SMC_PD_ONOFF       0x82000410u
@@ -99,9 +99,9 @@ bool hakios_abox_headphones(bool on);
  * PLL_AUD is a PLL_1031X fed by OSCCLK_AUD, 26 MHz: Fout = 26 MHz x (M + K/65536) / (P x 2^S). For 48 kHz the BSP's
  * table has M 45, P 1, S 0, K 24319: 1179.648040 MHz (abox.h AUD_PLL_RATE_HZ_FOR_48000).
  */
-#define CMU_PLL_LOCKTIME        0x0000          /* [19:0]: P x 500 for a PLL with K (pll_spec.c: PLL_1031X flock_time 500) */
-#define CMU_PLL_CON0            0x0120          /* S [2:0], P [13:8], M [25:16], MUX_SEL 4, MUX_BUSY 7, STABLE 29, ENABLE 31 */
-#define CMU_PLL_CON3            0x018C          /* K [15:0], signed */
+#define CMU_PLL_LOCKTIME        EXYNOS_ABOX_CMU_PLL_LOCKTIME          /* [19:0]: P x 500 for a PLL with K (pll_spec.c: PLL_1031X flock_time 500) */
+#define CMU_PLL_CON0            EXYNOS_ABOX_CMU_PLL_CON0          /* S [2:0], P [13:8], M [25:16], MUX_SEL 4, MUX_BUSY 7, STABLE 29, ENABLE 31 */
+#define CMU_PLL_CON3            EXYNOS_ABOX_CMU_PLL_CON3          /* K [15:0], signed */
 #define PLL_MUX_SEL             (1u << 4)       /* 1: the PLL's output, 0: OSCCLK (ra.h) */
 #define PLL_MUX_BUSY            (1u << 7)
 #define PLL_STABLE              (1u << 29)
@@ -112,14 +112,14 @@ bool hakios_abox_headphones(bool on);
 #define PLL_AUD_K               24319u
 #define PLL_AUD_LOCK            500u
 /* dividers: DIVRATIO (the ratio less one) in the low bits, BUSY bit 16, ENABLE_AUTOMATIC_CLKGATING bit 28 */
-#define CMU_DIV_AUDIF           0x1800          /* [8:0] DIV_CLK_AUD_AUDIF from PLL_AUD: abox's "audif" */
-#define CMU_DIV_BUS             0x1804          /* [2:0] DIV_CLK_AUD_BUS from PLL_AUD: ABOX's ACLK, abox's "bus" */
-#define CMU_DIV_BUSP            0x1808          /* [1:0] DIV_CLK_AUD_BUSP from DIV_CLK_AUD_BUS: the block's APB */
-#define CMU_DIV_PLL             0x1820          /* [3:0] DIV_CLK_AUD_PLL: toward the CPU's clock (not touched) */
-#define CMU_DIV_UAIF1           0x1828          /* [8:0] DIV_CLK_AUD_UAIF1 from DIV_CLK_AUD_AUDIF: UAIF1's BCLK */
-#define CMU_MUX_CPU             0x1000          /* MUX_CLK_AUD_CPU (not touched) */
-#define CMU_MUX_UAIF1           0x1008          /* [0]: 0 DIV_CLK_AUD_UAIF1, 1 CLKIO_AUD_UAIF1 (the pin); BUSY 16 */
-#define CMU_DIV_BUSY            (1u << 16)
+#define CMU_DIV_AUDIF           EXYNOS_ABOX_CMU_DIV_AUDIF          /* [8:0] DIV_CLK_AUD_AUDIF from PLL_AUD: abox's "audif" */
+#define CMU_DIV_BUS             EXYNOS_ABOX_CMU_DIV_BUS          /* [2:0] DIV_CLK_AUD_BUS from PLL_AUD: ABOX's ACLK, abox's "bus" */
+#define CMU_DIV_BUSP            EXYNOS_ABOX_CMU_DIV_BUSP          /* [1:0] DIV_CLK_AUD_BUSP from DIV_CLK_AUD_BUS: the block's APB */
+#define CMU_DIV_PLL             EXYNOS_ABOX_CMU_DIV_PLL          /* [3:0] DIV_CLK_AUD_PLL: toward the CPU's clock (not touched) */
+#define CMU_DIV_UAIF1           EXYNOS_ABOX_CMU_DIV_UAIF1          /* [8:0] DIV_CLK_AUD_UAIF1 from DIV_CLK_AUD_AUDIF: UAIF1's BCLK */
+#define CMU_MUX_CPU             EXYNOS_ABOX_CMU_MUX_CPU          /* MUX_CLK_AUD_CPU (not touched) */
+#define CMU_MUX_UAIF1           EXYNOS_ABOX_CMU_MUX_UAIF1          /* [0]: 0 DIV_CLK_AUD_UAIF1, 1 CLKIO_AUD_UAIF1 (the pin); BUSY 16 */
+#define CMU_DIV_BUSY            EXYNOS_ABOX_CMU_DIV_BUSY
 /* rates: the CAL's common table for BLK_AUD (cmucal-vclklut.c blk_aud_lut_params) has DIV_CLK_AUD_BUS 1, BUSP 2; abox.c's
  * abox_register_bclk_usage() with uaif_max_div 512 (device tree) asks AUDIF for 384000 x 96 x 2 = 73.728 MHz (ratio 16), and
  * abox_if.c BCLK = rate x channels x width = 1.536 MHz (ratio 48 under AUDIF) */
