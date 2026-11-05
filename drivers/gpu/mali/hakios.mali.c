@@ -29,9 +29,6 @@
  * are from Linux panfrost (drivers/gpu/drm/panfrost/panfrost_regs.h). The power, clock and rail sequence follows the
  * S9+ mainline port (github.com/SheroAbi/galaxy-s9plus-mainline-linux, GPL-2.0) and Samsung's GPL-2.0 Exynos 9810
  * kernel. Those were read for facts and not copied.
- *
- * Status: not yet run on the phone. The S9+ port has run panfrost on this SoC from S-Boot's state. The job code has
- * run only on the MT6768's G52.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
