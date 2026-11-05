@@ -350,6 +350,8 @@ struct ufshc_soc {
 	uint64_t dma_lo, dma_hi;                /* where UEFI's descriptors can be (followed only there); 0, 0: anywhere */
 	uint64_t carve_pa, carve_size;          /* own mode's memory: physical memory XNU does not manage; 0: XNU's own */
 	uint32_t default_slots;                 /* own mode: requests in flight at once unless ufs_native_slots= says; 0: 15 */
+	uint32_t carve_wc;                      /* carve_size: its first bytes are the list's and the descriptors', write-combined;
+	                                         * the slots' buffers after them cached (hc_carve_cached), or all of it write-combined with 0 */
 	bool cnr;                               /* has UTRLCNR below UFSHCI 3.0 (cleared per slot as 3.0's) */
 	const char *(*look)(bool link);         /* own mode: the blocks beside the controller, read only; why not */
 	const char *(*adopt)(void);             /* own mode: the vendor's registers looked at and kept; why not */
@@ -376,15 +378,16 @@ static const struct ufshc_soc hc_socs[] = {
 	{
 		.name = "exynos9810", .pa = EXYNOS_UFS_HCI_PA, .size = 0x200, .vs_pa = EXYNOS_UFS_VS_PA, .vs_size = 0x200,
 		.prdt_bytes = true, .prd_entry = 128, .prd_max = 4096, .rsp_offset = 1024, .rsp_length = 1024,
-		.prdt_offset = 2048, .clear_with_ones = true, .dma32 = true, .slot_buffer = 64u << 10,
+		.prdt_offset = 2048, .clear_with_ones = true, .dma32 = true, .slot_buffer = 256u << 10,
 		.default_step = 1, .dma_lo = 0x80000000ULL, .dma_hi = 0x100000000ULL,
-		.carve_pa = UFSHC_S9_MEM_PA, .carve_size = UFSHC_S9_MEM_BYTES,
+		.carve_pa = UFSHC_S9_MEM_PA, .carve_size = UFSHC_S9_MEM_BYTES, .carve_wc = 512u << 10,
 		/*
-		 * One request at a time, as Silicium's UfsDxe does (ufs-ro4 on the phone: 57 reads, two in flight at
-		 * once, then slot 4's 64 KB read never cleared its doorbell bit, with IS's UTRCS set and its bit in
-		 * 0x64 (UTRLCNR, which this 2.1 controller has: it read 00000014) set). UTRLCNR cleared per slot.
+		 * Four requests at a time. Two in flight once looked like a hang (ufs-ro4: slot 4's read never cleared its doorbell
+		 * bit, its UTRCS and UTRLCNR bit set): that is how this controller often ends any request (ufs-rw8), which hc_done_sign
+		 * now reads from the descriptor. 221,980 reads at 4 in flight, no error; twice to three times the reads a second of
+		 * one at a time, and more slots gain nothing: this flash peaks near 460 MB/s. ufs_native_slots=1 goes back.
 		 */
-		.default_slots = 1, .cnr = true,
+		.default_slots = 4, .cnr = true,
 		.look = exynos_look, .adopt = exynos_adopt, .nexus = exynos_nexus, .give_back = exynos_give_back,
 	},
 };
@@ -1383,6 +1386,14 @@ hc_off(void)
  */
 static void hc_stuck(struct hc_slot *s);
 static uint32_t hc_spin_us = 2000;              /* boot-arg ufs_native_spin */
+/*
+ * The S9's slot buffers: every byte of a read is copied out of one, since the controller reaches only below 4 GB and XNU's
+ * RAM is above it. Write-combined memory is not cached, so that copy reads it a load at a time; cached, it streams, and
+ * hc_rw's FlushPoC_DcacheRegion before the doorbell and after the completion are what keep it right (the list and the
+ * descriptors stay write-combined). Boot-arg ufs_native_cached=0: all of it write-combined, as it was.
+ */
+static bool hc_carve_cached;
+static uint64_t hc_copy_ticks, hc_flush_ticks;  /* hc_rw: time copying out of or into the slots' buffers, and flushing them */
 static uint64_t hc_sleeps, hc_cleared, hc_finish_failed;
 enum { HC_BY_DB, HC_BY_CNR, HC_BY_OCS, HC_BY_N };
 static const char *const hc_by_name[HC_BY_N] = { "its doorbell bit clear", "its UTRLCNR bit", "its descriptor and response" };
@@ -1906,11 +1917,18 @@ hc_rw(uint8_t lun, uint64_t offset, uint8_t *buf, uint64_t len, bool write)
 				take = len;
 			}
 			hc_make_rw(&c, lun, (uint8_t)s->number, first, (uint32_t)blocks, write);
-			if (write) {
-				memcpy(s->data, buf, (size_t)take);
+			{
+				uint64_t t0 = mach_absolute_time(), t1;
+
+				if (write) {
+					memcpy(s->data, buf, (size_t)take);
+				}
+				t1 = mach_absolute_time();
+				/* nothing of the buffer is left in a cache to be written back over what the controller writes */
+				FlushPoC_DcacheRegion((vm_offset_t)s->data, (size_t)blocks * BLOCK);
+				os_atomic_add(&hc_copy_ticks, t1 - t0, relaxed);
+				os_atomic_add(&hc_flush_ticks, mach_absolute_time() - t1, relaxed);
 			}
-			/* nothing of the buffer is left in a cache to be written back over what the controller writes */
-			FlushPoC_DcacheRegion((vm_offset_t)s->data, (size_t)blocks * BLOCK);
 			e = hc_place(s, &c, (uint32_t)blocks * BLOCK);
 			if (e == 0) {
 				e = hc_ring(s, true);
@@ -1945,7 +1963,11 @@ hc_rw(uint8_t lun, uint64_t offset, uint8_t *buf, uint64_t len, bool write)
 			    e->lba + e->blocks - 1);
 			r = hc_complete(e->slot, lun, what, false);
 			if (r == 0) {
+				uint64_t t0 = mach_absolute_time(), t1;
+
 				FlushPoC_DcacheRegion((vm_offset_t)e->slot->data, (size_t)e->blocks * BLOCK);
+				t1 = mach_absolute_time();
+				os_atomic_add(&hc_flush_ticks, t1 - t0, relaxed);
 				os_atomic_inc(&hc_requests, relaxed);
 				os_atomic_add(&hc_bytes, (uint64_t)e->blocks * BLOCK, relaxed);
 				hc_speed_add(e->slot, write, (uint64_t)e->blocks * BLOCK);
@@ -1954,6 +1976,7 @@ hc_rw(uint8_t lun, uint64_t offset, uint8_t *buf, uint64_t len, bool write)
 					os_atomic_add(&hc_write_bytes, (uint64_t)e->blocks * BLOCK, relaxed);
 				} else if (error == 0) {
 					memcpy(e->to, e->slot->data + e->skip, e->take);
+					os_atomic_add(&hc_copy_ticks, mach_absolute_time() - t1, relaxed);
 				}
 			} else if (error == 0) {
 				error = r == EAGAIN ? EIO : r;
@@ -2631,6 +2654,14 @@ hc_report(const char *when, bool late)
 		    hc_flight_hist[2], hc_flight_hist[3], hc_flight_hist[4], hc_flight_hist[5]);
 		(late ? hc_say_late : hc_say)("ufs: native: %s: waiters spin %u us, then sleep in 1 ms steps: %llu slept\n",
 		    when, hc_spin_us, hc_sleeps);
+		{
+			uint64_t copy_ns, flush_ns;
+
+			absolutetime_to_nanoseconds(hc_copy_ticks, &copy_ns);
+			absolutetime_to_nanoseconds(hc_flush_ticks, &flush_ns);
+			(late ? hc_say_late : hc_say)("ufs: native: %s: slots' buffers %s: %llu ms copying, %llu ms flushing\n",
+			    when, hc_carve_cached ? "cached" : "not cached", copy_ns / 1000000, flush_ns / 1000000);
+		}
 		(late ? hc_say_late : hc_say)("ufs: native: %s: completion: done by the doorbell bit %llu, by UTRLCNR %llu "
 		    "(%s), by the descriptor and response %llu; doorbell bits cleared with UTRLCLR %llu; not finished at once "
 		    "%llu\n", when, hc_done_by[HC_BY_DB], hc_done_by[HC_BY_CNR], hc_cnr_broken ? "NOT USED: a bit did not clear" :
@@ -2673,6 +2704,12 @@ hc_boot_args(void)
 	PE_parse_boot_argn("ufs_native_leave", &hc_leave, sizeof(hc_leave));
 	PE_parse_boot_argn("ufs_native_hang", &hc_hang_after, sizeof(hc_hang_after));
 	PE_parse_boot_argn("ufs_native_spin", &hc_spin_us, sizeof(hc_spin_us));
+	{
+		uint32_t cached = hc_soc->carve_wc != 0;
+
+		PE_parse_boot_argn("ufs_native_cached", &cached, sizeof(cached));
+		hc_carve_cached = cached != 0 && hc_soc->carve_wc != 0;
+	}
 	if (hc_spin_us > 5000) {
 		hc_spin_us = 5000;
 	}
@@ -3112,32 +3149,50 @@ hc_look_uefi(uint64_t list_pa, uint32_t nutrs)
 
 /* this kernel's memory the controller reaches: physically contiguous, below 4 GB if it must be */
 static vm_offset_t
-hc_dma_alloc(vm_size_t size, uint64_t *pa, bool dma32)
+hc_dma_alloc(vm_size_t size, uint64_t *pa, bool dma32, bool data)
 {
 	vm_offset_t va = 0;
 	ppnum_t max = dma32 ? (ppnum_t)((4ULL << 30) >> PAGE_SHIFT) - 1 : 0;
 
 	size = round_page(size);
 	if (hc_soc->carve_size != 0) {
-		/* the SoC's memory outside XNU's RAM (the S9's: see UFSHC_S9_MEM_PA), handed out in order, never given back */
-		static vm_offset_t carve_va;
-		static uint64_t carve_used;
-		uint64_t lo = hc_soc->carve_pa, n = hc_soc->carve_size;
+		/*
+		 * The SoC's memory outside XNU's RAM (the S9's: see UFSHC_S9_MEM_PA), handed out in order, never given back.
+		 * Two parts, each mapped one way only: the list's and the descriptors' write-combined, the slots' buffers
+		 * cached when carve_wc says so (see hc_carve_cached).
+		 */
+		static vm_offset_t carve_va, carve_data_va;
+		static uint64_t carve_used, carve_data_used;
+		uint64_t lo = hc_soc->carve_pa, n = hc_soc->carve_size, wc = hc_carve_cached ? hc_soc->carve_wc : n;
 
 		if (carve_va == 0) {
 			if (pmap_valid_address(lo) || pmap_valid_address(lo + n - 1) || (dma32 && lo + n > (4ULL << 30))) {
 				hc_say("ufs: own: memory %llx-%llx: XNU's RAM, or not below 4 GB: not used\n", lo, lo + n - 1);
 				return 0;
 			}
-			carve_va = hakios_physmap_wc(lo, n);
-			if (carve_va == 0) {
+			carve_va = hakios_physmap_wc(lo, wc);
+			if (carve_va != 0 && wc < n) {
+				carve_data_va = hakios_physmap_cached(lo + wc, n - wc);
+			}
+			if (carve_va == 0 || (wc < n && carve_data_va == 0)) {
 				hc_say("ufs: own: memory %llx-%llx: could not be mapped\n", lo, lo + n - 1);
 				return 0;
 			}
-			hc_say("ufs: own: memory: %llu KB at %llx, physical memory outside XNU's RAM, mapped write-combined\n",
-			    n >> 10, lo);
+			hc_say("ufs: own: memory: %llu KB at %llx, physical memory outside XNU's RAM: %llu KB mapped write-combined, "
+			    "%llu KB cached\n", n >> 10, lo, wc >> 10, (n - wc) >> 10);
 		}
-		if (carve_used + size > n) {
+		if (data && wc < n) {
+			if (carve_data_used + size > n - wc) {
+				return 0;
+			}
+			va = carve_data_va + (vm_offset_t)carve_data_used;
+			*pa = lo + wc + carve_data_used;
+			carve_data_used += size;
+			bzero((void *)va, size);
+			FlushPoC_DcacheRegion(va, size);
+			return va;
+		}
+		if (carve_used + size > wc) {
 			return 0;
 		}
 		va = carve_va + (vm_offset_t)carve_used;
@@ -3524,7 +3579,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 
 	/* the list (a page), the command descriptors, a page for slot 0's data; the slots' buffers */
 	hc_ucd_size = (hc_soc->prdt_offset + hc_soc->prd_entry * (hc_slot_buffer / hc_soc->prd_max + 1) + 127) & ~127u;
-	list = hc_dma_alloc(PAGE_SIZE + SLOTS * hc_ucd_size + PAGE_SIZE, &list_pa, dma32);
+	list = hc_dma_alloc(PAGE_SIZE + SLOTS * hc_ucd_size + PAGE_SIZE, &list_pa, dma32, false);
 	if (list == 0) {
 		hc_not_used(dma32 ? "no memory for the list below 4 GB" : "no memory for the list");
 		return false;
@@ -3553,7 +3608,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 			s->data_pa = list_pa + PAGE_SIZE + SLOTS * hc_ucd_size;
 			s->data_size = PAGE_SIZE;
 		} else if (i % 2 == 0 && i < hc_nutrs && nfree < slots) {
-			vm_offset_t data = hc_dma_alloc(hc_slot_buffer, &s->data_pa, dma32);
+			vm_offset_t data = hc_dma_alloc(hc_slot_buffer, &s->data_pa, dma32, true);
 
 			if (data == 0) {
 				hc_say("ufs: own: no memory for slot %u's buffer: %u slots it is\n", i, nfree);

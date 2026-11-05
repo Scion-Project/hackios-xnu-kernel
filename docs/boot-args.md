@@ -373,7 +373,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `touchscreen` | K | `hakios.buttons.c`, `hakios.goodix.c` | `CONFIG_TOUCHSCREEN` |  |
 | `virtio_input` | K | `hakios.virtio_input.c` | `CONFIG_VIRTIO_INPUT` |  |
 
-## Storage and APFS (53)
+## Storage and APFS (54)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -412,6 +412,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_native` | KL | `hakios.ufs.c`, `hakios.ufshc.c`, `loader.c` | `CONFIG_UFS_NATIVE` |  |
 | `ufs_native_bench` | K | `hakios.ufs.c` | `CONFIG_UFS_NATIVE_BENCH` |  |
 | `ufs_native_buffer` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_BUFFER` |  |
+| `ufs_native_cached` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_CACHED` |  |
 | `ufs_native_check` | K | `hakios.ufs.c` | `CONFIG_UFS_NATIVE_CHECK` |  |
 | `ufs_native_hang` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_HANG` |  |
 | `ufs_native_leave` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_LEAVE` |  |

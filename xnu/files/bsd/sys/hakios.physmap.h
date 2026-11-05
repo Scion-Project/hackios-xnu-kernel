@@ -7,6 +7,8 @@
  * registers no room: a panic). Mapped once and kept for the run: the descriptor and its map are never released.
  * The virtual address, or 0 if it cannot be mapped. The camera's frames and UFS's own mode use it; the display's
  * scan-out buffers (MiniIOMobileFramebuffer.cpp) still map theirs themselves, the same way.
+ * hakios_physmap_cached(pa, bytes): the same, cached: a buffer read in bulk, whose owner does the cache maintenance
+ * around each DMA. A range is mapped one way only.
  */
 #ifndef _SYS_HAKIOS_PHYSMAP_H_
 #define _SYS_HAKIOS_PHYSMAP_H_
@@ -18,5 +20,9 @@
 extern "C"
 #endif
 vm_offset_t hakios_physmap_wc(uint64_t pa, uint64_t bytes);
+#ifdef __cplusplus
+extern "C"
+#endif
+vm_offset_t hakios_physmap_cached(uint64_t pa, uint64_t bytes);
 
 #endif /* _SYS_HAKIOS_PHYSMAP_H_ */
