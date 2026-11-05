@@ -13,7 +13,7 @@ input/touch bsd/dev/hakios.focaltech_fw.h
 input    bsd/dev/hakios.input.c
 input    bsd/dev/hakios.buttons.c
 input    bsd/dev/hakios.exynos_keys.c
-input    bsd/dev/hakios.s6sy761.c
+input/touch bsd/dev/hakios.s6sy761.c
 input/ssp bsd/dev/hakios.ssp.c
 input/ssp bsd/dev/hakios.bcm_shub.h
 virtio   bsd/dev/hakios.virtio_input.c
@@ -61,7 +61,7 @@ audio/codec bsd/dev/hakios.cs47l93.c
 power    bsd/dev/hakios.battery.c
 power    iokit/Kernel/hakios.battery.cpp
 power/max77705 bsd/dev/hakios.max77705.c
-power    bsd/dev/hakios.exynos_cpufreq.c
+power/exynos bsd/dev/hakios.exynos_cpufreq.c
 power/exynos bsd/dev/hakios.exynos_tmu.c
 power/exynos bsd/dev/hakios.exynos_tmu.h
 power/exynos bsd/dev/hakios.exynos_poweroff.c
