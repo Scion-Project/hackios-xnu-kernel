@@ -1334,7 +1334,7 @@ IOMobileFramebuffer::reportFrameTimes(void)
 	fFramePauses = fFrameLongest = 0;
 }
 
-/* the S9's CPU governor's frame boost (drivers/power/hakios.exynos_cpufreq.c; a stub elsewhere): a stamp, no wait */
+/* the S9's CPU governor's frame boost (drivers/power/exynos/hakios.exynos_cpufreq.c; a stub elsewhere): a stamp, no wait */
 extern "C" void hakios_exynos_cpufreq_frame(void);
 
 /* SwapEnd: the swap is handed to the thread that puts frames on the panel, as soon as that has no other waiting. */
