@@ -57,6 +57,7 @@
 #include <sys/hakios.exynos_hsi2c.h>
 #include <sys/hakios.exynos_soc.h>
 #include <sys/hakios.input.h>
+#include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/hakios.log.h>
 #include <sys/hakios.xnu.h>
@@ -153,6 +154,12 @@ extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation
 /* s6sy761_trace=N: the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate */
 static uint32_t trace_left;
 
+/* kern.hakios.touch_events: finger events read from the chip since the start (the first-boot report, userland/src/selftest.c) */
+static uint32_t touch_events;
+SYSCTL_DECL(_kern_hakios);
+SYSCTL_UINT(_kern_hakios, OID_AUTO, touch_events, CTLFLAG_RD | CTLFLAG_LOCKED, &touch_events, 0,
+    "finger events read from the S6SY761");
+
 /* the CPU governor's held touch boost (gov_policy=2): how many fingers are down, after a change */
 static void
 fingers_changed(void)
@@ -193,6 +200,7 @@ handle_event(const uint8_t *e)
 		id--;
 		/* the CPU governor's touch boost (cpufreq_gov=1): a stamp and, at the first event, its thread woken; no wait */
 		hakios_exynos_cpufreq_touch();
+		touch_events++;
 		if (trace_left > 0) {
 			trace_left--;
 			say("s6sy761: t %llu ms: finger %u %s at %u,%u\n", (unsigned long long)(mach_absolute_time() / 24000), id,
