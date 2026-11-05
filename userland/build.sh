@@ -277,6 +277,8 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		$DYN -o obj/rwtouch src/rwtouch.c
 		# the kernel's thermal pressure passed on to iOS (src/thermald.c)
 		$DYN -o obj/thermald src/thermald.c
+		# the first boot's report (src/selftest.c, com.hakios.selftest.plist)
+		$DYN -o obj/selftest src/selftest.c
 		# the package manager's prefix on a kept /private/var (src/jb_seed.c, com.hakios.jbseed.plist)
 		$DYN -o obj/jb_seed src/jb_seed.c
 		# the stand-in for keybagd's XPC service: setting, changing and removing a passcode reaches the
@@ -507,6 +509,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/mali_test ] && cp obj/mali_test root/bin/      # (likewise)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
+	[ -f obj/selftest ] && cp obj/selftest root/bin/
 	[ -f obj/jb_seed ] && cp obj/jb_seed root/bin/
 	[ -f obj/passcoded ] && cp obj/passcoded root/bin/
 	[ -f obj/cputop ] && cp obj/cputop root/bin/
@@ -700,6 +703,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	# fairplayd among them).
 	cp com.hakios.demo.plist com.hakios.wifi.plist com.hakios.thermald.plist com.hakios.passcoded.plist root/LaunchDaemons/
 	[ ! -f root/bin/jb_seed ] || cp com.hakios.jbseed.plist root/LaunchDaemons/
+	[ ! -f root/bin/selftest ] || cp com.hakios.selftest.plist root/LaunchDaemons/
 	[ -z "$JB_KEPT_ONLY" ] || : > root/etc/jb.kept-only     # init: no graft on a memory filesystem (src/init.c)
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $DARWIN/rootfs.slt ] && VOLUME="--root-volume $DARWIN/rootfs.slt"
