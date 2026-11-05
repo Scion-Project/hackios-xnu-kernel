@@ -61,6 +61,14 @@ unzbm_all() { # unzbm_all DIR: expand every LZBITMAP file below DIR
 	[ "$left" -eq 0 ] || { echo "unpack.sh: $left files in $1 are still compressed"; exit 1; }
 }
 
+BTHAL=System/Library/Audio/Plug-Ins/HAL/BTAudioHALPlugin.driver
+extract_bthal() { # the audio server's Bluetooth plug-in, out of rootfs.dmg (kept out of system.files, see below)
+	rm -rf bt-hal
+	7z x -y -obt-hal rootfs.dmg $BTHAL > extract-bthal.log
+	[ -f bt-hal/$BTHAL/BTAudioHALPlugin ] || { echo "unpack.sh: the Bluetooth audio plug-in is not in the image"; exit 1; }
+	touch .done-bthal
+}
+
 # --- the root filesystem --------------------------------------------------------------------------
 if [ ! -f .done-rootfs ] || [ select-system.py -nt .done-rootfs ]; then
 	if [ ! -f rootfs.dmg ]; then
@@ -81,6 +89,21 @@ if [ ! -f .done-rootfs ] || [ select-system.py -nt .done-rootfs ]; then
 	python3 ../tools/font_trim.py faces rootfs/System/Library/Fonts/LanguageSupport/PingFang.ttc \
 		rootfs/System/Library/Fonts/LanguageSupport/PingFang.ttc '^\.?PingFang(SC|TC|HK)-(Regular|Semibold)$'
 	touch .done-rootfs
+	extract_bthal
+	[ -n "$KEEP" ] || rm -f rootfs.dmg
+fi
+
+# --- the audio server's Bluetooth plug-in -------------------------------------------------------------
+# Kept out of the system image (select-system.py): a system image with it makes every build run a plug-in that
+# waits for bluetoothd, and only a build with BT=1 has one. userland/build.sh BT=1 puts this copy in the small
+# image's /lib and /hal, and init binds that directory over the system image's.
+if [ ! -f .done-bthal ]; then
+	if [ ! -f rootfs.dmg ]; then
+		echo "unpack.sh: copying the root filesystem image out of the IPSW again (4.7 GB), for the Bluetooth audio plug-in"
+		python3 ipsw-member.py "$IPSW" $ROOTFS_DMG rootfs.dmg.part
+		mv rootfs.dmg.part rootfs.dmg
+	fi
+	extract_bthal
 	[ -n "$KEEP" ] || rm -f rootfs.dmg
 fi
 

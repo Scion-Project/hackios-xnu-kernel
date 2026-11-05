@@ -35,7 +35,10 @@
 #                                   phone's own scripts, etc/bluetool/ (bluetool/ here), instead of Apple's firmware
 #                                   loading; bluetoothd started with lib/libhakios.bluetoothd.dylib
 #                                   (src/inject_bluetoothd.c: its iAP PTY non-blocking, so that an accessory offering
-#                                   iAP does not stop its stack). devices/starlte/BLUETOOTH.md, "iOS"
+#                                   iAP does not stop its stack). Headphones (A2DP, HFP): the audio server's own Bluetooth
+#                                   plug-in, BTAudioHALPlugin.driver, from your IPSW (sysimage/unpack.sh, sysimage/bt-hal/),
+#                                   in lib/ and hal/, bound by init over the system image's plug-in directory.
+#                                   devices/starlte/BLUETOOTH.md, "iOS"
 #                      JB_KEPT_ONLY=1 a prefix in the system image (tools/mk-jb.sh) only for a kept /private/var: copied
 #                                   there once (src/jb_seed.c), with no icon and nothing in memory before that or
 #                                   without one. The installer's.
@@ -825,6 +828,20 @@ for f in extensions.plist extensions.plist.sig; do
 	[ -f $DARWIN/rootfs/System/Library/xpc/$f ] && cp $DARWIN/rootfs/System/Library/xpc/$f root/xpc/
 done
 [ -d root/lib/HakiosAudio.driver ] && ln -s /redwood/lib/HakiosAudio.driver root/hal/HakiosAudio.driver
+# BT=1: the audio server's Bluetooth plug-in, from the user's own IPSW (sysimage/unpack.sh). Without it bluetoothd's A2DP and
+# HFP devices have no client ("[Server.Audio] Error, unable to sendMsg due to no available xpc client connections"), Control
+# Center lists no headphones and nothing is played. init (audio_plugins) binds root/hal over the system image's directory
+# when that has our device only.
+if [ -n "$BT" ]; then
+	BTHAL=$DARWIN/bt-hal/System/Library/Audio/Plug-Ins/HAL/BTAudioHALPlugin.driver
+	if [ -f $BTHAL/BTAudioHALPlugin ]; then
+		cp -R $BTHAL root/lib/BTAudioHALPlugin.driver
+		ln -s /redwood/lib/BTAudioHALPlugin.driver root/hal/BTAudioHALPlugin.driver
+		echo "build.sh: BT=1: BTAudioHALPlugin.driver in the small image (A2DP and HFP audio)"
+	else
+		echo "build.sh: BT=1: $BTHAL is missing (sysimage/unpack.sh): no Bluetooth audio"
+	fi
+fi
 # the image: zlib where it saves room (a small file whole in its attribute, as Apple keeps them); fw/
 # as it is, which the kernel's drivers use where it lies in memory (drivers/storage/hakios.image.c)
 python3 ../tools/apfs/mkapfs.py -z --plain fw -o root.apfs redwood=root | tail -1
