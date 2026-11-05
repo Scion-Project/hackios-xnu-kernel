@@ -41,6 +41,7 @@
 #include <sys/hakios.net.h>
 #include <sys/sockio.h>
 #include <sys/systm.h>
+#include <sys/hakios.xnu.h>
 
 extern void HakiosWLANStart(const char *interface, const uint8_t *address);  /* drivers/wifi/hakios.wlan.cpp */
 
@@ -181,7 +182,6 @@ dns_answer(const uint8_t *m, size_t length, unsigned *rcode, unsigned *answers, 
 static uint32_t net_names_said;         /* (net_names: the lines said so far, both ways) */
 static bool net_names_console;          /* ("wifi names": the lines on the USB console too, as they come) */
 
-extern void loader_log_line(const char *line);
 
 /* one of net_names's lines: into the kernel's log, and onto the USB console after "wifi names" */
 static void __printflike(1, 2)
@@ -756,8 +756,6 @@ hakios_net_init(void)
 #include <sys/kpi_socket.h>
 #include <sys/socket.h>
 
-extern void loader_log_line(const char *line);
-extern kern_return_t thread_terminate(thread_t thread);
 
 static void
 console_say(const char *format, ...)

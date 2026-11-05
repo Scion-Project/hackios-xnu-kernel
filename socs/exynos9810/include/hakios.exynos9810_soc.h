@@ -106,6 +106,8 @@
 
 /* USI blocks: each one's I2C or SPI and its mode word; which device is on which is the driver's */
 #define EXYNOS_PERIC0_USI01_MODE_PA             0x1041100CUL
+#define EXYNOS_PERIC0_USI03_MODE_PA             0x1041101CUL
+#define EXYNOS_PERIC0_USI03_HSI2C_PA            0x104B0000UL
 #define EXYNOS_PERIC0_USI00_SPI_PA              0x10450000UL
 #define EXYNOS_PERIC0_USI01_SPI_PA              0x10470000UL
 #define EXYNOS_PERIC1_USI07_MODE_PA             0x10811024UL

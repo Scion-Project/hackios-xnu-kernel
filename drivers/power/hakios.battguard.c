@@ -29,13 +29,12 @@
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern void loader_return(void);
 extern void hakios_var_save_on_return(void);
 extern void hakios_adreno_stop(void);
 extern void hakios_wifi_stop(void);
 extern void hakios_adsp_stop(void);
-extern int kernel_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 
 static thread_call_t call;
 static uint32_t stop_percent, poll_seconds = 20, looks, strikes, last_said_minute = ~0u;

@@ -51,8 +51,8 @@
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void hakios_spmi_lock(void);
 extern void hakios_spmi_unlock(void);
 

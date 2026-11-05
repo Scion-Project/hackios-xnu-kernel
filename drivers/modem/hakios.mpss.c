@@ -81,17 +81,10 @@
 #include <sys/hakios.nas.h>
 #include <sys/hakios.qrtr.h>
 #include <sys/sysctl.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
-extern void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
-extern uint64_t kvtophys(vm_offset_t va);
-extern void loader_return(void);
-extern kern_return_t thread_terminate(thread_t thread);
-extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern dev_t mdevlookup(int devid);
 extern int mdevgetkernelrange(dev_t dev, vm_offset_t *base, uint64_t *size);
-extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);   /* osfmk/arm64/caches_asm.s */
 
 /* What the Wi-Fi's DSP and this one both use (hakios.wifi.c). */
 extern lck_mtx_t hakios_aop_mailbox_lock;
@@ -123,7 +116,6 @@ static bool leaving;                    /* on the way back to the loader after a
  * Every line goes to the log the loader reads from another core as well (as in hakios.wifi.c);
  * with modem=1 only the few that say how it went (tell()), the rest to the kernel's own log.
  */
-extern void loader_log_line(const char *line);
 
 static LCK_MTX_DECLARE(say_lock, &mpss_lock_group);
 static bool quiet;

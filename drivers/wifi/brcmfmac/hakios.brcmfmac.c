@@ -61,11 +61,9 @@
 #include <sys/hakios.macaddr.h>
 #include <sys/hakios.sta.h>
 #include <sys/systm.h>
+#include <sys/hakios.xnu.h>
 
-extern void loader_log_line(const char *line);
 extern const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
-extern kern_return_t thread_terminate(thread_t thread);
-extern void thread_set_thread_name(thread_t thread, const char *name);
 extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid), void *context);
 extern void gic_v3_spi_mask(uint32_t intid);
 extern void gic_v3_spi_unmask(uint32_t intid);

@@ -40,8 +40,8 @@
 #include <sys/hakios.pci.h>
 #include <sys/hakios.virtio.h>
 #include <sys/hakios.virtio_blk.h>
+#include <sys/hakios.xnu.h>
 
-extern uint64_t kvtophys(vm_offset_t va);
 
 #define VIRTIO_BLK_F_SIZE_MAX   1
 #define VIRTIO_BLK_F_SEG_MAX    2

@@ -17,6 +17,7 @@
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
 #include "hakios.drivers.h"
 
@@ -67,7 +68,6 @@ hakios_platform_init(void)
 }
 STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, hakios_platform_init);
 
-extern void loader_log_line(const char *line);
 
 int
 hakios_say(const char *format, ...)

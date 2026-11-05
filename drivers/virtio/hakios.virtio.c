@@ -40,9 +40,8 @@
 #include <sys/hakios.pci.h>
 #include <sys/hakios.virtio.h>
 #include <vm/vm_kern.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern uint64_t kvtophys(vm_offset_t va);
 extern int get_preemption_level(void);
 extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid),
     void *context);

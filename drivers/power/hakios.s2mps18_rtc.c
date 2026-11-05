@@ -54,8 +54,8 @@
 #include <mach/mach_time.h>
 #include <pexpert/pexpert.h>
 #include <sys/hakios.exynos_acpm.h>
+#include <sys/hakios.xnu.h>
 
-extern void loader_log_line(const char *line);
 
 #define RTC_CTRL        0x00
 #define RTC_UPDATE      0x02

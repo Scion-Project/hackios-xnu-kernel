@@ -165,15 +165,12 @@
 #include <sys/hakios.exynos_soc.h>
 #include "hakios.mali_va.h"
 #include <sys/hakios.log.h>
+#include <sys/hakios.xnu.h>
 
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-extern uint64_t kvtophys(vm_offset_t va);                       /* pmap_paddr_t */
-extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);   /* osfmk/arm64/caches_asm.s */
 extern vm_offset_t phystokv(uint64_t pa);
 extern boolean_t pmap_valid_address(uint64_t addr);             /* memory the kernel manages */
 extern int hakios_mfc_carved(uint64_t phys);                    /* the video decoder's (hakios.exynos_mfc.c, mfc_zc; stubs.c) */
 extern int hakios_scanout_carved(uint64_t phys);                /* the DPU's pool (hakios.exynos_dpu.c; stubs.c) */
-extern vm_offset_t pe_arm_get_soc_base_phys(void);
 extern void HakiosMaliStart(void);                              /* drivers/gpu/mali/hakios.mali.cpp */
 extern uint32_t gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShown;   /* hakios.mali.cpp */
 extern struct mali_made { uint64_t address, size; uint32_t asked, flags; } gMaliMade[32];
@@ -1696,7 +1693,7 @@ pll_mhz(void)
 }
 
 /*
- * mali_gov=1: the GPU's clock after its load, as drivers/power/hakios.exynos_cpufreq.c sets the cores': every window of
+ * mali_gov=1: the GPU's clock after its load, as drivers/power/exynos/hakios.exynos_cpufreq.c sets the cores': every window of
  * GOV_WINDOW_MS, the share of it the GPU ran jobs; the lowest of the three rates at which that would have been
  * GOV_TARGET% at most, at once if higher, after GOV_DOWN windows in a row if lower; never above what the G3D's
  * temperature allows. The switch is pll_switch(), between two jobs (this thread runs them, one at a time) and under
