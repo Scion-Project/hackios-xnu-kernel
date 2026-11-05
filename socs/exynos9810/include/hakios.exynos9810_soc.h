@@ -13,6 +13,8 @@
 /* The SoC, and the power processor */
 #define EXYNOS_APM_SRAM_PA                      0x02039000UL
 #define EXYNOS_SOC_BASE_PA                      0x10000000UL
+#define EXYNOS_CHIPID_PA                        0x10000000UL
+#define EXYNOS_PRODUCT_ID                       0xE9810000u
 #define EXYNOS_PMU_PA                           0x14060000UL
 #define EXYNOS_APM_MBOX_PA                      0x14100000UL
 
@@ -149,6 +151,7 @@
 /* ACPM's SRAM */
 #define EXYNOS_ACPM_SRAM_SIZE                   0x30000
 #define EXYNOS_ACPM_SRAM_FIRST                  0x3000
+#define EXYNOS_ACPM_INITDATA                    0x7F00
 #define EXYNOS_ACPM_FVMAP_OFFSET                0x6700
 
 /* the big cluster's PMU fields (hakios.exynos_m3.c) */

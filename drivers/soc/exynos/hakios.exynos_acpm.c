@@ -64,7 +64,7 @@ extern void delay(int usec);
 #define SRAM_PA         EXYNOS_APM_SRAM_PA
 #define SRAM_SIZE       EXYNOS_ACPM_SRAM_SIZE
 #define SRAM_FIRST      EXYNOS_ACPM_SRAM_FIRST          /* below: pages that fault; not mapped, never read */
-#define INITDATA        0x7F00
+#define INITDATA        EXYNOS_ACPM_INITDATA
 
 #define ID_CHANNELS     0x08
 #define ID_NCHANNELS    0x0C

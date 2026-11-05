@@ -10,4 +10,4 @@ The SoC's layer, kept in the common tree: every phone with this SoC shares this 
 | `include/hakios.exynos9810_soc.h` | the numbers: where each block is, interrupts, PMU and CMU offsets, the USI blocks. Goes to `bsd/sys/` |
 | `include/hakios.exynos9810_mem.h` | how the phones use the memory outside XNU's RAM, checked at build time. Goes to `bsd/sys/` |
 
-The drivers themselves are in `drivers/`: they are shared by the Exynos family. A new Exynos: [How the repositories fit](../../docs/porting/repositories.md).
+Each other SoC here is compile-tested at most: [docs/soc-support.md](../../docs/soc-support.md). The drivers themselves are in `drivers/`: they are shared by the Exynos family. A new Exynos: [How the repositories fit](../../docs/porting/repositories.md).
