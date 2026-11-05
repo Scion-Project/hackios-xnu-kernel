@@ -26,7 +26,7 @@ fastboot boot xnu-frankel.img  ->  ABL  ->  socs/lga/shim  ->  xnuloader ("frank
 | 4. The shim runs | a blue band on the panel | `shim/`, its bands, watchdogs stopped | the framebuffer has to be found: below |
 | 5. The loader runs | green, then yellow; its banner | `platform_frankel`, unchanged `xnuloader` | |
 | 6. XNU to `launchd` | `-v` on the panel | GICv4 frames in `gic_v3_irq.c`; PSCI by HVC through the shim; core 0 alone first; root in RAM | whether ARMv9.2 cores run XNU 8796 unchanged is unknown |
-| 7. Picture from CoreAnimation | the lock screen | the software route is the same as QEMU's | a framebuffer that keeps updating (below); a kernel console that sees the panel |
+| 7. Picture from CoreAnimation | the lock screen | **guess**: the software route is QEMU's | a framebuffer that keeps updating (below); a kernel console that sees the panel |
 
 No GPU, no UFS driver (Google's own host, in RAM until written), no touch, no USB, no modem are in this list on purpose.
 
@@ -50,7 +50,7 @@ Partly known, and the unknown part is what matters.
 
 | Source | What | Licence | Use |
 |---|---|---|---|
-| `private/google-modules/display/vsi-drm/verisilicon/` in [azagramac/pixel10-kernel-aosp](https://github.com/azagramac/pixel10-kernel-aosp) at 6f689be7fa23, a public copy of Google's kernel | the phone's own DRM driver: register layout, start sequence | check each file: the repository is marked GPL-2.0 | facts only |
+| `private/google-modules/display/vsi-drm/verisilicon/` in [azagramac/pixel10-kernel-aosp](https://github.com/azagramac/pixel10-kernel-aosp) at 6f689be7fa23, a public copy of Google's kernel | the phone's own DRM driver: register layout, start sequence | GPL-2.0 (`vs_drv.c`'s SPDX line) | facts only |
 | Linux `drivers/gpu/drm/verisilicon` at 05441d697f7f | mainline DC-series driver; Kconfig `depends on RISCV`. Whether it covers a DC9x00 is **not established** | GPL-2.0-only | facts only |
 | `lga-dpu.dtsi`, `lga-smmu.dtsi` through `scion-soc-lga`'s README | addresses, layers, SMMU | GPL-2.0 | facts, as already recorded |
 
@@ -72,8 +72,8 @@ fastboot (`docs/AUTOMATION.md`). Its QR log channel answers a problem step 4 als
 
 ## The GPU's interface, for later
 
-No GPU driver is planned here, and none of this is copied. Facts from Google's `private/google-modules/powervr/pvrsrvkm` at the same commit: files headed **Dual MIT/GPLv2**,
-as the Pixel 10's firmware facts are in [soc-support.md](soc-support.md).
+No GPU driver is planned here, and none of this is copied. Facts from Google's `private/google-modules/powervr/pvrsrvkm` at the same commit, whose files are headed
+**Dual MIT/GPLv2**. What the phone's firmware is: [soc-support.md](soc-support.md).
 
 - **To user space:** one DRM node. `DRM_PVR_SRVKM_CMD` (command 0) carries nearly everything, as a services "bridge" call: 27 server bridges (`srvcore`, `mm`, `sync`, `rgxta3d`
   and others), with `DRM_PVR_SRVKM_INIT` and a few fence commands beside it (`pvr_drm.h`, `pvr_bridge.h`). This is not mainline's `drm/imagination` UAPI, which Mesa's driver speaks.
