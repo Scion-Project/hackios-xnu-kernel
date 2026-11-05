@@ -178,7 +178,7 @@ FBSCALE	arg	fbscale	GPU and display	k	MiniIOMobileFramebuffer.cpp	the same point
 FBSUBTYPE	arg	fbsubtype	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 FBTRACE	arg	fbtrace	GPU and display	k	MiniIOMobileFramebuffer.cpp	log the first N calls of every selector (default 3)
 FBWIDTH	arg	fbwidth	GPU and display	k	MiniIOMobileFramebuffer.cpp	
-FP_S9	arg	fp_s9	User space	k	hakios.exynos_iris.c	the rear fingerprint sensor's SPI1, whose it is (1 read; 2 also one write each, read back, put back)
+FP_S9	arg	fp_s9	User space	k	hakios.exynos_iris.c	
 FPS_LOG	arg	fps_log	GPU and display	k	MiniIOMobileFramebuffer.cpp,hakios.ufs.c	a line a second while frames come ("fps: ...", in the loader's log and the kernel's): swaps
 GAMUT	arg	gamut	Loader	l	loader.c	
 GL	arg	gl	User space	u	inject.c,inject_sb.c	not even with a GPU; gl=1: also without one, by Mesa's software driver (slow; for working on eagl.c in QEMU)
@@ -243,12 +243,12 @@ HALT_OFF	arg	halt_off	Chip, thermal and PMIC	k	hakios.exynos_poweroff.c
 HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c	
 IMMEDIATE_NMI	arg	immediate_NMI	User space	k	1509-m3-diag-and-pan-off.patch	
 IOAES	arg	ioaes	User space	k	MiniIOAESAccelerator.cpp	no IOAESAccelerator at all, as the kernel was before this driver
-IRIS_S9	arg	iris_s9	User space	k	hakios.exynos_iris.c	
-IRIS_S9_EXP	arg	iris_s9_exp	User space	k	hakios.exynos_iris.c	the exposure in lines of 6.56 us (default the table's 0x0339, 825; at most 5075)
-IRIS_S9_GAIN	arg	iris_s9_gain	User space	k	hakios.exynos_iris.c	the analog gain, 0x20 being 1x (default 0x20, at most 0x200)
-IRIS_S9_ISPDIV	arg	iris_s9_ispdiv	User space	k	hakios.exynos_iris.c	
-IRIS_S9_MS	arg	iris_s9_ms	User space	k	hakios.exynos_iris.c	how long a capture may stream at most (default 600, 100 to 2000)
-IRIS_S9_SMC	arg	iris_s9_smc	User space	k	hakios.exynos_iris.c	the secure monitor's camera calls around the run (0 none; 1 PREPARE; 2 also ISPPRE; 3 SYSREG_PROT)
+IRIS_S9	arg	iris_s9	User space	k	hakios.exynos_iris.c	run the first N steps: 1 read the pins, CIS_CLK2, LDOs and the LED's ID; 2 power the sensor
+IRIS_S9_EXP	arg	iris_s9_exp	User space	k	hakios.exynos_iris.c	exposure in lines of 6.56 us (default 0x0339 = 825, at most 5075)
+IRIS_S9_GAIN	arg	iris_s9_gain	User space	k	hakios.exynos_iris.c	analog gain, 0x20 is 1x (default 0x20, range 0x20 to 0x200)
+IRIS_S9_ISPDIV	arg	iris_s9_ispdiv	User space	k	hakios.exynos_iris.c	CLKCMU_ISPPRE_BUS = 466 MHz / (D + 1) while the frame is taken (default 0, range 0 to 3)
+IRIS_S9_MS	arg	iris_s9_ms	User space	k	hakios.exynos_iris.c	longest a capture may stream (default 600, range 100 to 2000)
+IRIS_S9_SMC	arg	iris_s9_smc	User space	k	hakios.exynos_iris.c	secure monitor calls around the run: 0 none, 1 PREPARE, 2 also holds ISPPRE, 3 also SYSREG_PROT
 ISA_FLOOR	arg	isa_floor	User space	k	1510-isa-floor.patch	
 KEYSTORE_ENTCHECK	arg	keystore_entcheck	User space	k	MiniAppleKeyStore.cpp	
 KEYSTORE_KDF_KIB	arg	keystore_kdf_kib	User space	k	MiniAppleKeyStore.cpp	
@@ -261,16 +261,16 @@ M3_FLUSH	arg	m3_flush	User space	k	1509-m3-diag-and-pan-off.patch
 M3_IDS	arg	m3_ids	User space	k	1509-m3-diag-and-pan-off.patch	
 M3_PREP	arg	m3_prep	User space	k	1510-isa-floor.patch,1511-m3-user-cache-pou.patch,hakios.exynos_m3.c	
 MACHINE_NAME	arg	machine_name	CPU, memory and boot	k	GenericARMPE.cpp	
-MALI	arg	mali	GPU and display	k	hakios.mali.c	the first N of the GPU's nine steps of bring-up (9: all, then served); 0 or none: left alone
-MALI_ACPM	arg	mali_acpm	GPU and display	k	hakios.mali.c	the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
-MALI_FASTMAP	arg	mali_fastmap	GPU and display	k	hakios.mali.c	the GPU walks its tables through its own caches, and every buffer entered is an UPDATE of AS 0
+MALI	arg	mali	GPU and display	k	hakios.mali.c	run the first N steps (9: all, then serve)
+MALI_ACPM	arg	mali_acpm	GPU and display	k	hakios.mali.c	do not raise the rail. The GPU is then touched at the boot's voltage, which hung the S9+ (test only).
+MALI_FASTMAP	arg	mali_fastmap	GPU and display	k	hakios.mali.c	walk the page tables through the GPU's caches; each buffer entered is then an MMU update of AS 0
 MALI_FLUSH	arg	mali_flush	GPU and display	k	hakios.mali.cpp	
-MALI_GOV	arg	mali_gov	GPU and display	k	hakios.mali.c	
-MALI_GOV_FRAME	arg	mali_gov_frame	GPU and display	k	hakios.mali.c	
-MALI_MHZ	arg	mali_mhz	GPU and display	k	hakios.mali.c	the GPU's clock: 260 (S-Boot's, the default), 455 or 572, the S9+ port's three rates
-MALI_NAP_US	arg	mali_nap_us	GPU and display	k	hakios.mali.c	
-MALI_PLL	arg	mali_pll	GPU and display	k	hakios.mali.c	PLL_G3D left as the boot left it (the step stops if it does not run)
-MALI_TRACE	arg	mali_trace	GPU and display	k	hakios.mali.c	a line for every job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
+MALI_GOV	arg	mali_gov	GPU and display	k	hakios.mali.c	the clock follows the load (see gov_window())
+MALI_GOV_FRAME	arg	mali_gov_frame	GPU and display	k	hakios.mali.c	clock floor while frames are shown (default 572; 0: none)
+MALI_MHZ	arg	mali_mhz	GPU and display	k	hakios.mali.c	GPU clock: 260 (default), 455 or 572
+MALI_NAP_US	arg	mali_nap_us	GPU and display	k	hakios.mali.c	poll interval for a job still running after its first 200 us, clamped to 10..1000 (default 50)
+MALI_PLL	arg	mali_pll	GPU and display	k	hakios.mali.c	leave PLL_G3D as the boot set it; the step stops if it is not running
+MALI_TRACE	arg	mali_trace	GPU and display	k	hakios.mali.c	one line per job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
 MAX77705	arg	max77705	Audio and battery	k	hakios.max77705.c	
 MAX77705_HAPTIC	arg	max77705_haptic	Audio and battery	k	hakios.max77705.c	
 MAX77705_IPCLK	arg	max77705_ipclk	Audio and battery	k	hakios.max77705.c	
@@ -283,16 +283,16 @@ MD0	arg	md0	User space	k	1101-virtio-disk-as-md0.patch
 MEMBENCH	arg	membench	CPU, memory and boot	k	hakios.cpufreq.c	
 METAL	arg	metal	GPU and display	ku	MiniIOMobileFramebuffer.cpp,hakios_metal_shown.c	say where Metal's device is (docs/metal-plan.md, step 1)
 METAL_PROFILE	arg	metal_profile	User space	u	hakiosmetal_air.m	
-MFC	arg	mfc	Loader	kl	hakios.exynos_mfc.c,loader.c	s5p_mfc_regs_v10.h, s5p_mfc_cal.c, s5p_mfc_cmd.c, s5p_mfc_inst.c, s5p_mfc_reg.c, s5p_mfc_irq.c; drivers/soc/samsung/cal-if
-MFC_FW_PART	arg	mfc_fw_part	User space	k	hakios.exynos_mfc.c	
+MFC	arg	mfc	Loader	kl	hakios.exynos_mfc.c,loader.c	look: the domain's and the clocks' state, read only
+MFC_FW_PART	arg	mfc_fw_part	User space	k	hakios.exynos_mfc.c	the partition holding mfc_fw.bin (default VENDOR)
 MFC_INT_KHZ	arg	mfc_int_khz	User space	k	hakios.exynos_mfc.c	
-MFC_IRQ	arg	mfc_irq	User space	k	hakios.exynos_mfc.c	the block's interrupt instead of polling: its handler takes the answer and quiets the block, this waits on a wake-up
+MFC_IRQ	arg	mfc_irq	User space	k	hakios.exynos_mfc.c	with 4 or more: wait for the block's interrupt instead of polling
 MFC_MIF_KHZ	arg	mfc_mif_khz	User space	k	hakios.exynos_mfc.c	
 MFC_ZC	arg	mfc_zc	User space	k	hakios.exynos_mfc.c	
 MIC_ADC	arg	mic_adc	Audio and battery	k	hakios.mic.c	
 MIC_INPUT	arg	mic_input	Audio and battery	k	hakios.mic.c	
 MIC_MAIN	arg	mic_main	Audio and battery	k	hakios.mic.c	
-MIC_SECS	arg	mic_secs	Audio and battery	k	hakios.mic.c	
+MIC_SECS	arg	mic_secs	Audio and battery	k	hakios.mic.c	listen time for mic=3, 1..600 s (default 10)
 MIC_TAP	arg	mic_tap	Audio and battery	k	hakios.mic.c	
 MIC_TEST	arg	mic_test	Audio and battery	k	hakios.mic.c	
 MODEM_APN	arg	modem_apn	Cellular	k	hakios.mpss.c	a session to that APN instead of the default profile
@@ -421,7 +421,7 @@ SYSSLEEP	arg	syssleep	CPU, memory and boot	k	(patch)
 SYSTEM_APFS	arg	system_apfs	User space	u	init.c	the root is to be the big system image (userland/system.apfs, a RAM boot's md0) on /dev/DEV, read
 SYSTRACE	arg	systrace	CPU, memory and boot	k	(patch),user_exception_trace.c	
 SYSTRACE_NAME	arg	systrace_name	CPU, memory and boot	k	(patch)	
-TEE_PROBE	arg	tee_probe	User space	k	hakios.exynos_tee.c	one read-only question: the info fastcall, MC_FC_INFO (0xFF000002) with extended id 0 (MCI_VERSION)
+TEE_PROBE	arg	tee_probe	User space	k	hakios.exynos_tee.c	one read-only MC_FC_INFO (0xFF000002), extended id 0 (MCI_VERSION)
 THERMAL_LOG	arg	thermal_log	Chip, thermal and PMIC	k	hakios.thermal.c	a summary line this often (0: only on a rise; 60)
 THERMAL_TM0	arg	thermal_tm0	Chip, thermal and PMIC	k	hakios.thermal.c	
 THERMAL_TM1	arg	thermal_tm1	Chip, thermal and PMIC	k	hakios.thermal.c	
@@ -438,7 +438,7 @@ TORCH_MAX_S	arg	torch_max_s	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.to
 TORCH_SECS	arg	torch_secs	Haptics and torch	k	hakios.s2mpb02_torch.c,hakios.torch.c	
 TOUCH_FAULT	arg	touch_fault	User space	u	inject.c	the touch screen first made answers no "PrimaryUsagePage" (tests the remake)
 TOUCH_FLIP	arg	touch_flip	Touch and buttons	k	hakios.goodix.c	
-TOUCH_LAT	arg	touch_lat	GPU and display	ku	MiniIOMobileFramebuffer.cpp,eagl.c,hakios.goodix.c,hakios.gpu.cpp,hakios.input.c,inject.c,inject_sb.c	a line for every wait of a program's for the GPU that took a millisecond or more ("tl: f KIND US at US"), for telling apart what holds a frame up
+TOUCH_LAT	arg	touch_lat	GPU and display	ku	MiniIOMobileFramebuffer.cpp,eagl.c,hakios.goodix.c,hakios.gpu.cpp,hakios.input.c,inject.c,inject_sb.c	logs each wait of 1 ms or more as tl: f KIND US at US, for tools/frames.py
 TOUCH_POLL_US	arg	touch_poll_us	Touch and buttons	k	hakios.goodix.c	
 TOUCH_RATE	arg	touch_rate	Touch and buttons	k	hakios.goodix.c	the chip reports twice as often (Xiaomi's game mode; 240 otherwise)
 TOUCH_SPI_HZ	arg	touch_spi_hz	Touch and buttons	k	hakios.goodix.c	the bus at N Hz (Android's device tree gives the chip 5 MHz)

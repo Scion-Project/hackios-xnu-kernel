@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 630 symbols in 20 groups; 54 are set, 45 of them drivers built in.
+# 631 symbols in 20 groups; 54 are set, 45 of them drivers built in.
 #
 
 #
@@ -482,7 +482,7 @@ CONFIG_TOUCHSCREEN=y
 # CONFIG_VIRTIO_INPUT is not set
 
 #
-# GPU and display (106)
+# GPU and display (107)
 #
 
 # rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone) [needs fw-gpu/ from the phone]
@@ -550,6 +550,9 @@ CONFIG_GPU=y
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_HZ is not set
+
+# the registers of the display interface the panel is on, for a port
+# CONFIG_FB_INTF is not set
 
 # how often the panel is really refreshed
 # CONFIG_FB_MEASURE is not set
@@ -725,34 +728,34 @@ CONFIG_GPU=y
 # read by hakios.adreno.c (kernel)
 # CONFIG_GPU_VA is not set
 
-# the first N of the GPU's nine steps of bring-up (9: all, then served); 0 or none: left alone
+# run the first N steps (9: all, then serve)
 # CONFIG_MALI is not set
 
-# the rail not raised: the GPU is touched at the boot's voltage, which hung the S9+ (a test only)
+# do not raise the rail. The GPU is then touched at the boot's voltage, which hung the S9+ (test only).
 # CONFIG_MALI_ACPM is not set
 
-# the GPU walks its tables through its own caches, and every buffer entered is an UPDATE of AS 0
+# walk the page tables through the GPU's caches; each buffer entered is then an MMU update of AS 0
 # CONFIG_MALI_FASTMAP is not set
 
 # read by hakios.mali.cpp (kernel)
 # CONFIG_MALI_FLUSH is not set
 
-# read by hakios.mali.c (kernel)
+# the clock follows the load (see gov_window())
 # CONFIG_MALI_GOV is not set
 
-# read by hakios.mali.c (kernel)
+# clock floor while frames are shown (default 572; 0: none)
 # CONFIG_MALI_GOV_FRAME is not set
 
-# the GPU's clock: 260 (S-Boot's, the default), 455 or 572, the S9+ port's three rates
+# GPU clock: 260 (default), 455 or 572
 # CONFIG_MALI_MHZ is not set
 
-# read by hakios.mali.c (kernel)
+# poll interval for a job still running after its first 200 us, clamped to 10..1000 (default 50)
 # CONFIG_MALI_NAP_US is not set
 
-# PLL_G3D left as the boot left it (the step stops if it does not run)
+# leave PLL_G3D as the boot set it; the step stops if it is not running
 # CONFIG_MALI_PLL is not set
 
-# a line for every job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
+# one line per job: "tl: j SEQ f|v q QUEUED b BEGAN e ENDED", in microseconds
 # CONFIG_MALI_TRACE is not set
 
 # say where Metal's device is (docs/metal-plan.md, step 1)
@@ -797,7 +800,7 @@ CONFIG_GPU=y
 # read by MiniIOSurface.cpp (kernel)
 # CONFIG_SURFTRACE_OF is not set
 
-# a line for every wait of a program's for the GPU that took a millisecond or more ("tl: f KIND US at US"), for ...
+# logs each wait of 1 ms or more as tl: f KIND US at US, for tools/frames.py
 # CONFIG_TOUCH_LAT is not set
 
 # read by eagl.c (user space)
@@ -951,7 +954,7 @@ CONFIG_SOUND=4
 # read by hakios.mic.c (kernel)
 # CONFIG_MIC_MAIN is not set
 
-# read by hakios.mic.c (kernel)
+# listen time for mic=3, 1..600 s (default 10)
 # CONFIG_MIC_SECS is not set
 
 # read by hakios.mic.c (kernel)
@@ -1563,7 +1566,7 @@ CONFIG_MODEM_AGAIN=y
 # read by loader.c (loader)
 # CONFIG_LOADER_PLATFORM is not set
 
-# s5p_mfc_regs_v10.h, s5p_mfc_cal.c, s5p_mfc_cmd.c, s5p_mfc_inst.c, s5p_mfc_reg.c, s5p_mfc_irq.c; ...
+# look: the domain's and the clocks' state, read only
 # CONFIG_MFC is not set
 
 # read by loader.c, wdt_exynos.c (loader)
@@ -1687,7 +1690,7 @@ CONFIG_MODEM_AGAIN=y
 # read by hakios.exynos_dpu.c (kernel)
 # CONFIG_FB_PSR is not set
 
-# the rear fingerprint sensor's SPI1, whose it is (1 read; 2 also one write each, read back, put back)
+# read by hakios.exynos_iris.c (kernel)
 # CONFIG_FP_S9 is not set
 
 # not even with a GPU; gl=1: also without one, by Mesa's software driver (slow; for working on eagl.c in QEMU)
@@ -1747,22 +1750,22 @@ CONFIG_MODEM_AGAIN=y
 # no IOAESAccelerator at all, as the kernel was before this driver
 # CONFIG_IOAES is not set
 
-# read by hakios.exynos_iris.c (kernel)
+# run the first N steps: 1 read the pins, CIS_CLK2, LDOs and the LED's ID; 2 power the sensor
 # CONFIG_IRIS_S9 is not set
 
-# the exposure in lines of 6.56 us (default the table's 0x0339, 825; at most 5075)
+# exposure in lines of 6.56 us (default 0x0339 = 825, at most 5075)
 # CONFIG_IRIS_S9_EXP is not set
 
-# the analog gain, 0x20 being 1x (default 0x20, at most 0x200)
+# analog gain, 0x20 is 1x (default 0x20, range 0x20 to 0x200)
 # CONFIG_IRIS_S9_GAIN is not set
 
-# read by hakios.exynos_iris.c (kernel)
+# CLKCMU_ISPPRE_BUS = 466 MHz / (D + 1) while the frame is taken (default 0, range 0 to 3)
 # CONFIG_IRIS_S9_ISPDIV is not set
 
-# how long a capture may stream at most (default 600, 100 to 2000)
+# longest a capture may stream (default 600, range 100 to 2000)
 # CONFIG_IRIS_S9_MS is not set
 
-# the secure monitor's camera calls around the run (0 none; 1 PREPARE; 2 also ISPPRE; 3 SYSREG_PROT)
+# secure monitor calls around the run: 0 none, 1 PREPARE, 2 also holds ISPPRE, 3 also SYSREG_PROT
 # CONFIG_IRIS_S9_SMC is not set
 
 # read by 1510-isa-floor.patch (kernel)
@@ -1798,13 +1801,13 @@ CONFIG_MODEM_AGAIN=y
 # read by hakiosmetal_air.m (user space)
 # CONFIG_METAL_PROFILE is not set
 
-# read by hakios.exynos_mfc.c (kernel)
+# the partition holding mfc_fw.bin (default VENDOR)
 # CONFIG_MFC_FW_PART is not set
 
 # read by hakios.exynos_mfc.c (kernel)
 # CONFIG_MFC_INT_KHZ is not set
 
-# the block's interrupt instead of polling: its handler takes the answer and quiets the block, this waits on a wake-up
+# with 4 or more: wait for the block's interrupt instead of polling
 # CONFIG_MFC_IRQ is not set
 
 # read by hakios.exynos_mfc.c (kernel)
@@ -1864,7 +1867,7 @@ CONFIG_MODEM_AGAIN=y
 # the root is to be the big system image (userland/system.apfs, a RAM boot's md0) on /dev/DEV, read
 # CONFIG_SYSTEM_APFS is not set
 
-# one read-only question: the info fastcall, MC_FC_INFO (0xFF000002) with extended id 0 (MCI_VERSION)
+# one read-only MC_FC_INFO (0xFF000002), extended id 0 (MCI_VERSION)
 # CONFIG_TEE_PROBE is not set
 
 # the touch screen first made answers no "PrimaryUsagePage" (tests the remake)
