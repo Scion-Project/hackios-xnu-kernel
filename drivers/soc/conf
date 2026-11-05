@@ -35,3 +35,8 @@ driver EXYNOS_M3
 	help    steps: read, write, start the M3s; patch 1508 asks it before every CPU_ON)
 	help    and cohtest=N, a check that the big cluster is coherent with the A55s once started (cached ping-pong,
 	help    cache maintenance by VA across the clusters, read back through an uncached alias), off by default
+
+driver SOC_RUNTIME
+	file    bsd/dev/hakios.soc_runtime.c
+	default n
+	help    pick the SoC's numbers at boot, by its chip id, from every table in socs/: one kernel for many SoCs. Not booted

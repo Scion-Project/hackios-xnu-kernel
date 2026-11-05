@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's flashlight (starlte, Exynos 9810): the rear flash LED, driven by the flash block of the S2MPB02 (the
  * camera's PMIC, 0x59 on the HSI2C of USI10 of PERIC1, 0x10920000), switched by a pin of the SoC. Only with

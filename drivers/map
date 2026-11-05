@@ -92,6 +92,7 @@ core     bsd/dev/hakios.stubs.c
 soc/exynos bsd/dev/hakios.exynos_hsi2c.c
 soc/exynos bsd/dev/hakios.exynos_spi.c
 soc/exynos bsd/dev/hakios.exynos_acpm.c
+soc/exynos bsd/dev/hakios.soc_runtime.c
 soc/exynos bsd/dev/hakios.exynos_m3.c
 soc/exynos bsd/dev/hakios.exynos_tee.c
 usb      bsd/dev/hakios.dwc3.c

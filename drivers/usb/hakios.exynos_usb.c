@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's USB port, the SoC's half: the Exynos 9810's clocks, power isolation and USB PHY, brought up for the
  * device-neutral gadget driver (drivers/usb/hakios.dwc3.c, which owns the boot-args: usb_gadget=N). This file is the

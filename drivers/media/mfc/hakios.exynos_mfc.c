@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Exynos 9810's video codec block, MFC v10 (Multi Format Codec): hardware H.264 and HEVC decoding for iOS.
  *

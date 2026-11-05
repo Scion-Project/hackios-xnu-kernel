@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's temperatures: the Exynos 9810's TMU, read by the kernel itself, published, and a stop for a phone that
  * gets too hot. Nothing without boot-arg tmu=N, and then only its first N steps, each said in the log before it is taken.

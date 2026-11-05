@@ -329,6 +329,10 @@ used by `hakios.exynos_dpu.c`. DPP and IDMA were not compared. Tensor's DPU is a
 G5's was not read. Linux's `exynos-chipid.c` gives the value for the 8895, 9810, 990, 850, 2200 and gs101. The values for the 9820,
 2100 and Tensor G2 to G4 were not read, so those tables have no `EXYNOS_PRODUCT_ID`.
 
+## One kernel for all of them (draft, not on main)
+
+The draft pull request `soc/runtime-draft` picks the table at boot by the chip id. It has not booted. What it found: one kernel, the same installer, is real for the numbers of three drivers, and everything named below still forces per-SoC or per-phone facts.
+
 ## Sources of the survey
 
 Linux at 05441d697f7f, as named per SoC. PixOS and pixel6ios for what they saw on a Pixel: credited where used, every number of theirs in a

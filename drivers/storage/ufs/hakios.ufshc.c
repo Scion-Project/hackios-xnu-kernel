@@ -362,6 +362,14 @@ static const char *exynos_adopt(void);
 static void exynos_nexus(uint32_t slot, bool scsi);
 static void exynos_give_back(void);
 
+#if HAKIOS_SOC_RUNTIME
+#define UFSHC_EXY_HCI       0ull        /* filled from the SoC's table when the mode is chosen */
+#define UFSHC_EXY_VS        0ull
+#else
+#define UFSHC_EXY_HCI       EXYNOS_UFS_HCI_PA
+#define UFSHC_EXY_VS        EXYNOS_UFS_VS_PA
+#endif
+
 static const struct ufshc_soc hc_socs[] = {
 	{
 		.name = "pci", .may_enable = true, .prd_entry = 16, .prd_max = 256u << 10,
@@ -374,7 +382,7 @@ static const struct ufshc_soc hc_socs[] = {
 		.default_step = 5,
 	},
 	{
-		.name = "exynos9810", .pa = EXYNOS_UFS_HCI_PA, .size = 0x200, .vs_pa = EXYNOS_UFS_VS_PA, .vs_size = 0x200,
+		.name = "exynos9810", .pa = UFSHC_EXY_HCI, .size = 0x200, .vs_pa = UFSHC_EXY_VS, .vs_size = 0x200,
 		.prdt_bytes = true, .prd_entry = 128, .prd_max = 4096, .rsp_offset = 1024, .rsp_length = 1024,
 		.prdt_offset = 2048, .clear_with_ones = true, .dma32 = true, .slot_buffer = 64u << 10,
 		.default_step = 1, .dma_lo = 0x80000000ULL, .dma_hi = 0x100000000ULL,
@@ -3370,7 +3378,18 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	hc_soc = NULL;
 	for (unsigned i = 0; i < sizeof(hc_socs) / sizeof(hc_socs[0]); i++) {
 		if (strcmp(name, hc_socs[i].name) == 0) {
+#if HAKIOS_SOC_RUNTIME
+			if (hc_socs[i].vs_size != 0 && !HAKIOS_SOC_HAS(UFS_HCI_PA)) {
+				return false;
+			}
+#endif
 			hc_soc_own = hc_socs[i];
+#if HAKIOS_SOC_RUNTIME
+			if (hc_soc_own.vs_size != 0) {
+				hc_soc_own.pa = EXYNOS_UFS_HCI_PA;
+				hc_soc_own.vs_pa = EXYNOS_UFS_VS_PA;
+			}
+#endif
 			hc_soc = &hc_soc_own;
 		}
 	}

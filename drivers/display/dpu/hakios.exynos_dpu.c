@@ -204,6 +204,10 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 	uint32_t gc, trig, path0, path1, frames, base, img, on = 0;
 	int type;
 
+	if (!HAKIOS_SOC_HAS(DECON_PA)) {
+		return -1;
+	}
+
 	if (probed != 0) {
 		return probed > 0 ? 0 : -1;
 	}

@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The GPU of the Galaxy S9 (starlte, Exynos 9810), a Mali-G72 MP18, brought up from the kernel step by step and then
  * handed to HakiosMali (drivers/gpu/mali/hakios.mali.cpp), the IOKit service Mesa's panfrost draws through. Only with

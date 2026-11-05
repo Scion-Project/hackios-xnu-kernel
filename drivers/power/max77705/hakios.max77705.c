@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's battery (starlte, Exynos 9810): its fuel gauge and charger, both blocks of a Maxim MAX77705 on the I2C
  * of USI03 of the CMGP block (HSI2C at 0x14360000), read every few seconds and handed to iOS's power source through

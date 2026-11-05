@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's big cores, four Exynos M3s (MPIDR 0x100-0x103, "CLUSTER1" in the PMU): what the PMU has to hold
  * before the firmware's CPU_ON can start one of them (m3_prep=N, the first N of three steps, each logged before it

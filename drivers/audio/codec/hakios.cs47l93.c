@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's audio codec: a Cirrus Logic CS47L93 (Cirrus's Madera family, with the CS47L92), on SPI. The
  * headphones, the jack and the microphones go through it; the speakers do not (ABOX's UAIF1 drives the two MAX98512s

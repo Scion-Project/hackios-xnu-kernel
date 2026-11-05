@@ -272,6 +272,9 @@ hakios_acpm_init(int (*say)(const char *, ...))
 {
 	bool ready;
 
+	if (!HAKIOS_SOC_HAS(APM_MBOX_PA)) {
+		return false;
+	}
 	lck_mtx_lock(&acpm_lock);
 	if (!acpm_tried) {
 		acpm_tried = true;

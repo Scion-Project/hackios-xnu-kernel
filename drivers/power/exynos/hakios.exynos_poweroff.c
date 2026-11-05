@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * Power off for the Galaxy S9: releases PS_HOLD, for the TMU's stop (tmu_off=1) and, with halt_off=N, for a halt.
  *

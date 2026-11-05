@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's Bluetooth (starlte, Exynos 9810): the Bluetooth half of the Broadcom BCM4361 on its UART. The chip is
  * powered, answers HCI, takes Broadcom's patch (the .hcd file of the user's own phone), is raised to 4 Mbaud with flow
