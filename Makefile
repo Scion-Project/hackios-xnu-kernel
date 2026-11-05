@@ -27,6 +27,7 @@
 #   make devices             the device and SoC repositories (tools/hakios-device.py list; docs/porting/repositories.md)
 #   make virt.config         lay a fragment (configs/virt.config) over the .config there is
 #   make config              show the .config: its symbols, the kernel's arguments, the firmware it wants
+#   make soc-status          each SoC's blocks: which are built, which are absent and why (docs/soc-support.md)
 #   make savedefconfig       the .config as a minimal defconfig
 #   make phone               with a .config, its arguments are the kernel's; without, the phone line below
 #   FRAGMENTS="open trace"   fragments for a NAME_defconfig: make redwood_defconfig FRAGMENTS=open
@@ -55,7 +56,7 @@ PAYLOAD ?= qemu/payload.bin
 # make u-boot-img: the payload put in the image's ramdisk with the loader (none: U-Boot waits for them over fastboot)
 UBOOT_PAYLOAD ?=
 
-.PHONY: devices help unpack images kernel loader loader-open hello qemu qemu-open qemu-u-boot u-boot u-boot-img phone prebuilt clean all doctor defconfig config savedefconfig esp
+.PHONY: soc-status devices help unpack images kernel loader loader-open hello qemu qemu-open qemu-u-boot u-boot u-boot-img phone prebuilt clean all doctor defconfig config savedefconfig esp
 
 help:
 	@awk '{ if (!/^#/) exit; sub(/^# ?/, ""); print }' Makefile
@@ -70,6 +71,9 @@ unpack:
 
 images:
 	$(IMAGE_OPTS) userland/build.sh
+
+soc-status:
+	python3 tools/soc-check.py --status
 
 kernel:
 	[ -d xnu-src/xnu-8796.121.2 ] || xnu/apply.sh

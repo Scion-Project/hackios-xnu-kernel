@@ -25,7 +25,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -95,6 +95,11 @@ jobs:
           K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
           ls -la $K $K.unstripped
           mkdir -p out && cp $K $K.unstripped out/
+
+      - name: A kernel linked with each other SoC's table (compile only; none of them has booted)
+        run: |
+          source ./xnu-env.sh
+          JOBS=$(nproc) tools/soc-compile.sh
 
       - name: Loader (xnuloader/build.sh)
         # identity.h comes from the device tree of the builder's own IPSW (xnuloader/mkidentity.sh);

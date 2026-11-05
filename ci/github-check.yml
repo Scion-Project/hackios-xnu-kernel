@@ -60,6 +60,8 @@ jobs:
         run: |
           python3 tools/hakios-device.py check
           python3 tools/hakios-device-test.py
+      - name: Each SoC's table, fragment and matrix row agree; a block without its numbers is off
+        run: python3 tools/soc-check.py
       - name: The documentation pages made from the source are current
         run: |
           [ ! -d devices/redwood ] || python3 tools/docs-gen.py --check

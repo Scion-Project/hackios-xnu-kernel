@@ -85,7 +85,8 @@ the example), which `xnu/apply.sh` lays into `bsd/sys/`, and `sys/hakios.exynos_
 
 1. `socs/<soc>/`: `soc.conf`, `configs/<soc>.config`, and the header with the SoC's numbers from its own device tree and Samsung's source.
 2. A `soc <soc>` block in the manifest (`path`).
-3. A driver whose hardware really differs: a `#if` on the SoC's own macro in that driver, or a driver of the layer's (`drivers/<sub>/conf`).
+3. `block` and `source` lines in `soc.conf`, and `tools/soc-check.py --write`: which blocks are the same IP, each number with its source. [docs/soc-support.md](../soc-support.md) is the matrix.
+4. A driver whose hardware really differs: a `#if` on the SoC's own macro in that driver, or a driver of the layer's (`drivers/<sub>/conf`).
 
 ## The manifest
 
