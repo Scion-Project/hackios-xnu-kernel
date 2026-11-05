@@ -20,11 +20,6 @@
  * exynos9810: flexpmu_cal_local, cmucal-sfr, cmucal-node; the device tree's mfc0@178D0000, pd-mfc@14064068, sysmmu@17880000 and
  * @178A0000). GPL: read for these facts, nothing copied. This file is new, under the APSL as the kernel's are.
  *
- * Seen on phone 2, 4 November 2026: the domain and the clocks the boot leaves on; the SysMMUs' CTRL 0x4 (cleared: addresses pass through); the phone's own
- * mfc_fw.bin (21-01-12), block version 0x1200; the test stream's 6 frames with ffmpeg's CRCs in 10 ms; a 1080p H.264 clip, 225 frames a second with
- * mfc_test; through AVPlayer (userland/src/mfc_decoder.c) H.264 and HEVC at 1080p30, the first frame's CRC ffmpeg's, mediaserverd 17% of a core
- * against 63% in software.
- *
  *   registers     0x178D0000, 64 KB; SPI 356 (mfc_irq=1; otherwise the driver polls RISC2HOST_INT, spinning 20 ms and then sleeping a millisecond at a time)
  *   the domain    pd-mfc: the PMU's MFC_CONFIGURATION 0x14064068 [3:0] = 0xF, MFC_STATUS 0x1406406C. need_smc 0x17810204: after
  *                 the power comes, SMC 0x82000410 (1, 0x17810204, 0), the DTZPC restore (as the G3D's, ISPPRE's and AUD's)

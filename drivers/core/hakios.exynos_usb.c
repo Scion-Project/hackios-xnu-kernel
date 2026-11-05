@@ -55,9 +55,6 @@
  * s2mps18-private.h:116, 272; dwc3/otg.c:196-210 (mode 3 on, 1 off); the dt's LDO9-14 (starlte_eur_open_26.dts:8997-9062).
  * All of Samsung's kernel fork (Scion-Project/android_kernel_samsung_exynos9810, lineage-24.0, e5906667068e), GPL-2.0:
  * read for facts only, no code taken.
- *
- * Status: run on the phone since 1 November (usb_gadget=5 max77705_usbsw=1, the S9's default: the USB log and
- * console); not in QEMU (which has no such PHY). Compiled in and out.
  */
 #include <stdarg.h>
 #include <stdint.h>

@@ -1,26 +1,18 @@
 /*
- * An Exynos SPI master -- the SPI of a USI block of the Exynos 9810 -- polled: no DMA, no interrupt, the chip select
- * held by hand. sys/hakios.exynos_spi.h says how a driver describes its bus; the Galaxy S9's audio codec
- * (hakios.cs47l93.c, spi@10470000, USI01 of PERIC0) is the first to use it.
+ * Exynos SPI: the SPI master of a USI block, polled, chip select by hand. sys/hakios.exynos_spi.h says how a driver
+ * describes its bus.
  *
- * What it takes before the first transfer, none of which the UEFI does: the block's clock gates forced on and its
- * Q-channel enabled (in its CMU), the IP clock's divider set (the SPI's SCLK is a quarter of the IP clock: Samsung's
- * driver asks its clock for four times the bus speed), the USI block made an SPI (its mode word: 2), the pins set to
- * their function. Then the controller: USI_CON cleared (its reset value holds the block in reset and drives the pads
- * to a stable level), the chip select made inactive, the interrupts off, no DMA, 8-bit words, the FIFOs flushed.
+ * UEFI sets up none of this, so before the first transfer: force the block's clock gates on and enable its Q-channel
+ * (in its CMU), set the IP clock's divider (SCLK is a quarter of the IP clock), make the USI block an SPI (mode word 2),
+ * set the pins' function, clear USI_CON (its reset value holds the block in reset), then 8-bit words, no DMA, no
+ * interrupts, chip select inactive, FIFOs flushed.
  *
- * A transfer, a FIFO's worth at a time: the channels off and the controller reset (both FIFOs emptied), the bytes put
- * in the transmit FIFO, then both channels on; the clock runs for as long as there is something to send, and every
- * byte sent brings one back into the receive FIFO, which is read once it holds them all. The chip select is the
- * controller's own pin (nSS, the pin in function 2), driven by SLAVE_SEL's bit 0 (Samsung's MANUAL_CS_MODE: 0 selects,
- * 1 is inactive), so it stays low between FIFO loads and across transfers until deselected.
- *   CH_CFG 0x00 (TXCH_ON 0, RXCH_ON 1, CPHA 2, CPOL 3, SLAVE 4, SW_RST 5, HS_EN 6), MODE_CFG 0x08 (TRAILCNT [28:19],
- *   CH_TSZ [30:29], BUS_TSZ [18:17], DMA 1-2), SLAVE_SEL 0x0C, INT_EN 0x10, STATUS 0x14 (TX level [6+], RX level [15+],
- *   the level's mask (fifo size << 1) - 1, TX_DONE 25), TX_DATA 0x18, RX_DATA 0x1C, PACKET_CNT 0x20, PENDING_CLR 0x24,
- *   SWAP_CFG 0x28 (0 with 8-bit words), FB_CLK 0x2C, USI_CON 0xC4
- * Sources: Linux's drivers/spi/spi-s3c64xx.c as the S9's kernel has it (exynos_usi_init, s3c64xx_spi_hwinit,
- * s3c64xx_spi_config, enable_datapath, wait_for_xfer, flush_fifo, enable_cs/disable_cs) and drivers/soc/samsung/usi_v2.c
- * (SPI_SW_CONF), GPL: read for these facts, not copied.
+ * A transfer goes one FIFO at a time: channels off and reset (which empties both FIFOs), bytes into the transmit FIFO,
+ * both channels on. The clock runs while there is something to send and every byte sent brings one back, so the receive
+ * FIFO is read once it holds them all. nSS is the controller's own pin, driven by SLAVE_SEL bit 0 (MANUAL_CS_MODE: 0
+ * selects), so it stays low across FIFO loads and transfers until deselected.
+ *
+ * Sources: spi-s3c64xx.c and soc/samsung/usi_v2.c of Samsung's GPL kernel (read for these facts, not copied).
  */
 #include <kern/clock.h>
 #include <libkern/libkern.h>

@@ -102,7 +102,7 @@
  *   iris_s9_ispdiv=D   CLKCMU_ISPPRE_BUS = SHARED1_DIV4 (466 MHz) / (D + 1) while the frame is taken (default 0, Android's
  *                      466 MHz: two lanes at 2 Gb/s are 4.6 times the front camera's, which needed 233 MHz)
  *
- * THE SECURE MONITOR (iris_s9_smc=M, an experiment; 0 and none: no call). On the phone (3 November) gpg0-7 (iris_en)
+ * THE SECURE MONITOR (iris_s9_smc=M, an experiment; 0 and none: no call). On the phone gpg0-7 (iris_en)
  * and gpp4-6/7 (the sensor's bus) do not keep what the AP writes into them, though the rest of their banks do, and the
  * sensor does not answer: something above the kernel holds them, most likely EL3 for the iris camera's secure scenario.
  * Samsung's kernel calls, for that scenario (fimc_is_sensor_s_input, fimc-is-device-sensor_v2.c), MC_SECURE_CAMERA_
@@ -133,7 +133,7 @@
  * USI00 gates (PCLK 0x20B0, IPCLK 0x20AC, GATE_CLK 0x200C, the divider 0x1804, the Q-channel 0x3020; a gate found
  * manually off is opened for the reads and closed again), gpp0's CON, DAT and PUD, SPI1's CH_CFG, MODE_CFG and STATUS;
  * last, the mode word.
- *   What the phone showed (3 November). THIS PROBE PANICS THE KERNEL: reading SPI1's CH_CFG is a synchronous external
+ *   What the phone showed. THIS PROBE PANICS THE KERNEL: reading SPI1's CH_CFG is a synchronous external
  * abort (ESR 0x96000410), with USI00's gates open (0x200000) and gpp0's CON, DAT and its four pins' PUD reading 0. An
  * earlier order died the same way on the mode word at SYSREG_PERIC0 (ESR 0x96000610), after the CMU's reads. So neither
  * is the normal world's; N = 2's writes and the sensor itself were never reached. The expected end of a run is TWRP.
@@ -145,9 +145,6 @@
  * back; one found on is left on and as it is, one found on at another voltage stops the run before anything is written.
  * The S2MPB02 is written only in the seven LED registers above, with those values. A write that does not read back, or
  * a byte nobody acknowledges, and everything is powered down and nothing more is written for the run.
- *
- * Status: run on the phone with iris_s9_smc=1: steps 1 to 3 work; step 4 streams and writes no frame to memory (THE
- * SECURE MONITOR, above); step 5's picture has never been made. Without iris_s9_smc=, step 2 fails at the sensor.
  *
  * Sources: the phone's device tree (exynos9810-starlte_eur_open_26.dts of the BSP: hsi2c@108D0000 and its
  * fimc-is-secure@10, the hsi2c19-bus pin states, usi@10811024, fimc_is_mclk2_out/_fn, fimc_is_sensor@16260000,

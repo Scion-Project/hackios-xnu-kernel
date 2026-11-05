@@ -45,7 +45,7 @@
  *   abox_route=0       UAIF1 from SIFS0, the mixer (SPUS_CTRL0 OUT 1, MIXP_FORMAT, ROUTE_CTRL0 [7:4] = 1), instead of SIFS1
  *                      (SPUS OUT0 straight, SPUS_CTRL1 [18:16] = 0, ROUTE_CTRL0 [7:4] = 2). On the phone the mixer's way
  *                      stalls: RDMA0 reads 32 bytes and no more (the mixer's sample bank reads 0; calliope would set it up),
- *                      where SIFS1's runs at 192000 bytes a second (3 November); 1, SIFS1, is the default
+ *                      where SIFS1's runs at 192000 bytes a second; 1, SIFS1, is the default
  *   abox_rdma_ctrl0=V  bits of RDMA0's CTRL0 besides ENABLE, to try a format there (none: as it reads after reset)
  *   abox_rdma_ctrl1=V  RDMA0's CTRL1 (none: as it reads after reset)
  *   abox_vol=V         RDMA0's VOL_FACTOR [23:0] (none: 0x800000 if it reads 0, else left)
@@ -143,11 +143,6 @@
  * THE SPEAKERS' GUARD (drivers/audio/hakios.guard.c) applies: on Android the S9's speakers are protected by Maxim's DSM
  * running on ABOX's CPU (the device tree's dsm.bin), which does not run here. Every period, silence too, goes through
  * it, reckoned with the amplifiers at Android's loudest (attenuation 0, the most careful), after abox_gain.
- *
- * Status (3 November, phone 2 of the S9s): steps 1-6 run as written (the AUD domain was on, ABOX answers, PLL_AUD locks,
- * UAIF1's LRCLK toggles at gpb1-1 at 48 kHz); step 7 then refused the SysMMU the boot leaves on (CTRL 0x4), and the
- * kernel's own RAM is all above 4 GB. Hence abox_mmu_off, abox_rmem for the ring, and calliope's RDMA fields. AUDIO.md
- * in the starlte repository has each run.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
@@ -205,7 +200,7 @@ static uint32_t steps, secs = 3, route_sifs1 = 1, bclk_on, gain, dvfs_khz;
 static uint32_t sbank_bytes = 512, burst = 8;   /* Samsung's S10 values (see the header); set when the field reads 0 */
 static bool sbank_given, burst_given;           /* given on the command line: set whatever the field reads */
 static uint32_t rdma_ctrl0 = UINT32_MAX, rdma_ctrl1 = UINT32_MAX, vol = UINT32_MAX;
-/* found on the phone (3 November): the boot leaves ABOX's SysMMU translating (CTRL 0x4), and the T570 work names what
+/* found on the phone: the boot leaves ABOX's SysMMU translating (CTRL 0x4), and the T570 work names what
  * else a stream without calliope needs (sys/hakios.exynos_abox.h) */
 static uint32_t mmu_off = 1;            /* abox_mmu_off: a translating SysMMU switched off (CTRL 0), not refused */
 static uint32_t syspower = 1;           /* abox_syspower: SYSPOWER_CTRL 1 (DRAM on) and the ACLK/BCLK Q-channels kept on */
@@ -1552,7 +1547,7 @@ rec_prepare(void)
 	(void)poke_bits(&abox, "SPUM_CTRL0 (NSRC0: no ASRC, out to WDMA)", ABOX_SPUM_CTRL0, (1u << 4) | (1u << 7), 0);
 	(void)poke(&abox, "SPUM_CTRL3 (SIFM0 flushed)", ABOX_SPUM_CTRL3, 1);
 	/* NSRC0's sample bank: reads 0 after the boot, and with it 0 WDMA1 waits (PROGRESS, no byte) and UAIF0 says
-	 * ERROR_OF_MIC; given 512 bytes (SIZE [29:20] in 16-byte units, as for RDMA0) it runs (phone 1, 3 November) */
+	 * ERROR_OF_MIC; given 512 bytes (SIZE [29:20] in 16-byte units, as for RDMA0) it runs */
 	if ((rd(&abox, ABOX_SPUM_SBANK_NSRC0) & SBANK_SIZE_MASK) == 0) {
 		(void)poke_bits(&abox, "SPUM_SBANK_NSRC0 (SIZE 512 bytes)", ABOX_SPUM_SBANK_NSRC0, SBANK_SIZE_MASK,
 		    (512u / 16) << SBANK_SIZE_SHIFT);

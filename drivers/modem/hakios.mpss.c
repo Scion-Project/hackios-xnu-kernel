@@ -1754,7 +1754,7 @@ step_our_item(void)
 	 * Android's IPA driver allocates in this partition at its probe (techpack/dataipa, ipa_smmu_ap_cb_probe():
 	 * qcom_smem_alloc(SMEM_MODEM, SMEM_IPA_FILTER_TABLE, size)) and maps into the IPA's SMMU context as it is:
 	 * the modem puts its filter tables there for the IPA to read. The modem looks for it when its IPA driver
-	 * initializes; before the IPA ran here (22 October) an item of 0x2000 made the modem give up before any
+	 * initializes; before the IPA ran here an item of 0x2000 made the modem give up before any
 	 * service, since it then went on to the unclocked IPA. Now that the IPA runs, made by default, zeroed
 	 * (modem_ipa_item=0: not; our SMMU context maps all of DDR, so the item needs no mapping of its own).
 	 */

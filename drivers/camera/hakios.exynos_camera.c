@@ -1595,7 +1595,7 @@ patch_mean(uint32_t stride)
  * cells), the black level off; the aim 18 % of the range above it (173 of 959). The exposure asked is the one before
  * times aim / mean (a step of at most 8x either way, half the step while streaming), spent on time first, then on
  * analog gain, then on digital gain (at most cam_s9_dgain, 4x unless said). A change written after frame N's end
- * shows in frame N + 3 (seen on the phone, 3 November: the sensor latches it at a frame start, and the next frame has
+ * shows in frame N + 3 (the sensor latches it at a frame start, and the next frame has
  * begun integrating already), so each one is measured on the third frame after it.
  */
 #define AE_AIM                  ((1023 - BLACK_LEVEL) * 18 / 100)

@@ -1,31 +1,22 @@
 /*
- * The keys of the Galaxy S9 (starlte, Exynos 9810) -- power, volume up, volume down, Bixby -- as a source of
- * button records for /dev/hakios-touch (sys/hakios.input.h). Only with boot-arg exynos_keys=1: every address
- * below belongs to this phone.
+ * The Galaxy S9's keys, read from the ALIVE GPIO block, as button records for /dev/hakios-touch. Only with exynos_keys=1.
  *
- * All four are pins of the SoC's ALIVE GPIO block (pinctrl@14050000 in Samsung's device tree), each pulled up
- * on the board and pulled to ground by its key, so a pin reads 0 while its key is held:
- *   volume up    gpa0 pin 3     DAT 0x14050024 bit 3
- *   volume down  gpa0 pin 4     DAT 0x14050024 bit 4
- *   Bixby        gpa0 pin 6     DAT 0x14050024 bit 6
- *   power        gpa2 pin 4     DAT 0x14050064 bit 4
- * A bank of that block is CON (+0x00, a nibble per pin: 0 input, 0xF its wakeup interrupt), DAT (+0x04, a bit
- * per pin), PUD (+0x08), DRV (+0x0C), banks 0x20 apart, gpa0 at 0x20 and gpa2 at 0x60. DAT says the pin's level
- * whether the pin is an input or an interrupt (Android's own driver reads it with the pins set to 0xF).
- * Sources: the phone's device tree (gpio_keys, gpa0/gpa2 under pinctrl@14050000, the key-* pin settings),
- * Linux's drivers/pinctrl/samsung/pinctrl-exynos.c (the ALIVE banks of the Exynos 9810) and Project Silicium's
- * starlte UEFI, which reads the same four bits the same way (KeypadDeviceLib.c) and sets nothing up first.
+ * Each pin is pulled up on the board and grounded by its key, so it reads 0 while held:
+ *   volume up    gpa0 pin 3
+ *   volume down  gpa0 pin 4
+ *   Bixby        gpa0 pin 6
+ *   power        gpa2 pin 4
+ * A bank is CON +0x00 (a nibble per pin: 0 input, 0xF its wakeup interrupt), DAT +0x04, PUD +0x08, DRV +0x0C. DAT gives
+ * the level whether the pin is an input or an interrupt.
  *
- * THIS DRIVER ONLY READS. The firmware has left the pins as Android wants them; a pin found set to anything but
- * an input or its interrupt is not taken for a key, and said so.
+ * Read only: the firmware has left the pins as Android wants them. A pin set to anything else is not taken for a key.
  *
- * What a press is: a thread reads the two DAT registers 100 times a second, and a key has changed when two looks
- * in a row say so (Android debounces for 5 ms). A key that reads as held before it has ever been seen released
- * is not believed until it has been.
+ * A thread polls DAT at 100 Hz and takes a change when two reads agree (Android debounces for 5 ms). A key seen held
+ * before it was ever released is ignored until it is. Power is the side button (HAKIOS_BUTTON_LOCK); Bixby, which an
+ * iPhone X does not have, is home (HAKIOS_BUTTON_HOME).
  *
- * The mapping: the iPhone X, whose user space runs here, has a side button and two volume keys. Power is the
- * side button (HAKIOS_BUTTON_LOCK); Bixby, where the iPhone has nothing, is the home button (HAKIOS_BUTTON_HOME),
- * which is a way home while there is no touch screen.
+ * Sources: the phone's device tree (gpio_keys), pinctrl-exynos.c of Samsung's GPL kernel, and Project Silicium's starlte
+ * UEFI (KeypadDeviceLib.c), which reads the same bits.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>

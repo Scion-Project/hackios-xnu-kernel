@@ -69,7 +69,7 @@ extern void delay(int usec);
 #define ID_CHANNELS     0x08
 #define ID_NCHANNELS    0x0C
 #define ID_AP_MAX       0x18
-#define ID_BUILD        0x6C            /* seen on the phone, 1 November: three words more before build_info than the BSP's header has (0x007f0000 0x10 0x40), then "92dbdb1" */
+#define ID_BUILD        0x6C            /* three words more before build_info than the BSP's header has (0x007f0000 0x10 0x40), then "92dbdb1" */
 
 #define CH_SIZE         0x48
 #define CH_ID           0x00

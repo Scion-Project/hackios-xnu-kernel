@@ -1,20 +1,16 @@
 /*
- * An Exynos HSI2C -- the I2C master of a USI block of the Exynos 9810 -- as the Galaxy S9's drivers use it: the
- * touch screen (hakios.s6sy761.c, USI03 of PERIC0) and the battery's fuel gauge and charger (hakios.max77705.c,
- * USI03 of CMGP). sys/hakios.exynos_hsi2c.h says how a driver describes its bus.
+ * Exynos HSI2C: the I2C master of a USI block. sys/hakios.exynos_hsi2c.h says how a driver describes its bus.
  *
- * What it takes before the first transfer, none of which the UEFI does: the block's clock gates forced on and its
- * Q-channel enabled (in its CMU), the USI block made an I2C (its mode word: 4), its two pins set to function 2.
- * Then the controller: reset, its USI_CON cleared (its reset value holds the block in reset), its timing for the bus
- * speed from its input clock, master, auto mode. A message is then: the FIFO's triggers, master with the receive or
- * transmit channel on, the target's address, the length (and read, and STOP) in AUTO_CONF and RUN set; the bytes
- * pushed into or pulled out of the FIFO as there is room or data; done when INT_STAT says so (and the transmit FIFO is
- * empty) or the bytes are all in; abort, no acknowledgement, no device and time-out (INT_STAT 8-11) reset the bus.
- *   CTL 0x00, FIFO_CTL 0x04, TRAILING 0x08, INT_EN 0x20, INT_STAT 0x24, FIFO_STAT 0x30, TX 0x34, RX 0x38, CONF 0x40,
- *   AUTO_CONF 0x44, TIMEOUT 0x48, TRANS_STATUS 0x50, TIMING_FS1-3 0x60-0x68, ADDR 0x70, USI_CON 0xC4
- * Sources: Linux's drivers/i2c/busses/i2c-exynos5.c and drivers/soc/samsung/usi_v2.c of the S9's kernel, and the
- * Exynos 9810's CMU tables (GPL: read for these facts, not copied); the WoA port's HSI2C driver for the S9+
- * (github.com/ntdevlabs/exynos9810-woa), which does the same and runs on the hardware.
+ * UEFI sets up none of this, so before the first transfer: force the block's clock gates on and enable its Q-channel
+ * (in its CMU), make the USI block an I2C (mode word 4), set its pins to their function, reset the controller, clear
+ * USI_CON (its reset value holds the block in reset), then set the timing for the bus speed, master and auto mode.
+ *
+ * A message: FIFO triggers, master with the channel on, the target's address, the length (read, STOP) in AUTO_CONF, RUN.
+ * Done when INT_STAT says so and the transmit FIFO is empty, or when all bytes are in. Abort, no ack, no device and
+ * time-out (INT_STAT bits 8-11) reset the bus.
+ *
+ * Sources: i2c-exynos5.c and soc/samsung/usi_v2.c of Samsung's GPL kernel and the 9810's CMU tables (read for these facts,
+ * not copied); the WoA port for the S9+ (github.com/ntdevlabs/exynos9810-woa).
  */
 #include <kern/clock.h>
 #include <libkern/libkern.h>

@@ -1,35 +1,22 @@
 /*
- * The Galaxy S9 powered off (Exynos 9810): PS_HOLD let go, for the TMU's stop (tmu_off=1, hakios.exynos_tmu.c) and, with
- * boot-arg halt_off=N, for a halt ("shut down" in iOS: host_reboot with HOST_REBOOT_HALT, halt_all_cpus(FALSE), patch 1510).
+ * Power off for the Galaxy S9: releases PS_HOLD, for the TMU's stop (tmu_off=1) and, with halt_off=N, for a halt.
  *
- * Why. No platform driver of this port powers a machine off: a halt hands the phone back to the loader (loader_return),
- * and the rails stay up. The S9's panel, an S6E3HA8 in MIPI command mode, keeps its own copy of the last frame and goes on
- * showing it from that memory with nothing sending it anything: the phone looks frozen on the last spinner frame of the
- * shutdown, and stays on until the battery is flat or the loader's own restart comes.
+ * Without this a halt hands the phone back to the loader with the rails up, and the panel (S6E3HA8, MIPI command mode)
+ * keeps showing its last frame from its own memory, so the phone looks frozen until the battery is flat.
  *
- * PS_HOLD. The PMIC (S2MPS18) keeps the phone powered while the SoC holds its PWRHOLD line high, and the SoC holds it so
- * while the PMU's PS_HOLD_CONTROL (0x14060000 +0x330C) has bit 8 set. Clearing that bit is how Samsung's kernel ends a
- * power-off (sec_power_off(), drivers/staging/samsung/sec_reboot.c:135; exynos_power_off(), drivers/soc/samsung/
- * exynos-reboot.c:252; the offset in include/linux/sec_ext.h:33). Everything is lost with it, this log too (pstore is RAM).
- * With a charger attached, or the power key still held, the PMIC keeps the phone up anyway: Samsung then restarts into its
- * charging screen instead (INFORM2 = SEC_POWER_OFF, sec_reboot.c:120); here the run is handed to the loader, as before.
+ * The PMIC (S2MPS18) keeps the phone on while the SoC holds PWRHOLD high, which it does while bit 8 of the PMU's
+ * PS_HOLD_CONTROL is set. Clearing that bit is how Samsung's kernel ends a power-off (exynos-reboot.c: exynos_power_off(),
+ * sec_reboot.c: sec_power_off(); the offset from sec_ext.h). With a charger attached or the power key held the PMIC keeps
+ * the phone up anyway; Samsung then restarts into its charging screen, and here the run returns to the loader.
  *
- * A halt, with halt_off=N (only on the Galaxy S9: every address here belongs to it; 0, or none: nothing, the halt as it was):
- *   1  the data volume saved (hakios_var_save_on_return(), as every orderly end of a run does), the panel blanked
- *      (hakios_s6e3ha8_blank(): DCS display-off, 0x28, and sleep-in, 0x10, through DSIM0's command FIFO, as Samsung's
- *      display-off and exit sequences send them), then PS_HOLD low, unless the battery driver reports a charger
- *   2  the same, and before PS_HOLD the APM asked to stop (hakios_acpm_stop(): Samsung's acpm_enter_wfi(), which
- *      exynos_acpm_reboot() sends before every PS_HOLD and every restart; drivers/soc/samsung/acpm/acpm.c:250-292)
- * In both, the phone still running a second after PS_HOLD (a charger the battery driver did not see, the power key held),
- * or a charger reported: the loader's way, as without halt_off -- with the panel already dark, so a phone that the loader
- * then leaves on at least does not look frozen.
+ * halt_off=
+ *   0  a halt returns to the loader (default)
+ *   1  save the data volume, blank the panel (DCS display-off 0x28, sleep-in 0x10), release PS_HOLD unless a charger is reported
+ *   2  the same, and stop the APM first (Samsung's acpm_enter_wfi(), sent before every PS_HOLD by exynos_acpm_reboot())
+ * If the phone is still running a second after PS_HOLD, the run returns to the loader with the panel dark.
  *
- * Status: WRITTEN, NOT YET RUN on the phone, nor in QEMU (it has no such PMU: halt_off= must not be given there). Not known:
- * whether PS_HOLD alone powers the S9 off with the APM still running (Samsung never does it without exynos_acpm_reboot()
- * first, halt_off=2; tmu_off=1 does, and has not been seen either), and what the APM answers to the stop request.
- *
- * Boot-args:
- *   halt_off=<0-2>   what a halt does: 0 the loader's way (the default), 1 panel off and PS_HOLD, 2 also the APM stopped first
+ * Not yet run on a phone. Unknown: whether PS_HOLD alone powers off with the APM running (Samsung never does that), and
+ * what the APM answers to the stop request. QEMU has no such PMU: never give halt_off= there.
  */
 #include <stdint.h>
 #include <kern/clock.h>

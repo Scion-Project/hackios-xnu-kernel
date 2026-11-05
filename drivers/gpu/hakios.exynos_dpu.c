@@ -60,10 +60,6 @@
  * initial-phase formulas, dpp_reg_set_format), dpp_drv.c (the ratio, dpp_check_scale_ratio), dpp.h, helper.c
  * (dpu_dma_type_to_channel); and the device tree of the same tree (exynos9810-starlte_eur_open_26.dts: decon_f@16030000,
  * dpp@16021000-16026000 with their IDMA at 16071000-16076000). GPL: read for these facts, nothing copied.
- *
- * Seen on the phone (run 33, 2 November): the probe as expected (window 5 on G0, reading 0xCC000000); the buffers were
- * then never had, the presenter asking IOKit for memory below 4 GB where this kernel has none (its RAM is the bank from
- * 0x880000000): hence hakios_scanout_memory. Every step says what it decided, in the loader's log.
  */
 #include <stdarg.h>
 #include <kern/clock.h>
@@ -284,8 +280,8 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
  * Where the scan-out's buffers can be: the DECON's DMA takes 32-bit addresses, and none of this kernel's own memory is
  * below 4 GB on the S9 (the loader gives XNU the bank from 0x880000000 on; IOKit's "below 4 GB" never succeeds there).
  * In the lower bank, the gap of the phone's device tree between the moved payload and panic log (0xD0000000 -
- * 0xD3FFFFFF, kernel PR 144) and secure_camera (0xE1900000): no reserved-memory node, outside XNU's RAM, used by
- * neither payload layout (the memory table of hakios-starlte's README, starlte PR 27). Not 0xF0000000 and above: the
+ * 0xD3FFFFFF) and secure_camera (0xE1900000): no reserved-memory node, outside XNU's RAM, used by
+ * neither payload layout (devices/starlte/README.md, the memory table). Not 0xF0000000 and above: the
  * Shannon modem's region (modem_if, cp_ram_logging), then ABOX's. `count` buffers of `bytes` each from 0xD4000000,
  * 64 KB apart at least; physical addresses, the caller maps them (write-combined). 0 if they fit.
  */
@@ -297,7 +293,7 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
  * CoreAnimation's frame was drawn into, and nothing is copied (MiniIOMobileFramebuffer.cpp). Slots of 12 MB, one surface
  * each: the iPhone's 1125 x 2436 at 4544 or 4608 bytes a row is 11 MB. Four slots, in the three free pieces of the gap
  * below 0xE0000000 (sys/hakios.exynos9810_mem.h): what is drawn from there up does not reach the panel, and a slot that
- * ran over it (0xDF800000, PR 165's second) showed the bottom quarter of every other frame black. CoreAnimation keeps
+ * ran over it (at 0xDF800000) showed the bottom quarter of every other frame black. CoreAnimation keeps
  * two display surfaces: they take the first two, 0xDEC00000 and 0xD7000000, pieces the display has scanned out of before.
  */
 #define SCAN_SLOT               (12ULL << 20)

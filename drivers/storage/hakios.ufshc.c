@@ -216,13 +216,6 @@
  *      CAPACITY(16), the list given back
  *   5  all: LBA 0 and each unit's GPT read (hakios.ufs.c), /dev/ufs_NAME made, reads served
  * The S9's default is 1; QEMU's and the POCO's 5.
- *
- * Checked: shared mode run on the POCO (as before this file was made generic). Own mode run in
- * QEMU 11.1 on -device ufs with two ufs-lu units. exynos9810: own mode run on the phone through
- * ufs=3 (hakios.ufs.c takes the controller after its self-test against the loader's reads; kernel
- * PR 155), the S9's default, with /private/var kept in USERDATA. ufs_native=4
- * ufs_native_soc=exynos9810 given by hand (no self-test) starts at step 1 unless ufs_native_step=
- * says otherwise; nothing uses it.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -1392,14 +1385,6 @@ hc_off(void)
  *   - (own mode) its UTRLCNR bit set (hc_cnr_on: cleared before the doorbell, so a set bit is this request's);
  *   - (own mode) its descriptor written back (OCS not f) with a response UPIU of its task tag in its command
  *     descriptor (both made invalid by hc_place before the doorbell).
- * Seen on the phone (ufs-rw8, 4375 requests): the doorbell bit dropped by itself on about two in three; on the
- * rest it stayed, the descriptor written back (OCS 0), the response there (21, status 00) and IS's UTRCS set,
- * with UTRLCNR 0 as long as the poller looked (100 ms) -- 00000004 only read after UTRLCLR. So the descriptor
- * is the sign that holds on this controller, and the clean-up after it (hc_finish) is: IS acknowledged
- * (written with ones), the UTRLCNR bit written, and, if the doorbell bit is still set, that slot cleared with
- * UTRLCLR (clear_with_ones: on the Exynos a one clears, as the safety net did in rw7 and rw8; UFSHCI's own
- * sense is a zero) and the bit confirmed clear. A waiter spins (hc_spin_us, 2 ms: a 4 KB read is done in well under that) and then sleeps
- * in 1 ms steps; no poller thread, no 100 ms tick.
  */
 static void hc_stuck(struct hc_slot *s);
 static uint32_t hc_spin_us = 2000;              /* boot-arg ufs_native_spin */

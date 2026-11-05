@@ -685,7 +685,7 @@ step_mic(void)
 /*
  * AIF1's four pins are the codec's GPIO5-8 (pinctrl-cs47l92.c: the "aif1" group, pins 4-7), GPIOs after a reset (FN 1,
  * pulled down: 0x2001 read on the phone) until given their alternate function (FN 0; the device tree's cs47l93-gpio-
- * defaults: aif1, bias-bus-hold): without that ABOX records zeroes (phone 1, 3 November).
+ * defaults: aif1, bias-bus-hold): without that ABOX records zeroes.
  * AIF1 is the codec's side of UAIF0: I2S, the codec a slave of both clocks (CBS_CFS), 48 kHz, 2 x 16 bits
  * (madera_set_fmt, madera_hw_params: FMT 2 is I2S, the rate from SAMPLE_RATE_1 (AIF1_RATE 0), RX_BCPF the BCLKs a frame,
  * 32; FRAME_CTRL_1/2 WL [13:8] and SLOT_LEN [7:0] 16). What it sends (mixer_paths.xml's route-main-mic): AIF1TX1 and
