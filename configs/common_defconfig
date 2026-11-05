@@ -115,6 +115,9 @@ CONFIG_HAKIOS_BATTERY=y
 # the clock of the cores the kernel runs on (cpufreq=1), and the memory bus's votes (ddr=) [hakios.cpufreq.c]
 CONFIG_HAKIOS_CPUFREQ=y
 
+# counts what user space tells the scheduler about its frames' deadlines (perfctl=1): nothing is changed by it [hakios.perfctl.c]
+CONFIG_HAKIOS_PERFCTL=y
+
 # the SoC's temperature sensors (thermal=1): kern.hakios.thermal_*, and the run handed back to the loader when the ... [hakios.thermal.c]
 CONFIG_HAKIOS_THERMAL=y
 

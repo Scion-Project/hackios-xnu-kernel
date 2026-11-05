@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **573 arguments**: 505 read by the kernel, 21 by the loader, 62 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **574 arguments**: 506 read by the kernel, 21 by the loader, 62 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -552,7 +552,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `serial` | L | `loader.c` | `CONFIG_SERIAL` |  |
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 
-## User space (114)
+## User space (115)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -640,6 +640,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `passcode_debug` | U | `passcoded.m` | `CONFIG_PASSCODE_DEBUG` |  |
 | `passcode_reset` | K | `MiniAppleKeyStore.cpp` | `CONFIG_PASSCODE_RESET` |  |
 | `passcode_selftest` | K | `MiniAppleKeyStore.cpp` | `CONFIG_PASSCODE_SELFTEST` |  |
+| `perfctl` | K | `hakios.perfctl.c` | `CONFIG_PERFCTL` |  |
 | `poster_retry` | U | `poster_retry.c` | `CONFIG_POSTER_RETRY` |  |
 | `root_apfs` | U | `init.c` | `CONFIG_ROOT_APFS` |  |
 | `rtc_pmic` | K | `hakios.s2mps18_rtc.c` | `CONFIG_RTC_PMIC` |  |
