@@ -345,6 +345,18 @@ that, only the closed user-space driver would drive it, and it does not run unde
 same value; 990 70 and 69; 8895 40 and 37; 2100 5 and 2. The differing value on the 9820 and 990 is `INTERRUPT_ENABLE_MASK`, not
 used by `hakios.exynos_dpu.c`. DPP and IDMA were not compared. Tensor's DPU is a DRM driver of Google's and was not compared.
 
+**One kernel for all of them.** A draft pull request (`soc/runtime-draft`) picks the table at boot by the chip id, and is not on main: it has not booted. Things that force a per-SoC or per-phone choice whatever it does:
+
+| Fact | Why it cannot be read at run time here | Forces |
+|---|---|---|
+| Page size | `__ARM_16K_PG__` in the board's header, used throughout XNU | one build; 16 KB everywhere, and every core must have that granule (unknown on M4, M5, X1, X3, X4) |
+| Kernel base and memory map | loader's `payload_home`, `keep_out`; `hakios.exynos9810_mem.h` | per phone: a table the loader chooses from |
+| Boot chain | S-Boot and a Silicium UEFI against ABL and a shim | two images per family: **separate installers** for Samsung and Tensor, at least |
+| Early UART | the loader's `.uart` is PL011 only | none on any of these today |
+| CPU build flags | `+pan` in `MACHINE_FLAGS_ARM64_BCM2837`; the S9 runs with `pan=0` on its M3s, and the 8895's cores are ARMv8.0 as well | one build, at the floor of all of them |
+| Boot arguments | each phone's defconfig turns its drivers on | per phone, or a table of its own |
+| Chip ids | not read for Tensor G2, G3, G4 or G5 | those SoCs cannot be picked until they are |
+
 **Identifying the SoC.** A chip id block at 0x10000000 on every Samsung row and on Tensor G1 to G4, by their device trees; the Tensor
 G5's was not read. Linux's `exynos-chipid.c` gives the value for the 8895, 9810, 990, 850, 2200 and gs101. The values for the 9820,
 2100 and Tensor G2 to G4 were not read, so those tables have no `EXYNOS_PRODUCT_ID`.

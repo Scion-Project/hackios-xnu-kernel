@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's speakers (starlte, Exynos 9810): two Maxim MAX98512 amplifiers, 0x39 and 0x3A on the HSI2C of USI07 of
  * PERIC1 (0x108C0000), fed over I2S by UAIF1 of ABOX, the SoC's audio block, which drives both clocks. Only with boot-arg

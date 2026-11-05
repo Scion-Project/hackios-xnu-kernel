@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's sensors (starlte, Exynos 9810): the accelerometer, gyroscope, magnetometer, barometer, light and
  * proximity sensors all sit behind one sensor hub, the MCU inside the Broadcom BCM4775 B0 GNSS chip ("ssp,BCM4773" in

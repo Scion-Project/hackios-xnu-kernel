@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's cameras (starlte, Exynos 9810): the front camera, a Samsung S5K3H1 (Android's camera 1,
  * "fimc-is_sensor_3h1"), from its supplies to one raw frame in memory, without the ISP's libraries. Only with boot-arg

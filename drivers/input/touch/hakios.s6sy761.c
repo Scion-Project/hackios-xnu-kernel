@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The touch screen of the Galaxy S9 (starlte, Exynos 9810): a Samsung S6SY761 at 0x48 on the I2C bus of USI03
  * (HSI2C at 0x104B0000), as a source of touch records for /dev/hakios-touch (sys/hakios.input.h). Only with boot-arg

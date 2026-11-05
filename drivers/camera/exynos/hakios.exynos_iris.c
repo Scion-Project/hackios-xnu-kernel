@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's iris camera (starlte, Exynos 9810): the Samsung S5K5F1 infrared sensor ("fimc-is-secure@10",
  * Android's camera position 3) and its infrared LED, from the supplies to one raw infrared frame in memory and a

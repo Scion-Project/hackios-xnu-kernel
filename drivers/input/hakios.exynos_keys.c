@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's keys, read from the ALIVE GPIO block, as button records for /dev/hakios-touch. Only with exynos_keys=1.
  *

@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * hakios.exynos_tee.c: the Galaxy S9's secure OS (Kinibi) asked whether it is there, and at the next step started and
  * stopped there. Off unless asked, in nobody's default line; without tee_probe= this file does nothing at all.

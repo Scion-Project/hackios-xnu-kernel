@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's speakers (starlte, Exynos 9810), the SoC's side: ABOX, Samsung's audio block, driven from the AP with
  * its own CPU off ("bypass", no firmware). What iOS plays goes memory -> RDMA0 -> SPUS (ABOX's stream bus, chain 0, no

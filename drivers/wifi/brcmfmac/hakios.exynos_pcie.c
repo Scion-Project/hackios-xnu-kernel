@@ -1,3 +1,4 @@
+#define HAKIOS_SOC_FIXED
 /*
  * The Galaxy S9's Wi-Fi, stage 1 (starlte, Exynos 9810): the PCIe root complex of channel 0, a DesignWare core with
  * Samsung's PHY, as far as a link to the Broadcom BCM4361 and that chip's identity read from its configuration space.
