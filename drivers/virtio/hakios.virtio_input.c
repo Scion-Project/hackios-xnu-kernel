@@ -23,8 +23,9 @@
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
-#include <sys/hakios.xnu.h>
 
+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
 
 #define VIRTIO_BUS              0x0a000000UL    /* QEMU virt: 32 transports of 0x200 bytes */
 #define VIRTIO_SLOTS            32
