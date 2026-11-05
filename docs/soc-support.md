@@ -20,7 +20,7 @@ different one from Tensor G2 on. The verdicts:
 | `gs201` Tensor G2 | Pixel 7 | No | As G1, and a CSF GPU |
 | `zuma` Tensor G3 | Pixel 8 | No | The above; ARMv9 cores never tried under this kernel |
 | `zumapro` Tensor G4 | Pixel 9 | No | The above; fewest numbers: no UFS, GPU or display table read |
-| `lga` Tensor G5 | Pixel 10 | No | `scion-soc-lga` holds its layer. Another UART, UFS host and display, a Volcanic PowerVR. Written, not yet seen on a phone |
+| `lga` Tensor G5 | Pixel 10 | No; [to a framebuffer](pixel10-bringup.md) | `scion-soc-lga` holds its layer. Another UART, UFS host and display, a Volcanic PowerVR. Written, not yet seen on a phone |
 
 No table has been made for the Exynos 2200 (GICv3 and Cortex-X2 in mainline, Xclipse GPU: different IP), the 8855, 7885, 7870 or
 the Auto SoCs: mainline has trees for them, nobody has read further.
@@ -53,6 +53,7 @@ table. Cells that are not `built` are not stubbed: the driver is off in the SoC'
 | `exynos990` | needs code | table only, 6/6, built | table only | table only | table only | table only, 6/7 | needs code | table only, 3/3, built | needs code | needs code | table only, built | unknown | table only |
 | `gs101` | needs code | needs code | table only | table only | table only | needs code | needs code | different IP | needs code | needs code | needs code | different IP | table only |
 | `gs201` | needs code | needs code | table only | table only | table only | needs code | needs code | different IP | different IP | needs code | needs code | different IP | table only |
+| `lga` | needs code | different IP | table only | table only | different IP | different IP | unknown | different IP | different IP | unknown | unknown | different IP | different IP |
 | `zuma` | needs code | needs code | table only | table only | table only | needs code | needs code | different IP | different IP | needs code | needs code | different IP | table only |
 | `zumapro` | needs code | needs code | table only | table only | table only | needs code | needs code | different IP | different IP | needs code | needs code | different IP | table only |
 
@@ -207,6 +208,28 @@ table. Cells that are not `built` are not stubbed: the driver is off in the SoC'
 - B: android.googlesource.com/kernel/devices/google/gs201@05c125c7e224 dts/gs201.dtsi, gs201-ufs.dtsi, gs201-gpu.dtsi, gs201-drm-dpu.dtsi, gs201-mfc.dtsi
 - L: linux@05441d697f7f the gs101 drivers, the family only: mainline has no gs201
 
+### `lga`: Google Tensor G5 (laguna, "lga"), Imagination PowerVR DXT-48-1536
+
+| Block | State | Source | Why |
+|---|---|---|---|
+| cpu | code | M | A520, A725 and X4, ARMv9.2; under this kernel only in QEMU |
+| acpm | different | G | no ACPM: the CPM, Google's power manager, by mailbox |
+| gic | table | M | GICv3 with 256 KB GICv4 frames, walked by gic_v3_irq.c |
+| timer | table | M | architected; CNTFRQ_EL0 is the firmware's |
+| uart | different | M | DesignWare APB UART, 16550-style |
+| ufs | different | G | Google's host at 0x3C400000, behind an SMMUv3 |
+| usb | unknown | - | not looked at |
+| dpu | different | G | VeriSilicon DC9x00; the boot loader's framebuffer is the shim's, unproven |
+| gpu | different | F | PowerVR DXT-48-1536, Volcanic, signed firmware by way of Trusty; no open driver |
+| mfc | unknown | - | not looked at |
+| usi | unknown | - | not looked at |
+| pmic | different | G | DA9188 and DA9189, through the CPM |
+| wdt | different | M | google,wdt, two; the shim stops them |
+
+- M: linux@18686b294c6f arch/arm64/boot/dts/google/lga.dtsi, lga-pixel-common.dtsi
+- G: azagramac/pixel10-kernel-aosp@6f689be7fa23, Google's kernel for the Pixel 10 family: facts only
+- F: Google's factory image cp3a.261005.005: names and headers, read only
+
 ### `zuma`: Google Tensor G3 (zuma), Mali-G715 MP7 (Valhall v11, CSF)
 
 | Block | State | Source | Why |
@@ -252,9 +275,6 @@ table. Cells that are not `built` are not stubbed: the driver is off in the SoC'
 
 `table only, n/m` with n less than m is the same IP with numbers not found in the sources read. `guess:` on a number in a header
 is exactly that: `ACPM_SRAM_FIRST` is the 9810's measured value, assumed for its relatives.
-
-The Tensor G5 is not a row: `scion-soc-lga` is another repository and has no `block` lines. By the same words: GIC and timer table
-only, UART different IP (DesignWare 16550), UFS different IP (Google's host), GPU different IP (Volcanic PowerVR), DPU different IP (Verisilicon DC9x00).
 
 ## Findings that cross the table
 

@@ -57,6 +57,7 @@ LCK_MTX_DECLARE(hakios_rsc_lock, &hakios_platform_lock_group);
 LCK_MTX_DECLARE(hakios_smmu_lock, &hakios_platform_lock_group);
 
 static char hakios_drivers_string[] = HAKIOS_DRIVERS_LIST;
+const char hakios_builtin_args[] = HAKIOS_BUILTIN_ARGS;     /* pexpert/gen/bootargs.c, after the command line */
 
 SYSCTL_STRING(_kern_hakios, OID_AUTO, drivers, CTLFLAG_RD | CTLFLAG_LOCKED, hakios_drivers_string, 0,
     "the drivers this kernel was built with (CONFIG_HAKIOS_* of its configuration, lowercase)");
@@ -64,6 +65,7 @@ SYSCTL_STRING(_kern_hakios, OID_AUTO, drivers, CTLFLAG_RD | CTLFLAG_LOCKED, haki
 static void
 hakios_platform_init(void)
 {
+	printf("hakios-kernel: arguments built in: %s\n", hakios_builtin_args);
 	printf("hakios-kernel: %d drivers built in (%s): %s\n", HAKIOS_DRIVERS_COUNT, HAKIOS_DRIVERS_CONFIG, hakios_drivers_string);
 }
 STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, hakios_platform_init);
