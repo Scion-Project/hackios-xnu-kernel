@@ -169,6 +169,7 @@ fb_dpp	k
 fb_filter	k
 fb_flip	k
 fb_hz	k
+fb_intf	k
 fb_measure	k
 fb_native	k
 fb_pri	k
