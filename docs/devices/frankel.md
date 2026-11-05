@@ -9,7 +9,7 @@
 | SoC | `lga` |
 | Configuration | `make frankel_defconfig` |
 | Maintainer | Scion (README.md) |
-| Repository | [hakios-frankel](https://github.com/Scion-Project/hakios-frankel) |
+| Repository | [scion-frankel](https://github.com/Scion-Project/scion-frankel) |
 
 ## What works
 
