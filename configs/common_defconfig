@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 631 symbols in 20 groups; 54 are set, 45 of them drivers built in.
+# 632 symbols in 20 groups; 54 are set, 45 of them drivers built in.
 #
 
 #
@@ -1308,7 +1308,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_SOC_SMEM is not set
 
 #
-# Cameras (33)
+# Cameras (34)
 #
 
 # the cameras (5 is what the README uses) [needs fw-camera/ from the phone]
@@ -1349,6 +1349,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakios.exynos_camera.c (kernel)
 # CONFIG_CAM_S9_AE_FRAMES is not set
+
+# with 7: the stream from the boot to the run's end, wanted or not (the old behaviour, for debugging)
+# CONFIG_CAM_S9_ALWAYS is not set
 
 # camshot's Bayer order: 0 RGGB, 1 GRBG (the default, the sensor's), 2 GBRG, 3 BGGR
 # CONFIG_CAM_S9_BAYER is not set
