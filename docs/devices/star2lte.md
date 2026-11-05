@@ -9,7 +9,7 @@
 | SoC | `exynos9810` |
 | Configuration | `make star2lte_defconfig` |
 | Maintainer | Scion (README.md) |
-| Repository | [hakios-star2lte](https://github.com/Scion-Project/hakios-star2lte) |
+| Repository | [scion-star2lte](https://github.com/Scion-Project/scion-star2lte) |
 
 ## What works
 

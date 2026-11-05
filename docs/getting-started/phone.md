@@ -73,7 +73,7 @@ A configuration sets them for you (`CONFIG_GPU=y` is `gpu=1`); [every argument](
 
 ## Sileo
 
-The installer's system image (scion-packaging, `build-installer.sh`) carries Sileo and the Procursus rootless bootstrap
+The installer's system image (scion-installer, `build-installer.sh`) carries Sileo and the Procursus rootless bootstrap
 as `/jb`, fetched at build time by `tools/mk-jb.sh` and pinned by SHA-256. Nothing of theirs is in the repository. It needs
 no boot argument and no jailbreak; the kernel is ours, and `miniamfi` takes a binary's own signature.
 

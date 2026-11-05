@@ -14,7 +14,7 @@
 # userland/build.sh puts root/var/jb into the system image (as /jb, read only); on a kept /private/var a job
 # copies it to /private/var/jb once (userland/src/jb_seed.c), on a memory filesystem init grafts it there at every boot.
 #
-# PREINSTALL= ELLEKIT= tools/mk-jb.sh is the installer's (scion-packaging, build-installer.sh): the bootstrap and Sileo
+# PREINSTALL= ELLEKIT= tools/mk-jb.sh is the installer's (scion-installer, build-installer.sh): the bootstrap and Sileo
 # alone, both pinned below, with no tweak injection and no OpenSSH. Without them: ElleKit and PREINSTALL's list as well,
 # whatever the repository has as newest.
 set -e

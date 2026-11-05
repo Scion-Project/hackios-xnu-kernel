@@ -9,7 +9,7 @@
 | SoC | `exynos9810` |
 | Configuration | `make starlte_defconfig` |
 | Maintainer | Scion (README.md) |
-| Repository | [hakios-starlte](https://github.com/Scion-Project/hakios-starlte) |
+| Repository | [scion-starlte](https://github.com/Scion-Project/scion-starlte) |
 
 ## What works
 

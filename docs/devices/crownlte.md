@@ -9,7 +9,7 @@
 | SoC | `exynos9810` |
 | Configuration | `make crownlte_defconfig` |
 | Maintainer | Scion (README.md) |
-| Repository | [hakios-crownlte](https://github.com/Scion-Project/hakios-crownlte) |
+| Repository | [scion-crownlte](https://github.com/Scion-Project/scion-crownlte) |
 
 ## What works
 

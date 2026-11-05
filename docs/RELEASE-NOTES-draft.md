@@ -7,8 +7,8 @@ open-source release commit (oosexgang, 22 October 2026). The tree's `VERSION` is
 ## Highlights
 
 - **Galaxy S9 (SM-G960F, Exynos 9810), a new device.** Its device repository is
-  [hakios-starlte](https://github.com/Scion-Project/hakios-starlte) and its TWRP installer is
-  [scion-packaging](https://github.com/Scion-Project/scion-packaging). It boots the iOS 16.5 user space that you build
+  [scion-starlte](https://github.com/Scion-Project/scion-starlte) and its TWRP installer is
+  [scion-installer](https://github.com/Scion-Project/scion-installer). It boots the iOS 16.5 user space that you build
   from your own IPSW, from the phone's flash (`ufs=3 system_apfs=ufs_SYSTEM`).
 - **Android's own hypervisor (AVF/crosvm) as a host** (`avf/`): XNU as a guest on the Pixel, for
   [Scion](https://github.com/Scion-Project/scion). This adds virtio-pci, a virtio GPU with a GLES/Vulkan path through
@@ -21,7 +21,7 @@ open-source release commit (oosexgang, 22 October 2026). The tree's `VERSION` is
 ## Galaxy S9: state on the phone
 
 Seen on hardware by 3 November 2026, each on its own test image. `devices/starlte/configs/starlte.config` holds the
-defaults, and [hakios-starlte's README](https://github.com/Scion-Project/hakios-starlte) has the detail.
+defaults, and [scion-starlte's README](https://github.com/Scion-Project/scion-starlte) has the detail.
 
 | Part | Boot-arguments |
 |---|---|
@@ -63,8 +63,8 @@ Not supported: cellular, the rear cameras, and Apple's services (activation, App
 ## Building and installing
 
 - Build: [Building from source](getting-started/building.md). For the S9, follow
-  [hakios-starlte's README, "Build"](https://github.com/Scion-Project/hakios-starlte#build).
-- Install on the S9: [scion-packaging's README](https://github.com/Scion-Project/scion-packaging#install) gives the
+  [scion-starlte's README, "Build"](https://github.com/Scion-Project/scion-starlte#build).
+- Install on the S9: [scion-installer's README](https://github.com/Scion-Project/scion-installer#install) gives the
   TWRP installer. Back up `EFS`, `BOOT` and `SYSTEM` first.
 - The system image and the loader's identity come from **your own** IPSW (`make unpack IPSW=...`, `make loader`).
   Nothing of Apple's is in these repositories, and an installer you build is yours. Do not publish it.
@@ -74,7 +74,7 @@ Not supported: cellular, the rear cameras, and Apple's services (activation, App
 - `prebuilt/` dates from 25 October and is not an S9 build. Refresh it with `make prebuilt` before tagging, or say so.
 - `cpufreq_lit` and `cpufreq_big` are read from a table in `hakios.exynos_acpm.c`, so `tools/boot-args.py` does not
   list them in [boot-args.md](boot-args.md).
-- [docs/devices/starlte.md](devices/starlte.md) is generated from the pinned `hakios-starlte` revision. It shows the
+- [docs/devices/starlte.md](devices/starlte.md) is generated from the pinned `scion-starlte` revision. It shows the
   S9's parts as of that revision until `devices/manifest.conf` is bumped and `tools/docs-gen.py` is run again.
-- The Samsung audio firmware in `hakios-starlte/firmware/audio/` and the FocalTech touch firmware header have
+- The Samsung audio firmware in `scion-starlte/firmware/audio/` and the FocalTech touch firmware header have
   redistribution terms still marked "to verify" (THIRD_PARTY_LICENSES.md).
