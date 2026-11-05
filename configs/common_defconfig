@@ -1515,10 +1515,10 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_USTACKS_TNAME is not set
 
 #
-# Loader (11)
+# Loader (10)
 #
 
-# this core -- the one the loader stays on while the kernel runs on others (bootcpu=) -- given to the kernel
+# the kernel's box for this core (above), if it has one, and only with a kernel on another core to watch
 # CONFIG_CORE0 is not set
 
 # core 1, which S-Boot uses for its own display work, listed for the kernel all the same
@@ -1539,7 +1539,7 @@ CONFIG_MODEM_AGAIN=y
 # s5p_mfc_regs_v10.h, s5p_mfc_cal.c, s5p_mfc_cmd.c, s5p_mfc_inst.c, s5p_mfc_reg.c, s5p_mfc_irq.c; ...
 # CONFIG_MFC is not set
 
-# read by loader.c (loader)
+# read by loader.c, wdt_exynos.c (loader)
 # CONFIG_RECOVERY is not set
 
 # read by loader.c (loader)
@@ -1548,11 +1548,8 @@ CONFIG_MODEM_AGAIN=y
 # read by loader.c (loader)
 # CONFIG_UFS_PROBE is not set
 
-# the Galaxy S9's hardware watchdog is not armed (a restart still goes to recovery: INFORM3 is written)
-# CONFIG_WDT is not set
-
 #
-# User space (104)
+# User space (105)
 #
 
 # read by inject_sb.c (user space)
@@ -1866,6 +1863,9 @@ CONFIG_MODEM_AGAIN=y
 
 # read by hakios.virtio.c (kernel)
 # CONFIG_VIRTIO_POLL is not set
+
+# the Galaxy S9's hardware watchdog is not armed (a restart still goes to recovery: INFORM3 is written)
+# CONFIG_WDT is not set
 
 #
 # Extra arguments (2)

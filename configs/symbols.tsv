@@ -128,7 +128,7 @@ CC_FADE	arg	cc_fade	User space	u	inject_sb.c
 COHTEST	arg	cohtest	User space	k	hakios.exynos_m3.c	is the big cluster in the same coherency domain as the A55s once it is started? (off by default)
 COHTEST_DELAY	arg	cohtest_delay	User space	k	hakios.exynos_m3.c	
 CONSOLE_QUIET	arg	console_quiet	User space	k	1003-avf-console-quiet.patch	
-CORE0	arg	core0	Loader	kl	1513-psci-loader-core.patch,loader.c	this core -- the one the loader stays on while the kernel runs on others (bootcpu=) -- given to the kernel
+CORE0	arg	core0	Loader	kl	1513-psci-loader-core.patch,loader.c	the kernel's box for this core (above), if it has one, and only with a kernel on another core to watch
 CORE1	arg	core1	Loader	l	loader.c	core 1, which S-Boot uses for its own display work, listed for the kernel all the same
 CPUFREQ_GOV	arg	cpufreq_gov	User space	k	hakios.exynos_cpufreq.c	run it (0, or none: the fixed rates of cpufreq_lit= and cpufreq_big=)
 CPUFREQ_GOV_BIG_MAX	arg	cpufreq_gov_big_max	User space	k	hakios.exynos_cpufreq.c	
@@ -350,7 +350,7 @@ REC_SOUND_FED	arg	rec_sound_fed	Audio and battery	k	hakios.audio.c
 REC_SOUND_MIC	arg	rec_sound_mic	Audio and battery	k	hakios.audio.c	
 REC_START	arg	rec_start	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 REC_STEP	arg	rec_step	GPU and display	k	MiniIOMobileFramebuffer.cpp	
-RECOVERY	arg	recovery	Loader	l	loader.c	
+RECOVERY	arg	recovery	Loader	l	loader.c,wdt_exynos.c	
 REGTRACE	arg	regtrace	CPU, memory and boot	k	(patch)	
 RETURN_CPU	arg	return_cpu	CPU, memory and boot	k	loader_return.c	
 RETURN_PANIC	arg	return_panic	CPU, memory and boot	k	loader_return.c	
@@ -485,7 +485,7 @@ VIRTIO_NET_SSID	arg	virtio_net_ssid	Network	k	hakios.virtio_net.c
 VIRTIO_NET_WIFI	arg	virtio_net_wifi	Network	k	hakios.virtio_net.c	iOS is told that en0 is a radio, the way the phone's is (hakios.net.c, hakios.wlan.cpp, hakios.apple80211.c), and a station of this file's stands
 VIRTIO_POLL	arg	virtio_poll	User space	k	hakios.virtio.c	
 VIRTIO_SOUND	arg	virtio_sound	Audio and battery	k	hakios.virtio_sound.c	
-WDT	arg	wdt	Loader	l	loader.c	the Galaxy S9's hardware watchdog is not armed (a restart still goes to recovery: INFORM3 is written)
+WDT	arg	wdt	User space	l	wdt_exynos.c	the Galaxy S9's hardware watchdog is not armed (a restart still goes to recovery: INFORM3 is written)
 WIFI_AGAIN	arg	wifi_again	Wi-Fi	k	hakios.wifi.c	start the DSP although the one before it was shut down without having acknowledged a stop: THAT HAS RESET THE PHONE, twice of two
 WIFI_ASK	arg	wifi_ask	Wi-Fi	k	hakios.wifi.c	step 14 also asks that service a question (its capabilities) and writes down the beginning of an answer
 WIFI_BA	arg	wifi_ba	Wi-Fi	k	lx_80211.c	
