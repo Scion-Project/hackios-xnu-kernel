@@ -538,8 +538,16 @@ hakios_audio_init(void)
 	report_call = thread_call_allocate(audio_report, NULL);
 	audio_recording_init();
 	hakios_virtio_sound_init();
+	{
+		extern void hakios_scsnd_init(void);
+		hakios_scsnd_init();    /* scsnd.addr=: the Scion app plays it (bsd/dev/hakios.scsnd.c) */
+	}
 	hakios_speaker_init();
 	hakios_haptic_init();
 	hakios_torch_init();
+	{
+		extern void hakios_sccam_torch_init(void);
+		hakios_sccam_torch_init();      /* sccam.addr=: the phone's torch, by the Scion app (bsd/dev/hakios.sccam_torch.c) */
+	}
 	hakios_camera_init();
 }

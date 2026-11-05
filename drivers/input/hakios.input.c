@@ -10,6 +10,7 @@
 #include <sys/errno.h>
 #include <sys/proc.h>
 #include <sys/hakios.input.h>
+#include <sys/hakios.exynos_abox.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <pexpert/pexpert.h>
@@ -109,7 +110,7 @@ count_fingers(uint32_t type, uint32_t finger)
 }
 
 static void
-touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, bool from_driver)
+touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, bool from_driver, uint64_t when)
 {
 	struct hakios_touch *t;
 
@@ -118,7 +119,7 @@ touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, bool from_dri
 		touch_head++;                   /* nobody reads: drop the oldest */
 	}
 	t = &touch_queue[touch_tail++ % TOUCH_QUEUE];
-	t->time = mach_absolute_time();
+	t->time = when != 0 ? when : mach_absolute_time();
 	if (latency_lines()) {
 		uint64_t ns;
 
@@ -139,7 +140,14 @@ touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, bool from_dri
 void
 hakios_touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y)
 {
-	touch_post(type, finger, x, y, true);
+	touch_post(type, finger, x, y, true, 0);
+}
+
+/* The same, for a sample taken at mach_absolute_time() `when` (not later than now). */
+void
+hakios_touch_post_at(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, uint64_t when)
+{
+	touch_post(type, finger, x, y, true, when);
 }
 
 static int
@@ -207,7 +215,7 @@ touch_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 		if (t.type < HAKIOS_TOUCH_DOWN || t.type > HAKIOS_BUTTON_UP) {
 			return EINVAL;
 		}
-		touch_post(t.type, t.finger, t.x, t.y, false);
+		touch_post(t.type, t.finger, t.x, t.y, false, 0);
 	}
 	return error;
 }
@@ -239,6 +247,7 @@ hakios_input_init(void)
 	hakios_s6sy761_init();
 	hakios_s6e3ha8_init();
 	hakios_s2mpb02_torch_init();
+	hakios_exynos_abox_init();
 	hakios_battery_init();
 	hakios_scfb_battery_init();
 	hakios_max77705_init();

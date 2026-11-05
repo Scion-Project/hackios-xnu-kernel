@@ -9,7 +9,6 @@ separate tracks from conflicting in the one big patch:
 | 1100-1199 | virtio-pci transport and drivers |
 | 1200-1299 | display and input |
 | 1300-1399 | GPU 3D: virtio-gpu 3D / gfxstream (`drivers/gpu/hakios.vgpu3d*.c`) |
-| 1400-1499 | the Scion app's devices under AVF: camera, sound, flashlight (`avf/CAMERA.md`) |
 | 1500-1599 | other phones of this fork (the Galaxy S9: `devices/starlte`) where they touch upstream's or Apple's files |
 
 The patches change Apple's files and upstream's drivers. The AVF guest's own drivers are whole files in `drivers/`

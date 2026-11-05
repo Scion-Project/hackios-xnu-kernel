@@ -97,7 +97,7 @@ BUTTONS_STEPS	arg	buttons_steps	Touch and buttons	k	hakios.buttons.c
 CA_VBL	arg	ca_vbl	User space	u	inject.c	CoreAnimation's frame clock from the display driver's refresh notifications
 CAENV	arg	caenv	User space	u	inject.c,inject_sb.c	CoreAnimation's switches here as in the window server (inject.c), set before QuartzCore reads them
 CAM_AFTER	arg	cam_after	Cameras	k	hakios.camera.c	
-CAM_FAKE	arg	cam_fake	Cameras	k	1400-avf-scion-camera.patch,hakios.camera.c	
+CAM_FAKE	arg	cam_fake	Cameras	k	hakios.camera.c	
 CAM_FAKE_FPS	arg	cam_fake_fps	Cameras	k	hakios.camera.c	
 CAM_FRAMES	arg	cam_frames	Cameras	k	hakios.camera.c	
 CAM_GAIN	arg	cam_gain	Cameras	k	hakios.camera.c	
@@ -366,11 +366,11 @@ S6SY761_PRI	arg	s6sy761_pri	Touch and buttons	k	hakios.s6sy761.c	the polling thr
 S6SY761_STEPS	arg	s6sy761_steps	Touch and buttons	k	hakios.s6sy761.c	
 S6SY761_TRACE	arg	s6sy761_trace	Touch and buttons	k	hakios.s6sy761.c	the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate
 SB_FPS	arg	sb_fps	User space	u	inject_sb.c	
-SCCAM_ADDR	arg	sccam.addr	User space	k	1400-avf-scion-camera.patch,hakios.sccam_torch.c	
-SCCAM_H	arg	sccam.h	User space	k	1400-avf-scion-camera.patch	
-SCCAM_SIZE	arg	sccam.size	User space	k	1400-avf-scion-camera.patch	
-SCCAM_TURN	arg	sccam.turn	User space	k	1400-avf-scion-camera.patch	
-SCCAM_W	arg	sccam.w	User space	k	1400-avf-scion-camera.patch	
+SCCAM_ADDR	arg	sccam.addr	Cameras	k	hakios.camera.c,hakios.sccam_torch.c	the app's camera (above), whatever cam= says
+SCCAM_H	arg	sccam.h	Cameras	k	hakios.camera.c	
+SCCAM_SIZE	arg	sccam.size	Cameras	k	hakios.camera.c	
+SCCAM_TURN	arg	sccam.turn	Cameras	k	hakios.camera.c	turn the back camera's (1) or the front camera's (2) frames half round
+SCCAM_W	arg	sccam.w	Cameras	k	hakios.camera.c	
 SCFB_ADDR	arg	scfb.addr	User space	k	1200-avf-scfb-display.patch,1202-virtio-gpu-2d.patch,hakios.scfb_battery.c	
 SCGPU_ADDR	arg	scgpu.addr	User space	k	hakios.vgpu3d_xnu.c	
 SCGPU_SIZE	arg	scgpu.size	User space	k	hakios.vgpu3d_xnu.c	

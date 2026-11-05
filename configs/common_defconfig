@@ -1311,7 +1311,7 @@ CONFIG_MODEM_AGAIN=y
 # read by hakios.camera.c (kernel)
 # CONFIG_CAM_AFTER is not set
 
-# read by 1400-avf-scion-camera.patch, hakios.camera.c (kernel)
+# read by hakios.camera.c (kernel)
 # CONFIG_CAM_FAKE is not set
 
 # read by hakios.camera.c (kernel)
@@ -1816,19 +1816,19 @@ CONFIG_MODEM_AGAIN=y
 # read by inject_sb.c (user space)
 # CONFIG_SB_FPS is not set
 
-# read by 1400-avf-scion-camera.patch, hakios.sccam_torch.c (kernel)
+# read by hakios.sccam_torch.c, hakios.camera.c (kernel)
 # CONFIG_SCCAM_ADDR is not set
 
-# read by 1400-avf-scion-camera.patch (kernel)
+# read by hakios.camera.c (kernel)
 # CONFIG_SCCAM_H is not set
 
-# read by 1400-avf-scion-camera.patch (kernel)
+# read by hakios.camera.c (kernel)
 # CONFIG_SCCAM_SIZE is not set
 
-# read by 1400-avf-scion-camera.patch (kernel)
+# read by hakios.camera.c (kernel)
 # CONFIG_SCCAM_TURN is not set
 
-# read by 1400-avf-scion-camera.patch (kernel)
+# read by hakios.camera.c (kernel)
 # CONFIG_SCCAM_W is not set
 
 # read by 1200-avf-scfb-display.patch, 1202-virtio-gpu-2d.patch, hakios.scfb_battery.c (kernel)

@@ -303,13 +303,13 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `speaker_probe` | K | `hakios.speaker.c` | `CONFIG_SPEAKER_PROBE` |  |
 | `virtio_sound` | K | `hakios.virtio_sound.c` | `CONFIG_VIRTIO_SOUND` |  |
 
-## Cameras (28)
+## Cameras (33)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
-| `cam` | KL | `1400-avf-scion-camera.patch`, `hakios.camera.c`, `loader.c` | `CONFIG_CAM` |  |
+| `cam` | KL | `hakios.camera.c`, `loader.c` | `CONFIG_CAM` |  |
 | `cam_after` | K | `hakios.camera.c` | `CONFIG_CAM_AFTER` |  |
-| `cam_fake` | K | `1400-avf-scion-camera.patch`, `hakios.camera.c` | `CONFIG_CAM_FAKE` |  |
+| `cam_fake` | K | `hakios.camera.c` | `CONFIG_CAM_FAKE` |  |
 | `cam_fake_fps` | K | `hakios.camera.c` | `CONFIG_CAM_FAKE_FPS` |  |
 | `cam_frames` | K | `hakios.camera.c` | `CONFIG_CAM_FRAMES` |  |
 | `cam_gain` | K | `hakios.camera.c` | `CONFIG_CAM_GAIN` |  |
@@ -335,6 +335,11 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cam_settle` | K | `hakios.camera.c` | `CONFIG_CAM_SETTLE` |  |
 | `cam_shutter` | K | `hakios.camera.c` | `CONFIG_CAM_SHUTTER` |  |
 | `cam_vblank` | K | `hakios.camera.c` | `CONFIG_CAM_VBLANK` |  |
+| `sccam.addr` | K | `hakios.camera.c`, `hakios.sccam_torch.c` | `CONFIG_SCCAM_ADDR` |  |
+| `sccam.h` | K | `hakios.camera.c` | `CONFIG_SCCAM_H` |  |
+| `sccam.size` | K | `hakios.camera.c` | `CONFIG_SCCAM_SIZE` |  |
+| `sccam.turn` | K | `hakios.camera.c` | `CONFIG_SCCAM_TURN` |  |
+| `sccam.w` | K | `hakios.camera.c` | `CONFIG_SCCAM_W` |  |
 
 ## Sensors (10)
 
@@ -553,7 +558,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `serial` | L | `loader.c` | `CONFIG_SERIAL` |  |
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 
-## User space (110)
+## User space (105)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -642,11 +647,6 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `rtc_pmic` | K | `hakios.s2mps18_rtc.c` | `CONFIG_RTC_PMIC` |  |
 | `sb_delay` | U | `inject_sb.c` |  | xl (XL_SB_DELAY) |
 | `sb_fps` | U | `inject_sb.c` | `CONFIG_SB_FPS` |  |
-| `sccam.addr` | K | `1400-avf-scion-camera.patch`, `hakios.sccam_torch.c` | `CONFIG_SCCAM_ADDR` |  |
-| `sccam.h` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_H` |  |
-| `sccam.size` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_SIZE` |  |
-| `sccam.turn` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_TURN` |  |
-| `sccam.w` | K | `1400-avf-scion-camera.patch` | `CONFIG_SCCAM_W` |  |
 | `scfb.addr` | K | `1200-avf-scfb-display.patch`, `1202-virtio-gpu-2d.patch`, `hakios.scfb_battery.c` | `CONFIG_SCFB_ADDR` |  |
 | `scgpu.addr` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_SCGPU_ADDR` |  |
 | `scgpu.size` | K | `hakios.vgpu3d_xnu.c` | `CONFIG_SCGPU_SIZE` |  |

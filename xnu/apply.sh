@@ -47,7 +47,7 @@ python3 "$HERE/../tools/hakios-config.py" external-files | while IFS="$(printf '
 done
 # Numbered patches on top (xnu/patches/NNNN-*.patch, in order), kept apart from hakios.patch so
 # that work in progress on separate tracks does not conflict: 1000-1099 platform (AVF/crosvm),
-# 1100-1199 virtio-pci, 1200-1299 display and input, 1300-1399 GPU 3D, 1400-1499 the Scion app's devices.
+# 1100-1199 virtio-pci, 1200-1299 display and input, 1300-1399 GPU 3D.
 # They come after the drivers, some of which they change; they leave bsd/conf/files to the configuration below.
 NPATCHES=0
 for p in "$HERE"/patches/*.patch; do

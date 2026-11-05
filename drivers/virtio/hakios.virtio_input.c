@@ -13,6 +13,13 @@
  * F12, a process name, Enter prints where every thread of that process is (ustacks_now(); the
  * host side is "qemu/touch.py stacks NAME"). F11 is five fingers on the screen for as long as it
  * is held, which is how the way out in hakios.input.c is tried ("qemu/touch.py key fivefingers 2000").
+ *
+ * Under crosvm (the Android Virtualization Framework) the touch screen is a virtio-input
+ * multi-touch device on PCI, made by the Scion app (ABS_MT_SLOT, ABS_MT_TRACKING_ID,
+ * ABS_MT_POSITION_X/Y, range 0..width/height of the framebuffer). With the virtio core
+ * (sys/hakios.virtio.h) devices are found on either transport, the axes' ranges are read from
+ * the device's configuration space instead of assuming QEMU's 0..0x7fff, and every contact
+ * (up to ten) is its own finger. Without the core, the virtio-mmio code below is used as before.
  */
 #include <kern/clock.h>
 #include <kern/thread_call.h>
@@ -23,6 +30,13 @@
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
+#if __has_include(<sys/hakios.virtio.h>)
+#include <sys/hakios.virtio.h>
+#include <sys/hakios.scgpu.h>
+
+extern bool hakios_scgpu_bell_attach(vio_dev_t *v);       /* bsd/dev/hakios.vgpu3d_xnu.c */
+#define INPUT_VIO               1
+#endif
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern uint64_t kvtophys(vm_offset_t va);       /* pmap_paddr_t */
@@ -97,6 +111,18 @@ struct input_event {
 #define ABS_RANGE               0x7fff          /* QEMU's tablet: 0..0x7fff across the screen */
 #define BTN_LEFT                0x110
 #define BTN_TOUCH               0x14a
+#define ABS_MT_SLOT             0x2f
+#define ABS_MT_POSITION_X       0x35
+#define ABS_MT_POSITION_Y       0x36
+#define ABS_MT_TRACKING_ID      0x39
+#define MT_SLOTS                10              /* fingers told apart (the HID side takes ten) */
+#define EV_MSC                  4
+#define MSC_TIMESTAMP           5               /* microseconds of the sender's clock, wrapping */
+
+/* an axis' range, 0..65535 across the display after scaling */
+struct axis {
+	int32_t min, max;
+};
 
 struct input_device {
 	vm_offset_t             regs;
@@ -107,12 +133,37 @@ struct input_device {
 	/* the pointer */
 	uint32_t                x, y;
 	bool                    pressed, touching, moved;
+	/* multi-touch: one finger per slot */
+	struct axis             ax, ay, mtx, mty;
+	bool                    mt;             /* the device reports ABS_MT_*: ABS_X/Y are ignored */
+	int                     slot;
+	struct {
+		int32_t         id;             /* tracking id, -1 = no contact */
+		uint32_t        x, y;
+		bool            down, moved;    /* as last posted, and changed since */
+	} contact[MT_SLOTS];
+	uint64_t                reports;        /* EV_SYN reports handled */
+	/*
+	 * The sender's time of the report being read (MSC_TIMESTAMP, the Scion app sends one), and
+	 * how it maps onto mach_absolute_time: samples read in a burst then keep their real spacing.
+	 */
+	bool                    have_ts, ts_synced;
+	uint32_t                ts_us, base_us;
+	uint64_t                base_abs, last_abs;
+#ifdef INPUT_VIO
+	vio_dev_t *             vdev;
+	vio_queue_t *           vq;
+	vio_queue_t *           statusq;        /* (unused, but crosvm refuses to start a device without it) */
+	uint64_t                events_pa;
+#endif
 };
 
 #define MAX_DEVICES     4
 static struct input_device devices[MAX_DEVICES];
 static int device_count;
+#ifndef INPUT_VIO
 static thread_call_t poll_call;
+#endif
 
 static inline uint32_t
 reg_read(struct input_device *d, uint32_t reg)
@@ -206,6 +257,74 @@ button_for_key(uint16_t key)
 	return 0;
 }
 
+static uint32_t
+scale(const struct axis *a, int32_t v)
+{
+	int64_t span = (int64_t)a->max - a->min;
+
+	if (span <= 0) {
+		return 0;
+	}
+	if (v < a->min) {
+		v = a->min;
+	} else if (v > a->max) {
+		v = a->max;
+	}
+	return (uint32_t)(((int64_t)v - a->min) * 65535 / span);
+}
+
+/*
+ * When the report being finished was made, in mach_absolute_time, from its MSC_TIMESTAMP; 0
+ * (= now) without one. The sender's clock is mapped by the earliest-arriving report seen: a
+ * report that would map into the future moves the mapping to now, so it tracks the shortest
+ * delivery delay. A mapping more than a second off starts again. Never earlier than the previous.
+ */
+static uint64_t
+report_time(struct input_device *d)
+{
+	uint64_t now = mach_absolute_time(), t, delta, limit;
+
+	if (!d->have_ts) {
+		return 0;
+	}
+	d->have_ts = false;
+	nanoseconds_to_absolutetime((uint64_t)(uint32_t)(d->ts_us - d->base_us) * NSEC_PER_USEC, &delta);
+	nanoseconds_to_absolutetime(NSEC_PER_SEC, &limit);
+	t = d->base_abs + delta;
+	if (!d->ts_synced || t > now || now - t > limit) {
+		d->ts_synced = true;
+		d->base_us = d->ts_us;
+		d->base_abs = now;
+		t = now;
+	}
+	if (t < d->last_abs) {
+		t = d->last_abs;
+	}
+	d->last_abs = t;
+	return t;
+}
+
+/* A whole report has come (EV_SYN): post what changed for every contact. */
+static void
+mt_report(struct input_device *d)
+{
+	uint64_t when = report_time(d);
+
+	for (int i = 0; i < MT_SLOTS; i++) {
+		bool down = d->contact[i].id >= 0;
+
+		if (down && !d->contact[i].down) {
+			hakios_touch_post_at(HAKIOS_TOUCH_DOWN, (uint32_t)i, d->contact[i].x, d->contact[i].y, when);
+		} else if (down && d->contact[i].moved) {
+			hakios_touch_post_at(HAKIOS_TOUCH_MOVE, (uint32_t)i, d->contact[i].x, d->contact[i].y, when);
+		} else if (!down && d->contact[i].down) {
+			hakios_touch_post_at(HAKIOS_TOUCH_UP, (uint32_t)i, d->contact[i].x, d->contact[i].y, when);
+		}
+		d->contact[i].down = down;
+		d->contact[i].moved = false;
+	}
+}
+
 static void
 input_event(struct input_device *d, const struct input_event *e)
 {
@@ -213,16 +332,32 @@ input_event(struct input_device *d, const struct input_event *e)
 
 	switch (e->type) {
 	case EV_ABS:
-		if (e->code == ABS_X) {
-			d->x = e->value * 65535 / ABS_RANGE;
+		if (e->code == ABS_MT_SLOT) {
+			d->slot = (int32_t)e->value >= 0 && (int32_t)e->value < MT_SLOTS ? (int)e->value : 0;
+			d->mt = true;
+		} else if (e->code == ABS_MT_TRACKING_ID) {
+			d->contact[d->slot].id = (int32_t)e->value;
+			d->mt = true;
+		} else if (e->code == ABS_MT_POSITION_X) {
+			d->contact[d->slot].x = scale(&d->mtx, (int32_t)e->value);
+			d->contact[d->slot].moved = true;
+			d->mt = true;
+		} else if (e->code == ABS_MT_POSITION_Y) {
+			d->contact[d->slot].y = scale(&d->mty, (int32_t)e->value);
+			d->contact[d->slot].moved = true;
+			d->mt = true;
+		} else if (e->code == ABS_X) {
+			d->x = scale(&d->ax, (int32_t)e->value);
 			d->moved = true;
 		} else if (e->code == ABS_Y) {
-			d->y = e->value * 65535 / ABS_RANGE;
+			d->y = scale(&d->ay, (int32_t)e->value);
 			d->moved = true;
 		}
 		break;
 	case EV_KEY:
-		if (e->code == BTN_LEFT || e->code == BTN_TOUCH) {
+		if (d->mt && e->code == BTN_TOUCH) {
+			/* contacts say it themselves */
+		} else if (e->code == BTN_LEFT || e->code == BTN_TOUCH) {
 			d->pressed = e->value != 0;
 		} else if (command_key(e->code, e->value)) {
 			break;
@@ -235,7 +370,19 @@ input_event(struct input_device *d, const struct input_event *e)
 			hakios_touch_post(e->value ? HAKIOS_BUTTON_DOWN : HAKIOS_BUTTON_UP, button, 0, 0);
 		}
 		break;
+	case EV_MSC:
+		if (e->code == MSC_TIMESTAMP) {
+			d->ts_us = e->value;
+			d->have_ts = true;
+		}
+		break;
 	case EV_SYN:
+		d->reports++;
+		if (d->mt) {
+			mt_report(d);
+			break;
+		}
+		d->have_ts = false;
 		if (d->pressed && !d->touching) {
 			hakios_touch_post(HAKIOS_TOUCH_DOWN, 0, d->x, d->y);
 		} else if (d->pressed && d->moved) {
@@ -249,6 +396,17 @@ input_event(struct input_device *d, const struct input_event *e)
 	}
 }
 
+/* QEMU's tablet range until the device says otherwise; no contacts */
+static void
+input_defaults(struct input_device *d)
+{
+	d->ax = d->ay = d->mtx = d->mty = (struct axis){ 0, ABS_RANGE };
+	for (int i = 0; i < MT_SLOTS; i++) {
+		d->contact[i].id = -1;
+	}
+}
+
+#ifndef INPUT_VIO
 static void
 input_poll(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 {
@@ -338,7 +496,132 @@ input_attach(struct input_device *d, int slot)
 	reg_write(d, VIRTIO_QUEUE_NOTIFY, 0);
 	return true;
 }
+#endif /* !INPUT_VIO */
 
+#ifdef INPUT_VIO
+/* virtio-input configuration space (virtio 1.2, 5.8.4) */
+#define CFG_SELECT              0
+#define CFG_SUBSEL              1
+#define CFG_SIZE                2
+#define CFG_UNION               8
+#define CFG_ID_NAME             0x01
+#define CFG_ABS_INFO            0x12
+#define VIO_EVENTS              64
+
+static bool
+vio_axis(vio_dev_t *v, uint8_t code, struct axis *a)
+{
+	vio_cfg_write8(v, CFG_SELECT, CFG_ABS_INFO);
+	vio_cfg_write8(v, CFG_SUBSEL, code);
+	if (vio_cfg_read8(v, CFG_SIZE) < 8) {
+		return false;
+	}
+	a->min = (int32_t)vio_cfg_read32(v, CFG_UNION);
+	a->max = (int32_t)vio_cfg_read32(v, CFG_UNION + 4);
+	return a->max > a->min;
+}
+
+/* Every interrupt, and every 8 ms anyway: handle what came, give the buffers back. */
+static void
+vio_input_service(void *arg, __unused uint8_t isr)
+{
+	struct input_device *d = arg;
+	uint32_t len;
+	void *cookie;
+	bool returned = false;
+
+	while ((cookie = vio_queue_get(d->vq, &len)) != NULL) {
+		uintptr_t i = (uintptr_t)cookie - 1;
+		struct vio_sg sg = { d->events_pa + i * sizeof(struct input_event), sizeof(struct input_event), true };
+
+		if (len >= sizeof(struct input_event)) {
+			input_event(d, &d->events[i]);
+		}
+		vio_queue_add(d->vq, &sg, 1, cookie);
+		returned = true;
+	}
+	if (returned) {
+		vio_queue_kick(d->vq);
+	}
+}
+
+static bool
+vio_input_attach(struct input_device *d, vio_dev_t *v)
+{
+	char name[64];
+	uint64_t features;
+	uint8_t size;
+
+	if (vio_init(v, 0, &features) != 0) {
+		printf("virtio-input: %s: refused\n", vio_name(v));
+		return false;
+	}
+	vio_cfg_write8(v, CFG_SELECT, CFG_ID_NAME);
+	vio_cfg_write8(v, CFG_SUBSEL, 0);
+	size = vio_cfg_read8(v, CFG_SIZE);
+	size = size < sizeof(name) - 1 ? size : sizeof(name) - 1;
+	vio_cfg_read(v, CFG_UNION, name, size);
+	name[size] = 0;
+	/* SCGPU's doorbell, not a touch screen: the SCGPU code takes it (bsd/dev/hakios.vgpu3d_xnu.c) */
+	if (strcmp(name, SCGPU_BELL_NAME) == 0) {
+		hakios_scgpu_bell_attach(v);
+		return false;
+	}
+	input_defaults(d);
+	vio_axis(v, ABS_X, &d->ax);
+	vio_axis(v, ABS_Y, &d->ay);
+	d->mt = vio_axis(v, ABS_MT_POSITION_X, &d->mtx) && vio_axis(v, ABS_MT_POSITION_Y, &d->mty);
+	if (vio_queue_setup(v, 0, VIO_EVENTS, &d->vq) != 0) {
+		printf("virtio-input: %s: no event queue\n", vio_name(v));
+		vio_fail(v);
+		return false;
+	}
+	/*
+	 * The status queue (LED state and the like, guest to device) is never used here, but it must
+	 * exist: crosvm's virtio-input does not activate with one queue ("expected 2 queues, got 1"),
+	 * and then no event ever comes. QEMU does not mind.
+	 */
+	if (vio_queue_setup(v, 1, 8, &d->statusq) != 0) {
+		printf("virtio-input: %s: no status queue\n", vio_name(v));
+	}
+	d->events = vio_dma_alloc(VIO_EVENTS * sizeof(struct input_event), &d->events_pa);
+	if (d->events == NULL) {
+		vio_fail(v);
+		return false;
+	}
+	for (uintptr_t i = 0; i < vio_queue_size(d->vq); i++) {
+		struct vio_sg sg = { d->events_pa + i * sizeof(struct input_event), sizeof(struct input_event), true };
+
+		vio_queue_add(d->vq, &sg, 1, (void *)(i + 1));
+	}
+	d->vdev = v;
+	vio_intr_enable(v);                     /* (polled if there is no line) */
+	vio_driver_ok(v);
+	vio_queue_kick(d->vq);
+	printf("virtio-input: %s \"%s\": %s x %d..%d y %d..%d\n", vio_name(v), name, d->mt ? "multi-touch" : "pointer",
+	    d->mt ? d->mtx.min : d->ax.min, d->mt ? d->mtx.max : d->ax.max, d->mt ? d->mty.min : d->ay.min,
+	    d->mt ? d->mty.max : d->ay.max);
+	vio_service_start(v, vio_input_service, d, 8 * NSEC_PER_MSEC);
+	return true;
+}
+
+/* Every virtio input device, on PCI (crosvm) or virtio-mmio (QEMU, with its boot-arg). */
+void
+hakios_virtio_input_init(void)
+{
+	vio_dev_t *v;
+
+	for (unsigned n = 0; device_count < MAX_DEVICES && (v = vio_find(VIRTIO_ID_INPUT, n)) != NULL; n++) {
+		if (vio_input_attach(&devices[device_count], v)) {
+			device_count++;
+		}
+	}
+	if (device_count == 0) {
+		printf("virtio-input: no input devices\n");
+	}
+}
+
+#else /* !INPUT_VIO: QEMU's virtio-mmio bus only */
 void
 hakios_virtio_input_init(void)
 {
@@ -360,6 +643,7 @@ hakios_virtio_input_init(void)
 			printf("virtio-input: slot %d is a legacy transport; start QEMU with -global virtio-mmio.force-legacy=false\n", slot);
 			continue;
 		}
+		input_defaults(d);
 		if (input_attach(d, slot)) {
 			printf("virtio-input: device in slot %d\n", slot);
 			device_count++;
@@ -372,3 +656,4 @@ hakios_virtio_input_init(void)
 		printf("virtio-input: no input devices\n");
 	}
 }
+#endif /* INPUT_VIO */
