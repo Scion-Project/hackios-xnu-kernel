@@ -40,3 +40,4 @@ struct sysctl_oid; struct sysctl_req { void *newptr; };
 int sysctl_io_number(struct sysctl_req *r, int a, int s, int *p, void *c);
 #define SYSCTL_DECL(x)
 #define SYSCTL_PROC(...)
+void sched_perfcontrol_update_recommended_cores(uint32_t mask);
