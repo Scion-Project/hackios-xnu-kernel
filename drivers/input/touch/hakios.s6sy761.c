@@ -1,52 +1,20 @@
 #define HAKIOS_SOC_FIXED
 /*
- * The touch screen of the Galaxy S9 (starlte, Exynos 9810): a Samsung S6SY761 at 0x48 on the I2C bus of USI03
- * (HSI2C at 0x104B0000), as a source of touch records for /dev/hakios-touch (sys/hakios.input.h). Only with boot-arg
- * s6sy761=1: every address below belongs to this phone.
+ * Touch input for the Galaxy S9 (starlte, Exynos 9810): a Samsung S6SY761 at 0x48 on the I2C bus of USI03
+ * (HSI2C at 0x104B0000). Its records reach /dev/hakios-touch (sys/hakios.input.h). Enabled by boot-arg s6sy761=1;
+ * every address in this file belongs to this phone.
  *
- * Nothing here powers the chip. Its two supplies (LDO35 1.8 V, LDO43 3.0 V of the S2MPS18) are "boot-on" in Samsung's
- * device tree, the boot loader leaves them on, and the WoA port's touch driver for the S9+ (same bus, address and
- * supplies) works without touching them. The PMIC is reached through the always-on processor (ACPM, over SPEEDY): not
- * from here. If the chip does not answer, that is the first thing to suspect (step 4 says so).
+ * The chip's supplies are boot-on in the device tree and the boot loader leaves them on; nothing here turns them
+ * on at first. The PMIC is reached through ACPM over SPEEDY, and only if the chip does not answer (power_cycle()).
  *
- * The bus is an Exynos HSI2C in its "auto" mode, polled (drivers/soc/exynos/hakios.exynos_hsi2c.c). What the bring-up does
- * before the first transfer (the clock gates of USI03, the USI block set to I2C, the two pins to their I2C function)
- * is what Linux's drivers and the WoA port do; the UEFI does none of it (Silicium has no I2C for this SoC).
- *   HSI2C (USI03)      0x104B0000
- *   SYSREG_PERIC0      0x1041101C   USI03's mode: 4 = I2C
- *   CMU_PERIC0         0x10400000   gates +0x2018, +0x206C, +0x20DC, +0x20E0 (bit 20 manual, bit 21 on), Q-channel
- *                                   +0x3038 (bits 0-1); the IP clock's divider +0x1810 [3:0] (of 400 MHz) and mux +0x120
- *   PERIC0 GPIO        0x10430020   gpp1: pins 4 (SCL) and 5 (SDA), function 2
- *   the touch's IRQ    0x14050044   gpa1 pin 0 of the ALIVE block, low while the chip has events
- * The chip's protocol: write a command byte (and its data), or write it and read the answer. 0x55 boot status (0x20:
- * its application runs), 0x52 its id, 0x23 the panel (X and Y resolution, big-endian), 0x21 its firmware's check,
- * 0x10 sense on, 0x62 empty the event queue, 0x60 one event (8 bytes), 0x61 the rest. An event's byte 0: [1:0] kind
- * (0 coordinate, 1 status), [5:2] the finger (from 1), [7:6] 1 down, 2 moved, 3 up; X = b1 << 4 | b3 >> 4,
- * Y = b2 << 4 | b3 & 15; b7 [5:0] how many more are waiting.
- * Sources: the phone's device tree (hsi2c@104B0000, touchscreen@48, gpa1, the PERIC0 system register), Linux's
- * i2c-exynos5.c, usi_v2.c, the Exynos 9810 CMU tables and sec_ts (read for these facts, not copied), mainline Linux's
- * s6sy761.c, and the WoA port's HSI2C and touch drivers (github.com/ntdevlabs/exynos9810-woa), which run on the S9+.
+ * The bus is an Exynos HSI2C in auto mode, polled (drivers/soc/exynos/hakios.exynos_hsi2c.c). The clock gates,
+ * the USI block's I2C mode and the two pins' I2C function are set up before the first transfer, as Linux's drivers
+ * and the WoA port do. Silicium has no I2C for this SoC, so the UEFI does none of it.
  *
- * The bring-up is made in steps, each said in the log before it is made. Boot-arg s6sy761_steps=N stops after the
- * first N:
- *   1  map the blocks and read what they are set to          (nothing written)
- *   2  the bus's clocks on, USI03 to I2C, the pins to I2C    (the first writes: clock gates and the mode)
- *   3  the bus reset and set to 400 kHz
- *   4  ask the chip: boot status, id, panel, firmware check  (the first transfers)
- *   5  sense on, the event queue emptied
- *   6  watch it (the default)
- *
- * Boot-arg s6sy761_ipclk=MHz: the HSI2C's input clock, if step 1 says it is not the 200 MHz both other drivers assume.
- *
- * When the chip does not answer at step 4, its two supplies are switched off and on again (power_cycle()), and it is
- * asked again: the mainline Linux port to the S9+ (github.com/SheroAbi/galaxy-s9plus-mainline-linux, s9p-acpm.c; GPL,
- * read for these facts) finds the controller dead after the hand-over from the previous boot stage until it sees a
- * power-on reset. The supplies are the S2MPS18's LDO35 (tsp_io, 1.8 V) and LDO43 (tsp_avdd, 3.0 V) on the S9 as on
- * the S9+ (the phone's device tree); their control registers 0x6C and 0x74, whose bits 7:6 are the on mode (0xC0).
- * Only those bits of only those two registers are written, through the always-on processor (drivers/core/
- * hakios.exynos_acpm.c), each read back, in Android's order (sec_ts.c sec_ts_power(): LDO43 off, 4 ms, LDO35 off;
- * LDO35 on, 1 ms, LDO43 on): off for 2 s, on, then the chip is asked every 500 ms for 12 s; three cycles at most.
- * Boot-arg s6sy761_ldo=0: never.
+ * Sources for these facts: the phone's device tree (hsi2c@104B0000, touchscreen@48, gpa1, the PERIC0 system
+ * register); Linux's i2c-exynos5.c and usi_v2.c; the Exynos 9810 CMU tables; sec_ts (read for these facts, not
+ * copied); mainline Linux's s6sy761.c; and the WoA port's HSI2C and touch drivers (github.com/ntdevlabs/exynos9810-woa),
+ * which run on the S9+ with the same bus, address and supplies.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
@@ -63,7 +31,7 @@
 #include <sys/hakios.xnu.h>
 
 
-/* (every line to the loader's log as well, as the other drivers do: see hakios.buttons.c) */
+/* (every line also goes to the loader's log, as in the other drivers: see drivers/input/hakios.buttons.c) */
 
 /* ---- where things are ---- */
 #define ALIVE_PA                0x14050000UL
@@ -71,6 +39,15 @@
 #define IRQ_PIN                 0
 #define CHIP                    0x48
 
+/*
+ * Addresses:
+ *   HSI2C (USI03)      0x104B0000
+ *   SYSREG_PERIC0      0x1041101C   USI03's mode: 4 = I2C
+ *   CMU_PERIC0         0x10400000   gates +0x2018, +0x206C, +0x20DC, +0x20E0 (bit 20 manual, bit 21 on), Q-channel
+ *                                   +0x3038 (bits 0-1); the IP clock's divider +0x1810 [3:0] (of 400 MHz) and mux +0x120
+ *   PERIC0 GPIO        0x10430020   gpp1: pins 4 (SCL) and 5 (SDA), function 2
+ *   the touch's IRQ    0x14050044   gpa1 pin 0 of the ALIVE block, low while the chip has events
+ */
 static struct hakios_hsi2c bus = {
 	.name = "s6sy761",
 	.regs_pa = EXYNOS_PERIC0_USI03_HSI2C_PA,                  /* hsi2c@104B0000: USI03 of PERIC0 */
@@ -80,10 +57,23 @@ static struct hakios_hsi2c bus = {
 	.qch = 0x3038, .div = 0x1810, .mux = 0x0120,
 	.pins_pa = EXYNOS_GPIO_PERIC0_PA + 0x20,                  /* PERIC0 GPIO, bank gpp1: SCL pin 4, SDA pin 5 */
 	.pins_mask = 0xffu << 16, .pins_want = 0x22u << 16,
-	.ipclk_mhz = 400, .bus_hz = 400000,       /* seen on the phone, 1 November: CMU divider 0 on the 400 MHz branch */
+	.ipclk_mhz = 400, .bus_hz = 400000,       /* CMU divider 0 on the 400 MHz branch, as seen on the phone */
 };
 
 /* ---- the chip ---- */
+
+/*
+ * The chip's protocol: a command byte, with data if any, is written; or it is written and the answer is read.
+ *   0x55 boot status (BOOT_APPLICATION: its application runs)
+ *   0x52 id
+ *   0x23 panel size: X and Y resolution, big-endian
+ *   0x21 firmware check
+ *   0x10 sense on
+ *   0x62 empty the event queue
+ *   0x60 one event (8 bytes); 0x61 the rest of the queue
+ * An event's byte 0: [1:0] kind (0 coordinate, 1 status), [5:2] the finger (from 1), [7:6] 1 down, 2 moved, 3 up.
+ * X = b1 << 4 | b3 >> 4, Y = b2 << 4 | b3 & 15. Byte 7 [5:0]: how many more events are waiting.
+ */
 #define CMD_SENSE_ON            0x10
 #define CMD_FW_CHECK            0x21
 #define CMD_PANEL_INFO          0x23
@@ -94,10 +84,10 @@ static struct hakios_hsi2c bus = {
 #define CMD_CLEAR_EVENTS        0x62
 #define BOOT_APPLICATION        0x20
 #define EVENT_SIZE              8
-#define EVENTS_MOST             31
+#define EVENTS_MOST             31      /* most events read in one batch; more than this empties the queue */
 #define FINGERS                 10
 
-#define POLL_MS                 4
+#define POLL_MS                 4       /* the IRQ pin is polled this often */
 #define MINUTE_TICKS            (60 * 1000 / POLL_MS)
 
 static vm_offset_t alive;
@@ -114,7 +104,7 @@ rd(vm_offset_t base, uint32_t off)
 	return *(volatile uint32_t *)(base + off);
 }
 
-/* the chip: a command and its data */
+/* write a command byte and its data to the chip */
 static uint32_t
 chip_write(uint8_t cmd, const uint8_t *data, uint32_t len)
 {
@@ -127,14 +117,16 @@ chip_write(uint8_t cmd, const uint8_t *data, uint32_t len)
 	return hakios_hsi2c_message(&bus, CHIP, false, buf, 1 + len, true);
 }
 
-/* ... a command and its answer (a second try after a failure: the first transfer after a reset may be lost) */
+/*
+ * write a command byte, then read its answer. Tried twice: the first transfer after a reset may be lost.
+ * The two transfers are separate messages, with a STOP between them (stop-after-trans in the device tree).
+ */
 static uint32_t
 chip_read(uint8_t cmd, uint8_t *answer, uint32_t len)
 {
 	uint32_t error = 0;
 
 	for (int attempt = 0; attempt < 2; attempt++) {
-		/* (a STOP between the two: the bus's device tree asks for one after every message, stop-after-trans) */
 		error = hakios_hsi2c_message(&bus, CHIP, false, &cmd, 1, true);
 		if (error == 0) {
 			error = hakios_hsi2c_message(&bus, CHIP, true, answer, len, true);
@@ -151,16 +143,16 @@ chip_read(uint8_t cmd, uint8_t *answer, uint32_t len)
 extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation, void *parameter, integer_t priority,
     thread_t *new_thread);
 
-/* s6sy761_trace=N: the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate */
+/* s6sy761_trace=N: say the first N finger events, with their time (ms, from the 24 MHz counter), to measure the rate */
 static uint32_t trace_left;
 
-/* kern.hakios.touch_events: finger events read from the chip since the start (the first-boot report, userland/src/selftest.c) */
+/* kern.hakios.touch_events: finger events read from the chip since boot; the first-boot report (userland/src/selftest.c) prints it */
 static uint32_t touch_events;
 SYSCTL_DECL(_kern_hakios);
 SYSCTL_UINT(_kern_hakios, OID_AUTO, touch_events, CTLFLAG_RD | CTLFLAG_LOCKED, &touch_events, 0,
     "finger events read from the S6SY761");
 
-/* the CPU governor's held touch boost (gov_policy=2): how many fingers are down, after a change */
+/* tell the CPU governor how many fingers are down: its touch boost is held while any is (gov_policy=2) */
 static void
 fingers_changed(void)
 {
@@ -172,6 +164,7 @@ fingers_changed(void)
 	hakios_exynos_cpufreq_fingers(down);
 }
 
+/* lift every finger that is down: for when the chip's event stream was lost or reset */
 static void
 all_up(void)
 {
@@ -198,7 +191,7 @@ handle_event(const uint8_t *e)
 			return;
 		}
 		id--;
-		/* the CPU governor's touch boost (cpufreq_gov=1): a stamp and, at the first event, its thread woken; no wait */
+		/* the CPU governor's touch boost (cpufreq_gov=1): a stamp, and at the first event its thread is woken; no wait */
 		hakios_exynos_cpufreq_touch();
 		touch_events++;
 		if (trace_left > 0) {
@@ -227,7 +220,7 @@ handle_event(const uint8_t *e)
 		uint32_t type = (e[0] >> 2) & 0xf, sid = e[1];
 
 		if ((type == 2 || type == 7) && sid == 0 && e[2] == BOOT_APPLICATION) {
-			/* the chip started again by itself (its watchdog): sensing is off again */
+			/* the chip restarted itself (its watchdog); sensing is off again */
 			say("s6sy761: the chip restarted itself: sense on again\n");
 			all_up();
 			(void)chip_write(CMD_SENSE_ON, NULL, 0);
@@ -239,14 +232,17 @@ handle_event(const uint8_t *e)
 	}
 }
 
-/* everything the chip has: one event, then the rest it says are waiting */
+/*
+ * Read the queue: one event, then the rest that its byte 7 says are waiting.
+ * A lost read can be a finger's "up" (seen on the phone: about 3 failed transfers a minute), so each read is
+ * tried once more; chip_read() has already retried inside.
+ */
 static void
 read_events(void)
 {
 	uint8_t one[EVENT_SIZE], rest[EVENT_SIZE * EVENTS_MOST];
 	uint32_t left;
 
-	/* one retry: a lost read can be a finger's "up" (seen on the phone: ~3 failed transfers a minute) */
 	if ((chip_read(CMD_ONE_EVENT, one, sizeof(one)) != 0 && chip_read(CMD_ONE_EVENT, one, sizeof(one)) != 0) || one[0] == 0) {
 		return;
 	}
@@ -275,8 +271,16 @@ irq_low(void)
 	return ((rd(alive, GPA1 + 4) >> IRQ_PIN) & 1) == 0;
 }
 
-/* ---- the chip's supplies, switched off and on (see the header) ---- */
+/* ---- the chip's supplies, switched off and on ---- */
 
+/*
+ * LDO35 (tsp_io, 1.8 V) and LDO43 (tsp_avdd, 3.0 V) of the S2MPS18, as on the S9 and S9+ (the phone's device tree).
+ * Their control registers are 0x6C and 0x74; bits 7:6 are the on mode (0xC0).
+ *
+ * Why this exists: the mainline Linux port to the S9+ (github.com/SheroAbi/galaxy-s9plus-mainline-linux, s9p-acpm.c;
+ * GPL, read for these facts) finds the controller dead after the hand-over from the previous boot stage, until it
+ * sees a power-on reset.
+ */
 #define LDO35_CTRL              0x6c    /* tsp_io */
 #define LDO43_CTRL              0x74    /* tsp_avdd */
 #define LDO_ON_MODE             0xc0
@@ -284,6 +288,10 @@ irq_low(void)
 #define LDO_AVDD_TO_DVDD_MS     4       /* sec_ts_power(): off, AVDD, then 4 ms, then DVDD */
 #define LDO_DVDD_TO_AVDD_MS     1       /* ... on, DVDD, then 1 ms, then AVDD */
 
+/*
+ * Set one of the two supplies, through ACPM (drivers/soc/exynos/hakios.exynos_acpm.c). Only those bits of only those
+ * two registers are written, and each is read back.
+ */
 static bool
 ldo_set(uint8_t reg, bool on)
 {
@@ -304,6 +312,11 @@ ldo_set(uint8_t reg, bool on)
 	return true;
 }
 
+/*
+ * Off for LDO_OFF_MS, then on, in Android's order (sec_ts.c sec_ts_power()): LDO43 off, 4 ms, LDO35 off; then
+ * LDO35 on, 1 ms, LDO43 on. The I/O supply goes off only once the analog one has: never the chip's analog side
+ * powered with its I/O side not. Both come back on whatever happened above: never leave the touch unpowered.
+ */
 static bool
 power_cycle(void)
 {
@@ -317,18 +330,12 @@ power_cycle(void)
 	(void)hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, LDO35_CTRL, &l35);
 	(void)hakios_acpm_pmic_read(HAKIOS_ACPM_PMIC_PMIC, LDO43_CTRL, &l43);
 	say("s6sy761: its supplies: LDO35 %02x, LDO43 %02x; off for %u ms, then on\n", l35, l43, LDO_OFF_MS);
-	/*
-	 * Android's order (sec_ts_power): off, the analog supply first, 4 ms, then the I/O supply; on, the I/O supply
-	 * first, 1 ms, then the analog one. The I/O supply is switched off only once the analog one is: never the
-	 * chip's analog side powered with its I/O side not.
-	 */
 	ok = ldo_set(LDO43_CTRL, false);
 	if (ok) {
 		delay_for_interval(LDO_AVDD_TO_DVDD_MS, NSEC_PER_MSEC);
 		ok = ldo_set(LDO35_CTRL, false);
 	}
 	delay_for_interval(LDO_OFF_MS, NSEC_PER_MSEC);
-	/* on again whatever happened above: never leave the touch unpowered */
 	ok = ldo_set(LDO35_CTRL, true) && ok;
 	delay_for_interval(LDO_DVDD_TO_AVDD_MS, NSEC_PER_MSEC);
 	ok = ldo_set(LDO43_CTRL, true) && ok;
@@ -337,6 +344,16 @@ power_cycle(void)
 
 /* ---- the steps ---- */
 
+/*
+ * The bring-up is made in steps, each said in the log before it is made. Boot-arg s6sy761_steps=N stops after the
+ * first N:
+ *   1  map the blocks and read what they are set to          (nothing written)
+ *   2  the bus's clocks on, USI03 to I2C, the pins to I2C    (the first writes: clock gates and the mode)
+ *   3  the bus reset and set to 400 kHz
+ *   4  ask the chip: boot status, id, panel, firmware check  (the first transfers)
+ *   5  sense on, the event queue emptied
+ *   6  watch it (the default)
+ */
 static void
 touch_thread(void *arg, __unused wait_result_t wr_)
 {
@@ -368,6 +385,7 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 
 	say("s6sy761: step 4: ask the chip at 0x%x\n", CHIP);
 	error = chip_read(CMD_BOOT_STATUS, answer, 1);
+	/* no answer: cycle the supplies, up to three times; after each, ask every 500 ms for 12 s */
 	for (uint32_t cycle = 1; error != 0 && ldo_cycles != 0 && cycle <= 3; cycle++) {
 		say("s6sy761: no answer (INT_STAT %x): its supplies switched off and on, cycle %u of 3\n", error, cycle);
 		if (!power_cycle()) {
@@ -423,6 +441,7 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 
 	say("s6sy761: step 6: watching the IRQ pin every %u ms; the coordinates are 0-%u x 0-%u\n", POLL_MS, res_x - 1,
 	    res_y - 1);
+	/* up to four rounds of reads per tick while the pin is low */
 	for (unsigned tick = 1;; tick++) {
 		for (int rounds = 0; rounds < 4 && irq_low(); rounds++) {
 			read_events();
@@ -431,6 +450,7 @@ touch_thread(void *arg, __unused wait_result_t wr_)
 			say("s6sy761: a minute: %llu touches, %llu events, %llu transfers, %llu failed (last %x)\n", stats.downs,
 			    stats.events, bus.transfers, bus.errors, bus.last_error);
 		}
+		/* give up when more than half of at least 1000 transfers have failed */
 		if (bus.errors >= 1000 && bus.errors * 2 > bus.transfers) {
 			say("s6sy761: more than half of %llu transfers have failed: giving up\n", bus.transfers);
 			all_up();               /* (no finger left down for good) */
@@ -445,6 +465,11 @@ out:
 	thread_terminate(current_thread());
 }
 
+/*
+ * Boot args: s6sy761=1 enables the driver. s6sy761_steps=N (default 6, see touch_thread()). s6sy761_ldo=0 never
+ * switches the supplies. s6sy761_ipclk=MHz sets the HSI2C's input clock (default 400; the other drivers assume
+ * 200). s6sy761_trace=N, s6sy761_pri=N: see above.
+ */
 void
 hakios_s6sy761_init(void)
 {
@@ -462,9 +487,11 @@ hakios_s6sy761_init(void)
 	}
 	PE_parse_boot_argn("s6sy761_trace", &trace_left, sizeof(trace_left));
 	{
-		/* s6sy761_pri=N: the polling thread's priority. Default 92 (BASEPRI_PREEMPT, as the display's presenter, fb_pri):
-		 * at the kernel's default it lost the processors to the window server under load on two cores, and a
-		 * finger's moves came in bursts (seen on the phone, 1 November: scrolling sticky, long presses by mistake). */
+		/*
+		 * s6sy761_pri=N: the polling thread's priority. Default 92 (BASEPRI_PREEMPT, as fb_pri, the display's
+		 * presenter). At the kernel's default it lost the processors to the window server under load on two cores,
+		 * and a finger's moves came in bursts (seen on the phone: scrolling sticky, long presses by mistake).
+		 */
 		uint32_t pri = 92;
 
 		PE_parse_boot_argn("s6sy761_pri", &pri, sizeof(pri));
