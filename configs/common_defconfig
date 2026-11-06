@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 638 symbols in 20 groups; 54 are set, 45 of them drivers built in.
+# 639 symbols in 20 groups; 54 are set, 45 of them drivers built in.
 #
 
 #
@@ -439,7 +439,7 @@ CONFIG_UFS=2
 # CONFIG_VIRTIO_BLK_RW is not set
 
 #
-# Touch and buttons (17)
+# Touch and buttons (18)
 #
 
 # the touch screen, and the power and volume buttons
@@ -477,6 +477,9 @@ CONFIG_TOUCHSCREEN=y
 
 # the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate
 # CONFIG_S6SY761_TRACE is not set
+
+# a reader that falls behind gets the newest pending MOVE of a finger, never a lost DOWN/UP. Off by default
+# CONFIG_TOUCH_COALESCE is not set
 
 # read by hakios.goodix.c (kernel)
 # CONFIG_TOUCH_FLIP is not set
