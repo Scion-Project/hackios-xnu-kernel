@@ -1519,6 +1519,26 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 			ba->commandLine[n++] = *c;
 		}
 	}
+	if (PLAT->psci_hvc) {
+		/* the shim's platforms: ABL's device tree stays in place, outside XNU's window; ufs_native_cold=1 reads phy-cal-data from it */
+		static const efi_guid dtb_guid = EFI_DTB_TABLE_GUID;
+		static const char prefix[] = "abl_fdt=0x";
+		static const char hex[] = "0123456789abcdef";
+
+		for (uint64_t i = 0; i < ST->nr_tables; i++) {
+			if (guid_eq(&ST->tables[i].guid, &dtb_guid)) {
+				uint64_t address = (uint64_t)(uintptr_t)ST->tables[i].table;
+
+				for (const char *c = prefix; *c && n < BOOT_LINE_LENGTH - 1; c++) {
+					ba->commandLine[n++] = *c;
+				}
+				for (int shift = 60; shift >= 0 && n < BOOT_LINE_LENGTH - 1; shift -= 4) {
+					ba->commandLine[n++] = hex[(address >> shift) & 0xf];
+				}
+				if (n < BOOT_LINE_LENGTH - 1) ba->commandLine[n++] = ' ';
+			}
+		}
+	}
 	if (block_enabled) {
 		static const char prefix[] = "ufs_shared_pa=0x";
 		static const char hex[] = "0123456789abcdef";

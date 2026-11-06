@@ -21,6 +21,7 @@ virtio   bsd/dev/hakios.virtio_input.c
 storage/ufs bsd/dev/hakios.ufs.c
 storage/ufs bsd/dev/hakios.ufshc.c
 storage/ufs bsd/dev/hakios.ufshc.h
+storage/ufs bsd/dev/hakios.ufshc.lga.h
 storage  bsd/dev/hakios.ext4.c
 storage  bsd/dev/hakios.sparse.c
 storage  bsd/dev/hakios.image.c
@@ -29,6 +30,7 @@ virtio   bsd/dev/hakios.virtio_blk.c
 
 gpu/adreno bsd/dev/hakios.adreno.c
 display/dpu bsd/dev/hakios.exynos_dpu.c
+display/dpu bsd/dev/hakios.lga_dpu.c
 media/mfc bsd/dev/hakios.exynos_mfc.c
 media/mfc bsd/dev/hakios.exynos_mfc_test.h
 display/panel bsd/dev/hakios.s6e3ha8.c

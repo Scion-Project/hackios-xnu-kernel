@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 632 symbols in 20 groups; 54 are set, 45 of them drivers built in.
+# 636 symbols in 20 groups; 54 are set, 45 of them drivers built in.
 #
 
 #
@@ -19,7 +19,7 @@
 CONFIG_FIRMWARE="device"
 
 #
-# Drivers built in (57)
+# Drivers built in (58)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -75,6 +75,9 @@ CONFIG_HAKIOS_EXYNOS_DPU=y
 
 # the Galaxy S9's panel brightness through DSIM0's command FIFO: the gamma worked out from the panel's MTP as ... [hakios.s6e3ha8.c]
 CONFIG_HAKIOS_S6E3HA8=y
+
+# the Pixel 10's frame kicker: a frame of the command-mode panel started every 1/lga_kick seconds (the display ... [hakios.lga_dpu.c]
+# CONFIG_HAKIOS_LGA_DPU is not set
 
 # the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and the window ... [hakios.adreno.c, hakios.gpu.cpp]
 CONFIG_HAKIOS_ADRENO=y
@@ -261,7 +264,7 @@ CONFIG_HAKIOS_BRCMFMAC=y
 # CONFIG_XPCPROXY_IDVERSION is not set
 
 #
-# Storage and APFS (54)
+# Storage and APFS (55)
 #
 
 # the phone's storage: 1 a survey, read only; 2 the loader's block service, through which the kernel reads it (the ...
@@ -381,6 +384,9 @@ CONFIG_UFS=2
 # what this kernel's own driver reads is what the loader reads, byte for byte
 # CONFIG_UFS_NATIVE_CHECK is not set
 
+# the Pixel 10's host: the link out of Hibern8 before NOP OUT (off by default; where ABL's shutdown left it)
+# CONFIG_UFS_NATIVE_H8EXIT is not set
+
 # read by hakios.ufshc.c (kernel)
 # CONFIG_UFS_NATIVE_HANG is not set
 
@@ -399,7 +405,7 @@ CONFIG_UFS=2
 # read by hakios.ufs.c (kernel)
 # CONFIG_UFS_NATIVE_SOAK is not set
 
-# the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810
+# the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810, lga (the Pixel 10's, read only), ...
 # CONFIG_UFS_NATIVE_SOC is not set
 
 # read by hakios.ufshc.c (kernel)
@@ -1582,7 +1588,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_UFS_PROBE is not set
 
 #
-# User space (107)
+# User space (109)
 #
 
 # arguments only the kernel reads built into the kernel (HAKIOS_BUILTIN_ARGS); given on the line, an argument goes ...
@@ -1782,6 +1788,12 @@ CONFIG_MODEM_AGAIN=y
 
 # read by MiniAppleKeyStore.cpp (kernel)
 # CONFIG_KEYSTORE_REAL is not set
+
+# read by hakios.lga_dpu.c (kernel)
+# CONFIG_LGA_DPU is not set
+
+# read by hakios.lga_dpu.c (kernel)
+# CONFIG_LGA_KICK is not set
 
 # read by 1509-m3-diag-and-pan-off.patch (kernel)
 # CONFIG_M3_DIAG is not set

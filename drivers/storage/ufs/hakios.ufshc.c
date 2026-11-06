@@ -282,7 +282,8 @@ extern boolean_t ml_set_interrupts_enabled(boolean_t enable);
 /* ULLS, DFES, UTPES, HCFES, SBFES, CEFES (ShengUfs: link lost and the crypto engine are fatal, a UIC error not) */
 #define IS_FATAL            ((1u << 7) | (1u << 11) | (1u << 12) | (1u << 16) | (1u << 17) | (1u << 18))
 #define UIC_LINK_STARTUP    0x16
-#define UIC_DME_GET         0x01                /* the one other UIC command sent here: a local attribute read */
+#define UIC_DME_GET         0x01                /* a local attribute read */
+#define UIC_DME_HIBERNATE_EXIT 0x18             /* and, with ufs_native_h8exit=1, the link out of Hibern8 */
 
 /* the request descriptor's first word: command type, data direction */
 #define UTRD_CT_MASK        0xf0000000u
@@ -353,8 +354,12 @@ struct ufshc_soc {
 	uint32_t carve_wc;                      /* carve_size: its first bytes are the list's and the descriptors', write-combined;
 	                                         * the slots' buffers after them cached (hc_carve_cached), or all of it write-combined with 0 */
 	bool cnr;                               /* has UTRLCNR below UFSHCI 3.0 (cleared per slot as 3.0's) */
+	bool read_only;                         /* no write of any kind, refused whatever a boot argument says */
+	uint32_t dma_bits;                      /* the controller's DMA address width where CAP's 64-bit bit does not say; 0: CAP's */
+	bool h8_exit;                           /* ufs_native_h8exit=1 may take the link out of Hibern8 before NOP OUT */
 	const char *(*look)(bool link);         /* own mode: the blocks beside the controller, read only; why not */
 	const char *(*adopt)(void);             /* own mode: the vendor's registers looked at and kept; why not */
+	const char *(*cold)(void);              /* ufs_native_cold=1: the host from nothing, before any register is read; why not */
 	void (*nexus)(uint32_t slot, bool scsi);        /* before every doorbell */
 	void (*give_back)(void);                /* at the end: what adopt kept */
 };
@@ -363,6 +368,9 @@ static const char *exynos_look(bool link);
 static const char *exynos_adopt(void);
 static void exynos_nexus(uint32_t slot, bool scsi);
 static void exynos_give_back(void);
+static const char *lga_look(bool link);
+static const char *lga_cold(void);
+static void lga_nexus(uint32_t slot, bool scsi);
 
 #if HAKIOS_SOC_RUNTIME
 #define UFSHC_EXY_HCI       0ull        /* filled from the SoC's table when the mode is chosen */
@@ -397,6 +405,29 @@ static const struct ufshc_soc hc_socs[] = {
 		 */
 		.default_slots = 4, .cnr = true,
 		.look = exynos_look, .adopt = exynos_adopt, .nexus = exynos_nexus, .give_back = exynos_give_back,
+	},
+	/*
+	 * The Pixel 10's (Tensor G5, "google,ufshc" at 0x3C400000), from Google's ufs-google.c, lga/ufs-platform.h and
+	 * lga/ufs-regs-gen.h (private/google-modules/soc/rdo/drivers/ufs at 6f689be7fa23, GPL-2.0, facts only) and the lga
+	 * device tree. A standard UFSHCI 4.0 host in single doorbell mode (CONFIG.QT 0; its multi circular queue is not
+	 * used here), 16-byte PRDT entries, no vendor nexus bit. What differs: 36-bit DMA whatever CAP says
+	 * (UFSHCD_ANDROID_QUIRK_36BIT_ADDRESS_DMA); initiator id 1 in every command UPIU
+	 * (UFSHCD_ANDROID_QUIRK_SET_IID_TO_ONE, lga only); the SMMUv3 in front of it is identity-mapped by the tree.
+	 * Taken as ABL left it, read only; or, with ufs_native_cold=1, brought up from nothing (hakios.ufshc.lga.h: the
+	 * CPM's power domains, the reset pad, the reference clock, 40 KB of M-PHY firmware). Whether ABL leaves it up, as
+	 * Google's kernel assumes, or shuts it down, as PixOS found on the Pixel 6a, is not known for a Pixel 10 booted by fastboot.
+	 */
+	{
+		.name = "lga", .pa = 0x3c400000, .size = 0x1000, .vs_pa = 0x3c410000, .vs_size = 0x504,
+		.prd_entry = 16, .prd_max = 256u << 10, .rsp_offset = 512, .rsp_length = 512, .prdt_offset = 1024,
+		.slot_buffer = SLOT_BUFFER_DEFAULT, .default_step = 1, .read_only = true, .dma_bits = 36, .h8_exit = true,
+		.look = lga_look, .cold = lga_cold, .nexus = lga_nexus,
+	},
+	/* QEMU's -device ufs with the lga quirks (IID, 36-bit DMA, read only): what a test can check of the entry above */
+	{
+		.name = "lga-qemu", .may_enable = true, .prd_entry = 16, .prd_max = 256u << 10, .rsp_offset = 512,
+		.rsp_length = 512, .prdt_offset = 1024, .slot_buffer = SLOT_BUFFER_DEFAULT, .default_step = 5,
+		.read_only = true, .dma_bits = 36, .h8_exit = true, .cold = lga_cold, .nexus = lga_nexus,
 	},
 };
 #define SOC_SHARED          (&hc_socs[1])       /* the one shared mode knows: the POCO's */
@@ -777,6 +808,56 @@ static void
 exynos_give_back(void)
 {
 	vs_write(EXY_UTRL_NEXUS_TYPE, exy_nexus_at_start);
+}
+
+/* ---- the Tensor G5's host (ufs_native_soc=lga): ufs-regs-gen.h's offsets, read and never written ---- */
+
+#define LGA_CONFIG              0x300           /* QT 0: single doorbell, 1: multi circular queue; DW2PRDTEN 2 */
+#define LGA_CONFIG_QT           (1u << 0)
+#define LGA_CONFIG_DW2PRDTEN    (1u << 2)
+#define LGA_MCQCONFIG           0x380
+#define LGA_TOP_VERSION         0x000
+#define LGA_TOP_CARD_DET        0x004
+#define LGA_TOP_ENC_STAT        0x008
+#define LGA_TOP_PWR_CTRL        0x100           /* 17:16 SRAM_BYPASS, 19:18 SRAM_BOOTLOAD_BYPASS: the M-PHY firmware's source */
+#define LGA_TOP_REXT_CTRL       0x110
+#define LGA_TOP_AWUSER_VC       0x200           /* Google sets 1 in AWUSER (2:0) and ARUSER (10:8): its TODO b/413175647 */
+#define LGA_TOP_PHYCLK_SEL      0x208
+#define LGA_TOP_CFG_CLKSEL      0x210
+#define LGA_TOP_MPHY_CFG        0x214
+
+static const char *
+lga_look(bool link)
+{
+	uint32_t cfg = hc_read(LGA_CONFIG), pwr = vs_read(LGA_TOP_PWR_CTRL), vc = vs_read(LGA_TOP_AWUSER_VC);
+
+	if (link) {
+		return NULL;
+	}
+	hc_say("ufs: own: lga: top: VERSION %08x CARD_DET %08x ENC_STAT %08x PWR_CTRL %08x (M-PHY firmware: %s) REXT_CTRL %08x "
+	    "AWUSER_VC %08x (AWUSER %u, ARUSER %u; Google's driver sets 1 and 1) PHYCLK_SEL %08x CFG_CLKSEL %08x MPHY_CFG %08x; "
+	    "host: CONFIG %08x MCQCONFIG %08x\n", vs_read(LGA_TOP_VERSION), vs_read(LGA_TOP_CARD_DET), vs_read(LGA_TOP_ENC_STAT),
+	    pwr, ((pwr >> 16) & 3) == 3 && ((pwr >> 18) & 3) == 3 ? "the PHY's ROM" : ((pwr >> 16) & 3) == 0 &&
+	    ((pwr >> 18) & 3) == 3 ? "the patched SRAM image (Google's mode 2)" : "neither of Google's two", vs_read(LGA_TOP_REXT_CTRL),
+	    vc, vc & 7, (vc >> 8) & 7, vs_read(LGA_TOP_PHYCLK_SEL), vs_read(LGA_TOP_CFG_CLKSEL), vs_read(LGA_TOP_MPHY_CFG), cfg,
+	    hc_read(LGA_MCQCONFIG));
+	if (cfg & LGA_CONFIG_QT) {
+		return "the host is in multi circular queue mode (CONFIG.QT): this driver uses the single doorbell only";
+	}
+	if (cfg & LGA_CONFIG_DW2PRDTEN) {
+		return "CONFIG.DW2PRDTEN is set: a descriptor layout this driver does not know";
+	}
+	return NULL;
+}
+
+/* initiator id 1 (the high nibble of the UPIU's byte 4) in every command, as Google's driver sets it on this host */
+static void
+lga_nexus(uint32_t slot, bool scsi)
+{
+	volatile uint8_t *upiu = (volatile uint8_t *)hc_slots[slot].ucd;
+
+	(void)scsi;
+	upiu[4] = (upiu[4] & 0x0f) | 0x10;
 }
 
 /* ---- the whitelist: the one check every command passes before it goes into a slot ---- */
@@ -2954,6 +3035,33 @@ hc_dme_get(uint16_t attr, uint16_t sel, uint32_t *v)
 }
 
 /*
+ * DME_HIBERNATE_EXIT (UIC 0x18): the link out of Hibern8, where ABL's shutdown left the Pixel 6a's (PixOS, "ABL's UFS
+ * shutdown"; its own softer alternative, untested there). Only with ufs_native_h8exit=1 and a SoC that allows it.
+ */
+static int
+hc_h8_exit(void)
+{
+	uint32_t result;
+
+	if ((hc_read(UFSHC_HCS) & HCS_UCRDY) == 0) {
+		return EBUSY;
+	}
+	hc_write(UFSHC_IS, IS_UCCS);
+	hc_write(UFSHC_UICCMDARG1, 0);
+	hc_write(UFSHC_UICCMDARG2, 0);
+	hc_write(UFSHC_UICCMDARG3, 0);
+	hc_write(UFSHC_UICCMD, UIC_DME_HIBERNATE_EXIT);
+	if (!hc_poll(UFSHC_IS, IS_UCCS, IS_UCCS, 500)) {
+		return ETIMEDOUT;
+	}
+	result = hc_read(UFSHC_UICCMDARG2) & 0xff;
+	hc_write(UFSHC_IS, IS_UCCS);
+	return result == 0 ? 0 : EIO;
+}
+
+#include "hakios.ufshc.lga.h"
+
+/*
  * Step 2: the link as UEFI left it, from the host's own attributes (PA layer, UniPro 1.6): the
  * lanes there are, connected and active, the gears, the power mode and the HS series. The S9's
  * device tree asks for two lanes at HS-G3 (ufs,pmd-attr-lane, ufs,pmd-attr-gear) and Silicium's
@@ -3334,7 +3442,7 @@ ufshc_own_probe(void)
 	char name[32] = "pci";
 
 	PE_parse_boot_argn("ufs_native", &mode, sizeof(mode));
-	/* ufs_native_soc=NAME: the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810 */
+	/* ufs_native_soc=NAME: the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810, lga (the Pixel 10's, read only), lga-qemu */
 	(void)PE_parse_boot_arg_str("ufs_native_soc", name, sizeof(name));
 	return hc_own_probe(name, mode, 0);
 }
@@ -3434,13 +3542,13 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	for (unsigned i = 0; i < sizeof(hc_socs) / sizeof(hc_socs[0]); i++) {
 		if (strcmp(name, hc_socs[i].name) == 0) {
 #if HAKIOS_SOC_RUNTIME
-			if (hc_socs[i].vs_size != 0 && !HAKIOS_SOC_HAS(UFS_HCI_PA)) {
+			if (hc_socs[i].adopt == exynos_adopt && !HAKIOS_SOC_HAS(UFS_HCI_PA)) {
 				return false;
 			}
 #endif
 			hc_soc_own = hc_socs[i];
 #if HAKIOS_SOC_RUNTIME
-			if (hc_soc_own.vs_size != 0) {
+			if (hc_soc_own.adopt == exynos_adopt) {
 				hc_soc_own.pa = EXYNOS_UFS_HCI_PA;
 				hc_soc_own.vs_pa = EXYNOS_UFS_VS_PA;
 			}
@@ -3450,10 +3558,11 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	}
 	if (hc_soc == NULL) {
 		hc_soc = SOC_SHARED;
-		hc_say("ufs: own: ufs_native_soc=%s: no such controller (pci, sm7325, exynos9810)\n", name);
+		hc_say("ufs: own: ufs_native_soc=%s: no such controller (pci, sm7325, exynos9810, lga, lga-qemu)\n", name);
 		return false;
 	}
 	hc_slot_buffer = hc_soc->slot_buffer;
+	hc_pol.ro |= hc_soc->read_only;         /* (nothing clears it: a SoC marked read only takes no write of any kind) */
 	hc_boot_args();
 	/* ufs_native_step=N: own mode goes as far as step N: 1 look, 2 the link, 3 NOP OUT, 4 READ CAPACITY, 5 all (the GPTs) */
 	hc_step = step != 0 ? step : hc_soc->default_step;
@@ -3480,6 +3589,19 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	if (pa == 0 || hc == 0) {
 		return false;
 	}
+	if (hc_soc->cold != NULL) {
+		uint32_t cold = 0;
+
+		PE_parse_boot_argn("ufs_native_cold", &cold, sizeof(cold));
+		if (cold == 1) {
+			no = hc_soc->cold();
+			if (no != NULL) {
+				hc_not_used(no);
+				return false;
+			}
+			hc_enabled_here = true;
+		}
+	}
 	cap = hc_read(UFSHC_CAP);
 	hc_ver = hc_read(UFSHC_VER);
 	hcs = hc_read(UFSHC_HCS);
@@ -3492,7 +3614,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	rsr = hc_read(UFSHC_UTRLRSR);
 	tm_db = hc_read(UFSHC_UTMRLDBR);
 	hc_nutrs = CAP_NUTRS(cap);
-	dma32 = hc_soc->dma32 || (cap & CAP_64AS) == 0;
+	dma32 = hc_soc->dma32 || (hc_soc->dma_bits == 0 && (cap & CAP_64AS) == 0);
 	hc_say("ufs: own: %s controller at %llx: CAP %08x (%u slots, 64-bit %s), VER %08x, HCE %08x, HCS %08x, IS %08x, "
 	    "IE %08x; transfer list %08x:%08x, doorbell %08x, run %08x; task doorbell %08x\n", hc_soc->name, pa, cap, hc_nutrs,
 	    (cap & CAP_64AS) ? "yes" : "no", hc_ver, hce, hcs, is, ie, baseu, base, db, rsr, tm_db);
@@ -3701,6 +3823,32 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	hc_say("ufs: own: %u slots of %u KB, command descriptors of %u bytes, PRDT entries of %u bytes and %u KB at most, "
 	    "offsets in %s%s\n", nfree, hc_slot_buffer >> 10, hc_ucd_size, hc_soc->prd_entry, hc_soc->prd_max >> 10,
 	    hc_soc->prdt_bytes ? "bytes" : "dwords", dma32 ? ", all below 4 GB" : "");
+
+	if (hc_soc->dma_bits != 0) {
+		uint64_t limit = 1ULL << hc_soc->dma_bits;
+
+		for (uint32_t i = 0; i < SLOTS; i++) {
+			struct hc_slot *s = &hc_slots[i];
+
+			if (s->ucd_pa + hc_ucd_size > limit || (s->data != NULL && s->data_pa + s->data_size > limit)) {
+				hc_not_used("memory above the controller's DMA range");
+				hc_off();
+				return false;
+			}
+		}
+	}
+	if (hc_soc->h8_exit && !hc_enabled_here) {
+		uint32_t on = 0;
+
+		/* ufs_native_h8exit=1: the Pixel 10's host: the link out of Hibern8 before NOP OUT (off by default; where ABL's shutdown left it) */
+		PE_parse_boot_argn("ufs_native_h8exit", &on, sizeof(on));
+		if (on) {
+			int e = hc_h8_exit();
+
+			hc_say("ufs: own: DME_HIBERNATE_EXIT: %s (%d)\n", e == 0 ? "the link is out of Hibern8" : "refused or failed: "
+			    "not in Hibern8, or not to be got out of it this way", e);
+		}
+	}
 
 	/* the device: NOP OUT first (ShengUfs), then, if the controller was enabled here, fDeviceInit */
 	hc_pol.control = true;
