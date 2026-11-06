@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **581 arguments**: 512 read by the kernel, 21 by the loader, 63 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **582 arguments**: 513 read by the kernel, 21 by the loader, 63 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -360,7 +360,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `shub_req_rpc` | K | `hakios.ssp.c` | `CONFIG_SHUB_REQ_RPC` |  |
 | `shub_sensors` | K | `hakios.ssp.c` | `CONFIG_SHUB_SENSORS` |  |
 
-## Touch and buttons (17)
+## Touch and buttons (18)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -375,6 +375,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `s6sy761_pri` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_PRI` |  |
 | `s6sy761_steps` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_STEPS` |  |
 | `s6sy761_trace` | K | `hakios.s6sy761.c` | `CONFIG_S6SY761_TRACE` |  |
+| `touch_coalesce` | K | `hakios.input.c` | `CONFIG_TOUCH_COALESCE` |  |
 | `touch_flip` | K | `hakios.goodix.c` | `CONFIG_TOUCH_FLIP` |  |
 | `touch_poll_us` | K | `hakios.goodix.c` | `CONFIG_TOUCH_POLL_US` |  |
 | `touch_rate` | K | `hakios.goodix.c` | `CONFIG_TOUCH_RATE` |  |

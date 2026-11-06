@@ -467,6 +467,7 @@ tmu_ungate	k
 torch	kl
 torch_max_s	k
 torch_secs	k
+touch_coalesce	k
 touch_fault	u
 touch_flip	k
 touch_lat	ku
