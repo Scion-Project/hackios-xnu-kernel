@@ -1,43 +1,45 @@
 /*
- * The Galaxy S9's display controller (Exynos 9810 DPU) as the display driver's scan-out: MiniIOMobileFramebuffer.cpp
- * draws a frame into a buffer of its own and this file has the DECON show that buffer from its next refresh on, instead
- * of the frame being drawn into the very buffer the DECON is reading (which tears). Only with boot-arg fb_flip=1 or
- * fb_dpp=1 (read by MiniIOMobileFramebuffer.cpp, which calls in here); with neither, or fps_log=1 alone, the DECON is
- * only read.
+ * Scan-out on the Exynos 9810 DPU (Galaxy S9): frames are shown from buffers of their own, not from the buffer the DECON
+ * is reading.
  *
- * What the boot loader leaves (Samsung's S-Boot sets the display up; Silicium's UEFI and this kernel only write into
- * the buffer): DECON0 (0x16030000) in MIPI command mode, its frames started by the panel's TE (HW trigger), one window
- * on one DMA channel whose IDMA reads the 1440 x 2960 buffer at 0xCC000000 (the boot framebuffer), through the DPP and
- * DSC to DSIM0 and the S6E3HA8. The DECON reads that buffer once every refresh, while the processor writes the next
- * frame into it: what reaches the panel is part one frame, part the next.
+ * MiniIOMobileFramebuffer.cpp draws each frame into a buffer and calls in here to have the DECON show that buffer from
+ * its next refresh on. Otherwise the frame is drawn into the buffer the DECON is reading, which tears. This runs only
+ * with boot-arg fb_flip=1 or fb_dpp=1 (read by MiniIOMobileFramebuffer.cpp); with neither, or with fps_log=1 alone, the
+ * DECON is only read.
  *
- * Two ways out, both off by default:
+ * Boot state (Samsung's S-Boot sets up the display; Silicium's UEFI and this kernel only write into the buffer): DECON0
+ * (0x16030000) in MIPI command mode, frames started by the panel's TE (HW trigger), one window on one DMA channel. That
+ * channel's IDMA reads the 1440 x 2960 buffer at 0xCC000000 (the boot framebuffer), through the DPP and DSC to DSIM0 and
+ * the S6E3HA8. The DECON reads that buffer once every refresh while the processor writes the next frame into it, so what
+ * reaches the panel is part one frame, part the next.
  *
- *   fb_flip=1   the same channel, the same scaling on the processor, but into one of three buffers of the panel's size
- *               (the boot framebuffer and two more): when a frame is drawn, its buffer's address is written to the
- *               channel's IDMA_IN_BASE_ADDR and a shadow update asked for (SHADOW_REG_UPDATE_REQ, as Samsung's driver
- *               does after every frame: all windows and the global bit). The DECON takes the new address at the start
- *               of its next frame (the next TE) and clears the request; only then is the next frame flipped, and the
- *               buffer that was shown before is drawn into again only after that. No buffer is ever written while the
- *               DECON reads it, and frames go to the panel at most once a refresh.
- *   fb_dpp=1    the scaling in hardware: the window is moved to the channel VGF0 (IDMA_VGF0, channel 1 in
- *               DATA_PATH_CONTROL_1), one of the two of the six whose DPP has a scaler (DPP_SCALED_IMG_SIZE, VGF0 and
- *               VGF1 only; VGF1 is the one with HDR). It reads the iPhone's 1125 x 2436 picture from three buffers of
- *               that size and scales it to the panel's 1440 x 2960 (8 taps across, 4 down, polyphase, 16 phases); the
- *               processor's part is a copy, not a scaling, and the flips are as above. Before the window is moved, VGF0
- *               is set up from scratch and its registers forced in (SFR_UPDATE_FORCE, it is idle); after, three refreshes
- *               are waited for and the configuration errors of its IDMA and DPP read: any error, or the DECON not taking
- *               the change, and the window goes back to the boot loader's channel and the boot buffer.
+ * Two modes, both off by default:
  *
- *   fb_psr=<ms> the panel has its own memory in command mode, so on a screen unchanged for this long (50 to 5000; 0 off, the
- *               default) the TE trigger is masked (HW_TRIG_MASKED): no refresh, no read of DRAM over DSI. A new frame unmasks it.
- *               Samsung's decon_reg_set_trigger() masks it after every frame.
+ *   fb_flip=1   The same channel and scaling on the processor, but into one of three buffers of the panel's size (the
+ *               boot framebuffer and two more). When a frame is drawn, its buffer's address is written to the channel's
+ *               IDMA_IN_BASE_ADDR and a shadow update is requested (SHADOW_REG_UPDATE_REQ, as Samsung's driver does after
+ *               every frame: all windows and the global bit). The DECON takes the new address at the start of its next
+ *               frame (the next TE) and clears the request. Only then is the next frame flipped, and a buffer that was
+ *               shown before is drawn into again only after that. No buffer is written while the DECON reads it, and
+ *               frames go to the panel at most once per refresh.
+ *   fb_dpp=1    Scaling in hardware. The window moves to channel VGF0 (IDMA_VGF0, channel 1 in DATA_PATH_CONTROL_1), one
+ *               of the two of the six DPPs that has a scaler (SCALED_IMG_SIZE; VGF0 and VGF1 only, and VGF1 is the one
+ *               with HDR). It reads the iPhone's 1125 x 2436 picture from three buffers of that size and scales it to the
+ *               panel's 1440 x 2960 (8 taps across, 4 down, polyphase, 16 phases). The processor's part is a copy, not a
+ *               scaling, and the flips are as above. Before the window moves, VGF0 is set up from scratch and its registers
+ *               forced in (SFR_UPDATE_FORCE; it is idle). After, three refreshes are waited for and the configuration errors
+ *               of its IDMA and DPP are read. On any error, or if the DECON does not take the change, the window goes back to
+ *               the boot loader's channel and the boot buffer.
  *
- * The scaler's coefficients are not Samsung's: they are Catmull-Rom (a cubic through the four nearest pixels, sharp and
- * without ringing to speak of), worked out here at start for each of the nine phases the registers take (the other
- * seven are the mirror of these: the hardware mirrors them), in units of 1/512, each row summing to 512.
+ *   fb_psr=<ms> The panel has its own memory in command mode. On a screen unchanged for this long (50 to 5000; 0, the
+ *               default, is off), the TE trigger is masked (HW_TRIG_MASKED): no refresh, no read of DRAM over DSI. A new
+ *               frame unmasks it. Samsung's decon_reg_set_trigger() masks it after every frame.
  *
- * Registers and fields (all from Samsung's dpu_9810, read for these facts):
+ * The scaler's coefficients are not Samsung's. They are Catmull-Rom (a cubic through the four nearest pixels), computed
+ * at start for each of the nine phases the registers take. The other seven of the hardware's sixteen phases are mirrors
+ * of these. Units are 1/512, and each row sums to 512.
+ *
+ * Registers and fields (from Samsung's dpu_9810; see Sources):
  *   DECON0 0x16030000: GLOBAL_CONTROL 0x000 (bit 8 command mode, bit 4 running), SHADOW_REG_UPDATE_REQ 0x060 (bit 31
  *     global, bits 0-5 the windows; cleared by the hardware when taken), HW_SW_TRIG_CONTROL 0x070 (bit 0 HW trigger,
  *     bit 4 HW trigger masked, bit 8 SW trigger), DATA_PATH_CONTROL_0 0x214 (bit 4w window w on),
@@ -158,7 +160,7 @@ static const int type_of_channel[8] = { 2, 4, 5, 1, 3, 0, -1, -1 };
 static const char *const type_name[6] = { "G0", "G1", "VG0", "VG1", "VGF0", "VGF1" };
 
 static vm_offset_t decon, dpp, dma;
-static int probed;                      /* 1: the DECON is as expected; -1: it is not, nothing is written */
+static int probed;                      /* 0 until probed; 1 if the DECON is as expected; -1 if not (nothing written) */
 static unsigned win, boot_type;         /* the boot loader's window and its channel's block */
 static uint32_t boot_base, boot_data_path_1;
 static int mode;                        /* 0 the boot loader's, 1 flip on its channel, 2 VGF0's scaler */
@@ -277,7 +279,7 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 	say("exynos_dpu: probe: as expected (window %u on %s reading the boot framebuffer, command mode, running; the "
 	    "boot channel's IDMA enable reads %x, not checked): flips and the scaler may be asked for\n", win,
 	    type_name[boot_type], rd(idma(boot_type), IDMA_ENABLE));
-	/* (sys/hakios.exynos9810_mem.h; scan_slots[] below, in the same order) */
+	/* the pool slots are listed in scan_slots[] order (below); layout in sys/hakios.exynos9810_mem.h */
 	say("exynos_dpu: memory: scan-out buffers %#llx-%#llx, fb_zc's pool four slots of 12 MB at %#llx %#llx %#llx %#llx "
 	    "(all below %#llx)\n", EXYNOS9810_MEM_DPU_SCAN_PA, EXYNOS9810_MEM_DPU_SCAN_END - 1, EXYNOS9810_MEM_DPU_POOL2_PA,
 	    EXYNOS9810_MEM_DPU_POOL0_PA, EXYNOS9810_MEM_DPU_POOL1_PA, EXYNOS9810_MEM_DPU_POOL1_PA + (12ULL << 20),
@@ -286,24 +288,25 @@ hakios_scanout_probe(uint64_t fb_phys, uint32_t width, uint32_t height, uint32_t
 }
 
 /*
- * Where the scan-out's buffers can be: the DECON's DMA takes 32-bit addresses, and none of this kernel's own memory is
- * below 4 GB on the S9 (the loader gives XNU the bank from 0x880000000 on; IOKit's "below 4 GB" never succeeds there).
- * In the lower bank, the gap of the phone's device tree between the moved payload and panic log (0xD0000000 -
- * 0xD3FFFFFF) and secure_camera (0xE1900000): no reserved-memory node, outside XNU's RAM, used by
- * neither payload layout (devices/starlte/README.md, the memory table). Not 0xF0000000 and above: the
- * Shannon modem's region (modem_if, cp_ram_logging), then ABOX's. `count` buffers of `bytes` each from 0xD4000000,
- * 64 KB apart at least; physical addresses, the caller maps them (write-combined). 0 if they fit.
+ * Where the scan-out's buffers go. The DECON's DMA takes 32-bit addresses, and none of this kernel's memory is below
+ * 4 GB on the S9 (the loader gives XNU the bank from 0x880000000 up; IOKit's "below 4 GB" never succeeds there). The
+ * buffers go in the lower bank, in the gap of the phone's device tree between the moved payload and the panic log
+ * (0xD0000000 - 0xD3FFFFFF) and secure_camera (0xE1900000): no reserved-memory node, outside XNU's RAM, and used by
+ * neither payload layout (devices/starlte/README.md, the memory table). Not 0xF0000000 and up, which holds the Shannon
+ * modem's region (modem_if, cp_ram_logging) and then ABOX's. `count` buffers of `bytes` each from 0xD4000000, at least
+ * 64 KB apart; physical addresses, the caller maps them (write-combined). 0 if they fit.
  */
 #define SCAN_MEMORY_PA          EXYNOS9810_MEM_DPU_SCAN_PA      /* 0xD4000000 (sys/hakios.exynos9810_mem.h) */
 #define SCAN_MEMORY_END         EXYNOS9810_MEM_DPU_SCAN_END     /* 0xD7000000 */
 /*
- * The buffers above take 34 MB at most (fb_flip's of the panel's size) of their 48 MB. fb_zc has a pool of its own: the
- * window server's own display surfaces are made of it (MiniIOSurface.cpp), so that VGF0 scans out the very surface
- * CoreAnimation's frame was drawn into, and nothing is copied (MiniIOMobileFramebuffer.cpp). Slots of 12 MB, one surface
- * each: the iPhone's 1125 x 2436 at 4544 or 4608 bytes a row is 11 MB. Four slots, in the three free pieces of the gap
- * below 0xE0000000 (sys/hakios.exynos9810_mem.h): what is drawn from there up does not reach the panel, and a slot that
- * ran over it (at 0xDF800000) showed the bottom quarter of every other frame black. CoreAnimation keeps
- * two display surfaces: they take the first two, 0xDEC00000 and 0xD7000000, pieces the display has scanned out of before.
+ * The buffers above take 34 MB at most (the fb_flip buffers of the panel's size) of their 48 MB. fb_zc has a pool of
+ * its own: the window server's display surfaces are made from it (MiniIOSurface.cpp), so VGF0 scans out the surface
+ * CoreAnimation drew the frame into, and nothing is copied (MiniIOMobileFramebuffer.cpp). Slots are 12 MB, one surface
+ * each: the iPhone's 1125 x 2436 at 4544 or 4608 bytes a row is 11 MB. Four slots sit in the three free pieces of the
+ * gap below 0xE0000000 (sys/hakios.exynos9810_mem.h). Anything drawn from 0xE0000000 up does not reach the panel: a slot
+ * at 0xDF800000 that ran over it showed the bottom quarter of every other frame black. CoreAnimation keeps two display
+ * surfaces, which take the first two slots, 0xDEC00000 and 0xD7000000: both are pieces the display has scanned out of
+ * before.
  */
 #define SCAN_SLOT               (12ULL << 20)
 static const uint64_t scan_slots[] = {
@@ -392,7 +395,10 @@ hakios_scanout_uncarve(uint64_t phys)
 	}
 }
 
-/* Is `phys` in the pool? (The Mali's tables take it, though the kernel does not manage it: drivers/gpu/mali/hakios.mali.c.) */
+/*
+ * Is `phys` in the pool? (The Mali's tables take it, though the kernel does not manage it: drivers/gpu/mali/
+ * hakios.mali.c.)
+ */
 int
 hakios_scanout_carved(uint64_t phys)
 {
@@ -400,15 +406,15 @@ hakios_scanout_carved(uint64_t phys)
 }
 
 /*
- * fb_zc: VGF0 to scan out a surface of the pool from the next refresh on, `rowbytes` a row (its size stays the
- * display's, as attached). As hakios_scanout_flip(): the caller has waited for the flip before to be taken.
+ * fb_psr state: psr_ms the idle limit in ms (0 off), psr_last_frame the time of the last frame, and psr_masked
+ * whether the TE trigger is masked.
  */
 static uint32_t psr_ms;
 static thread_call_t psr_call;
 static uint64_t psr_last_frame;
 static bool psr_masked;
 
-/* a frame is coming: the trigger on before the shadow update is asked for, or it would never be taken */
+/* a frame is coming: unmask the trigger before the shadow update is requested, or that update is never taken */
 static void
 psr_wake(void)
 {
@@ -437,7 +443,7 @@ psr_tick(thread_call_param_t p0 __unused, thread_call_param_t p1 __unused)
 		__atomic_store_n(&psr_masked, true, __ATOMIC_RELEASE);
 		wr(decon, TRIG_CONTROL, rd(decon, TRIG_CONTROL) | HW_TRIG_MASKED);
 		__asm__ volatile ("dsb sy" ::: "memory");
-		/* a frame that came while masking may have seen it unmasked already: back on, and its update goes out */
+		/* a frame that arrived while masking may have seen the trigger unmasked: unmask again, so its update goes out */
 		if (rd(decon, SHADOW_REQ) != 0) {
 			__atomic_store_n(&psr_masked, false, __ATOMIC_RELEASE);
 			wr(decon, TRIG_CONTROL, rd(decon, TRIG_CONTROL) & ~HW_TRIG_MASKED);
@@ -447,6 +453,10 @@ psr_tick(thread_call_param_t p0 __unused, thread_call_param_t p1 __unused)
 	thread_call_enter_delayed(psr_call, deadline);
 }
 
+/*
+ * fb_zc: VGF0 scans out a surface of the pool from the next refresh on. rowbytes is the row length (the display's size
+ * stays as attached). As for hakios_scanout_flip(), the caller has waited for any earlier shadow update to be taken.
+ */
 int
 hakios_scanout_show(uint64_t phys, uint32_t rowbytes)
 {
@@ -492,7 +502,7 @@ hakios_scanout_flip(unsigned index)
 	psr_wake();
 	i = idma(channel_type);
 	if (mode == 2 && shown_rowbytes != scan_rowbytes) {
-		/* (back from a surface of fb_zc's, whose rows may be shorter) */
+		/* returning from a pool surface, whose rows may be shorter */
 		wr(i, IDMA_SRC_SIZE, (rd(i, IDMA_SRC_SIZE) & 0xffff0000u) | (scan_rowbytes / 4));
 		shown_rowbytes = scan_rowbytes;
 	}
@@ -533,7 +543,7 @@ coefficients(int16_t table[9][4])
 			table[t][k] = (int16_t)cubic(k - 1, t);
 			sum += table[t][k];
 		}
-		/* what rounding left over goes to the nearer of the middle two */
+		/* the rounding remainder goes to the middle tap: pixel 0, or pixel 1 at phase 8 */
 		table[t][t < 8 ? 1 : 2] += (int16_t)(512 - sum);
 	}
 }
@@ -592,7 +602,10 @@ hakios_scanout_detach(const char *why)
 	channel_type = boot_type;
 }
 
-/* VGF0 set up to read `phys` (width x height, rowbytes a row) and scale it to the boot window's size; then the window moved */
+/*
+ * VGF0 set up to read `phys` (width x height, rowbytes a row) and scale it to the boot window's size; then the window
+ * is moved to it.
+ */
 static int
 attach_vgf0(uint64_t phys, uint32_t width, uint32_t height, uint32_t rowbytes)
 {
@@ -621,7 +634,7 @@ attach_vgf0(uint64_t phys, uint32_t width, uint32_t height, uint32_t rowbytes)
 		return -1;
 	}
 	dump_channel("before,", IDMA_VGF0);
-	/* the IDMA: the boot channel's format and bus settings, our buffer and sizes, nothing else of its */
+	/* IDMA: the boot channel's format and bus settings; this buffer and its sizes */
 	wr(i, IDMA_IN_CON, in_con & IN_CON_KEEP);
 	wr(i, IDMA_OUT_CON, rd(bi, IDMA_OUT_CON));
 	wr(i, IDMA_SRC_SIZE, height << 16 | (rowbytes / 4));
@@ -633,13 +646,13 @@ attach_vgf0(uint64_t phys, uint32_t width, uint32_t height, uint32_t rowbytes)
 	wr(i, IDMA_BUS_CON, rd(bi, IDMA_BUS_CON));
 	wr(i, IDMA_GATING, rd(bi, IDMA_GATING));
 	wr(i, IDMA_REQ_DEST, rd(bi, IDMA_REQ_DEST));
-	/* the DPP: ARGB as the boot channel's, the sizes, the scaler */
+	/* DPP: the boot channel's ARGB input format, the sizes, the scaler */
 	wr(d, DPP_IN_CON, (rd(d, DPP_IN_CON) & ~DPP_IN_KEEP) | (dpp_in & DPP_IN_KEEP));
 	wr(d, DPP_IMG_SIZE, height << 16 | width);
 	wr(d, DPP_SCALED_SIZE, ph << 16 | pw);
 	setup_scaler(d, width, height, pw, ph);
 	wr(d, DPP_GATING, rd(bd, DPP_GATING));
-	/* VGF0 is idle: its registers taken now, not at a frame of its own */
+	/* VGF0 is idle, so its registers are taken now rather than at a frame of its own */
 	wr(i, IDMA_ENABLE, rd(i, IDMA_ENABLE) | SFR_UPDATE_FORCE);
 	wr(d, DPP_ENABLE, rd(d, DPP_ENABLE) | SFR_UPDATE_FORCE);
 	dump_channel("set up,", IDMA_VGF0);
@@ -647,7 +660,7 @@ attach_vgf0(uint64_t phys, uint32_t width, uint32_t height, uint32_t rowbytes)
 		say("exynos_dpu: a shadow update is still pending (%x): not taken\n", rd(decon, SHADOW_REQ));
 		return -1;
 	}
-	/* the window to VGF0 */
+	/* move the window to VGF0 */
 	frames = rd(decon, FRAME_COUNT);
 	mode = 2;
 	channel_type = IDMA_VGF0;
@@ -658,7 +671,7 @@ attach_vgf0(uint64_t phys, uint32_t width, uint32_t height, uint32_t rowbytes)
 		hakios_scanout_detach("the DECON did not take the window's new channel in 100 ms");
 		return -1;
 	}
-	/* three refreshes on it, then what VGF0 says of them */
+	/* wait for three refreshes on the new channel, then read VGF0's error state */
 	for (unsigned ms = 0; ms < 100 && rd(decon, FRAME_COUNT) - frames < 3; ms++) {
 		IOSleep(1);
 	}
