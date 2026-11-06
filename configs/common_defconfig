@@ -460,22 +460,22 @@ CONFIG_TOUCHSCREEN=y
 # read by hakios.buttons.c (kernel)
 # CONFIG_PRESS_POWER_MS is not set
 
-# every address below belongs to this phone
+# read by hakios.s6sy761.c (kernel)
 # CONFIG_S6SY761 is not set
 
-# the HSI2C's input clock, if step 1 says it is not the 200 MHz both other drivers assume
+# read by hakios.s6sy761.c (kernel)
 # CONFIG_S6SY761_IPCLK is not set
 
 # read by hakios.s6sy761.c (kernel)
 # CONFIG_S6SY761_LDO is not set
 
-# the polling thread's priority. Default 92 (BASEPRI_PREEMPT, as the display's presenter, fb_pri)
+# read by hakios.s6sy761.c (kernel)
 # CONFIG_S6SY761_PRI is not set
 
 # read by hakios.s6sy761.c (kernel)
 # CONFIG_S6SY761_STEPS is not set
 
-# the first N finger events said, with the time (ms, the 24 MHz counter), to measure the rate
+# say the first N finger events, with their time (ms, from the 24 MHz counter), to measure the rate
 # CONFIG_S6SY761_TRACE is not set
 
 # a reader that falls behind gets the newest pending MOVE of a finger, never a lost DOWN/UP. Off by default
