@@ -11,6 +11,8 @@
 #include <sys/proc.h>
 #include <sys/hakios.input.h>
 #include <sys/hakios.exynos_abox.h>
+#include <sys/hakios.touch_queue.h>
+#include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <pexpert/pexpert.h>
@@ -61,6 +63,14 @@ static LCK_GRP_DECLARE(touch_lck_grp, "hakios-touch");
 static LCK_MTX_DECLARE(touch_lock, &touch_lck_grp);
 static struct hakios_touch touch_queue[TOUCH_QUEUE];
 static uint32_t touch_head, touch_tail;        /* read from head, add at tail */
+
+/* touch_coalesce=1: a reader that falls behind gets the newest pending MOVE of a finger, never a lost DOWN/UP. Off by default.
+ * (From danstronics/ios-s9plus-exynos core/, MIT; see docs/star2lte-absorb.md.) */
+static TUNABLE(uint32_t, touch_coalesce, "touch_coalesce", 0);
+static uint32_t touch_coalesced;
+SYSCTL_DECL(_kern_hakios);
+SYSCTL_UINT(_kern_hakios, OID_AUTO, touch_coalesced, CTLFLAG_RD | CTLFLAG_LOCKED | CTLFLAG_KERN,
+    &touch_coalesced, 0, "Pending trailing touch MOVE events replaced with the latest position");
 
 /*
  * The way out when nothing else is at hand: five fingers held on the screen for a second and a
@@ -169,10 +179,8 @@ touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, bool from_dri
 	struct hakios_touch *t;
 
 	lck_mtx_lock(&touch_lock);
-	if (touch_tail - touch_head == TOUCH_QUEUE) {
-		touch_head++;                   /* nobody reads: drop the oldest */
-	}
-	t = &touch_queue[touch_tail++ % TOUCH_QUEUE];
+	t = hakios_touch_queue_slot(touch_queue, TOUCH_QUEUE, &touch_head, &touch_tail,
+	    type, finger, touch_coalesce, &touch_coalesced);     /* a full queue drops the oldest */
 	t->time = when != 0 ? when : mach_absolute_time();
 	if (latency_lines()) {
 		uint64_t ns;
