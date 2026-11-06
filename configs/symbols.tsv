@@ -1,3 +1,4 @@
+ABL_FDT	arg	abl_fdt	Storage and APFS	k	hakios.ufshc.lga.h	
 ABOX	arg	abox	Audio and battery	k	hakios.exynos_abox.c	the first N of ABOX's eight steps (1 only looks, 7 plays a tone, 8 serves iOS); 0 or none: left alone
 ABOX_BCLK_ON	arg	abox_bclk_on	Audio and battery	k	hakios.exynos_abox.c	ABOX never gates UAIF1's BCLK (QCHANNEL_DISABLE bit 3), as Samsung does for UAIF0 while it plays
 ABOX_BURST	arg	abox_burst	Audio and battery	k	hakios.exynos_abox.c	RDMA0's CTRL0 BURST_LEN [22:19], 1 to 15 (8, set only when it reads 0; given, set anyway; 0: left)
@@ -458,7 +459,7 @@ UFS_NATIVE_H8EXIT	arg	ufs_native_h8exit	Storage and APFS	k	hakios.ufshc.c	the Pi
 UFS_NATIVE_HANG	arg	ufs_native_hang	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_LEAVE	arg	ufs_native_leave	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_LOG	arg	ufs_native_log	Storage and APFS	k	hakios.ufs.c	
-UFS_NATIVE_RO	arg	ufs_native_ro	Storage and APFS	k	hakios.ufs.c	
+UFS_NATIVE_RO	arg	ufs_native_ro	Storage and APFS	k	hakios.ufs.c,hakios.ufshc.lga.h	
 UFS_NATIVE_SLOTS	arg	ufs_native_slots	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_SOAK	arg	ufs_native_soak	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE_SOC	arg	ufs_native_soc	Storage and APFS	k	hakios.ufs.c,hakios.ufshc.c	the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810, lga (the Pixel 10's, read only), lga-qemu

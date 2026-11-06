@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 636 symbols in 20 groups; 54 are set, 45 of them drivers built in.
+# 638 symbols in 20 groups; 54 are set, 45 of them drivers built in.
 #
 
 #
@@ -264,7 +264,7 @@ CONFIG_HAKIOS_BRCMFMAC=y
 # CONFIG_XPCPROXY_IDVERSION is not set
 
 #
-# Storage and APFS (55)
+# Storage and APFS (57)
 #
 
 # the phone's storage: 1 a survey, read only; 2 the loader's block service, through which the kernel reads it (the ...
@@ -275,6 +275,9 @@ CONFIG_UFS=2
 
 # keep /private/var across reboots, in the partition `darwin` [requires CONFIG_UFS_WRITE]
 # CONFIG_VAR_STORE is not set
+
+# read by hakios.ufshc.lga.h (kernel)
+# CONFIG_ABL_FDT is not set
 
 # read by apfs_vfsops.c (kernel)
 # CONFIG_APFS_CHEAP is not set
@@ -384,6 +387,9 @@ CONFIG_UFS=2
 # what this kernel's own driver reads is what the loader reads, byte for byte
 # CONFIG_UFS_NATIVE_CHECK is not set
 
+# read by hakios.ufshc.c (kernel)
+# CONFIG_UFS_NATIVE_COLD is not set
+
 # the Pixel 10's host: the link out of Hibern8 before NOP OUT (off by default; where ABL's shutdown left it)
 # CONFIG_UFS_NATIVE_H8EXIT is not set
 
@@ -396,7 +402,7 @@ CONFIG_UFS=2
 # read by hakios.ufs.c (kernel)
 # CONFIG_UFS_NATIVE_LOG is not set
 
-# read by hakios.ufs.c (kernel)
+# read by hakios.ufs.c, hakios.ufshc.lga.h (kernel)
 # CONFIG_UFS_NATIVE_RO is not set
 
 # read by hakios.ufshc.c (kernel)
