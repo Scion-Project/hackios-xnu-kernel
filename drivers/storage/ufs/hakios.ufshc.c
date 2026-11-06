@@ -3812,7 +3812,9 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 		uint64_t limit = 1ULL << hc_soc->dma_bits;
 
 		for (uint32_t i = 0; i < SLOTS; i++) {
-			if (hc_slots[i].ucd_pa + hc_ucd_size > limit || (hc_slots[i].data != NULL && hc_slots[i].data_pa + hc_slots[i].data_size > limit)) {
+			struct hc_slot *s = &hc_slots[i];
+
+			if (s->ucd_pa + hc_ucd_size > limit || (s->data != NULL && s->data_pa + s->data_size > limit)) {
 				hc_not_used("memory above the controller's DMA range");
 				hc_off();
 				return false;
