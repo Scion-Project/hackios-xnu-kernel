@@ -1,0 +1,73 @@
+panfrost: HMC=1, keep a cached BO's CPU mapping for as long as the BO (Darwin only, off by default)
+
+From danstronics/ios-s9plus-exynos baseline-support/panfrost-cache-mapping.patch
+(Mesa's own licence applies to the patched file). Applies to Mesa 25.0.7
+(checked with patch --dry-run; not built or run by Scion on a phone). Without
+the environment variable HMC=1 nothing changes: the mapping is still
+released when the BO's last reference goes.
+
+--- a/src/gallium/drivers/panfrost/pan_bo.c
++++ b/src/gallium/drivers/panfrost/pan_bo.c
+@@ -29,0 +30,4 @@
++#ifdef __APPLE__
++#include <stdlib.h>
++#include <string.h>
++#endif
+@@ -56,0 +61,28 @@
++#ifdef __APPLE__
++/* HMC=1: keep a cached BO's CPU mapping as long as that BO. HakiosMali's
++ * pinned no-purge implementation already retains the underlying allocation.
++ * Cache admission, GPU completion checks, stale/all eviction and real map
++ * operations are unchanged. Unmap before destroying the BO, never afterwards.
++ * Off by default; not a generic assumption about Linux purging semantics.
++ */
++static pthread_once_t mapping_cache_once = PTHREAD_ONCE_INIT;
++static bool mapping_cache_enabled;
++static unsigned mappings_retained, mappings_destroyed;
++
++static void
++init_mapping_cache(void)
++{
++   const char *value = getenv("HMC");
++   mapping_cache_enabled = value != NULL && strcmp(value, "1") == 0;
++}
++
++static bool
++keep_cached_mappings(void)
++{
++   pthread_once(&mapping_cache_once, init_mapping_cache);
++   return mapping_cache_enabled;
++}
++
++static void panfrost_bo_munmap(struct panfrost_bo *bo);
++#endif
++
+@@ -130,0 +163,11 @@
++#ifdef __APPLE__
++   if (bo->ptr.cpu) {
++      panfrost_bo_munmap(bo);
++      if (keep_cached_mappings()) {
++         unsigned count = __atomic_add_fetch(&mappings_destroyed, 1, __ATOMIC_RELAXED);
++         if (count == 1 || count == 1024)
++            fprintf(stderr, "panfrost: HMC=1: %u CPU mappings released at BO destruction\n", count);
++      }
++   }
++#endif
++
+@@ -284,0 +328,8 @@
++#ifdef __APPLE__
++   if (keep_cached_mappings() && bo->ptr.cpu) {
++      unsigned count = __atomic_add_fetch(&mappings_retained, 1, __ATOMIC_RELAXED);
++      if (count == 1 || count == 1024)
++         fprintf(stderr, "panfrost: HMC=1: %u existing CPU mappings kept with cached BOs\n", count);
++   }
++#endif
++
+@@ -467,2 +518,5 @@
+-      /* When the reference count goes to zero, we need to cleanup */
+-      panfrost_bo_munmap(bo);
++      /* Darwin's mapped BO cache releases the mapping in panfrost_bo_free(). */
++#ifdef __APPLE__
++      if (!keep_cached_mappings())
++#endif
++         panfrost_bo_munmap(bo);
