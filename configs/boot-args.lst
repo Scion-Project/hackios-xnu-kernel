@@ -269,6 +269,8 @@ keystore_kdf_kib	k
 keystore_real	k
 ksample	k
 ksample_us	k
+lga_dpu	k
+lga_kick	k
 loader_platform	l
 loader_return_after	kl
 m3_diag	k
@@ -480,6 +482,7 @@ ufs_native_bench	k
 ufs_native_buffer	k
 ufs_native_cached	k
 ufs_native_check	k
+ufs_native_h8exit	k
 ufs_native_hang	k
 ufs_native_leave	k
 ufs_native_log	k

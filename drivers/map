@@ -29,6 +29,7 @@ virtio   bsd/dev/hakios.virtio_blk.c
 
 gpu/adreno bsd/dev/hakios.adreno.c
 display/dpu bsd/dev/hakios.exynos_dpu.c
+display/dpu bsd/dev/hakios.lga_dpu.c
 media/mfc bsd/dev/hakios.exynos_mfc.c
 media/mfc bsd/dev/hakios.exynos_mfc_test.h
 display/panel bsd/dev/hakios.s6e3ha8.c

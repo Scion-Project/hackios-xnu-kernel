@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **576 arguments**: 507 read by the kernel, 21 by the loader, 63 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **579 arguments**: 510 read by the kernel, 21 by the loader, 63 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
 
@@ -382,7 +382,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `touchscreen` | K | `hakios.buttons.c`, `hakios.goodix.c` | `CONFIG_TOUCHSCREEN` |  |
 | `virtio_input` | K | `hakios.virtio_input.c` | `CONFIG_VIRTIO_INPUT` |  |
 
-## Storage and APFS (54)
+## Storage and APFS (55)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -423,6 +423,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs_native_buffer` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_BUFFER` |  |
 | `ufs_native_cached` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_CACHED` |  |
 | `ufs_native_check` | K | `hakios.ufs.c` | `CONFIG_UFS_NATIVE_CHECK` |  |
+| `ufs_native_h8exit` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_H8EXIT` |  |
 | `ufs_native_hang` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_HANG` |  |
 | `ufs_native_leave` | K | `hakios.ufshc.c` | `CONFIG_UFS_NATIVE_LEAVE` |  |
 | `ufs_native_log` | K | `hakios.ufs.c` | `CONFIG_UFS_NATIVE_LOG` |  |
@@ -556,7 +557,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `serial` | L | `loader.c` | `CONFIG_SERIAL` |  |
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 
-## User space (108)
+## User space (110)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -625,6 +626,8 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `keystore_entcheck` | K | `MiniAppleKeyStore.cpp` | `CONFIG_KEYSTORE_ENTCHECK` |  |
 | `keystore_kdf_kib` | K | `MiniAppleKeyStore.cpp` | `CONFIG_KEYSTORE_KDF_KIB` |  |
 | `keystore_real` | K | `MiniAppleKeyStore.cpp` | `CONFIG_KEYSTORE_REAL` |  |
+| `lga_dpu` | K | `hakios.lga_dpu.c` | `CONFIG_LGA_DPU` |  |
+| `lga_kick` | K | `hakios.lga_dpu.c` | `CONFIG_LGA_KICK` |  |
 | `m3_diag` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_DIAG` |  |
 | `m3_flush` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_FLUSH` |  |
 | `m3_ids` | K | `1509-m3-diag-and-pan-off.patch` | `CONFIG_M3_IDS` |  |

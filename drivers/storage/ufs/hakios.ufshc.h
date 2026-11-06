@@ -10,6 +10,10 @@
  *                one controller this kernel may also bring up from reset. The test bench.
  *   sm7325       the POCO's (Qualcomm, ufshc@1d84000). Nothing of Qualcomm's own registers is
  *                needed for a controller UEFI has brought up.
+ *   lga          the Pixel 10's (Tensor G5: Google's host at 0x3C400000). A standard UFSHCI 4.0 host in single doorbell mode,
+ *                36-bit DMA, initiator id 1 in every command UPIU; taken as ABL left it, never enabled here, and READ ONLY: no
+ *                write of any kind reaches it, whatever a boot argument says. lga-qemu is QEMU's controller with the same
+ *                quirks, for tests. Facts from Google's ufs-google.c and lga/ (GPL-2.0, facts only; hakios.ufshc.c's table).
  *   exynos9810   the Galaxy S9's (Samsung, ufs@11120000; the vendor's HCI registers at
  *                0x11121100). Its differences, from the S9's own kernel and from a mainline port
  *                to the S9+ (both GPL-2.0, facts only; the head of hakios.ufshc.c says which file

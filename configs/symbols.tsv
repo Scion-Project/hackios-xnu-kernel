@@ -256,6 +256,8 @@ KEYSTORE_KDF_KIB	arg	keystore_kdf_kib	User space	k	MiniAppleKeyStore.cpp
 KEYSTORE_REAL	arg	keystore_real	User space	k	MiniAppleKeyStore.cpp	
 KSAMPLE	arg	ksample	Debugging	k	user_exception_trace.c	
 KSAMPLE_US	arg	ksample_us	Debugging	k	user_exception_trace.c	
+LGA_DPU	arg	lga_dpu	User space	k	hakios.lga_dpu.c	
+LGA_KICK	arg	lga_kick	User space	k	hakios.lga_dpu.c	
 LOADER_PLATFORM	arg	loader_platform	Loader	l	loader.c	
 M3_DIAG	arg	m3_diag	User space	k	1509-m3-diag-and-pan-off.patch	
 M3_FLUSH	arg	m3_flush	User space	k	1509-m3-diag-and-pan-off.patch	
@@ -451,13 +453,14 @@ UFS_NATIVE_BENCH	arg	ufs_native_bench	Storage and APFS	k	hakios.ufs.c
 UFS_NATIVE_BUFFER	hex	ufs_native_buffer	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_CACHED	arg	ufs_native_cached	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_CHECK	arg	ufs_native_check	Storage and APFS	k	hakios.ufs.c	what this kernel's own driver reads is what the loader reads, byte for byte
+UFS_NATIVE_H8EXIT	arg	ufs_native_h8exit	Storage and APFS	k	hakios.ufshc.c	the Pixel 10's host: the link out of Hibern8 before NOP OUT (off by default; where ABL's shutdown left it)
 UFS_NATIVE_HANG	arg	ufs_native_hang	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_LEAVE	arg	ufs_native_leave	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_LOG	arg	ufs_native_log	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE_RO	arg	ufs_native_ro	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE_SLOTS	arg	ufs_native_slots	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_SOAK	arg	ufs_native_soak	Storage and APFS	k	hakios.ufs.c	
-UFS_NATIVE_SOC	arg	ufs_native_soc	Storage and APFS	k	hakios.ufs.c,hakios.ufshc.c	the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810
+UFS_NATIVE_SOC	arg	ufs_native_soc	Storage and APFS	k	hakios.ufs.c,hakios.ufshc.c	the controller own mode takes: pci (QEMU's, the default), sm7325, exynos9810, lga (the Pixel 10's, read only), lga-qemu
 UFS_NATIVE_SPIN	arg	ufs_native_spin	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_STEP	arg	ufs_native_step	Storage and APFS	k	hakios.ufshc.c	own mode goes as far as step N: 1 look, 2 the link, 3 NOP OUT, 4 READ CAPACITY, 5 all (the GPTs)
 UFS_NATIVE_TEST	arg	ufs_native_test	Storage and APFS	k	hakios.ufs.c	own mode's test at start: the refusals, and writes put back (2: one block left written)

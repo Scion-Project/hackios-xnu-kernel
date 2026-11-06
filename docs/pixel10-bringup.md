@@ -26,9 +26,10 @@ fastboot boot xnu-frankel.img  ->  ABL  ->  socs/lga/shim  ->  xnuloader ("frank
 | 4. The shim runs | a blue band on the panel | `shim/`, its bands, watchdogs stopped | the framebuffer has to be found: below |
 | 5. The loader runs | green, then yellow; its banner | `platform_frankel`, unchanged `xnuloader` | |
 | 6. XNU to `launchd` | `-v` on the panel | GICv4 frames in `gic_v3_irq.c`; PSCI by HVC through the shim; core 0 alone first; root in RAM | whether ARMv9.2 cores run XNU 8796 unchanged is unknown |
-| 7. Picture from CoreAnimation | the lock screen | **guess**: the software route is QEMU's | a framebuffer that keeps updating (below); a kernel console that sees the panel |
+| 7. Picture from CoreAnimation | the lock screen | **guess**: the software route is QEMU's; the kernel's frame kicker (below) | whether its two writes start a frame |
+| 8. The system image | SpringBoard | read-only UFS driver for Google's host, GPT, mount, to the home screen in QEMU (below) | whether ABL leaves the host up; DMA; everything on the phone |
 
-No GPU, no UFS driver (Google's own host, in RAM until written), no touch, no USB, no modem are in this list on purpose.
+No GPU, no touch, no USB, no modem are in this list on purpose. Storage is a second route, below ("Storage: the system image off `userdata`").
 
 ## Can the boot loader's framebuffer be inherited?
 
@@ -75,6 +76,62 @@ and writes its log to ramoops' console zone. What it cannot say: why a frame did
 | `private/google-modules/display/vsi-drm/verisilicon/` in [azagramac/pixel10-kernel-aosp](https://github.com/azagramac/pixel10-kernel-aosp) at 6f689be7fa23, a public copy of Google's kernel | the phone's own DRM driver: register layout, start sequence | GPL-2.0 (`vs_drv.c`'s SPDX line) | facts only |
 | Linux `drivers/gpu/drm/verisilicon` at 05441d697f7f | mainline DC-series driver; Kconfig `depends on RISCV`. Whether it covers a DC9x00 is **not established** | GPL-2.0-only | facts only |
 | `lga-dpu.dtsi`, `lga-smmu.dtsi` through `scion-soc-lga`'s README | addresses, layers, SMMU | GPL-2.0 | facts, as already recorded |
+
+## The frame kicker (`lga_kick=HZ`)
+
+`drivers/display/dpu/hakios.lga_dpu.c`, built into the Pixel 10's kernel alone (`CONFIG_HAKIOS_LGA_DPU=y` in `scion-soc-lga`'s `lga.config`, `default n`
+elsewhere), off until `lga_kick=` asks (`mkimage.sh -K` asks for 30). A thread call every 1/HZ seconds writes `OUTPUT0_START` (0xB6000) = 1 and then
+`OUTPUT0_SW_CONFIG` (0xB6004) = 1 (fact 4), reads `DEBUG_DSI0_FRAME_CNT` (0xB6434) before and after (fact 6), and starts the next frame only when the counter
+has moved since the last kick or four periods have passed. It writes nothing unless the chip id (0x20) is 0x9400 and output 0 is in command mode
+(0xB6008 bit 1). The first eight kicks log their writes and the counter; then every five seconds `lga_kick: N kicks, frame counter C (+D in 5 s)`, with
+"IT DID NOT MOVE" when D is 0. The buffer it makes visible is the one the kernel and CoreAnimation already draw into (MiniIOMobileFramebuffer takes
+ABL's buffer through the boot arguments): no framebuffer driver of its own is needed.
+
+QEMU (`qemu/run-lga-ufs.sh`): RAM stands where the controller would be (`lga_dpu=0x90000000`, chip id and command mode put there by `-device loader`).
+The log shows the identity line, `a frame of output 0 every 33 ms`, `kick 1: wrote b6000 <- 1, b6004 <- 1; frame counter 0 before, 0 after` for eight kicks, then
+about 30 kicks per five seconds with the counter at 0: nothing counts frames in RAM, so QEMU shows the writes and the reporting, and **nothing about whether a
+frame starts**. That is the phone's to say.
+
+## Storage: the system image off `userdata`, read only
+
+The Galaxy S9 mounts `system.apfs` from a partition of its flash and its small root from RAM; this is the same for the Pixel 10 with one
+difference: **no write of any kind**. `frankel_ufs_defconfig` (`devices/frankel`) builds `hakios.ufshc.c` with its `lga` entry and the image says
+`ufs_native=4 ufs_native_soc=lga ufs_native_ro=1 system_apfs=ufs_userdata`; init mounts `/dev/ufs_userdata` read only and makes it the root.
+
+| What | Fact | Level |
+|---|---|---|
+| Host | Google's `google,ufshc` at 0x3C400000 (top block 0x3C410000, PHY SRAM 0x3C700000), a UFSHCI 4.0 host; SMMUv3 in front, identity-mapped | source-read |
+| Doorbell mode | single doorbell is the default (`CONFIG.QT` 0, +0x300); Google's driver turns on its multi circular queue; the driver here refuses to go on if `QT` is set | source-read; unknown what ABL leaves |
+| Quirks | `UFSHCD_ANDROID_QUIRK_36BIT_ADDRESS_DMA` (DMA width 36 bits whatever CAP says: the driver checks its memory is below 2^36) and `UFSHCD_ANDROID_QUIRK_SET_IID_TO_ONE` (lga only: the high nibble of UPIU byte 4 is 1 in every command, NOP and query included; done in the `nexus` hook before each doorbell) | source-read |
+| Descriptors | 16-byte PRDT entries, offsets in dwords, no vendor nexus bit: as the standard (and QEMU's) host; nothing says otherwise | guess |
+| Top block | reported before anything is taken: version, card detect, `ENC_STAT`, `PWR_CTRL` (which M-PHY firmware ABL selected: ROM, or the patched SRAM image, Google's mode 2), `AWUSER_VC` (Google sets 1 and 1), `CONFIG`, `MCQCONFIG` | source-read offsets |
+| Cold re-init | **not implemented, and not possible from this tree**: Google's bring-up is the CPM's power domains, the PMIC's rails (DA9188 LDOs 1S and 24S, bucks 11S and 13S), the reset GPIO, the reference clock, `HSIOS_UFS_*` setup, the FIPS self-test wait, 125 KB of M-PHY firmware loaded into SRAM (mode 2), calibration, `HCLKDIV` 0xC8, link startup, T_ACTIVATE and C-port setup. None of that exists here and the firmware is Google's (GPL data: facts only, not copied) | source-read |
+| What does apply from PixOS (Pixel 6a, `soc/google/gs101/docs/08-abl-ufs-shutdown.md`, MIT, nothing copied) | ABL's shutdown leaves the *device* in power-down and the *link* in Hibern8 while the host registers stay on; the cure there is hardware reset + HCE + link startup (Exynos/gs101 registers: do not apply), with "H8 exit + START STOP UNIT" as an untested softer way. Here: the driver already sends START STOP UNIT (ACTIVE) when `bCurrentPowerMode` is not active; `ufs_native_h8exit=1` (off) sends UIC DME_HIBERNATE_EXIT first (`mkimage.sh -U 5 -H`). Untested anywhere | partly guess |
+| G5 vs the 6a | whether ABL shuts the host down at all on `fastboot boot`; Google's kernel assumes it is up ("We assume the power domain is in ON state when enter kernel"); an S2MPU stopped DMA from low RAM on the 6a; none known for a Pixel 10 | unknown |
+
+**Read only, enforced three ways.** The `lga` entry has `.read_only = true`, which sets the controller layer's own fence (`hc_pol.ro`: every data-out command
+and every write refused in `hc_refusal`, and no window can be opened over a partition) and nothing clears it; `ufs_native_write=` and `ufs_write=` then
+find nothing to open. `audit-image.py --ufs-ro` refuses an image whose `.config` or command line could write (`ufs_write`, `ufs_native_write`, `var_hfs`,
+`var_store`, `ufs_native_test` and more), requires `ufs_native_soc=lga` and `ufs_native_ro=1`, and checks the source still has the entry read only. And the
+QEMU test attaches the disk `readonly=on` at the host, so a write could not have landed there either.
+
+**What QEMU shows** (`qemu/run-lga-ufs.sh`, QEMU 11.1.3, `-cpu max`, 8 cores, 7 GB, XNU's window 4.2 GB, the QEMU `ufs` device holding a GPT
+(`tools/mkgpt.py`: Pixel-like partition names, `userdata` holding the system image): the shim, the loader, `frankel_ufs` kernel, `ufs_native_soc=lga-qemu`
+(the entry's quirks on QEMU's PCI controller), the GPT read (17 partitions), `/dev/ufs_userdata` mounted read only and made the root, launchd, the jobs
+started (100 spawned lines by minute four), SpringBoard's home screen drawn by the CPU into the framebuffer (a picture taken through the monitor, `qemu/fbshot.py`), all eight
+processors active (the loader's own core joins after the kernel asks). **What it cannot show**: the real `lga` entry's addresses and the top block (no such
+device in QEMU), ABL's state, the M-PHY, the SMMU, DMA, timing, MCQ-versus-doorbell, whether the IID setting is what the host wants, and anything of a
+panel. `lga-qemu` and `lga` differ in exactly the PCI discovery, `may_enable` (QEMU's controller is enabled from reset; the phone's never) and the `look` hook.
+
+## CPU features
+
+QEMU 11.1.3's `-cpu max` has pointer authentication (QARMA3, address and generic), BTI, MTE (instructions; no tag memory), SVE and SME; the shim's `cpu:` line
+says `pauth addr 5 generic 1, bti 1, mte 1, sve 1, sme 2`. There is no A520, A725 or X4 in QEMU and its cores are all one kind per machine: `cortex-a710`
+(Armv9.0) is the nearest; launchd spawned SpringBoard on it too (`cpu:` there: pauth 5/1, bti 1, mte 1, sve 1, sme 0). **XNU 8796 needed no fix** for any of it: it started on all eight cores (`cpus=8 bootcpu=7
+core0=2`: `core0=2` gives the loader's own core to the kernel, else seven; `small_cores_after=0` starts the slower cores at once, else after 28 s), ran
+launchd and SpringBoard, with no exception, PAC or BTI fault in the log. The kernel is arm64 (not arm64e) and iOS 16.5's iPhone X userland is arm64: neither uses
+PAC, BTI, SVE or SME, so this shows they are *harmless* to XNU, not that they work. Nothing was seen that FPAC, `SCTLR` or `CPACR` settings of Google's
+firmware could not change on the phone; the cores' real state is what the `cpu:` line there will say.
 
 ## Early console
 
