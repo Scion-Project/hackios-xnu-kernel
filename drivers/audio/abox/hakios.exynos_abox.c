@@ -1,42 +1,45 @@
 #define HAKIOS_SOC_FIXED
 /*
- * The Galaxy S9's speakers (starlte, Exynos 9810), the SoC's side: ABOX, Samsung's audio block, driven from the AP with
- * its own CPU off ("bypass", no firmware). What iOS plays goes memory -> RDMA0 -> SPUS (ABOX's stream bus, chain 0, no
- * ASRC) -> SIFS1 (not the mixer, SIFS0: see abox_route) -> UAIF1, an I2S master, -> the two MAX98512 amplifiers. The amplifiers' I2C is another
- * driver's, reached only through the hook of sys/hakios.exynos_abox.h, which also has UAIF1's format and every register
- * fact used here (FACT or INFERRED, with the file it comes from). Only with boot-arg abox=N on this phone (the SoC's
- * registers at 0x10000000); every address below is the S9's.
+ * ABOX, the audio block of the Exynos 9810 in the Galaxy S9 (starlte), driven from the AP with ABOX's own CPU off
+ * ("bypass"; no firmware). The speaker path is:
  *
- * THE STEPS. abox=N makes the first N of eight and stops; 0 or none leaves ABOX alone. Each step says what it will touch
- * before it does, and every write to a register of the SoC is said with what it reads back. A step that does not find
- * what it needs ends the sequence; with N under 8 everything is put back at the end (the stream stopped, the pins idle,
- * the domain off again if this driver switched it on).
- *   1  look     the PMU's AUD domain, its pads' retention, ABOX's CPU power; ACPM's AUD DVFS rate. Nothing written, and
- *               nothing of the AUD block read (it may have no power)
- *   2  power    the AUD domain on (PMU 0x14064000 [3:0] = 0xF, then 0x14064004 [3:0] == 0xF) unless it is; the DTZPC
- *               restore, SMC 0x82000410 (1, 0x17C10204); ABOX's IP_INDEX must read "ABOX"; ABOX's CPU kept off (bypass)
- *   3  clocks   SYSREG MISC_CON = 1; CMU_AUD's dividers (ACLK 589.824 MHz, its APB 196.608, AUDIF 73.728, UAIF1's BCLK
- *               1.536) and UAIF1's mux, then PLL_AUD at 1179.648 MHz (M 45 P 1 S 0 K 24319), stable; the Q-channels of
- *               ABOX's "cpu" clock (abox_enable() turns it on before any firmware is there), UAIF1's BCLK and the
- *               SysMMU asked on if the hardware does not gate them itself
- *   4  pins     gpb1-0..3 to UAIF1 (function 2, pull 1), then the pads' retention released (PMU 0x4170 bit 28, 0x1424 bit 0)
- *   5  UAIF1    master, I2S, 2 x 16 bits (CTRL0 0x01000014, CTRL1 0x0984F000); then on for 50 ms with nothing routed to
- *               it: its status, and whether BCLK and LRCLK toggle at the pins (gpb1's DAT sampled)
- *   6  route    SPUS chain 0: RDMA0 in, no ASRC, out to SIFS1 (SPUS_CTRL0 [3:0] = 0, SPUS_CTRL1 [18:16] = 0); UAIF1
- *               from SIFS1 (ROUTE_CTRL0 [7:4] = 2) (with abox_route=0 the mixer, SIFS0, instead); SPUS's sample banks
- *               read, and RDMA0's given 512 bytes if it has none (SBANK_RDMA0 SIZE, 0x17C50220)
- *   7  stream   ABOX's SysMMU switched to pass addresses through (the boot leaves it translating); SYSPOWER_CTRL 1 and
- *               the ACLK and BCLK_UAIF1 Q-channels held on; a ring of 8 periods of 512 frames below 4 GB (in abox_rmem,
- *               the kernel's RAM being above it); RDMA0
- *               programmed (its burst length 8 if it reads 0); UAIF1 on, then RDMA0 on (Samsung's order); the amplifiers started; a tone (1 kHz, -20 dBFS,
- *               both channels) for abox_secs, through the speakers' guard; RDMA0's status every millisecond at first
- *               and every second after; then the amplifiers stopped, RDMA0 off, UAIF1 off
- *   8  sink     the same stream, kept running for good (and, with abox_mic=1, the microphone for iOS; with the codec's
- *               cs47l93_hp=1, the headphones: their sections below): /dev/hakios-audio's sink (sys/hakios.audio.h) into a ring, a
- *               thread of ours from there through the guard into each period RDMA0 has finished (silence when there is
- *               nothing), at the volume iOS sets (its "below", taken off digitally before the guard, as the POCO's
- *               amplifiers take it off in their own volume); the amplifiers started when iOS plays and stopped after
- *               3 s of silence or while it is muted
+ *   RDMA0 (memory) -> SPUS chain 0, no ASRC -> SIFS1 -> UAIF1 (I2S master) -> two MAX98512 amplifiers
+ *
+ * abox_route=0 ends the path at the mixer, SIFS0, instead. The amplifiers' I2C belongs to their own driver and is
+ * reached only through the hook in sys/hakios.exynos_abox.h, which also has UAIF1's format and the register facts
+ * used here, each marked FACT or INFERRED with its source. Enabled by the boot-arg abox=N. Addresses are the S9's;
+ * the SoC's registers are at 0x10000000.
+ *
+ * Steps. abox=N runs the first N of eight steps and stops; 0 or no argument leaves ABOX alone. Each step says what it
+ * will touch before doing so, and every register write is read back and reported. A step that does not find what it
+ * needs ends the sequence. With N below 8 everything is put back at the end: the stream stopped, the pins idle, the
+ * AUD domain off again if this driver turned it on.
+ *
+ *   1  look     PMU AUD domain, pad retention, ABOX CPU power, ACPM's AUD DVFS rate. Writes nothing and reads nothing
+ *               of the AUD block itself (it may be unpowered).
+ *   2  power    AUD domain on (PMU 0x14064000 [3:0] = 0xF, then 0x14064004 [3:0] == 0xF) unless already on; DTZPC
+ *               restore, SMC 0x82000410 (1, 0x17C10204); ABOX IP_INDEX must read "ABOX"; ABOX CPU kept off.
+ *   3  clocks   SYSREG MISC_CON = 1; CMU_AUD dividers (ACLK 589.824 MHz, APB 196.608, AUDIF 73.728, UAIF1 BCLK 1.536)
+ *               and UAIF1's mux; PLL_AUD at 1179.648 MHz (M 45 P 1 S 0 K 24319), until stable; Q-channels asked on
+ *               for ABOX's "cpu" clock (abox_enable() turns it on before any firmware exists), UAIF1's BCLK and the
+ *               SysMMU, if the hardware does not gate them itself.
+ *   4  pins     GPB1[0..3] to UAIF1 (function 2, pull 1); then pad retention released (PMU 0x4170 bit 28, 0x1424 bit 0).
+ *   5  UAIF1    master, I2S, 2 x 16 bits (CTRL0 0x01000014, CTRL1 0x0984F000). On for 50 ms with nothing routed to it:
+ *               its status, and whether BCLK and LRCLK toggle at the pins (GPB1 DAT sampled).
+ *   6  route    SPUS chain 0: RDMA0 in, no ASRC, out to SIFS1 (SPUS_CTRL0 [3:0] = 0, SPUS_CTRL1 [18:16] = 0); UAIF1 from
+ *               SIFS1 (ROUTE_CTRL0 [7:4] = 2), or from the mixer SIFS0 with abox_route=0. SPUS's sample banks are read,
+ *               and RDMA0 is given 512 bytes if it has none (SBANK_RDMA0 SIZE, 0x17C50220).
+ *   7  stream   ABOX's SysMMU set to pass addresses through (the boot leaves it translating); SYSPOWER_CTRL 1 and the
+ *               ACLK and BCLK_UAIF1 Q-channels held on; a ring of 8 periods of 512 frames below 4 GB (in abox_rmem,
+ *               as the kernel's RAM is above it); RDMA0 programmed (BURST_LEN 8 if it reads 0); UAIF1 on, then RDMA0
+ *               on (Samsung's order); amplifiers started; a 1 kHz tone at -20 dBFS on both channels for abox_secs,
+ *               through the speakers' guard; RDMA0's STATUS read every millisecond at first and every second after;
+ *               then amplifiers stopped, RDMA0 off, UAIF1 off.
+ *   8  sink     the same stream, kept running. /dev/hakios-audio's frames (sys/hakios.audio.h) go into a ring; a thread
+ *               here feeds each period RDMA0 has finished through the guard (silence when there is nothing), at the
+ *               volume iOS sets, taken off digitally before the guard as the POCO's amplifiers take it off in their own
+ *               volume. Amplifiers start when iOS plays and stop after 3 s of silence or while iOS mutes. With
+ *               abox_mic=1 the microphone is served too, and with cs47l93_hp=1 the headphones (their sections below).
  *
  * Boot-args:
  *   abox=N             the first N of ABOX's eight steps (1 only looks, 7 plays a tone, 8 serves iOS); 0 or none: left alone
@@ -63,87 +66,87 @@
  *   abox_mic=1         with abox=8: /dev/hakios-mic, the codec's main microphone for iOS, recorded through UAIF0 and WDMA1
  *                      whenever iOS listens (its section below; the codec made ready by cs47l93=6); 0 or none: no device
  *
- * THE USB CONSOLE. "abox" on hakios.dwc3.c's console (usb_gadget=5) says the state of the path and the amplifiers' own
- * status registers, and "abox tone S" makes steps 1-7 again while the phone runs, with what "abox set" changed: a
- * run on the phone without a new image for every guess. "abox rec S" records S seconds of the codec's microphone
- * through UAIF0 and WDMA1 (the capture section below; the codec set up first by "codec mic", hakios.cs47l93.c).
- * "abox r/w BLOCK OFF" reads and writes registers. See
- * hakios_abox_console() below.
+ * USB console (hakios.dwc3.c, usb_gadget=5): "abox" prints the state of the path and the amplifiers' status registers.
+ * "abox tone S" runs steps 1-7 again while the phone runs, with whatever "abox set" changed. "abox rec S" records S
+ * seconds of the codec's microphone through UAIF0 and WDMA1 (the codec is set up first by "codec mic",
+ * hakios.cs47l93.c). "abox r/w BLOCK OFF" reads and writes registers. See hakios_abox_console().
  *
- * WHERE IT COMES FROM. The S9 kernel (github.com/ExyHyperBrick/android_kernel_samsung_exynos9810, lineage-24.0), GPL-2.0,
- * read for facts and not copied; which part of this file does the work of what there:
+ * Sources. The S9 kernel (github.com/ExyHyperBrick/android_kernel_samsung_exynos9810, lineage-24.0, GPL-2.0), read for
+ * facts and not copied. Where each part of this file comes from:
  *   step 2   cal-if/exynos9810/flexpmu_cal_local_exynos9810.h (aud_on), cal-if/pmucal_local.c pmucal_local_enable(),
  *            exynos-el3_mon.c exynos_pd_tz_restore(), linux/smc.h; the device tree's pd-aud (cal_id 0xB1380000: index 0,
  *            no PMIC write in cal-if.c cal_pd_control(), unlike the G3D's); abox.c abox_cpu_enable()/abox_cpu_power()
- *   step 3   abox.c abox_enable() (MISC_CON, the clocks) and abox_register_bclk_usage() (PLL 48 kHz family, AUDIF for
- *            uaif_max_div 512); abox_if.c abox_if_startup() and abox_uaif_hw_params() (BCLK = rate x channels x width);
- *            cal-if/ra.c ra_set_pll()/ra_pll_set_pmsk()/ra_set_div_rate()/ra_req_enable_qch(), pll_spec.c, and
- *            exynos9810/cmucal-*.c (the registers, the PLL table, BLK_AUD's dividers); clk-exynos9810.c (which clock
- *            each of the device tree's "pll", "cpu", "audif", "bus", "bclk", "bclk_gate" is)
+ *   step 3   abox.c abox_enable() and abox_register_bclk_usage() (PLL 48 kHz family, AUDIF for uaif_max_div 512);
+ *            abox_if.c abox_if_startup() and abox_uaif_hw_params() (BCLK = rate x channels x width); cal-if/ra.c
+ *            ra_set_pll(), ra_pll_set_pmsk(), ra_set_div_rate(), ra_req_enable_qch(); pll_spec.c and exynos9810/
+ *            cmucal-*.c (registers, PLL table, BLK_AUD dividers); clk-exynos9810.c (which clock each device tree name is)
  *   step 4   the device tree's aud-i2s1-bus/-idle; pinctrl-exynos.c (exynos9810 bank layout); abox.c abox_pad_retention()
  *   step 5   abox_if.c abox_uaif_set_fmt(), abox_uaif_hw_params(), abox_uaif_trigger(), abox_uaif_shutdown();
  *            exynos9810_madera.c (UAIF1's dai_fmt); abox.c probe (the SIFs' 48000/S16/2 defaults)
- *   step 6   abox.c: the DAPM muxes (spus_in/asrc/out, uaif1_spk, sifs1) and abox_flush_mixp(), abox_sif_format_put_ipc()
- *            (SPUS_CTRL1's MIXP_FORMAT, written by the AP), abox_try_to_asrc_off() (ASRC off when the rates and widths match)
+ *   step 6   abox.c: DAPM muxes (spus_in/asrc/out, uaif1_spk, sifs1), abox_flush_mixp(), abox_sif_format_put_ipc()
+ *            (SPUS_CTRL1's MIXP_FORMAT, written by the AP), abox_try_to_asrc_off() (ASRC off when rates and widths match)
  *   step 7   abox_rdma.c (hw_params, prepare, trigger, pointer, hw_free and its 40 ms disable barrier, the UAIF FIFO's
  *            0.6-1.2 ms); soc-pcm.c and the RDMA links' SND_SOC_DPCM_TRIGGER_POST_PRE (start: UAIF first, stop: RDMA
- *            first); drivers/iommu/exynos-iommu*.h (the SysMMU's CTRL values); include/sound/samsung/abox_ipc.h
- *   steps 6-7, the sample bank and the burst length: the Galaxy S10's kernel (github.com/ivanmeler/
- *            android_kernel_samsung_beyondlte, GPL-2.0, read for facts): abox_soc.h, abox_cmpnt_v20.c
- *            abox_cmpnt_adjust_sbank(), abox_rdma.c hw_params, Kconfig (ABOX version 0x10100 for the 9810)
+ *            first); drivers/iommu/exynos-iommu*.h (SysMMU CTRL values); include/sound/samsung/abox_ipc.h
+ *   steps 6-7, sample bank and burst length: the Galaxy S10 kernel (github.com/ivanmeler/android_kernel_samsung_beyondlte,
+ *            GPL-2.0, read for facts): abox_soc.h, abox_cmpnt_v20.c abox_cmpnt_adjust_sbank(), abox_rdma.c hw_params,
+ *            Kconfig (ABOX version 0x10100 for the 9810)
  *
- * WITH THE FIRMWARE OFF, WHAT ANDROID DOES. Nothing that plays. abox_enable() switches the clocks on, puts back the
- * registers the AP owns (regcache_sync of the regmap: SYSTEM_CONFIG0, REMAP, DYN_CLOCK_OFF, QCHANNEL_DISABLE,
- * ROUTE_CTRL0-2, SPUS_CTRL0-3, the SIFS counts, SPUM_CTRL0-3, UAIFn CTRL0/1, DSIF, RDMA3's VOL_FACTOR) and sets the pins,
- * then abox_download_firmware() returns -EAGAIN while calliope_sram.bin/calliope_dram.bin are not loaded, and
- * abox_enable() returns before abox_cpu_power()/abox_cpu_enable(): calliope_state stays CALLIOPE_DISABLED. Every message
- * a stream sends (PCM_SET_BUFFER, PCM_PLTDAI_HW_PARAMS, _PREPARE, _TRIGGER, the mixer's format) then goes through
- * abox_process_ipc(), where abox_can_calliope_ipc() says "Invalid calliope state" and drops it. abox_uaif_set_fmt,
- * _hw_params and _trigger still write UAIF1 directly (snd_soc_component_update_bits on the regmap), and the DAPM muxes
- * still write SPUS_CTRL0/1 and ROUTE_CTRL0, so UAIF1 would clock out whatever SIFS0 holds; but nothing ever writes
- * RDMA0's BUF_*, STR_POINT or CTRL0, and abox_rdma_pointer() reads STATUS with PROGRESS 0 and says 0: the stream stalls.
- * So Android never runs RDMA without calliope, and its source cannot say whether RDMA0 runs that way; what it does say:
+ * Without the firmware, Android plays nothing. abox_enable() switches the clocks on, restores the registers the AP owns
+ * (regcache_sync: SYSTEM_CONFIG0, REMAP, DYN_CLOCK_OFF, QCHANNEL_DISABLE, ROUTE_CTRL0-2, SPUS_CTRL0-3, the SIFS counts,
+ * SPUM_CTRL0-3, UAIFn CTRL0/1, DSIF, RDMA3's VOL_FACTOR) and sets the pins. abox_download_firmware() then returns
+ * -EAGAIN while calliope_sram.bin and calliope_dram.bin are not loaded, and abox_enable() returns before
+ * abox_cpu_power()/abox_cpu_enable(), leaving calliope_state CALLIOPE_DISABLED. Every message a stream sends
+ * (PCM_SET_BUFFER, PCM_PLTDAI_HW_PARAMS, _PREPARE, _TRIGGER, the mixer's format) then goes through abox_process_ipc(),
+ * where abox_can_calliope_ipc() reports "Invalid calliope state" and drops it. abox_uaif_set_fmt, _hw_params and _trigger
+ * still write UAIF1 directly, and the DAPM muxes still write SPUS_CTRL0/1 and ROUTE_CTRL0, so UAIF1 would clock out
+ * whatever SIFS0 holds. But nothing writes RDMA0's BUF_*, STR_POINT or CTRL0, and abox_rdma_pointer() reads STATUS with
+ * PROGRESS 0 and returns 0, so the stream stalls. Android therefore never runs RDMA without calliope. What the source
+ * does say:
  *   - RDMA0's registers are plain registers on the AP's bus: the AP reads STATUS (abox_rdma_pointer) and CTRL0
- *     (abox_rdma_disable_barrier) directly, and writes RDMA3's VOL_FACTOR (0x1318) through the same regmap
- *   - what RDMA0 needs that calliope gives it: its BUF_*, STR_POINT and CTRL0/1, SPUS's sample bank (reset 0), the
- *     buffer as an IOVA (0x91000000, SysMMU on) and ABOX's GIC for its interrupts. Bypass gives the first two from the
- *     AP, a physical address with the SysMMU off for the third, and polls instead of the fourth
+ *     (abox_rdma_disable_barrier) directly, and writes RDMA3's VOL_FACTOR (0x1318) through the same regmap.
+ *   - What calliope gives RDMA0: its BUF_*, STR_POINT and CTRL0/1, SPUS's sample bank (reset 0), the buffer as an IOVA
+ *     (0x91000000, SysMMU on) and ABOX's GIC for its interrupts. Bypass gives the first two from the AP, a physical
+ *     address with the SysMMU off for the third, and polling instead of the fourth.
  *   - calliope's other duties for a plain stream (the mixer's rate, the ASRC, the DSM speaker protection) are either
- *     off here (the ASRC: try-to-asrc-off holds at 48 kHz 16-bit) or replaced (the guard for DSM)
+ *     off here (the ASRC: try-to-asrc-off holds at 48 kHz 16-bit) or replaced (the guard for DSM).
  *
- * WHAT IS INFERRED, NOT READ. Samsung's ABOX firmware programs RDMA0; the kernel only names its registers.
+ * Inferred, not read. Samsung's ABOX firmware programs RDMA0; the kernel only names its registers.
  *   - RDMA0: BUF_STR = the ring's first byte, BUF_END = one past its last, BUF_OFFSET = a period's bytes, STR_POINT =
- *     BUF_STR, VOL_FACTOR 0x800000 as unity (Q1.23; any reading of 0x800000 is at most unity). Why: the registers' names,
- *     and that PCM_SET_BUFFER gives the firmware exactly an address, a period's bytes and a count; STATUS's period
- *     offset plus count in the period (abox_rdma_pointer) says the hardware keeps periods itself. The format (16-bit,
- *     stereo) is in no named field: CTRL0's other bits and CTRL1 are left as they read after reset unless abox_rdma_ctrl0/1
- *     say otherwise, and the bytes RDMA0 reads per second are measured and said (192000 is 48 kHz 16-bit stereo; 96000
- *     would say mono or 8-bit, 384000 32-bit or 4 channels). The ring sits at the start of 256 KB of zeroes (all that
- *     STATUS's 13-bit offset can point into, twice), so a different meaning of BUF_END reads silence, not memory of
- *     someone else's; a position outside the ring stops the stream.
- *   - The SIFS0 mixer's rate is told to the firmware (SET_MIXER_SAMPLE_RATE) and no register holds it: taken to follow
- *     the UAIF that pulls from it (48 kHz). RDMA0, the mixer and UAIF1 are all 48 kHz 16-bit stereo, so Samsung's own
+ *     BUF_STR, VOL_FACTOR 0x800000 as unity (Q1.23; any reading of 0x800000 is at most unity). Basis: the registers'
+ *     names; PCM_SET_BUFFER gives the firmware an address, a period's bytes and a count; STATUS's period offset plus
+ *     count within the period (abox_rdma_pointer) says the hardware keeps periods itself.
+ *   - The format (16-bit stereo) is in no named field. CTRL0's other bits and CTRL1 are left as they read after reset
+ *     unless abox_rdma_ctrl0/1 say otherwise. The bytes RDMA0 reads per second are measured and reported: 192000 is
+ *     48 kHz 16-bit stereo; 96000 would mean mono or 8-bit, 384000 32-bit or 4 channels.
+ *   - The ring sits at the start of 256 KB of zeroes (all that STATUS's 13-bit offset can point into, twice), so a
+ *     different meaning of BUF_END reads silence rather than someone else's memory. A position outside the ring stops
+ *     the stream.
+ *   - The SIFS0 mixer's rate is sent to the firmware (SET_MIXER_SAMPLE_RATE) and no register holds it; it is taken to
+ *     follow the UAIF that pulls from it (48 kHz). RDMA0, the mixer and UAIF1 are all 48 kHz 16-bit stereo, so Samsung's
  *     rule (abox_try_to_asrc_off) leaves the ASRC off.
- *   - The SysMMU passes addresses through when CTRL's bit 2 (on in Linux's CTRL_ENABLE 0x5 and CTRL_BLOCK 0x7, off in
- *     CTRL_DISABLE 0 and CTRL_BLOCK_DISABLE 3) is clear: checked before RDMA0 is given an address, and refused when set;
- *     when only bit 1 (blocked) is set, CTRL_DISABLE (0) is written. The ring is below 4 GB (RDMA's address registers are
- *     32 bits) and its physical address is what RDMA0 is given.
+ *   - The SysMMU passes addresses through when CTRL's bit 2 is clear (set in Linux's CTRL_ENABLE 0x5 and CTRL_BLOCK 0x7,
+ *     clear in CTRL_DISABLE 0 and CTRL_BLOCK_DISABLE 3). This is checked before RDMA0 is given an address, and a set bit
+ *     refuses the stream. When only bit 1 (blocked) is set, CTRL_DISABLE (0) is written. The ring is below 4 GB (RDMA's
+ *     address registers are 32 bits) and its physical address is what RDMA0 is given.
  *   - The DMA does not snoop the processors' caches: every period is cleaned to memory after it is written.
- *   - The DTZPC restore returns 0 when it succeeds (as hakios.mali.c assumes for the G3D's).
- * What a firmware mode would settle: run calliope once (abox_fw=1, a mode to add) and read RDMA0's registers back after
- * its PCM_PLTDAI_TRIGGER: CTRL0/CTRL1's format bits, what BUF_END and BUF_OFFSET hold, VOL_FACTOR's unity. Note that the
- * firmware sees memory through the SysMMU at IOVAs (its DRAM image at 0x80000000, RDMA buffers at 0x91000000 + 1 MB x n,
- * abox.h): that mode needs ABOX's SysMMU given page tables, where bypass needs it off. Steps 1-6 are the firmware mode's
- * too (abox_enable() does the same power, clocks, pins and UAIF/route writes around booting the CPU), and step 7 calls
- * RDMA0 only through `struct abox_dma` below, which that mode would give through IPC instead.
+ *   - The DTZPC restore returns 0 on success, as hakios.mali.c assumes for the G3D's.
  *
- * WHAT IS NOT DONE. No PMIC is written (the AUD domain's power-on has no PMIC step in the CAL); ACPM is only read unless
- * abox_dvfs= asks. ABOX's GIC, its CPU and its SRAM are not touched; of the WDMAs only WDMA1, by "abox rec". No interrupt is used: RDMA0's status is
- * polled from a thread of ours every 2 ms. The amplifiers are not touched except through their driver's hook.
+ * A firmware mode (abox_fw=1, a mode to add) would settle the inferred points: read RDMA0's registers back after
+ * PCM_PLTDAI_TRIGGER, checking CTRL0/CTRL1's format bits, what BUF_END and BUF_OFFSET hold, and VOL_FACTOR's unity.
+ * The firmware sees memory through the SysMMU at IOVAs (DRAM image at 0x80000000, RDMA buffers at 0x91000000 + 1 MB x n;
+ * abox.h), so that mode needs ABOX's SysMMU given page tables where bypass needs it off. Steps 1-6 are the same in that
+ * mode (abox_enable() does the same power, clocks, pins and UAIF/route writes around booting the CPU). Step 7 calls RDMA0
+ * only through `struct abox_dma` below, which that mode would provide through IPC.
  *
- * THE SPEAKERS' GUARD (drivers/audio/hakios.guard.c) applies: on Android the S9's speakers are protected by Maxim's DSM
- * running on ABOX's CPU (the device tree's dsm.bin), which does not run here. Every period, silence too, goes through
- * it, reckoned with the amplifiers at Android's loudest (attenuation 0, the most careful), after abox_gain.
+ * Not done. No PMIC is written (the AUD domain's power-on has no PMIC step in the CAL). ACPM is only read unless
+ * abox_dvfs= is given. ABOX's GIC, CPU and SRAM are not touched; of the WDMAs only WDMA1 is used, by "abox rec". No
+ * interrupt is used: RDMA0's status is polled from a thread of ours every 2 ms. The amplifiers are touched only through
+ * their driver's hook.
+ *
+ * The speakers' guard (drivers/audio/hakios.guard.c) applies. On Android the S9's speakers are protected by Maxim's DSM
+ * running on ABOX's CPU (the device tree's dsm.bin), which does not run here. Every period, silence included, goes
+ * through the guard, sized for the amplifiers at Android's loudest (attenuation 0, the most careful), after abox_gain.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
@@ -196,8 +199,8 @@ static uint32_t steps, secs = 3, route_sifs1 = 1, bclk_on, gain, dvfs_khz;
 static uint32_t sbank_bytes = 512, burst = 8;   /* Samsung's S10 values (see the header); set when the field reads 0 */
 static bool sbank_given, burst_given;           /* given on the command line: set whatever the field reads */
 static uint32_t rdma_ctrl0 = UINT32_MAX, rdma_ctrl1 = UINT32_MAX, vol = UINT32_MAX;
-/* found on the phone: the boot leaves ABOX's SysMMU translating (CTRL 0x4), and the T570 work names what
- * else a stream without calliope needs (sys/hakios.exynos_abox.h) */
+/* seen on the S9: the boot leaves ABOX's SysMMU translating (CTRL 0x4), and sys/hakios.exynos_abox.h names what
+ * else a stream without calliope needs */
 static uint32_t mmu_off = 1;            /* abox_mmu_off: a translating SysMMU switched off (CTRL 0), not refused */
 static uint32_t syspower = 1;           /* abox_syspower: SYSPOWER_CTRL 1 (DRAM on) and the ACLK/BCLK Q-channels kept on */
 static uint32_t rdma_fmt = 1;           /* abox_rdma_fmt: RDMA0 CTRL0's FORMAT, FUNC 0, BUF_UPDATE, SBANK_LIMIT, as calliope */
@@ -205,7 +208,7 @@ static uint32_t ring_pa;                /* abox_ring_pa: the ring at this physic
 static volatile uint32_t busy;          /* a run (boot's or the console's) is going on */
 static uint32_t step;                   /* the step being made, for what is said */
 
-/* ---- the blocks ---------------------------------------------------------------------------------------------------- */
+/* the blocks */
 
 struct block {
 	const char *name;
@@ -341,7 +344,7 @@ smc(uint64_t function, uint64_t first, uint64_t second, uint64_t third)
 	return x0;
 }
 
-/* ---- what has been done, to be put back ----------------------------------------------------------------------------- */
+/* what has been done, to be put back */
 
 static bool on_at_boot, powered_here, pins_set, uaif_on, rdma_on;
 static vm_offset_t area;                /* the ring and its zeroes */
@@ -350,7 +353,7 @@ static bool area_rmem;                  /* in abox_rmem, mapped once and kept, n
 static uint32_t syspower_was, qch_was;  /* SYSPOWER_CTRL and QCHANNEL_DISABLE before a stream */
 static bool area_kept;                  /* RDMA0 did not say it stopped: the memory is never given back */
 
-/* ---- the amplifiers' hook ------------------------------------------------------------------------------------------- */
+/* the amplifiers' hook */
 
 static const struct hakios_abox_amp *volatile amp_hook;
 static const struct hakios_abox_amp *amp_running;      /* the one started, which is the one stopped */
@@ -403,7 +406,7 @@ amps_stop(void)
 	}
 }
 
-/* ---- step 1: look -------------------------------------------------------------------------------------------------- */
+/* step 1: look */
 
 static bool
 step_look(void)
@@ -433,7 +436,7 @@ step_look(void)
 	return true;
 }
 
-/* ---- step 2: power ------------------------------------------------------------------------------------------------- */
+/* step 2: power */
 
 static bool
 step_power(void)
@@ -490,7 +493,7 @@ step_power(void)
 	return true;
 }
 
-/* ---- step 3: clocks ------------------------------------------------------------------------------------------------ */
+/* step 3: clocks */
 
 /* a divider (or a mux) of CMU_AUD set, then its BUSY waited for */
 static bool
@@ -616,7 +619,7 @@ step_clocks(void)
 	return true;
 }
 
-/* ---- step 4: pins -------------------------------------------------------------------------------------------------- */
+/* step 4: pins */
 
 static bool
 step_pins(void)
@@ -640,7 +643,7 @@ step_pins(void)
 	return true;
 }
 
-/* ---- step 5: UAIF1 ------------------------------------------------------------------------------------------------- */
+/* step 5: UAIF1 */
 
 static uint32_t
 uaif1_ctrl1(void)
@@ -707,7 +710,7 @@ step_uaif(void)
 	return true;
 }
 
-/* ---- step 6: route ------------------------------------------------------------------------------------------------- */
+/* step 6: route */
 
 /*
  * SPUS's sample banks (sys/hakios.exynos_abox.h): all read and said; RDMA0's given abox_sbank's bytes when its SIZE reads
@@ -765,7 +768,7 @@ step_route(void)
 	       ((rd(&abox, ABOX_ROUTE_CTRL0) >> ROUTE_UAIF1_SHIFT) & 0xF) == (route_sifs1 ? ROUTE_SIFS1 : ROUTE_SIFS0);
 }
 
-/* ---- RDMA0: how the stream's memory is read ------------------------------------------------------------------------ */
+/* RDMA0: how the stream's memory is read */
 
 /*
  * The four things the stream asks of RDMA0. Here the AP does them (bypass). A firmware mode gives the same through
@@ -871,7 +874,7 @@ static const struct abox_dma bypass_dma = {
 };
 static const struct abox_dma *dma = &bypass_dma;
 
-/* ---- the stream (steps 7 and 8) ------------------------------------------------------------------------------------ */
+/* the stream (steps 7 and 8) */
 
 /* ABOX's SysMMU must pass the ring's physical address through untranslated */
 static bool
@@ -1131,7 +1134,7 @@ stream_start(void)
 		fill_period(p, SILENT);
 	}
 	if (syspower) {
-		/* the T570 work's stream start: SYSPOWER_CTRL 1 ("DRAM on": ABOX's way out to DRAM kept up) and the bus and
+		/* at stream start: SYSPOWER_CTRL 1 ("DRAM on": ABOX's way out to DRAM kept up) and the bus and
 		 * UAIF1 clocks never gated while it plays */
 		syspower_was = rd(&abox, ABOX_SYSPOWER_CTRL);
 		qch_was = rd(&abox, ABOX_QCHANNEL_DISABLE);
@@ -1358,13 +1361,10 @@ step_sink(void)
 	stream_stop();
 }
 
-/* ---- the whole ----------------------------------------------------------------------------------------------------- */
-
-/* ---- capture: the codec's microphone, UAIF0 -> NSRC0 -> SPUM (no ASRC) -> SIFM0 -> WDMA1 ("abox rec S") ------------ */
+/* capture: the codec's microphone, UAIF0 -> NSRC0 -> SPUM (no ASRC) -> SIFM0 -> WDMA1 ("abox rec S") */
 
 /*
- * What Samsung's firmware would do for a capture stream, done by the AP as for RDMA0 (the Galaxy Tab Active3's
- * firmware-less work names the WDMAs' registers, the same as the RDMAs' at 0x17C52000 + 0x100 n, and the route:
+ * What Samsung's firmware would do for a capture stream, done by the AP as for RDMA0 (the Galaxy Tab Active3's work without firmware names the WDMAs' registers, the same as the RDMAs' at 0x17C52000 + 0x100 n, and the route:
  * ROUTE_CTRL1's NSRCn = 8 + n for UAIFn, SPUM_CTRL0's ASRC [4n+4] and OUT [4n+7] clear for WDMA, SIFMn flushed through
  * SPUM_CTRL3 bit n, WDMAn+1 then writes it; UAIFn's CTRL0 DATA_MODE 1 and IRQ_MODE 0 on the microphone's side, as
  * abox_if_startup() sets them). UAIF0 is the S9's codec link (mixer_paths.xml: "UAIF0 - CODEC for normal Playback and
@@ -1375,8 +1375,8 @@ step_sink(void)
  *
  * The ring is 64 KB of abox_rmem at +1 MB, 16 periods of 4 KB (STATUS's offset reaches 128 KB); a thread follows WDMA1's
  * STATUS every millisecond and copies what it has written to the recording, abox_rmem at +2 MB (up to 10 s). Then each
- * channel's mean, RMS and peak are said, and the recording goes to the USB console as a camshot's bytes do (16-bit
- * little-endian stereo at 48 kHz, "camshot ... RGB" in the header only because it rides that framing).
+ * channel's mean, RMS and peak are said, and the recording goes to the USB console in its picture framing (16-bit
+ * little-endian stereo at 48 kHz, the picture header only frames the bytes).
  */
 #define CMU_DIV_UAIF0           EXYNOS_ABOX_CMU_DIV_UAIF0
 #define CMU_MUX_UAIF0           EXYNOS_ABOX_CMU_MUX_UAIF0
@@ -1548,7 +1548,7 @@ rec_prepare(void)
 		(void)poke_bits(&abox, "SPUM_SBANK_NSRC0 (SIZE 512 bytes)", ABOX_SPUM_SBANK_NSRC0, SBANK_SIZE_MASK,
 		    (512u / 16) << SBANK_SIZE_SHIFT);
 	}
-	/* the firmware's set-buffer order (the T570 work): volume, FUNC 0, the buffer, the period, then CTRL0's fields */
+	/* the firmware's set-buffer order: volume, FUNC 0, the buffer, the period, then CTRL0's fields */
 	(void)poke_bits(&abox, "WDMA1_VOL_FACTOR", W1(RDMA_VOL_FACTOR), RDMA_VOL_MASK, 0x800000);
 	(void)poke_bits(&abox, "WDMA1_CTRL0 (FUNC 0, off)", W1(RDMA_CTRL0), RDMA_FUNC_MASK | RDMA_ENABLE, 0);
 	(void)poke(&abox, "WDMA1_BUF_STR", W1(RDMA_BUF_STR), REC_RING_PA);
@@ -1681,7 +1681,7 @@ rec_thread(__unused void *arg, __unused wait_result_t result)
 	thread_terminate(current_thread());
 }
 
-/* ---- the microphone for iOS: /dev/hakios-mic, while it is open (abox_mic=1, with abox=8) ------------------------------ */
+/* the microphone for iOS: /dev/hakios-mic, while it is open (abox_mic=1, with abox=8) */
 
 /*
  * The capture of "abox rec" made continuous: whenever Darwin's audio server has /dev/hakios-mic open (its input runs:
@@ -1810,7 +1810,7 @@ follow_input(void)
 	}
 }
 
-/* ---- the headphones: iOS's sound to UAIF0, the codec's AIF1 (hakios.cs47l93.c, cs47l93_hp=1) ------------------------ */
+/* the headphones: iOS's sound to UAIF0, the codec's AIF1 (hakios.cs47l93.c, cs47l93_hp=1) */
 
 /*
  * With something plugged into the jack, the codec's driver asks for the sound (hakios_abox_headphones(true)) before it
@@ -1822,7 +1822,7 @@ follow_input(void)
  *   off  UAIF0's SPK_ENABLE off, its route as it was, UAIF0 released unless the microphone runs; the amplifiers start
  *        again the next time iOS plays
  * INFERRED: that one SIF may feed two UAIFs at once (the route is a field per UAIF; Samsung's DAPM routes
- * "UAIF0 SPK" and "UAIF1 SPK" each with its own mux) -- the owner's test (docs: starlte, the headphones) says.
+ * "UAIF0 SPK" and "UAIF1 SPK" each with its own mux) ; the headphones test is what settles it.
  */
 static volatile uint32_t hp_want;
 static uint32_t hp_route_was;
@@ -2016,7 +2016,7 @@ hakios_exynos_abox_init(void)
 }
 
 /*
- * ---- the USB console's "abox" (hakios.dwc3.c) ------------------------------------------------------------------------
+ * the USB console's "abox" (hakios.dwc3.c)
  * Only once abox=N has been given at boot (N of 1 at least: the phone and its blocks are known). What it does:
  *   abox                     the state now: the AUD domain, ABOX's power, routing, UAIF1, RDMA0, the SysMMU; and the
  *                            amplifiers' own status registers, when their driver has registered (max98512=3)
