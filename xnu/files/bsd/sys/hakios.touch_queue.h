@@ -1,4 +1,4 @@
-/* From danstronics/ios-s9plus-exynos core/drivers/input (MIT, "HakiOS authors"); see docs/star2lte-absorb.md. */
+/* From danstronics/ios-s9plus-exynos core/drivers/input, now xnu/files/bsd/sys (MIT, "HakiOS authors"); see docs/star2lte-absorb.md. */
 /* Called with the input queue locked. Preserve transitions; replace only a trailing MOVE. */
 #ifndef HAKIOS_TOUCH_QUEUE_H
 #define HAKIOS_TOUCH_QUEUE_H

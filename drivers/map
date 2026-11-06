@@ -10,7 +10,6 @@
 
 input/touch bsd/dev/hakios.goodix.c
 input/touch bsd/dev/hakios.focaltech_fw.h
-input    bsd/sys/hakios.touch_queue.h
 input    bsd/dev/hakios.input.c
 input    bsd/dev/hakios.buttons.c
 input    bsd/dev/hakios.exynos_keys.c
