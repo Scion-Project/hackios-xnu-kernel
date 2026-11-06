@@ -8,7 +8,7 @@ Every device with a repository, and how far each part of it works. A device of y
 | Device | SoC | display | touch | buttons | cpu | gpu | storage | audio | battery | haptic | camera | torch | wifi | bluetooth | cellular | network | thermal | usb | sensors |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | [Galaxy Note9](crownlte.md) | `exynos9810` | no | no | no | no | no | no | no | no | no | no | no | no | no | no |  | no | no |  |
-| [Pixel 10](frankel.md) | `lga` | partly | no | no | partly | no | no | no | no |  |  |  | no | no | no |  | no | no |  |
+| [Pixel 10](frankel.md) | `lga` | partly | no | no | partly | no | partly | no | no |  |  |  | no | no | no |  | no | no |  |
 | [QEMU virt (aarch64)](qemu.md) | `none` | yes | yes | yes |  | no | yes | yes |  |  |  |  |  |  |  | yes |  |  |  |
 | [POCO X5 Pro 5G](redwood.md) | `sc7280` | yes | yes | yes | yes | yes | yes | yes | partly | yes | yes | partly | yes | no | partly |  | partly |  |  |
 | [Galaxy S9+](star2lte.md) | `exynos9810` | no | no | no | no | no | no | no | no | no | no | no | no | no | no |  | no | no |  |
