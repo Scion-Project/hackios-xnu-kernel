@@ -21,6 +21,7 @@ virtio   bsd/dev/hakios.virtio_input.c
 storage/ufs bsd/dev/hakios.ufs.c
 storage/ufs bsd/dev/hakios.ufshc.c
 storage/ufs bsd/dev/hakios.ufshc.h
+storage/ufs bsd/dev/hakios.ufshc.lga.h
 storage  bsd/dev/hakios.ext4.c
 storage  bsd/dev/hakios.sparse.c
 storage  bsd/dev/hakios.image.c

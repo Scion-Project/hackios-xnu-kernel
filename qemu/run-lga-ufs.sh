@@ -13,6 +13,7 @@
 #      OUT       where the disk, logs and the shim's files go (default: out-lga-ufs beside this script)
 #      QEMU_CPU  max (PAC, BTI, MTE, SVE, SME as QEMU offers them; cortex-a710 is its nearest Armv9 core), QEMU_MEM (7G: XNU then gets the
 #                4.2 GB block above the payload, as the phone's window is)
+#      UFS_FW    with ufs_native_cold=1: goes into the payload as the M-PHY firmware (a test: it reads the file, QEMU's host has no PHY)
 #      QEMU_MONITOR  a Unix socket for the monitor: qemu/fbshot.py takes a picture of the framebuffer (in RAM at FB_BASE) through it
 # The frame kicker is on (lga_kick=30) against RAM standing where the display controller would be (FAKE_DPU, with the DC9x00's chip
 # id and command mode in it): the log shows the writes, and a counter that never moves, as nothing counts frames there.
@@ -37,6 +38,7 @@ fi
 DPU() { printf -- "-device loader,addr=%#x,data=%#x,data-len=4 " $((FAKE_DPU + $1)) "$2"; }
 export QEMU_EXTRA="-drive file=$DISK,if=none,id=lu0,format=raw,readonly=on -device ufs,id=ufs0 -device ufs-lu,drive=lu0,bus=ufs0,lun=0 \
 $(DPU 0x20 0x9400) $(DPU 0xb6008 2)"
+[ -z "${UFS_FW:-}" ] || export PAYLOAD_EXTRA="ufsphyfw=$UFS_FW"
 export QEMU_CPU=${QEMU_CPU:-max} QEMU_MEM=${QEMU_MEM:-7G} OUT SHIM_ARGS="scion.fb=$FB_BASE,1080,2424,4320"
 exec "$TOP/socs/lga/shim/qemu-test.sh" "$SECS" ufs_native=4 ufs_native_soc=lga-qemu ufs_native_ro=1 system_apfs=ufs_userdata \
 	cpus=8 bootcpu=7 core0=2 small_cores_after=0 lga_kick=30 lga_dpu=$FAKE_DPU "$@"

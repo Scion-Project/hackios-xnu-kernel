@@ -359,6 +359,7 @@ struct ufshc_soc {
 	bool h8_exit;                           /* ufs_native_h8exit=1 may take the link out of Hibern8 before NOP OUT */
 	const char *(*look)(bool link);         /* own mode: the blocks beside the controller, read only; why not */
 	const char *(*adopt)(void);             /* own mode: the vendor's registers looked at and kept; why not */
+	const char *(*cold)(void);              /* ufs_native_cold=1: the host from nothing, before any register is read; why not */
 	void (*nexus)(uint32_t slot, bool scsi);        /* before every doorbell */
 	void (*give_back)(void);                /* at the end: what adopt kept */
 };
@@ -368,6 +369,7 @@ static const char *exynos_adopt(void);
 static void exynos_nexus(uint32_t slot, bool scsi);
 static void exynos_give_back(void);
 static const char *lga_look(bool link);
+static const char *lga_cold(void);
 static void lga_nexus(uint32_t slot, bool scsi);
 
 #if HAKIOS_SOC_RUNTIME
@@ -411,22 +413,21 @@ static const struct ufshc_soc hc_socs[] = {
 	 * used here), 16-byte PRDT entries, no vendor nexus bit. What differs: 36-bit DMA whatever CAP says
 	 * (UFSHCD_ANDROID_QUIRK_36BIT_ADDRESS_DMA); initiator id 1 in every command UPIU
 	 * (UFSHCD_ANDROID_QUIRK_SET_IID_TO_ONE, lga only); the SMMUv3 in front of it is identity-mapped by the tree.
-	 * Taken as ABL left it, read only, never enabled from reset here: Google's own bring-up needs the CPM (power
-	 * domains, the PMIC's rails, the reset GPIO), the reference clock and 125 KB of M-PHY firmware, none of which
-	 * this tree has. Whether ABL leaves it up, as Google's kernel assumes, or shuts it down, as PixOS found on the
-	 * Pixel 6a, is not known for a Pixel 10 booted by fastboot.
+	 * Taken as ABL left it, read only; or, with ufs_native_cold=1, brought up from nothing (hakios.ufshc.lga.h: the
+	 * CPM's power domains, the reset pad, the reference clock, 40 KB of M-PHY firmware). Whether ABL leaves it up, as
+	 * Google's kernel assumes, or shuts it down, as PixOS found on the Pixel 6a, is not known for a Pixel 10 booted by fastboot.
 	 */
 	{
 		.name = "lga", .pa = 0x3c400000, .size = 0x1000, .vs_pa = 0x3c410000, .vs_size = 0x504,
 		.prd_entry = 16, .prd_max = 256u << 10, .rsp_offset = 512, .rsp_length = 512, .prdt_offset = 1024,
 		.slot_buffer = SLOT_BUFFER_DEFAULT, .default_step = 1, .read_only = true, .dma_bits = 36, .h8_exit = true,
-		.look = lga_look, .nexus = lga_nexus,
+		.look = lga_look, .cold = lga_cold, .nexus = lga_nexus,
 	},
 	/* QEMU's -device ufs with the lga quirks (IID, 36-bit DMA, read only): what a test can check of the entry above */
 	{
 		.name = "lga-qemu", .may_enable = true, .prd_entry = 16, .prd_max = 256u << 10, .rsp_offset = 512,
 		.rsp_length = 512, .prdt_offset = 1024, .slot_buffer = SLOT_BUFFER_DEFAULT, .default_step = 5,
-		.read_only = true, .dma_bits = 36, .h8_exit = true, .nexus = lga_nexus,
+		.read_only = true, .dma_bits = 36, .h8_exit = true, .cold = lga_cold, .nexus = lga_nexus,
 	},
 };
 #define SOC_SHARED          (&hc_socs[1])       /* the one shared mode knows: the POCO's */
@@ -3058,6 +3059,8 @@ hc_h8_exit(void)
 	return result == 0 ? 0 : EIO;
 }
 
+#include "hakios.ufshc.lga.h"
+
 /*
  * Step 2: the link as UEFI left it, from the host's own attributes (PA layer, UniPro 1.6): the
  * lanes there are, connected and active, the gears, the power mode and the HS series. The S9's
@@ -3586,6 +3589,19 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 	if (pa == 0 || hc == 0) {
 		return false;
 	}
+	if (hc_soc->cold != NULL) {
+		uint32_t cold = 0;
+
+		PE_parse_boot_argn("ufs_native_cold", &cold, sizeof(cold));
+		if (cold == 1) {
+			no = hc_soc->cold();
+			if (no != NULL) {
+				hc_not_used(no);
+				return false;
+			}
+			hc_enabled_here = true;
+		}
+	}
 	cap = hc_read(UFSHC_CAP);
 	hc_ver = hc_read(UFSHC_VER);
 	hcs = hc_read(UFSHC_HCS);
@@ -3821,7 +3837,7 @@ hc_own_probe(const char *name, uint32_t mode, uint32_t step)
 			}
 		}
 	}
-	if (hc_soc->h8_exit) {
+	if (hc_soc->h8_exit && !hc_enabled_here) {
 		uint32_t on = 0;
 
 		/* ufs_native_h8exit=1: the Pixel 10's host: the link out of Hibern8 before NOP OUT (off by default; where ABL's shutdown left it) */

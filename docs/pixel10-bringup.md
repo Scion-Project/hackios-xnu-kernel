@@ -105,7 +105,7 @@ difference: **no write of any kind**. `frankel_ufs_defconfig` (`devices/frankel`
 | Quirks | `UFSHCD_ANDROID_QUIRK_36BIT_ADDRESS_DMA` (DMA width 36 bits whatever CAP says: the driver checks its memory is below 2^36) and `UFSHCD_ANDROID_QUIRK_SET_IID_TO_ONE` (lga only: the high nibble of UPIU byte 4 is 1 in every command, NOP and query included; done in the `nexus` hook before each doorbell) | source-read |
 | Descriptors | 16-byte PRDT entries, offsets in dwords, no vendor nexus bit: as the standard (and QEMU's) host; nothing says otherwise | guess |
 | Top block | reported before anything is taken: version, card detect, `ENC_STAT`, `PWR_CTRL` (which M-PHY firmware ABL selected: ROM, or the patched SRAM image, Google's mode 2), `AWUSER_VC` (Google sets 1 and 1), `CONFIG`, `MCQCONFIG` | source-read offsets |
-| Cold re-init | **not implemented, and not possible from this tree**: Google's bring-up is the CPM's power domains, the PMIC's rails (DA9188 LDOs 1S and 24S, bucks 11S and 13S), the reset GPIO, the reference clock, `HSIOS_UFS_*` setup, the FIPS self-test wait, 125 KB of M-PHY firmware loaded into SRAM (mode 2), calibration, `HCLKDIV` 0xC8, link startup, T_ACTIVATE and C-port setup. None of that exists here and the firmware is Google's (GPL data: facts only, not copied) | source-read |
+| Cold re-init | `ufs_native_cold=1`, off by default, below ("Cold re-init"): CPM power domains, reset and power pads, reference clock, 40 KB of M-PHY firmware, link startup. No PMIC write | source-read; QEMU for the logic it can reach |
 | What does apply from PixOS (Pixel 6a, `soc/google/gs101/docs/08-abl-ufs-shutdown.md`, MIT, nothing copied) | ABL's shutdown leaves the *device* in power-down and the *link* in Hibern8 while the host registers stay on; the cure there is hardware reset + HCE + link startup (Exynos/gs101 registers: do not apply), with "H8 exit + START STOP UNIT" as an untested softer way. Here: the driver already sends START STOP UNIT (ACTIVE) when `bCurrentPowerMode` is not active; `ufs_native_h8exit=1` (off) sends UIC DME_HIBERNATE_EXIT first (`mkimage.sh -U 5 -H`). Untested anywhere | partly guess |
 | G5 vs the 6a | whether ABL shuts the host down at all on `fastboot boot`; Google's kernel assumes it is up ("We assume the power domain is in ON state when enter kernel"); an S2MPU stopped DMA from low RAM on the 6a; none known for a Pixel 10 | unknown |
 
@@ -122,6 +122,66 @@ started (100 spawned lines by minute four), SpringBoard's home screen drawn by t
 processors active (the loader's own core joins after the kernel asks). **What it cannot show**: the real `lga` entry's addresses and the top block (no such
 device in QEMU), ABL's state, the M-PHY, the SMMU, DMA, timing, MCQ-versus-doorbell, whether the IID setting is what the host wants, and anything of a
 panel. `lga-qemu` and `lga` differ in exactly the PCI discovery, `may_enable` (QEMU's controller is enabled from reset; the phone's never) and the `look` hook.
+
+## Cold re-init (`ufs_native_cold=1`)
+
+For a phone whose ABL leaves the host down (PixOS saw that on a 6a; **not known for a Pixel 10**). `drivers/storage/ufs/hakios.ufshc.lga.h`, entered from
+`hc_own_probe` before any host register is read; `mkimage.sh -U 5 -F FW` asks for it. **Never run on a phone.** After step 20 the existing driver goes on from NOP OUT.
+
+**Sources.** *GOS*: [GrapheneOS kernel_pixel](https://github.com/GrapheneOS/kernel_pixel) `17-muzel`, `private/google-modules/soc/rdo/` (blob `3dc90b3e` of `ufs-google.c`, line numbers below; GPL-2.0, facts only, nothing copied).
+It is the flow of the factory image's own module: `ufs.ko` of frankel `cp3a.261005.005`'s `vendor_boot` has its strings ("phy init skipped", `psm_status_hsios`). *AOSP*: `private/devices/google/lga/dts/`, `muzel/dts/` in `azagramac/pixel10-kernel-aosp` at
+6f689be7fa23 (older: sets `T_ACTIVATE` to 0xA before the PHY; GOS and the module's flow do not, and neither does this). *Levels*: **source-read**, **data-read** (the factory image's files), **guess**, **unknown**. Nothing is *tested* on a phone.
+
+### How Linux gets power, and what is reachable after ABL
+
+| Thing | Who owns it | How Linux asks | From EL1 here |
+|---|---|---|---|
+| Power domains `hsio_s`, `hsio_s_ufs_prep`, `hsio_s_ufs` | the CPM (a microcontroller with Google's `cpm.img`) | mails on the **non-secure** AP client of its mailbox (MBA), `cpm_ap_ns_req` 0x05260000, `cpm_ap_ns_resp` 0x05261000: request, polled for the answer. `lga-mba.dtsi:517-539`; `power_controller_main.c:214,305` | the client is the AP's; whether the CPM answers after ABL's hand-over is **unknown**. Linux resets the queue at its own boot, after ABL's use of it, and this does the same (source-read) |
+| PHY reset | CPM, same mailbox | `rst-cpm.c:70`, service 8 | same |
+| Reference and aux clock gates | **EL3** (`use-smc` in `lga-cpm-clk.dtsi:336,368`) | SIP call 0x82000702 (LPCM 6; clock 3 or 16; 1), `clk-cpm.c:301` | a plain SMC from EL1: the shim leaves `HCR_EL2.TSC` clear. EL3's answer without pKVM below it is **unknown**; a refusal ends the attempt with the register dump. Nothing in the secure world is changed, read or patched |
+| Rails: L1S 0.75 V, L24S 1.2 V (PHY), S11S 2.5 V (VCC), S13S 1.2 V (VCCQ) | PMIC DA9188, through the CPM | **Linux does not set them**: `google,monitor-only`, "leave as default PMIC OTP value" (`lga-ap-pmic.dtsi:17,634,659,685,931`; volts in `lga-frankel-pmic.dtsi:429-461,645`). `UFS_PWR_EN` gates VCC and VCCQ ("Set UFS_EN to 0 to disable vcc/vccq", `ufs-google.c`). The only PMIC write in Google's UFS driver is behind `google,cpm-override`, in no tree (`:413`) | **no PMIC mail exists in this code**: no voltage is set, read or written |
+| Pads RESETB, PWR_EN, REFCLK | AP | MMIO, `lga-pinctrl.dtsi:1369-1385,1454-1468`, `common.c` (`DMUX` = bit of the function; `TXDATA` OE, out, pull) | allow list; `hsio_s` must be on |
+| M-PHY firmware, 40960 bytes (the "125 KB" written here before was the header's source text) | Google's | `lga/ufs-phy-fw-patch.h`, version 02.28; loaded in mode 2 | `ufs-phy-fw.py` takes it from the owner's `vendor_boot`: **byte for byte the public header** (sha256 `7ed6f1d1...`, data-read), never committed |
+| `phy-cal-data` | **ABL**, from OTP | required by Google's driver (`:771`), in no dts and not in `vendor_boot`'s trees (data-read): ABL adds it (mainline's series says so) | read from ABL's tree (the loader passes `abl_fdt=`); **no OTP is read here**. Absent: no calibration and it says so |
+
+**What cannot be done here, and what is left if so.** EL3 refusing the clock SMC, or the CPM ignoring this client, cannot be worked around without changing secure firmware, and that is out. The alternatives then are what ABL leaves: as it is
+(`xnu-frankel-ufs.img`), or out of Hibern8 (`-H`). There is no way to stay in ABL's UFS driver: nothing of ABL is callable after hand-over (nothing read says otherwise, and `fastboot boot` offers no such thing). Failing those, the system image cannot come from this phone's flash: the RAM route is what remains.
+
+### The order
+
+`ufs-google.c` unless named; steps 3-5 are Google's notifier for a domain power-up, which Linux runs on resume (at its boot the domains are `on-at-init` and it assumes them on, `:300`).
+
+| # | Step | Source | Level |
+|---|---|---|---|
+| 1 | Mailbox: clear, config as `goog_mba_ctrl_startup`, queue reset (word 0x100 in slot 0), wait outstanding 0 | `goog-mba-cpm-iface.c` `cpm_iface_init_q_mode`, `goog-mba-ctrl.c:332` | source-read; polled instead of interrupts: guess |
+| 2 | `hsio_s` state (LPB service 5, id 24, GET); on only if not 3, then wait for its event | `power_controller_main.c:214`, `lpb_service.h` | source-read |
+| 3 | `hsio_s_ufs_prep` on (LPCM service 8, `0x01030101`) | `:305`, `lga-base.dtsi:2162`; "no effect" if already there, `ufs_google_init`'s comment | source-read |
+| 4 | Read PSM status (0x3C00B108, D210, E108: log only) and `PWR_CTRL`. EXT_LD_DONE and INIT_DONE set: **PHY up: no PHY init** (Linux's first probe: `phy_init_needed` false, `:1478`). Else 5 and 13-18 | `lga-base.dtsi:595`, `:993` | the decision is a **guess** |
+| 5 | PRE_ON, cold only: mode 2 (`SRAM_BYPASS` clear, `BOOTLOAD_BYPASS` set), `PHYCLK_SEL` \|= 2, `MPHY_CFG` \|= 1, `CFG_CLKSEL` \|= 2, `REXT_EN` clear | `:955`, `:300` | source-read |
+| 6 | `hsio_s_ufs` on (`0x01000101`) | `:631`, `lga-base.dtsi:2170` | source-read |
+| 7 | Crypto self-test done: `ENC_STAT` bit 4 (400 us; here 1 ms) | `:300` | source-read |
+| 8 | Pads: REFCLK as `refclk_on`; RESETB low; `UFS_PWR_EN` high, 2 ms; reference clock SMC, 310 us; RESETB high. **Different from Google's power-off/on: PWR_EN is never driven low** | `:538` | source-read |
+| 9 | Vendor bits of IS cleared; HCE 0, then 1 | `:300`; `ufshcd.c` | source-read |
+| 10 | `HCLKDIV` 0xC8; `AWUSER_VC` 1, 1 | `:1715` | source-read |
+| 11 | `CBULPH8` 0, `CFG_UPD` 1 | `:1449` | source-read |
+| 12 | PHY up: straight to 19 | `:1478` | source-read |
+| 13 | RMMI attributes; TX EQ pre-de 0; `CFG_UPD` | `lga/ufs-platform.c` | source-read |
+| 14 | PHY reset off (`0x01030604`) | `rst-cpm.c:70`, `reset_v2.h` | source-read |
+| 15 | `SRAM_INIT_DONE`, 570 ms | `:1449` | source-read |
+| 16 | Calibration through the PHY's indirect registers, then the done bits | `:1421`, `:1370` | source-read |
+| 17 | Firmware: `SRAM_APB_MODE` 1, words into 0x3C700000, mode 0, `EXT_LD_DONE` | `:1449` | source-read |
+| 18 | `DME_MPHY_DISABLE` 0; TX FSMs 1, RX FSMs nonzero (1 s each) | `lga/ufs-platform.c` | source-read |
+| 19 | `DME_LINKSTARTUP`, three tries, HCS.DP | `ufshcd.c` | source-read |
+| 20 | `T_ACTIVATE` + 1; C-port both ends; `BUSTHRTL` power gating off; aux clock; `UTRLRDY` | `:1715`, `:1591`, `:1618` | source-read |
+| 21 | The driver: NOP OUT, `fDeviceInit`, power mode, READ CAPACITY, GPT | `hc_own_probe` | QEMU |
+
+The link stays at **PWM-G1**: no gear change is written (Google's needs calibration, Adapt and PA_PWRMODE). Enough for NOP OUT, the GPT and a mount; a first look, not SpringBoard's speed.
+
+**Safety.** `hc_pol.ro` stays: `.read_only` on the entry. `fDeviceInit` and START STOP UNIT (a query flag and a power state, no data out) are the same as when the driver enables QEMU's host, and pass `hc_refusal`. Every store of the file is through `cold_wr` and its allow list or `cold_host` and its list; the mails are `cold_mails[]`, the SMC is one function with fixed arguments. `audit-image.py` compares those lists with its own copy, refuses names of PMIC, OTP, fuses, GSA, `bl31`, RPMB in the file, a second SMC or another store, and takes `ufs_native_cold` only with `ufs_native_ro=1` and without `h8exit`.
+
+**The firmware** is an entry of the payload, in RAM from the boot image, not a file in the small root: this code runs before there is a root. `ufs-phy-fw.py vendor_boot.img out.bin`, `mkimage.sh -U 5 -F out.bin`.
+
+**QEMU** (`UFS_FW=... qemu/run-lga-ufs.sh 100 ufs_native_cold=1`, `ufs_native_soc=lga-qemu`, with `phy-cal-data` added to the tree): the power steps, mailbox, pads, SMC, SRAM and PHY are skipped, as QEMU has none; firmware entry found (40960 bytes), `abl_fdt=` read and 2 calibration values parsed, HCE, the DME attributes logged (QEMU's host takes only link startup: its failures are let through there alone), link up, then NOP, `fDeviceInit`, the GPT (17 partitions), mount and launchd as before. **Untested anywhere**: every mail and its answers, EL3's answer, the pads, the PSM reads, whether top registers read in PREP, the SRAM load, the PHY, the step-4 decision, the real link, DMA behind `inf_smmu`, and timing.
 
 ## CPU features
 

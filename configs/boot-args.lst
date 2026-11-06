@@ -482,6 +482,7 @@ ufs_native_bench	k
 ufs_native_buffer	k
 ufs_native_cached	k
 ufs_native_check	k
+ufs_native_cold	k
 ufs_native_h8exit	k
 ufs_native_hang	k
 ufs_native_leave	k

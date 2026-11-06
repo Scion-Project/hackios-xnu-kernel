@@ -453,6 +453,7 @@ UFS_NATIVE_BENCH	arg	ufs_native_bench	Storage and APFS	k	hakios.ufs.c
 UFS_NATIVE_BUFFER	hex	ufs_native_buffer	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_CACHED	arg	ufs_native_cached	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_CHECK	arg	ufs_native_check	Storage and APFS	k	hakios.ufs.c	what this kernel's own driver reads is what the loader reads, byte for byte
+UFS_NATIVE_COLD	arg	ufs_native_cold	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_H8EXIT	arg	ufs_native_h8exit	Storage and APFS	k	hakios.ufshc.c	the Pixel 10's host: the link out of Hibern8 before NOP OUT (off by default; where ABL's shutdown left it)
 UFS_NATIVE_HANG	arg	ufs_native_hang	Storage and APFS	k	hakios.ufshc.c	
 UFS_NATIVE_LEAVE	arg	ufs_native_leave	Storage and APFS	k	hakios.ufshc.c	
