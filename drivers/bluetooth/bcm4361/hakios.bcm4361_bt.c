@@ -1,16 +1,13 @@
 #define HAKIOS_SOC_FIXED
 /*
- * The Galaxy S9's Bluetooth (starlte, Exynos 9810): the Bluetooth half of the Broadcom BCM4361 on its UART. The chip is
- * powered, answers HCI, takes Broadcom's patch (the .hcd file of the user's own phone), is raised to 4 Mbaud with flow
- * control, and then stays up for the USB console ("bt", "bt scan": an inquiry and an LE scan) and for user space, as
- * /dev/cu.bluetooth (a tty carrying H4, what iOS's bluetoothd opens on an iPhone whose controller is on a UART) and a
- * "bluetooth" registry entry with the chip's address (hakios.bt_node.cpp). No host stack in the kernel. Only with boot-arg
- * bt=N on this phone (the SoC's registers at 0x10000000); nothing is touched without it. The POCO's bt=N is
- * drivers/bluetooth/hakios.bt.c, which is not in the S9's kernel. Seen working on phone 2, 3 November 2026: every step
- * below, the SEMCO module's patch (BCM4347B2 ROM, "BCM4361B2 Crown E32A ANT1 [Version: 0110.0232]" after it), 4 Mbaud,
- * and a scan that heard the LE devices around.
+ * Bluetooth for the BCM4361 on the Galaxy S9 (starlte, Exynos 9810): the chip on UART_BT, brought up only when the
+ * boot-arg bt=N is given (1 to 7, each step adding to the last; nothing is touched without it). The chip is patched,
+ * raised to 4 Mbaud with flow control, and kept powered for the USB console ("bt", "bt scan") and for user space as
+ * /dev/cu.bluetooth and com.apple.uart.bluetooth, with a "bluetooth" registry entry (hakios.bt_node.cpp). There is no
+ * host stack in the kernel. The POCO's bt=N is drivers/bluetooth/hakios.bt.c, which is not in this kernel. Not in QEMU,
+ * which has no such UART or expander: bt=N must not be given there.
  *
- * What is where (Samsung's device tree for the S9, exynos9810-starlte_eur_open_26.dts of its kernel, and its drivers):
+ * Hardware, from Samsung's device tree for the S9 (exynos9810-starlte_eur_open_26.dts) and its drivers:
  *   UART_BT      0x10840000  uart@10840000 (dts 9480-9495): Samsung's "uart1", /dev/ttySAC1 to Android
  *                            (init.samsungexynos9810.rc:637), the port bcm43xx.c's low-power code names (BT_UPORT 1,
  *                            bcm43xx.c:46). Not a USI block: its clocks are PERIC1's UART_BT (below), but the serial
@@ -31,7 +28,7 @@
  *                            are the PMIC's SPEEDY bus: nothing here writes their bits
  *   BT_EN        pin 7 (port 0, bit 7) of the PCAL6524 GPIO expander at 0x22 on hsi2c@10930000 (the bluetooth node's first
  *                            gpio, <76 7 0>, dts 13866-13872; pcal6524@22, dts 6767-6786; bcm43xx.c:272 takes it as bt_en).
- *                            This is BT_REG_ON. It is NOT shared with Wi-Fi: WLAN_REG_ON is gpg0-5 of the SoC (bcmdhd's
+ *                            This is BT_REG_ON. It is not shared with Wi-Fi: WLAN_REG_ON is gpg0-5 of the SoC (bcmdhd's
  *                            dhd_custom_exynos.c:222-236, "cfg_wlanen", dts 2670), driven by drivers/wifi/brcmfmac/hakios.exynos_pcie.c
  *                            (wifi_pcie=2); the BCM4361 has the two lines apart, and bcmdhd's one BT/WLAN REG_ON workaround,
  *                            si_pmu_wlan_bt_reg_on_war() (hndpmu.c:680-710), is for the 4389 alone (PMU rev 40)
@@ -66,14 +63,14 @@
  *                            is written 1 then 0, USI_OPTION 2 (CLKREQ on), all interrupts masked and cleared
  *                            (samsung.c:1555-1571, 1730-1737). The divisor: hakios.bcm_hci.h, as samsung.c works it out.
  *
- * What the chip is told, as Linux's Broadcom drivers tell it (btbcm.c, hci_bcm.c of the S9's kernel): it starts at 115200
- * baud, 8N1, with RTS/CTS (hci_bcm.c:817 init_speed; samsung.c:1268-1274); HCI_Reset (0x0C03, btbcm.c:173) and Read Local
- * Version (0x1001, 209); the patch: Download Minidriver (0xFC2E), 50 ms, the .hcd's records sent one by one as commands,
- * each answered before the next, then 250 ms after the last, Launch_RAM (btbcm.c:106-167); then HCI_Reset and Read Local
- * Version again; the patch goes at 115200 (108 KB, about ten seconds). Then (bt=7) the rate: hci_bcm.c's bcm_set_baudrate()
- * sends 0xFC45 (the UART clock at 48 MHz) above 3 Mbaud, which this module's BCM4347B2 refuses (status 01, unknown
- * command) and does not need: 0xFC18 with 4000000, answered at the old rate, then the UART to 4 Mbaud (UBRDIV 2,
- * UFRACVAL 2 from 200 MHz: exact). BT_EN high and 100 ms before the first byte (bcm43xx.c:96-99); low to power it off (112).
+ * The HCI sequence follows Linux's Broadcom drivers (btbcm.c, hci_bcm.c, bcm43xx.c of the S9's kernel). The chip starts
+ * at 115200 baud, 8N1, with RTS/CTS (hci_bcm.c:817 init_speed; samsung.c:1268-1274). HCI_Reset (0x0C03, btbcm.c:173),
+ * then Read Local Version (0x1001). The patch: Download Minidriver (0xFC2E), 50 ms, the .hcd's records sent one by one as
+ * commands, each answered before the next, then 250 ms after the last, Launch_RAM (btbcm.c:106-167); then HCI_Reset and
+ * Read Local Version again. Then (bt=7) the rate: hci_bcm.c's bcm_set_baudrate() sends 0xFC45 (the UART clock at 48 MHz)
+ * above 3 Mbaud. This module's BCM4347B2 refuses that (status 01, unknown command) and does not need it, so the code
+ * sends 0xFC18 with 4000000, answered at the old rate, then sets the UART to 4 Mbaud (UBRDIV 2, UFRACVAL 2 from 200 MHz:
+ * exact). BT_EN high and 100 ms before the first byte (bcm43xx.c:96-99); low to power it off (112).
  *
  *   bt=1   a look, reading only: UART_BT's clocks and pins, BT_WAKE, BT_HOST_WAKE, the expander's reset pin and bus as
  *          found; UART_BT's registers if its clocks are open (a block whose clock is off can stop the bus)
@@ -96,9 +93,9 @@
  *          tty.bluetooth; bt_tty=0 leaves them out), the kernel control com.apple.uart.bluetooth (the UART as iOS's
  *          BlueTool and bluetoothd open it) and the "bluetooth" registry entry for iOS's bluetoothd
  *   bt_scan=1        at bt=7, one scan as soon as the chip is up, before the console has it
- *   bt_addr=<a>      at bt=7, the chip's address, "8c:83:e1:02:ee:e9" (default: the phone's own, the text of
+ *   bt_addr=<a>      at bt=7, the chip's address, "xx:xx:xx:xx:xx:xx" (default: the phone's own, the text of
  *                    /bluetooth/bt_addr in its EFS partition, read only, as Samsung's Android gives it to the chip;
- *                    bt_addr=0: Broadcom's default 43:61:b2:..., the same in every S9)
+ *                    bt_addr=0: the chip keeps Broadcom's default 43:61:b2:...)
  *   bt_trace=N       at bt=7, the H4 packets on com.apple.uart.bluetooth, both ways, on the console: at most N lines a
  *                    second (each: the direction, the type, the opcode, event or handle, the length, the first bytes);
  *                    the packets beyond that are counted and the count said with the next line
@@ -109,12 +106,7 @@
  *   bt_vendor_part=<name>  the partition the patch is read from (default VENDOR)
  *   bt_expander_reset=1  at bt=2 and up, take the expander out of reset if it is held there
  *   bt_uart_mhz=<n>  UART_BT's clock in MHz, if bt=1 shows the divider or mux not as Android leaves them (default 200)
- * Each step says what it is about to do before it does it.
- *
- * What was checked: compiled, with the driver on and off; every register, bit and number above against the BSP files
- * named with them; the H4 framing, the events, the .hcd reading and the divisor on a computer by tools/bcm_hci_test.c
- * (tools/bcm-hci-test.sh); and on phone 2 (SEMCO module), bt=7 end to end. Not in QEMU (which has no such UART or
- * expander: bt=N must not be given there).
+ * Each step logs what it is about to do before it does it.
  *
  * Sources (Samsung's GPL kernel for the S9, Scion-Project/android_kernel_samsung_exynos9810 at e5906667068e, read for
  * these facts, not copied): drivers/bluetooth/bcm43xx.c, btbcm.c, hci_bcm.c, include/net/bluetooth/hci.h,
@@ -152,8 +144,6 @@
 
 extern void HakiosBTNodeStart(const uint8_t *hci_address, uint32_t speed);
 extern const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
-
-/* ---- where ---------------------------------------------------------------------------------------------------- */
 
 #define UART_PA                 EXYNOS_UART_BT_PA
 #define CMU_PERIC1_PA           EXYNOS_CMU_PERIC1_PA
@@ -278,8 +268,6 @@ deadline_ms(uint32_t ms)
 	return mach_absolute_time() + interval;
 }
 
-/* ---- pins ---------------------------------------------------------------------------------------------------- */
-
 static uint32_t
 pin_con(vm_offset_t gpio, uint32_t bank, unsigned pin)
 {
@@ -313,8 +301,6 @@ look_pins(const char *when)
 	    pin_dat(alive, BANK_GPA2, PIN_HOST_WAKE), pin_con(peric1, BANK_GPG3, PIN_EXP_RESET),
 	    pin_dat(peric1, BANK_GPG3, PIN_EXP_RESET));
 }
-
-/* ---- UART_BT ------------------------------------------------------------------------------------------------- */
 
 /* a gate is open while hardware runs it (manual clear) or it is forced on */
 static bool
@@ -470,8 +456,6 @@ bt_uart_loopback(void)
 	return true;
 }
 
-/* ---- the expander -------------------------------------------------------------------------------------------- */
-
 static bool
 pcal_get(uint8_t reg, uint8_t *value)
 {
@@ -550,8 +534,6 @@ expander_up(void)
 	return look_expander("2");
 }
 
-/* ---- power --------------------------------------------------------------------------------------------------- */
-
 static void
 power_off(const char *why)
 {
@@ -600,8 +582,6 @@ power_on(void)
 	}
 	return true;
 }
-
-/* ---- HCI ----------------------------------------------------------------------------------------------------- */
 
 /*
  * A command, and its Command Complete waited for: true with its status 0 and the return parameters after the status
@@ -833,8 +813,6 @@ patch(void)
 	return true;
 }
 
-/* ---- bt=7: the link at speed, the chip kept, and the USB console's "bt" ---------------------------------------- */
-
 #define BCM_UPDATE_BAUD         0xFC18  /* hci_bcm.c:117: two zero bytes, the rate le32 */
 #define BCM_UART_CLOCK          0xFC45  /* hci_bcm.c:106: 1 = 48 MHz, needed above 3 Mbaud */
 #define HCI_SET_EVENT_MASK      0x0C01
@@ -884,7 +862,7 @@ uart_set_baud(uint32_t baud)
 	return true;
 }
 
-/* hci_bcm.c's bcm_set_baudrate(): the clock at 48 MHz above 3 Mbaud, 0xFC18 answered at the old rate, then ours */
+/* hci_bcm.c's bcm_set_baudrate(): the clock at 48 MHz above 3 Mbaud, then 0xFC18 answered at the old rate, then the new rate */
 static bool
 raise_baud(uint32_t baud)
 {
@@ -1043,7 +1021,7 @@ scan_event(const uint8_t *event)
 	}
 }
 
-/* events for a while, each to the scan */
+/* read events for up to ms, or until until_set is set, and pass each to scan_event() */
 static void
 collect(uint32_t ms, volatile bool *until_set)
 {
@@ -1168,8 +1146,6 @@ hakios_bt_console(const char *arg)
 	}
 	thread_deallocate(thread);
 }
-
-/* ---- bt=7: /dev/cu.bluetooth, the chip's HCI for user space ------------------------------------------------------ */
 
 /*
  * What iOS's bluetoothd opens on an iPhone whose controller is on a UART (its strings: "/dev/cu.bluetooth",
@@ -1359,19 +1335,19 @@ static const struct cdevsw bt_cdevsw = {
 };
 
 /*
- * com.apple.uart.bluetooth: the UART as iOS's BlueTool opens it. BlueTool 16.5 ("device -D", or "device -d <name>")
- * does not open a /dev node: it makes a PF_SYSTEM stream socket, asks CTLIOCGINFO for the kernel control of that name
- * (default com.apple.uart.bluetooth, or $BT_UART), connects to it, reads and sets termios with get/setsockopt at
- * SYSPROTO_CONTROL (the option numbers are TIOCGETA and TIOCSETA), writes H4 with write() and reads it with read()
- * until it has as many bytes as it asked for (a control registered for datagrams refuses its connect: EPROTOTYPE). With
- * no such control, every BlueTool command that needs the chip says "Device not open yet" and bluetoothd's boot of the
- * chip through BlueTool fails (seen on the phone, 3 November). bluetoothd's own transport
- * (BT_HCI_TRANSPORT=H4:POSIX:<name>,<rate>, its "POSIX" driver) is the same kind of socket, so it opens this control
- * too. So the same UART, when neither the tty nor the console has it: what is sent goes out as it comes; what the chip
- * sends is queued to the socket as it is read; the rate is the kernel's (the chip was raised to it at bt=7), so a rate
- * set through termios is answered and not followed. One client at a time, the newest: BlueTool keeps its socket open
- * after its scripts, so a new connection (bluetoothd's) takes the UART from it, as does an open of /dev/cu.bluetooth;
- * the client cut off finds its writes failing with ENXIO.
+ * com.apple.uart.bluetooth: the UART as iOS's BlueTool (16.5) opens it. BlueTool does not open a /dev node. It makes a
+ * PF_SYSTEM stream socket, asks CTLIOCGINFO for the kernel control of that name (default com.apple.uart.bluetooth, or
+ * $BT_UART), connects, and reads and sets termios with get/setsockopt at SYSPROTO_CONTROL (TIOCGETA and TIOCSETA).
+ * It writes H4 with write() and reads with read() until it has as many bytes as it asked for. A control registered for
+ * datagrams refuses its connect (EPROTOTYPE). Without the control, BlueTool commands that need the chip report "Device
+ * not open yet", and bluetoothd's boot of the chip through BlueTool fails. bluetoothd's own transport
+ * (BT_HCI_TRANSPORT=H4:POSIX:<name>,<rate>) is the same kind of socket, so it opens this control too.
+ *
+ * While neither the tty nor the console holds the UART, the control passes H4 through: what is sent goes out as it
+ * comes, and what the chip sends is queued to the socket as it is read. The rate is the kernel's (raised at bt=7), so a
+ * rate set through termios is answered but not followed. One client at a time, the newest: BlueTool keeps its socket
+ * open after its scripts, so a new connection (bluetoothd's) takes the UART from it, as does an open of
+ * /dev/cu.bluetooth. The client cut off finds its writes failing with ENXIO.
  */
 /*
  * bt_trace=N: what goes over com.apple.uart.bluetooth, packet by packet, as the console can take it (N lines a second;
@@ -1693,7 +1669,7 @@ bt_tty_publish(void)
 	    link_baud);
 }
 
-/* "8C:83:E1:02:EE:E9" (a line of text, upper or lower case) into HCI's order (the last byte first), or false */
+/* "xx:xx:xx:xx:xx:xx" (text, upper or lower case) into HCI's order (last byte first), or false */
 static bool
 addr_parse(const char *t, size_t n, uint8_t out[6])
 {
@@ -1728,8 +1704,9 @@ addr_parse(const char *t, size_t n, uint8_t out[6])
  * The phone's own address for the chip, as Samsung's Android gives it: the text in /efs/bluetooth/bt_addr (the EFS
  * partition, read here and never written: drivers/storage/hakios.ext4.c, the phone's storage up as for the patch),
  * sent with Broadcom's Write_BD_ADDR (0xFC01, the address in HCI's order: btbcm.c:93 btbcm_set_bdaddr()). Without it the
- * chip answers with Broadcom's default, 43:61:b2:00:1f:ac, which every S9 then has: two phones near each other, or a
- * headset paired with both, take one for the other. bt_addr=<a> gives one; bt_addr=0 keeps the default.
+ * chip keeps Broadcom's default, 43:61:b2:00:1f:ac, and two devices with the same address can be confused for one
+ * another by a peer (two phones near each other, or a headset paired with both). bt_addr=<a> gives an address;
+ * bt_addr=0 keeps the default.
  */
 #define HCI_BCM_WRITE_BD_ADDR   0xFC01
 
@@ -1780,7 +1757,7 @@ stage7(void)
 	if (baud != BAUD && !raise_baud(baud)) {
 		struct hci_local_version v;
 
-		/* the chip may be at the new rate and we not: start it again, patch it again, and stay at 115200 */
+		/* the chip may be at the new rate while the UART is not: restart and patch the chip, and stay at 115200 */
 		say("bt: 7: %u baud did not work: the chip off and on again, patched again, kept at %u\n", baud, BAUD);
 		power_off("the rate did not take");
 		sleep_ms(200);
@@ -1808,8 +1785,6 @@ stage7(void)
 	}
 	return true;
 }
-
-/* ---- the steps ----------------------------------------------------------------------------------------------- */
 
 static void
 bt_thread(void *arg, wait_result_t wr_unused)
