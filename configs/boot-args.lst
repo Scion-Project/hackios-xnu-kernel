@@ -501,6 +501,7 @@ ufs_native_write	k
 ufs_probe	l
 ufs_shared_pa	k
 ufs_write	kl
+ufs_write_guid	l
 usb_gadget	k
 usb_gadget_clk	k
 usb_gadget_crlf	k

@@ -139,6 +139,8 @@ static int block_probe_requested;       /* ufs_probe=1: block_io2_probe() at blo
 static efi_block_io *block_bios[BLOCK_MAX_PARTS];
 static int block_enabled;
 static int block_write_requested;       /* ufs_write=1 on the command line */
+static efi_guid block_write_guid;       /* ufs_write_guid=: the one partition, by its unique GUID, that takes writes ... */
+static int block_write_guid_set;        /* ... instead of PLAT->data_part by name; 0: not given, nothing here changes */
 static int block_write_part = -1;       /* the only partition a write may reach; -1: none, writes refused */
 static uint64_t block_write_first = BLOCK_WRITE_FIRST;  /* ... and its first block a write may reach */
 static uint64_t block_writes, block_writes_refused, block_write_bytes;
@@ -469,6 +471,77 @@ block_is_data_part(const efi_partition_info *info, const efi_block_io *bio, cons
 	return 1;
 }
 
+/*
+ * ufs_write_guid=: the partition whose unique GPT GUID this is (the text sgdisk prints, 8-4-4-4-12), whatever it is named, is
+ * the data volume from its first block, on the same terms as block_is_data_part (a partition, first logical unit, blocks of
+ * 4096, at least 1 GiB, whole as its GPT entry says, writable as UEFI gives it out). It is for SCIONVAR on a dual-boot
+ * S9 (docs/dual-boot-s9.md): the one place iOS may write there, with Android's USERDATA beside it. A GUID that no partition
+ * has, or a partition that fails a rule: nothing is written this run.
+ */
+static int
+block_is_guid_part(const efi_partition_info *info, const efi_block_io *bio, const struct loader_block_part *bp)
+{
+	const char *why = NULL;
+	const uint8_t *u = (const uint8_t *)&info->unique_guid;
+
+	if (memcmp(&info->unique_guid, &block_write_guid, sizeof(efi_guid)) != 0) {
+		return 0;                       /* another partition: nothing to say about it */
+	}
+	if (bp->unit != 0) {
+		why = "it is not on the first logical unit";
+	} else if (bp->block_size != 4096 || bp->blocks < BLOCK_DATA_MIN ||
+	    info->end_lba - info->start_lba + 1 != bp->blocks) {
+		why = "it is not at least 1 GiB in blocks of 4096, whole";
+	} else if (bio->media->read_only) {
+		why = "UEFI gives it out read only";
+	}
+	if (why != NULL) {
+		print("ufs: %s (by ufs_write_guid=): no write will be served: %s\n", bp->name, why);
+		return 0;
+	}
+	print("ufs: %s (by ufs_write_guid=, GUID %x...%x, LBA %d..%d of unit 0): the data volume, all of its blocks may be written this run\n",
+	    bp->name, (uint64_t)u[3] << 24 | (uint64_t)u[2] << 16 | (uint64_t)u[1] << 8 | u[0],
+	    (uint64_t)u[12] << 24 | (uint64_t)u[13] << 16 | (uint64_t)u[14] << 8 | u[15], info->start_lba, info->end_lba);
+	return 1;
+}
+
+/* 8-4-4-4-12 hex to a GUID, as the GPT stores it (the first three fields little-endian); 0 if it is not that text */
+static int
+block_parse_guid(const char *s, efi_guid *g)
+{
+	uint8_t b[16];
+	unsigned n = 0;
+
+	for (unsigned i = 0; i < 36; i++) {
+		if (i == 8 || i == 13 || i == 18 || i == 23) {
+			if (s[i] != '-') {
+				return 0;
+			}
+			continue;
+		}
+		int v = s[i] >= '0' && s[i] <= '9' ? s[i] - '0' : s[i] >= 'a' && s[i] <= 'f' ? s[i] - 'a' + 10 :
+		    s[i] >= 'A' && s[i] <= 'F' ? s[i] - 'A' + 10 : -1;
+
+		if (v < 0) {
+			return 0;
+		}
+		if (n % 2 == 0) {
+			b[n / 2] = (uint8_t)(v << 4);
+		} else {
+			b[n / 2] |= (uint8_t)v;
+		}
+		n++;
+	}
+	if (s[36] != 0 && s[36] != ' ') {
+		return 0;
+	}
+	g->a = (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3];
+	g->b = (uint16_t)(b[4] << 8 | b[5]);
+	g->c = (uint16_t)(b[6] << 8 | b[7]);
+	memcpy(g->d, b + 8, 8);
+	return 1;
+}
+
 static void
 block_start(void)
 {
@@ -543,9 +616,10 @@ block_start(void)
 		}
 		/* a port that names its data partition writes only that one; the others only darwin */
 		if (block_write_requested &&
-		    (PLAT->data_part != NULL ? block_is_data_part(info, bio, bp) : block_is_darwin(info, bio, bp))) {
+		    (block_write_guid_set ? block_is_guid_part(info, bio, bp) :
+		    PLAT->data_part != NULL ? block_is_data_part(info, bio, bp) : block_is_darwin(info, bio, bp))) {
 			block_write_part = (int)block_shared.parts;
-			block_write_first = PLAT->data_part != NULL ? 0 : BLOCK_WRITE_FIRST;
+			block_write_first = (PLAT->data_part != NULL || block_write_guid_set) ? 0 : BLOCK_WRITE_FIRST;
 		}
 		block_bios[block_shared.parts++] = bio;
 		if (block_probe_requested && bp->name[0] == 'd' && bp->name[1] == 'a' && bp->name[2] == 'r' &&

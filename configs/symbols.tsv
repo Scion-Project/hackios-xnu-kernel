@@ -470,6 +470,7 @@ UFS_NATIVE_TEST	arg	ufs_native_test	Storage and APFS	k	hakios.ufs.c	own mode's t
 UFS_NATIVE_VERIFY	arg	ufs_native_verify	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE_WRITE	arg	ufs_native_write	Storage and APFS	k	hakios.ufs.c	own mode: the one partition that takes writes, through /dev/rufs_NAME (never EFS, BOOT, PARAM ...)
 UFS_PROBE	arg	ufs_probe	Loader	l	loader.c	
+UFS_WRITE_GUID	arg	ufs_write_guid	Loader	l	loader.c	
 USB_GADGET	arg	usb_gadget	USB	k	hakios.dwc3.c	the steps (0, or none: nothing)
 USB_GADGET_CLK	arg	usb_gadget_clk	USB	k	hakios.dwc3.c	the glue may open a clock the boot left shut (Android's mux, divider and gate)
 USB_GADGET_CRLF	arg	usb_gadget_crlf	USB	k	hakios.dwc3.c	send the log's line ends as they are (LF) rather than CR LF
