@@ -1301,6 +1301,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	/* a run that does not ask for writes does not get them, whatever an earlier run of this
 	 * loader asked for (the loader stays resident across runs) */
 	block_write_requested = 0;
+	block_write_guid_set = 0;
 	block_write_part = -1;
 	block_write_first = BLOCK_WRITE_FIRST;
 	/*
@@ -1359,6 +1360,12 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		block_probe_requested |= starts_with(c, "ufs_probe=1") && (c == pi.cmdline || c[-1] == ' ');
 		block_write_requested |= starts_with(c, "ufs_write=1") && (c == pi.cmdline || c[-1] == ' ') &&
 		    (c[11] == 0 || c[11] == ' ');
+		if (starts_with(c, "ufs_write_guid=") && (c == pi.cmdline || c[-1] == ' ')) {
+			block_write_guid_set = block_parse_guid(c + 15, &block_write_guid);
+			if (!block_write_guid_set) {
+				print("ufs: ufs_write_guid= is not a GUID (8-4-4-4-12 hex): the by-name rule stays\n");
+			}
+		}
 		/* 1-3: the kernel's list beside UEFI's, in this loader's area; 4 and 5 are the kernel's alone (it has the
 		 * controller for the run, and this loader serves no storage then: drivers/storage/ufs/hakios.ufshc.c, own mode) */
 		hc_requested |= starts_with(c, "ufs_native=") && (c == pi.cmdline || c[-1] == ' ') && c[11] >= '1' &&
@@ -1989,7 +1996,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	}
 	if (block_write_requested) {
 		print("ufs: %d writes into %s, %d bytes, read back the same; %d refused\n", block_writes,
-		    PLAT->data_part != NULL ? PLAT->data_part : "darwin", block_write_bytes, block_writes_refused);
+		    block_write_guid_set ? "the ufs_write_guid= partition" : PLAT->data_part != NULL ? PLAT->data_part : "darwin", block_write_bytes, block_writes_refused);
 	}
 	/* ... and its other cores should all be off again: the next kernel cannot start one that is not */
 	for (int i = 1; i < cpu_count; i++) {
