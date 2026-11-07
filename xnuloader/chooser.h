@@ -38,12 +38,6 @@ cz_le32(const uint8_t *p)
 	return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-static uint64_t
-cz_le64(const uint8_t *p)
-{
-	return cz_le32(p) | (uint64_t)cz_le32(p + 4) << 32;
-}
-
 static uint32_t
 cz_be32(const uint8_t *p)
 {
