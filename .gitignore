@@ -52,6 +52,7 @@ __pycache__/
 !/xnuloader/efi.h
 !/xnuloader/*.c
 !/xnuloader/platform.h
+!/xnuloader/chooser.h
 !/xnuloader/platforms/
 !/xnuloader/mkidentity.py
 !/xnuloader/mkpayload.py

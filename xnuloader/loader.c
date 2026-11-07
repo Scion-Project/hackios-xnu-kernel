@@ -616,6 +616,9 @@ jump_to_kernel(uint64_t entry, uint64_t boot_args_pa)
 #include "ufs_service.c"
 #include "wdt_exynos.c"
 #include "wdt_haven.c"
+#if CHOOSER
+#include "chooser.c"
+#endif
 
 /* ------------------------------------------------------------------------ */
 /* UEFI exception hook: put the fault into the log instead of on the screen  */
@@ -2468,6 +2471,11 @@ efi_main(efi_handle image, efi_system_table *st)
 	ram_dump_base = PLAT->ram_dump, ram_dump_size = PLAT->ram_dump_size;
 	clear_ram_dump();
 	print("platform %s, %s\n", PLAT->name, PLAT->gic_cpu != 0 ? "GICv2" : "GICv3");
+#if CHOOSER
+	if (PLAT == &platform_starlte) {       /* the Galaxy S9: its keys and its Android (chooser.c) */
+		chooser_run();
+	}
+#endif
 	pci_probe(PLAT);
 
 	install_exception_hook();
